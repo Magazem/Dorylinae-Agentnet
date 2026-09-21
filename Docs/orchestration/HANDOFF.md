@@ -89,10 +89,10 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | Ticket | Worker | Worktree / branch | Opus review |
 |---|---|---|---|
 | 1.0e sender outbox (**migration 7**), Reseal, OnAck, key-miss re-seal, `status --json` outbox, two-daemon harness | W4-Outbox | `outbox` / `w4/outbox` | **yes, and it must also cover 1.0b + 1.0d** |
-| M4 manual two-machine checklist `tests/phase0-manual.md` + smoke scripts | W4-ManualTest | `manual-test` / `w4/manual-test` | no |
+| ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
 | Windows TempDir flake elimination (tests only, maybe `internal/testutil`) | W4-WinFlakes | `win-flakes` / `w4/win-flakes` | no |
 
-After 1.0e merges: 1.0f docs/CLI reconciliation. Then the owner runs M4 on two machines.
+After 1.0e merges: 1.0f docs/CLI reconciliation, plus fill in step 11 of `tests/phase0-manual.md`, plus `agentnetd install --relay URL` (installed services get no relay URL today because launchd/systemd/schtasks do not inherit env), plus a Windows service log file. Then the owner runs M4 on two machines.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
