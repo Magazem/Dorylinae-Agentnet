@@ -83,7 +83,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | Ticket | Worker | Worktree / branch | Needs Opus review before merge |
 |---|---|---|---|
 | ~~0.8b fingerprints, trust, peers verify/remove~~ | merged `a8cb0a3` (migration 3 adds `peers.trust` + `mailbox_keys`; IPC errors `fingerprint_mismatch`, `bad_fingerprint`, `unknown_peer`) | — | — |
-| 0.8d pairing v2, relay side | committed `f06f841` on `w2/relay-v2` (rebased on main); **in Opus review** (W2-RelayReviewer → `Docs/review/08b-relay-v2-review.md`) | `relay-v2` / `w2/relay-v2` | **yes** |
+| ~~0.8d pairing v2, relay side~~ | merged `099054e` + review fixes `6c78619` (pair_new 10/key/min → `pair_rate_limited`; `PairMaxCodes` 10000 → `pair_limit`) | — | — |
 | ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
 | 1.0c `internal/mail` seal/open | committed `baa55f6` on `w2/mail`; **in Opus review** (W2-MailReviewer → `Docs/review/08-wave2-security-review.md`) | `mail` / `w2/mail` | **yes** |
 
@@ -116,6 +116,7 @@ To see live status: `team_members`, `team_task_list`, `git worktree list`.
   - M2: relay abuse limits and TLS. Must land before hosted relay 4.1.
   - The Low items.
 - 15 Low items from `Docs/review/07-spec-review.md` (14 not fixed).
+- 7 Low items from `Docs/review/08b-relay-v2-review.md`. Before 4.1: per-IP/account pairing limits (L5); make v1 pairing default-off for library callers of `relay.Options` (L1).
 - Spec nits from 0.8e: pairing.md says card_I is "333 bytes" (correct, é is 2 bytes; clarify); state explicitly that u32 length prefixes count canonical bytes.
 
 Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options.md` §5.
