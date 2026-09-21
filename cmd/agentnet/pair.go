@@ -37,6 +37,7 @@ func runPair(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
 	newCode := fs.Bool("new", false, "issue a one-time pairing code")
+	legacy := fs.Bool("v1", false, "redeem a legacy 10-character (v1) code")
 	statusID := fs.String("status", "", "show the state of the pairing with this ID")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stdout, `Pair with an agent on another machine through the relay.
@@ -44,11 +45,15 @@ func runPair(args []string, stdout, stderr io.Writer) int {
 Usage:
   agentnet pair --new [--json]         issue a one-time code (valid 10 minutes)
   agentnet pair <code> [--json]        redeem a code shown by the other machine
+  agentnet pair --v1 <code> [--json]   redeem a legacy 10-character code
   agentnet pair --status <id> [--json] check a pairing that was still pending
 
 Flags:
-  --new        issue a one-time pairing code and return; enter the code on the
-               other machine with 'agentnet pair <code>'
+  --new        issue a one-time pairing code (15 characters, LLLLL-SSSSS-SSSSS)
+               and return; enter the code on the other machine with
+               'agentnet pair <code>'
+  --v1         allow redeeming a legacy 10-character code. The peer is stored
+               with trust "relay", which a hostile relay could have forged
   --status ID  show the state of a pairing by its ID
   --json       print machine-readable JSON on stdout:
                {"ok":true,"pairing_id","role":"issuer|redeemer",
@@ -62,9 +67,9 @@ Flags:
 
 The command returns in under 2 seconds. If the exchange is not finished by
 then, state is "pending" and the pairing ID can be polled with --status. Both
-daemons verify the other's signed Agent Card before storing the peer; a card
-with a bad signature aborts the pairing and nothing is stored. Codes are
-single use. List the result with 'agentnet peers'.
+daemons verify the other's signed Agent Card and mailbox key and prove they know
+the code; if anything was altered on the way the pairing fails and nothing is
+stored. Codes are single use. List the result with 'agentnet peers'.
 
 Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 3 daemon not running.
@@ -81,17 +86,20 @@ Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 	var method string
 	var params any
 	switch {
-	case *newCode && (*statusID != "" || len(pos) > 0):
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--new takes no code and cannot be combined with --status")
+	case *newCode && (*statusID != "" || len(pos) > 0 || *legacy):
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--new takes no code and cannot be combined with --status or --v1")
 	case *newCode:
 		method = "pair_new"
 	case *statusID != "":
 		if len(pos) > 0 {
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--status takes no code")
 		}
+		if *legacy {
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--v1 applies only to redeeming a code")
+		}
 		method, params = "pair_status", daemon.PairStatusParams{PairingID: *statusID}
 	case len(pos) == 1:
-		method, params = "pair_redeem", daemon.PairRedeemParams{Code: pos[0]}
+		method, params = "pair_redeem", daemon.PairRedeemParams{Code: pos[0], V1: *legacy}
 	case len(pos) > 1:
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", fmt.Sprintf("unexpected argument %q", pos[1]))
 	default:
@@ -133,7 +141,8 @@ func printPair(w io.Writer, st daemon.PairStatus) {
 	}
 }
 
-// formatCode shows a 10-character code as XXXXX-XXXXX.
+// formatCode shows a code as LLLLL-SSSSS-SSSSS (v2), or XXXXX-XXXXX (v1). The
+// daemon already formats v2 codes, so a code that has dashes is left alone.
 func formatCode(c string) string {
 	if len(c) == 10 {
 		return c[:5] + "-" + c[5:]

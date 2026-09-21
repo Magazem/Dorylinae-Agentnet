@@ -17,6 +17,9 @@ const (
 	MaxRefLen = 128
 	// PairCodeLen is the number of significant characters in a pairing code.
 	PairCodeLen = 10
+	// PairCodeV2Len is the number of significant characters in a v2 pairing code:
+	// the 5-character lookup followed by the 10-character secret.
+	PairCodeV2Len = 15
 	// PairLookupLen is the length of the v2 lookup, the only part sent to the relay.
 	PairLookupLen = 5
 	// PairAlphabet is the Crockford base32 alphabet used for pairing codes.
@@ -49,6 +52,11 @@ func FormatPairCode(code string) string {
 // a well-formed code.
 func NormalizePairCode(s string) (code string, ok bool) {
 	return normalizePair(s, PairCodeLen)
+}
+
+// NormalizePairCodeV2 is NormalizePairCode for a v2 code of PairCodeV2Len characters.
+func NormalizePairCodeV2(s string) (code string, ok bool) {
+	return normalizePair(s, PairCodeV2Len)
 }
 
 // NormalizePairLookup canonicalises a v2 lookup with the same rules as

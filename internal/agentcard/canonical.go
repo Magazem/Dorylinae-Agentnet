@@ -18,10 +18,10 @@ const maxSafeInt = 1 << 53
 
 var intPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
 
-// parseStrict decodes one JSON document into generic values (map[string]any,
+// ParseStrict decodes one JSON document into generic values (map[string]any,
 // []any, string, json.Number, bool, nil). It rejects invalid UTF-8, duplicate
 // object keys and trailing data.
-func parseStrict(data []byte) (any, error) {
+func ParseStrict(data []byte) (any, error) {
 	if !utf8.Valid(data) {
 		return nil, errors.New("input is not valid UTF-8")
 	}
@@ -177,4 +177,15 @@ func writeString(buf *bytes.Buffer, s string) {
 		}
 	}
 	buf.WriteByte('"')
+}
+
+// CanonicalValue returns the deterministic JSON form (agent-card.md §Canonical
+// serialisation) of a value produced by ParseStrict. It fails on numbers that
+// are not integers within +-2^53.
+func CanonicalValue(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := canonicalize(&buf, v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
 
@@ -141,7 +142,7 @@ func (o *Opener) open(env envelope.Envelope) (*Opened, error) {
 	if err != nil {
 		return nil, reject(7, ReasonBadSignature, err)
 	}
-	canonMsg, err := canonical(gen)
+	canonMsg, err := agentcard.CanonicalValue(gen)
 	if err != nil {
 		return nil, reject(7, ReasonBadSignature, err)
 	}
@@ -202,7 +203,7 @@ func hpkeOpen(priv *ecdh.PrivateKey, enc, ct, info, aad []byte) ([]byte, error) 
 // parseSigned parses plaintext strictly. It returns the msg as parsed
 // generically (the form the signature covers), the typed message and sig.
 func parseSigned(plain []byte) (gen map[string]any, msg Msg, sig []byte, err error) {
-	doc, err := parseStrict(plain)
+	doc, err := agentcard.ParseStrict(plain)
 	if err != nil {
 		return nil, Msg{}, nil, err
 	}
@@ -250,7 +251,7 @@ func parseSigned(plain []byte) (gen map[string]any, msg Msg, sig []byte, err err
 	if msg.Body, ok = gen["body"].(map[string]any); !ok {
 		return nil, Msg{}, nil, errors.New("body must be an object")
 	}
-	if _, err := canonical(gen); err != nil { // integers only, in range
+	if _, err := agentcard.CanonicalValue(gen); err != nil { // integers only, in range
 		return nil, Msg{}, nil, err
 	}
 	return gen, msg, sig, nil

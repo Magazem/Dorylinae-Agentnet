@@ -23,7 +23,8 @@ const domain = "dorylinae-agent-card-v1\n"
 
 const maxTextLen = 128
 
-var b64 = base64.RawURLEncoding
+// Strict: no padding, and trailing bits must be zero, so a value has one encoding.
+var b64 = base64.RawURLEncoding.Strict()
 
 // Skill is one declared skill.
 type Skill struct {
@@ -126,7 +127,7 @@ func Canonical(c Card) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentcard: marshal: %w", err)
 	}
-	v, err := parseStrict(raw)
+	v, err := ParseStrict(raw)
 	if err != nil {
 		return nil, fmt.Errorf("agentcard: %w", err)
 	}
@@ -169,7 +170,7 @@ func Sign(priv ed25519.PrivateKey, c Card) (Signed, error) {
 // generically, so any changed or added field fails; the schema is checked
 // after the signature.
 func Verify(data []byte) (*Signed, error) {
-	doc, err := parseStrict(data)
+	doc, err := ParseStrict(data)
 	if err != nil {
 		return nil, fmt.Errorf("agentcard: %w", err)
 	}

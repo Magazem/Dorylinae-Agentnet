@@ -30,6 +30,8 @@ type PeersResult struct {
 // PairRedeemParams are the params of "pair_redeem".
 type PairRedeemParams struct {
 	Code string `json:"code"`
+	// V1 allows redeeming a legacy 10-character code.
+	V1 bool `json:"v1,omitempty"`
 }
 
 // PairStatusParams are the params of "pair_status".
@@ -50,7 +52,7 @@ func registerPairing(srv *ipc.Server, m *peers.Manager) {
 		if err := json.Unmarshal(params, &p); err != nil || p.Code == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "code is required"}
 		}
-		st, err := m.Redeem(ctx, p.Code)
+		st, err := m.Redeem(ctx, p.Code, p.V1)
 		if err != nil {
 			return nil, pairError(err)
 		}
@@ -85,7 +87,9 @@ func pairError(err error) error {
 	case errors.Is(err, relayclient.ErrNotConnected):
 		return &ipc.Error{Code: CodeRelayUnavailable, Message: "the daemon is not connected to the relay"}
 	case errors.Is(err, peers.ErrBadCode):
-		return &ipc.Error{Code: CodeBadCode, Message: "not a valid pairing code (10 letters and digits, e.g. 7KQ2M-9XHF4)"}
+		return &ipc.Error{Code: CodeBadCode, Message: "not a valid pairing code (15 letters and digits, e.g. 7KQ2M-9XHF4-TRW8N)"}
+	case errors.Is(err, peers.ErrNeedV1):
+		return &ipc.Error{Code: CodeBadCode, Message: "a 10-character code is a legacy v1 code; redeem it with 'agentnet pair --v1 <code>'"}
 	case errors.Is(err, peers.ErrNotFound):
 		return &ipc.Error{Code: CodeUnknownPairing, Message: "no pairing with that id"}
 	case errors.Is(err, peers.ErrTooMany):

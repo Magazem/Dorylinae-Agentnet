@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 )
 
 // Wire constants from Docs/protocol/mail.md.
@@ -48,7 +50,7 @@ const (
 )
 
 var (
-	b64u = base64.RawURLEncoding
+	b64u = base64.RawURLEncoding.Strict() // rejects non-canonical trailing bits
 
 	idPattern   = regexp.MustCompile(`^m-[0-9a-f]{32}$`)
 	kindPattern = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
@@ -137,7 +139,7 @@ func Seal(in SealInput) (Sealed, error) {
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: marshal body: %w", err)
 	}
-	genBody, err := parseStrict(rawBody)
+	genBody, err := agentcard.ParseStrict(rawBody)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: body: %w", err)
 	}
@@ -153,12 +155,12 @@ func Seal(in SealInput) (Sealed, error) {
 		"kind":    in.Kind,
 		"body":    genBody,
 	}
-	canonMsg, err := canonical(msg)
+	canonMsg, err := agentcard.CanonicalValue(msg)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: canonicalize msg: %w", err)
 	}
 	sig := ed25519.Sign(in.Priv, append([]byte(msgTag), canonMsg...))
-	plain, err := canonical(map[string]any{"msg": msg, "sig": b64u.EncodeToString(sig)})
+	plain, err := agentcard.CanonicalValue(map[string]any{"msg": msg, "sig": b64u.EncodeToString(sig)})
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: canonicalize signed: %w", err)
 	}

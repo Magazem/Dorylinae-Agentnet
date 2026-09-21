@@ -86,14 +86,17 @@ returns or exports it.
 
 ### `pair_new`
 
-Params: none. Asks the relay for a one-time code and waits at most one second.
-Result: a pairing status (below) with `role: "issuer"`, carrying `code` and
-`expires` if the relay answered in time.
+Params: none. Generates a v2 code (15 characters, shown `LLLLL-SSSSS-SSSSS`),
+registers its lookup with the relay and waits at most one second. Result: a
+pairing status (below) with `role: "issuer"`, carrying `code` and `expires` (the
+daemon's own 10-minute limit) if the relay answered in time.
 
 ### `pair_redeem`
 
-Params: `{"code": "<code as typed>"}`. Redeems a code and waits at most one
-second. Result: a pairing status with `role: "redeemer"`.
+Params: `{"code": "<code as typed>", "v1"?: true}`. Redeems a code and waits at
+most one second. A 15-character code is v2; a 10-character (legacy) code is
+refused with `bad_code` unless `v1` is true. Result: a pairing status with
+`role: "redeemer"`.
 
 ### `pair_status`
 
@@ -102,7 +105,8 @@ Params: `{"pairing_id": "<id>"}`. Result: the pairing status.
 A pairing status is `{"pairing_id", "role": "issuer|redeemer", "state":
 "pending|complete|failed", "code"?, "expires"?, "peer"?, "error"?}`, described
 in [../cli/pair.md](../cli/pair.md). Setup failures (below) are IPC errors; a
-relay refusal or a bad card is a status with `state: "failed"`.
+relay refusal, a bad card or mailbox key, a failed confirmation or a reused code
+(`code_used`) is a status with `state: "failed"`.
 
 ### `peers`
 

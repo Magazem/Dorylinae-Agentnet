@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
 
@@ -267,12 +268,12 @@ func sealBadSig(t *testing.T, s party, signer ed25519.PrivateKey, rcpt party) Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc, err := parseStrict(sl.Signed)
+	doc, err := agentcard.ParseStrict(sl.Signed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc.(map[string]any)["msg"].(map[string]any)["from"] = s.key
-	plain, err := canonical(doc)
+	plain, err := agentcard.CanonicalValue(doc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +388,7 @@ func signedAnnouncement(t *testing.T, id ed25519.PrivateKey, pub []byte, created
 	if tamper != nil {
 		tamper(ann)
 	}
-	c, err := canonical(ann)
+	c, err := agentcard.CanonicalValue(ann)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -74,12 +74,12 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 		t.Errorf("identity output lacks the fingerprint: %q", human)
 	}
 
-	// A new v1 pairing is trust=relay, and peers shows the fingerprint.
+	// A v2 pairing is trust=code, and peers shows the fingerprint.
 	ps := listPeers(t, a)
-	if len(ps) != 1 || ps[0].Trust != "relay" || ps[0].Fingerprint != bobFP {
+	if len(ps) != 1 || ps[0].Trust != "code" || ps[0].Fingerprint != bobFP {
 		t.Fatalf("alice peers = %+v", ps)
 	}
-	if _, human, _ := cli(t, a, "peers"); !strings.Contains(human, envelope.FormatFingerprint(bobFP)) || !strings.Contains(human, "relay") {
+	if _, human, _ := cli(t, a, "peers"); !strings.Contains(human, envelope.FormatFingerprint(bobFP)) || !strings.Contains(human, "code") {
 		t.Errorf("peers output lacks fingerprint/trust: %q", human)
 	}
 
@@ -93,7 +93,7 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 	if code != exitError || errCode(t, out) != "bad_fingerprint" {
 		t.Fatalf("malformed fp: %d %s", code, out)
 	}
-	if ps := listPeers(t, a); ps[0].Trust != "relay" {
+	if ps := listPeers(t, a); ps[0].Trust != "code" {
 		t.Fatalf("trust changed by failed verify: %+v", ps)
 	}
 

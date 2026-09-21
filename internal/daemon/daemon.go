@@ -16,6 +16,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
@@ -114,11 +115,24 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return fmt.Errorf("encode agent card: %w", err)
 	}
 	peerStore := peers.NewStore(st.DB())
+	idPub, err := envelope.ParseKey(id.Card().Card.PublicKey)
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("agent card public key: %w", err)
+	}
+	// An injected identity keystore means tests: keep the mailbox key out of the real keychain too.
+	mailboxMode := os.Getenv(identity.KeystoreEnv)
+	if opts.Keystore != nil {
+		mailboxMode = "file"
+	}
+	mailboxKeys := mailbox.New(p.Dir, mailboxMode, idPub, relayclient.NewKeystoreSigner(ks, idPub).Sign, nil)
 	pairs := peers.NewManager(peers.Config{
-		Store:  peerStore,
-		Audit:  log,
-		Card:   cardJSON,
-		Logger: opts.Logger,
+		Store:   peerStore,
+		Audit:   log,
+		Card:    cardJSON,
+		Self:    id.Card().Card.PublicKey,
+		Mailbox: mailboxKeys.Announcement,
+		Logger:  opts.Logger,
 	})
 	defer pairs.Close()
 	sessions, err := newSessions(id, ks, log, peerStore, opts)
@@ -202,8 +216,11 @@ func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, 
 		Signer: relayclient.NewKeystoreSigner(ks, pub),
 		Logger: opts.Logger,
 
-		OnControl:  pairs.HandleControl,
-		OnEnvelope: sessions.HandleEnvelope,
+		OnControl: pairs.HandleControl,
+		OnEnvelope: func(e envelope.Envelope) {
+			pairs.HandleEnvelope(e) // pair.confirm comes from a peer that is not paired yet
+			sessions.HandleEnvelope(e)
+		},
 		OnError: func(ef envelope.ErrorFrame) {
 			pairs.HandleError(ef)
 			sessions.HandleError(ef)

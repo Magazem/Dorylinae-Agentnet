@@ -25,7 +25,18 @@ import (
 type fakeSender struct {
 	mu   sync.Mutex
 	sent []envelope.Control
+	envs []envelope.Envelope
 	err  error
+}
+
+func (f *fakeSender) Send(_ context.Context, e envelope.Envelope) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.envs = append(f.envs, e)
+	return nil
 }
 
 func (f *fakeSender) SendControl(_ context.Context, c envelope.Control) error {
@@ -53,10 +64,18 @@ type env struct {
 	send   *fakeSender
 	audit  *audit.Log
 	store  *peers.Store
+	db     *store.Store
+	id     *ident
 	ownRaw json.RawMessage
 }
 
 func newEnv(t *testing.T, wait time.Duration) *env {
+	t.Helper()
+	return newEnvWith(t, wait, nil)
+}
+
+// newEnvWith is newEnv with a hook to change the manager config.
+func newEnvWith(t *testing.T, wait time.Duration, mut func(*peers.Config)) *env {
 	t.Helper()
 	ctx := context.Background()
 	dir, err := os.MkdirTemp("", "dn") // not t.TempDir: Windows may hold SQLite WAL files briefly after Close
@@ -69,10 +88,15 @@ func newEnv(t *testing.T, wait time.Duration) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	e := &env{send: &fakeSender{}, audit: audit.New(st.DB()), store: peers.NewStore(st.DB())}
-	own, _ := signedCard(t, "me")
-	e.ownRaw = own
-	e.m = peers.NewManager(peers.Config{Store: e.store, Audit: e.audit, Card: own, Sender: e.send, Wait: wait})
+	e := &env{send: &fakeSender{}, audit: audit.New(st.DB()), store: peers.NewStore(st.DB()), db: st}
+	e.id = newIdent(t, "me")
+	e.ownRaw = e.id.card
+	cfg := peers.Config{Store: e.store, Audit: e.audit, Card: e.id.card, Self: e.id.key,
+		Mailbox: func() ([]byte, error) { return e.id.mbox, nil }, Sender: e.send, Wait: wait}
+	if mut != nil {
+		mut(&cfg)
+	}
+	e.m = peers.NewManager(cfg)
 	t.Cleanup(e.m.Close)
 	return e
 }
@@ -141,7 +165,7 @@ func TestRedeemVerifiesCardBeforeStoring(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t, 50*time.Millisecond)
-			st, err := e.m.Redeem(context.Background(), "abcde-fghjk")
+			st, err := e.m.Redeem(context.Background(), "abcde-fghjk", true)
 			if err != nil || st.State != peers.StatePending {
 				t.Fatalf("Redeem = %+v, %v", st, err)
 			}
@@ -185,23 +209,27 @@ func TestPendingWhenRelayStaysSilent(t *testing.T) {
 	if time.Since(start) > time.Second {
 		t.Fatalf("Start took %v", time.Since(start))
 	}
-	// The code arrives later and can be polled.
-	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Code: "ABCDE-FGHJK", Expires: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339), Ref: st.ID})
+	sent := e.send.last(t)
+	if sent.Op != envelope.OpPairNew || len(sent.Lookup) != 5 || sent.Code != "" || len(sent.Mbox) == 0 || sent.Ref != st.ID {
+		t.Fatalf("sent %+v", sent)
+	}
+	// The relay's acknowledgement arrives later; the code can be polled.
+	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Expires: time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339), Ref: st.ID})
 	got, _ := e.m.Get(st.ID)
-	if got.State != peers.StatePending || got.Code != "ABCDE-FGHJK" || got.Expires == "" {
+	if got.State != peers.StatePending || len(got.Code) != 17 || !strings.HasPrefix(strings.ReplaceAll(got.Code, "-", ""), sent.Lookup) || got.Expires == "" {
 		t.Fatalf("polled = %+v", got)
 	}
 	// A code frame for an unknown ref, or twice, changes nothing.
-	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Code: "ZZZZZ-ZZZZZ", Ref: st.ID})
-	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Code: "ZZZZZ-ZZZZZ", Ref: "nope"})
-	if got2, _ := e.m.Get(st.ID); got2.Code != "ABCDE-FGHJK" {
+	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Ref: st.ID})
+	e.m.HandleControl(envelope.Control{Op: envelope.OpPairCode, Ref: "nope"})
+	if got2, _ := e.m.Get(st.ID); got2.Code != got.Code {
 		t.Fatalf("code replaced: %+v", got2)
 	}
 }
 
 func TestRelayErrorFailsPairing(t *testing.T) {
 	e := newEnv(t, 50*time.Millisecond)
-	st, err := e.m.Redeem(context.Background(), "ABCDEFGHJK")
+	st, err := e.m.Redeem(context.Background(), "ABCDEFGHJK", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +273,7 @@ func TestRedeemReturnsFinalStatusWithinWait(t *testing.T) {
 		}
 	}()
 	start := time.Now()
-	st, err := e.m.Redeem(context.Background(), "ABCDEFGHJK")
+	st, err := e.m.Redeem(context.Background(), "ABCDEFGHJK", true)
 	if err != nil || st.State != peers.StateComplete {
 		t.Fatalf("Redeem = %+v, %v", st, err)
 	}
@@ -258,8 +286,11 @@ func TestSetupErrors(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, 50*time.Millisecond)
 
-	if _, err := e.m.Redeem(ctx, "short"); !errors.Is(err, peers.ErrBadCode) {
+	if _, err := e.m.Redeem(ctx, "short", false); !errors.Is(err, peers.ErrBadCode) {
 		t.Errorf("bad code err = %v", err)
+	}
+	if _, err := e.m.Redeem(ctx, "ABCDE-FGHJK", false); !errors.Is(err, peers.ErrNeedV1) {
+		t.Errorf("v1 code without --v1 err = %v", err)
 	}
 	if e.actions(t) != "" {
 		t.Errorf("malformed code was audited: %s", e.actions(t))

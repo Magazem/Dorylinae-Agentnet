@@ -48,6 +48,12 @@ ALTER TABLE peers ADD COLUMN trust TEXT NOT NULL DEFAULT 'relay'
 ALTER TABLE peers ADD COLUMN mailbox_keys TEXT NOT NULL DEFAULT '[]'
 	CHECK (json_valid(mailbox_keys));
 `},
+	{4, "pair_used_codes", `
+CREATE TABLE pair_used_codes (
+	hash    BLOB PRIMARY KEY,
+	used_at INTEGER NOT NULL
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

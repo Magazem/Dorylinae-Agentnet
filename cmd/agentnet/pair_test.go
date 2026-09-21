@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -138,6 +139,7 @@ type pairOut struct {
 		Name      string `json:"name"`
 		Harness   string `json:"harness"`
 		PairedAt  string `json:"paired_at"`
+		Trust     string `json:"trust"`
 	} `json:"peer"`
 	Error *struct{ Code, Message string } `json:"error"`
 }
@@ -224,9 +226,9 @@ func TestPairTwoDaemons(t *testing.T) {
 	if !issued.OK || issued.State != "pending" || issued.Role != "issuer" || issued.PairingID == "" {
 		t.Fatalf("pair --new = %+v", issued)
 	}
-	norm, ok := envelope.NormalizePairCode(issued.Code)
-	if !ok || issued.Expires == "" {
-		t.Fatalf("no code in %+v", issued)
+	norm, ok := envelope.NormalizePairCodeV2(issued.Code)
+	if !ok || issued.Expires == "" || len(issued.Code) != 17 {
+		t.Fatalf("no v2 code (LLLLL-SSSSS-SSSSS) in %+v", issued)
 	}
 	_, human, _ := cli(t, a, "pair", "--status", issued.PairingID)
 	if !strings.Contains(human, issued.PairingID) || !strings.Contains(human, issued.Code[:5]) {
@@ -234,13 +236,24 @@ func TestPairTwoDaemons(t *testing.T) {
 	}
 
 	// B redeems it (lower case, split by a space: input is normalised).
-	typed := strings.ToLower(norm[:5] + " " + norm[5:])
+	typed := strings.ToLower(norm[:5] + " " + norm[5:10] + " " + norm[10:])
 	code, out, errs = cli(t, b, "pair", typed, "--json")
 	if code != exitOK {
 		t.Fatalf("pair <code>: code %d: %s %s", code, out, errs)
 	}
 	red := decodePair(t, out)
-	if !red.OK || red.State != "complete" || red.Peer == nil || red.Peer.PublicKey != a.key || red.Peer.Name != "alice" {
+	if red.State == "pending" { // key derivation and the confirmation can outlast the daemon's 1 s wait
+		deadline := time.Now().Add(10 * time.Second)
+		for red.State == "pending" {
+			if time.Now().After(deadline) {
+				t.Fatalf("redeemer never finished: %+v", red)
+			}
+			time.Sleep(20 * time.Millisecond)
+			_, out, _ = cli(t, b, "pair", "--status", red.PairingID, "--json")
+			red = decodePair(t, out)
+		}
+	}
+	if !red.OK || red.State != "complete" || red.Peer == nil || red.Peer.PublicKey != a.key || red.Peer.Name != "alice" || red.Peer.Trust != "code" {
 		t.Fatalf("redeem result = %+v", red)
 	}
 	if red.Code != "" {
@@ -266,17 +279,33 @@ func TestPairTwoDaemons(t *testing.T) {
 		t.Fatalf("bob peers = %v", got)
 	}
 
-	// The same code fails a second time, from the same and from another machine.
+	// Each side stored the other's verified mailbox key announcement, and holds its own private key.
+	for _, c := range []struct{ self, other *testNode }{{a, b}, {b, a}} {
+		keys := storedMailboxKeys(t, c.self, c.other.key)
+		if len(keys) != 1 || !strings.Contains(keys[0], `"identity":"`+c.other.key+`"`) {
+			t.Fatalf("stored mailbox_keys of the peer = %v", keys)
+		}
+		files, _ := filepath.Glob(filepath.Join(c.self.p.Dir, "mailbox", "*.key"))
+		if len(files) != 1 {
+			t.Fatalf("own mailbox private keys = %v, want exactly one", files)
+		}
+	}
+
+	// The same code fails a second time: the redeemer refuses it locally, and
+	// another machine finds the relay entry gone (the issuer cancelled it).
 	c := startNode(t, "carol", url)
 	c.waitRelay(t)
-	for _, n := range []*testNode{b, c} {
-		code, out, _ = cli(t, n, "pair", issued.Code, "--json")
+	for _, n := range []struct {
+		node *testNode
+		want string
+	}{{b, "code_used"}, {c, envelope.CodePairInvalid}} {
+		code, out, _ = cli(t, n.node, "pair", issued.Code, "--json")
 		if code != exitError {
 			t.Fatalf("second redemption: code %d, out %s", code, out)
 		}
 		f := decodePair(t, out)
-		if f.OK || f.State != "failed" || f.Error == nil || f.Error.Code != envelope.CodePairInvalid {
-			t.Fatalf("second redemption = %+v", f)
+		if f.OK || f.State != "failed" || f.Error == nil || f.Error.Code != n.want {
+			t.Fatalf("second redemption = %+v, want %s", f, n.want)
 		}
 	}
 	if got := peerKeys(t, c); len(got) != 0 {
@@ -284,13 +313,37 @@ func TestPairTwoDaemons(t *testing.T) {
 	}
 
 	wantA := []string{"pair.start", "pair.complete"}
-	if got := auditActions(t, a, issued.Code, "card"); strings.Join(got, ",") != strings.Join(wantA, ",") {
+	if got := auditActions(t, a, issued.Code, norm[5:], "card"); strings.Join(got, ",") != strings.Join(wantA, ",") {
 		t.Errorf("alice audit = %v, want %v", got, wantA)
 	}
 	wantB := []string{"pair.start", "pair.complete", "pair.start", "pair.fail"}
-	if got := auditActions(t, b, issued.Code, "card"); strings.Join(got, ",") != strings.Join(wantB, ",") {
+	if got := auditActions(t, b, issued.Code, norm[5:], "card"); strings.Join(got, ",") != strings.Join(wantB, ",") {
 		t.Errorf("bob audit = %v, want %v", got, wantB)
 	}
+}
+
+// storedMailboxKeys returns the mailbox_keys array of the peer row for key.
+func storedMailboxKeys(t *testing.T, n *testNode, key string) []string {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, n.p.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var raw string
+	if err := st.DB().QueryRowContext(ctx, `SELECT mailbox_keys FROM peers WHERE public_key = ?`, key).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, a := range arr {
+		out = append(out, string(a))
+	}
+	return out
 }
 
 func TestPairBadCardRejected(t *testing.T) {
@@ -327,7 +380,7 @@ func TestPairBadCardRejected(t *testing.T) {
 			}
 			code := issueFrom(t, srv, url, priv, raw)
 
-			c, out, errs := cli(t, b, "pair", code, "--json")
+			c, out, errs := cli(t, b, "pair", "--v1", code, "--json")
 			if c != exitError {
 				t.Fatalf("code %d, out %s, err %s", c, out, errs)
 			}
@@ -413,6 +466,14 @@ func TestPairNoRelayAndUsage(t *testing.T) {
 	code, out, _ = cli(t, n, "pair", "not-a-code", "--json")
 	if code != exitError || !strings.Contains(out, daemon.CodeBadCode) {
 		t.Errorf("malformed code: code %d out %s", code, out)
+	}
+	// A legacy 10-character code needs --v1.
+	code, out, _ = cli(t, n, "pair", "ABCDE-FGHJK", "--json")
+	if code != exitError || !strings.Contains(out, daemon.CodeBadCode) || !strings.Contains(out, "--v1") {
+		t.Errorf("v1 code without --v1: code %d out %s", code, out)
+	}
+	if code, _, _ := cli(t, n, "pair", "--new", "--v1"); code != exitUsage {
+		t.Errorf("--new --v1: code %d, want usage", code)
 	}
 	code, out, _ = cli(t, n, "pair", "--status", "pair-unknown", "--json")
 	if code != exitError || !strings.Contains(out, daemon.CodeUnknownPairing) {

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 )
 
 // signedPlain builds a canonical signed plaintext from a msg map, signed by
@@ -17,12 +19,12 @@ import (
 // Seal would refuse.
 func signedPlain(t *testing.T, priv ed25519.PrivateKey, msg map[string]any) []byte {
 	t.Helper()
-	c, err := canonical(msg)
+	c, err := agentcard.CanonicalValue(msg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sig := ed25519.Sign(priv, append([]byte(msgTag), c...))
-	plain, err := canonical(map[string]any{"msg": msg, "sig": b64u.EncodeToString(sig)})
+	plain, err := agentcard.CanonicalValue(map[string]any{"msg": msg, "sig": b64u.EncodeToString(sig)})
 	if err != nil {
 		t.Fatal(err)
 	}

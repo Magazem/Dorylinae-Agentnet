@@ -27,7 +27,8 @@ const (
 	maxIDLen   = 128
 )
 
-var b64 = base64.RawURLEncoding
+// Strict: no padding, and trailing bits must be zero, so a value has one encoding.
+var b64 = base64.RawURLEncoding.Strict()
 
 // Envelope is a message from one daemon to another. Payload is opaque to the relay.
 type Envelope struct {

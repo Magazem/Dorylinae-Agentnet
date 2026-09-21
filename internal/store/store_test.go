@@ -58,6 +58,7 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
 			paired_at TEXT NOT NULL)`,
+		`DROP TABLE pair_used_codes`,
 		`DELETE FROM migrations WHERE version > 2`,
 		`INSERT INTO peers VALUES ('k1', 'old', 'h', '[]', '{}', '2026-01-02T03:04:05Z')`,
 	} {

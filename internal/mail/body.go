@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 )
 
 // Step 12 body checks for the kinds this package understands.
@@ -92,7 +94,7 @@ func verifyAnnouncement(v any, identity string, now time.Time) error {
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return errors.New("signature must be 64 bytes")
 	}
-	canon, err := canonical(ann)
+	canon, err := agentcard.CanonicalValue(ann)
 	if err != nil {
 		return err
 	}

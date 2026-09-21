@@ -125,13 +125,15 @@ func pairNodes(t *testing.T, a, b *testNode) {
 	if issued.Code == "" {
 		t.Fatalf("pair --new = %s", out)
 	}
-	if code, out, errs := cli(t, b, "pair", issued.Code, "--json"); code != exitOK || decodePair(t, out).State != "complete" {
+	// Key derivation and the confirmation round trip can outlast the daemon's
+	// one-second wait, so the redeemer may still be pending here.
+	if code, out, errs := cli(t, b, "pair", issued.Code, "--json"); code != exitOK || decodePair(t, out).State == "failed" {
 		t.Fatalf("redeem: %d %s %s", code, out, errs)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for len(peerKeys(t, a)) == 0 {
+	deadline := time.Now().Add(10 * time.Second)
+	for len(peerKeys(t, a)) == 0 || len(peerKeys(t, b)) == 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("issuer never stored the peer")
+			t.Fatal("a side never stored the peer")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -239,7 +241,7 @@ func TestPingEncryptedThroughRelay(t *testing.T) {
 	proxy.mu.Lock()
 	var data int
 	for _, e := range proxy.captured {
-		if !strings.HasPrefix(e.Type, "session.") {
+		if !strings.HasPrefix(e.Type, "session.") && e.Type != "pair.confirm" {
 			t.Errorf("non-session envelope %q in transit", e.Type)
 		}
 		if e.Type == session.TypeData {
