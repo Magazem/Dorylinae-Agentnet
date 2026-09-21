@@ -218,3 +218,4 @@ Count: **11 tickets** (0.8a–e, 1.0a–f).
 4. Relay telemetry counts only `mail`; per-kind counts move to daemon-side audit.
 5. Session durability: sealed mail + sender outbox + receiver dedupe (§Part B). Noise XX kept for ping/interactive only.
 6. Licence: PolyForm Shield 1.0.0.
+7. Spec review (07) accepted: redeemer sends tag_R first; issuer counts attempts at pair_peer (max 3, timeout counts); redeemer's 24 h used-code record is persisted in SQLite.

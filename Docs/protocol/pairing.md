@@ -312,7 +312,9 @@ itself, using role `issuer` for a received `tag_I` and `redeemer` for a received
 2. **Single use.** If this daemon has already sent a `tag_R` for this exact code (same
    lookup and secret) in the last 24 hours, fail with `code_used` and send nothing. The
    redeemer keeps `SHA-256("dorylinae-pair-used-v2\n" ‖ code)` for every code it has sent
-   a tag for, in memory, for 24 hours (a daemon restart forgets them; accepted). This
+   a tag for, in the daemon's SQLite store (`pair_used_codes`: `hash BLOB PRIMARY KEY`,
+   `used_at INTEGER` unix seconds), and prunes rows older than 24 hours, so a daemon
+   restart does not reopen the window. This
    stops a hostile relay from collecting a second `tag_R` sample, or stretching its
    cracking window, by failing a pairing and waiting for the user to retry the same code.
    A retry needs a new code from the issuer.
