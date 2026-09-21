@@ -82,7 +82,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 ### In flight: Wave 2 (started 2026-09-21)
 | Ticket | Worker | Worktree / branch | Needs Opus review before merge |
 |---|---|---|---|
-| 0.8b fingerprints, trust, `peers verify/remove` | W2-Fingerprints | `fingerprints` / `w2/fingerprints` | no |
+| ~~0.8b fingerprints, trust, peers verify/remove~~ | merged `a8cb0a3` (migration 3 adds `peers.trust` + `mailbox_keys`; IPC errors `fingerprint_mismatch`, `bad_fingerprint`, `unknown_peer`) | — | — |
 | 0.8d pairing v2, relay side | W2-RelayV2 | `relay-v2` / `w2/relay-v2` | **yes** |
 | ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
 | 1.0c `internal/mail` seal/open | committed `baa55f6` on `w2/mail`; **in Opus review** (W2-MailReviewer → `Docs/review/08-wave2-security-review.md`) | `mail` / `w2/mail` | **yes** |
