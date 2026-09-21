@@ -20,6 +20,8 @@ type Paths struct {
 	Dir string
 	// DB is the SQLite database file.
 	DB string
+	// RelayQueueDB is the relay's SQLite file of envelopes queued for offline peers.
+	RelayQueueDB string
 	// Endpoint is the IPC address: a socket path (Unix) or pipe name (Windows).
 	Endpoint string
 }
@@ -43,9 +45,10 @@ func In(dir string) (Paths, error) {
 		return Paths{}, fmt.Errorf("resolve config dir: %w", err)
 	}
 	return Paths{
-		Dir:      abs,
-		DB:       filepath.Join(abs, "dorylinae.db"),
-		Endpoint: endpoint(abs),
+		Dir:          abs,
+		DB:           filepath.Join(abs, "dorylinae.db"),
+		RelayQueueDB: filepath.Join(abs, "relay-queue.db"),
+		Endpoint:     endpoint(abs),
 	}, nil
 }
 

@@ -4,17 +4,20 @@ The AgentNet relay: accepts WebSocket connections from daemons, authenticates
 them by a signed challenge, and forwards envelopes between them. It never reads
 or logs envelope payloads. Protocol: [../protocol/envelope.md](../protocol/envelope.md).
 
-Phase 0 runs it locally, in memory, over plain `ws://` (no TLS, no queue for
-offline peers, no persistence). Ticket 0.4.
+Phase 0 runs it locally over plain `ws://` (no TLS). Envelopes for an offline
+peer are stored in a SQLite file and delivered in order when the peer
+reconnects; they survive a relay restart. Tickets 0.4, 0.7.
 
 ```
-relay [--listen HOST:PORT] [--allow-non-loopback] [--verbose] [--version]
+relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--verbose] [--version]
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--listen HOST:PORT` | `127.0.0.1:8787` | Address to listen on. Port `0` picks a free port |
 | `--allow-non-loopback` | off | Permit `--listen` on a non-loopback address. Without it such an address is refused, because the Phase 0 relay has no TLS |
+| `--queue-db PATH` | `relay-queue.db` in the config dir (`$DORYLINAE_HOME`, else the OS user config dir + `dorylinae`) | SQLite file for envelopes queued for offline peers. Created, with its directory, if missing. If it cannot be opened the relay exits 1 with a message |
+| `--queue-ttl DURATION` | `168h` (7 days) | How long an envelope waits for its recipient before it is dropped. Must be positive |
 | `--verbose` | off | Also log every connect, disconnect and routed envelope (routing metadata only: abbreviated keys, `type`, `id`, byte counts) |
 | `--version` | | Print the version and exit |
 | `--help`, `-h` | | Print usage and exit |
@@ -37,8 +40,8 @@ rejected authentication) appear. Logs never contain payloads or raw frames.
 | Code | Meaning |
 |------|---------|
 | 0 | Stopped cleanly (SIGINT/SIGTERM) or `--help`/`--version` |
-| 1 | Could not listen, or the server failed |
-| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` |
+| 1 | Could not listen, could not open the offline queue, or the server failed |
+| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` or a non-positive `--queue-ttl` |
 
 The relay has no `--json` output.
 

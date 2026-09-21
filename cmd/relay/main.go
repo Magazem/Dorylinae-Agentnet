@@ -12,19 +12,22 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 const (
-	name           = "relay"
-	summary        = "AgentNet relay: forwards encrypted traffic between daemons."
-	defaultListen  = "127.0.0.1:8787"
-	shutdownWindow = 5 * time.Second
+	name            = "relay"
+	summary         = "AgentNet relay: forwards encrypted traffic between daemons."
+	defaultListen   = "127.0.0.1:8787"
+	shutdownWindow  = 5 * time.Second
+	defaultQueueTTL = 7 * 24 * time.Hour
 )
 
 func main() {
@@ -40,8 +43,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	listen := fs.String("listen", defaultListen, "address to listen on, host:port (port 0 picks a free port)")
 	allowPublic := fs.Bool("allow-non-loopback", false, "allow --listen on a non-loopback address; Phase 0 relay has no TLS, so this is plaintext")
 	verbose := fs.Bool("verbose", false, "also log every routed envelope (metadata only, never payloads)")
+	queueDB := fs.String("queue-db", "", "SQLite file holding envelopes queued for offline peers (default: relay-queue.db in the config directory)")
+	queueTTL := fs.Duration("queue-ttl", defaultQueueTTL, "how long a queued envelope waits for its recipient")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--verbose] [--version]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, envelope.ConnectPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--verbose] [--version]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, envelope.ConnectPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -67,6 +72,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 	}
+	if *queueTTL <= 0 {
+		_, _ = fmt.Fprintf(stderr, "%s: --queue-ttl must be positive\n", name)
+		return 2
+	}
+	dbPath := *queueDB
+	if dbPath == "" {
+		p, err := paths.Default()
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			return 1
+		}
+		dbPath = p.RelayQueueDB
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: create queue directory: %v\n", name, err)
+		return 1
+	}
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -78,7 +100,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		level = slog.LevelInfo
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-	rs := relay.New(relay.Options{Logger: logger})
+	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL})
+	if err != nil {
+		_ = ln.Close()
+		_, _ = fmt.Fprintf(stderr, "%s: cannot open offline queue %s: %v\n", name, dbPath, err)
+		return 1
+	}
 	srv := &http.Server{
 		Handler:           rs,
 		ReadHeaderTimeout: 10 * time.Second,

@@ -75,9 +75,11 @@ type Server struct {
 	closeOnce sync.Once
 }
 
-// New returns a Server. It panics if the offline queue cannot be opened, which
-// can only happen when Options.QueuePath is set; use Open to handle that error.
+// New returns a Server with an in-memory offline queue, ignoring
+// Options.QueuePath. It is for tests and cannot fail; anything that wants a
+// persistent queue must use Open and handle its error.
 func New(opts Options) *Server {
+	opts.QueuePath = ""
 	s, err := Open(opts)
 	if err != nil {
 		panic(err)
