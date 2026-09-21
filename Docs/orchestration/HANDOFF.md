@@ -94,7 +94,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
 | ~~Windows TempDir flakes~~ | merged `a01c877`: use `internal/testutil.TempDir(t)` instead of `t.TempDir()` in any test that writes files. At the 1.0e merge, switch its new tests to it. | — | — |
 
-1.0f is in flight (W4-DocsCLI, `docs-cli` / `w4/docs-cli`): docs/CLI reconciliation, plan table rows, `agentnetd install --relay`, Windows service log, `tests/phase0-manual.md` step 11, spec nits. No Opus review needed unless it touches crypto. Then the owner runs M4 on two machines.
+1.0f was LOST once (see hard rule 11) and is being REDONE by W4-DocsCLI-Redo in `docs-cli2` / `w4/docs-cli2` (same scope + D10 + debug `note` kind + `agentnet mail send`): docs/CLI reconciliation, plan table rows, `agentnetd install --relay`, Windows service log, `tests/phase0-manual.md` step 11, spec nits. No Opus review needed unless it touches crypto. Then the owner runs M4 on two machines.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
