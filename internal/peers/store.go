@@ -9,11 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
+
+// ActionListSkip is the audit action for a peers row that List skipped.
+const ActionListSkip = "peers.list_skip"
 
 // Trust states, ordered by rank (Docs/protocol/pairing.md).
 const (
@@ -38,13 +42,22 @@ type Peer struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// AuditSink is the part of audit.Log that Store needs.
+type AuditSink interface {
+	Append(ctx context.Context, actor, action string, detail any) error
+}
+
 // Store reads and writes the peers table (created by the store migrations).
 type Store struct {
-	db *sql.DB
+	db    *sql.DB
+	audit AuditSink
 }
 
 // NewStore returns a Store over a migrated database.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// SetAudit sets where List reports the rows it skips. Nil means nowhere.
+func (s *Store) SetAudit(a AuditSink) { s.audit = a }
 
 // Add stores a peer from a card that the caller has already verified, as a v1
 // pairing does: trust=relay and no mailbox key. raw is the card envelope as
@@ -93,6 +106,27 @@ ON CONFLICT (public_key) DO UPDATE SET name = excluded.name, harness = excluded.
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("peers: store peer: %w", err)
+	}
+	return nil
+}
+
+// MergeMailboxKeysTx merges the verified canonical announcement ann of peer
+// into peers.mailbox_keys inside tx, by the rule of Docs/protocol/mail.md
+// §Peer storage. A peer that is no longer paired is ignored.
+func MergeMailboxKeysTx(ctx context.Context, tx *sql.Tx, peer string, ann []byte) error {
+	var old string
+	switch err := tx.QueryRowContext(ctx, `SELECT mailbox_keys FROM peers WHERE public_key = ?`, peer).Scan(&old); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("peers: read mailbox_keys: %w", err)
+	}
+	keys, err := mergeMailboxKeys(old, ann)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE peers SET mailbox_keys = ? WHERE public_key = ?`, keys, peer); err != nil {
+		return fmt.Errorf("peers: store mailbox_keys: %w", err)
 	}
 	return nil
 }
@@ -192,6 +226,7 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 	}
 	defer func() { _ = rows.Close() }()
 	out := []Peer{}
+	var bad []string
 	for rows.Next() {
 		var (
 			p      Peer
@@ -205,7 +240,9 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 		}
 		fp, err := envelope.KeyFingerprint(p.PublicKey)
 		if err != nil {
-			return nil, fmt.Errorf("peers: fingerprint of %q: %w", p.PublicKey, err)
+			// One row with a non-canonical key must not break the whole list (review L6).
+			bad = append(bad, p.PublicKey)
+			continue
 		}
 		p.Fingerprint = fp
 		if p.Skills == nil {
@@ -213,7 +250,17 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+	for _, key := range bad {
+		slog.Warn("peers: skipping row with a bad key", "event", "peers_bad_key", "key_len", len(key))
+		if s.audit != nil {
+			_ = s.audit.Append(ctx, "daemon", ActionListSkip, map[string]any{"peer": key})
+		}
+	}
+	return out, nil
 }
 
 // SetTrust raises the trust of the peer with this key to trust. It never

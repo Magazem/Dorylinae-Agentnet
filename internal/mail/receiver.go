@@ -36,6 +36,9 @@ type Kind struct {
 	// transaction, so it must only use tx. An error rolls everything back and
 	// nothing is acked.
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error
+	// After runs once after the commit of a mail that was not a duplicate. It
+	// must not block for long; it may be nil.
+	After func(ctx context.Context, op *Opened)
 }
 
 // PeerKeys returns the newest mailbox public key (32 bytes) announced by a peer.
@@ -60,6 +63,9 @@ type Receiver struct {
 	// Kinds are the application kinds this daemon understands. A kind that is
 	// absent is unsupported: recorded in mail_seen and acked as unsupported.
 	Kinds map[string]Kind
+	// OnKeyMiss is called with each envelope rejected at step 3 (sealed to a
+	// key that is not live), to start key-miss recovery. May be nil.
+	OnKeyMiss func(ctx context.Context, env envelope.Envelope)
 	// OnAck receives each verified ack mail. Acks are never stored or acked.
 	OnAck func(op *Opened)
 	Log   *slog.Logger
@@ -92,6 +98,9 @@ func (r *Receiver) log() *slog.Logger {
 func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	op, err := r.Opener.Open(env)
 	if err != nil {
+		if ReasonOf(err) == ReasonKeyMiss && r.OnKeyMiss != nil {
+			r.OnKeyMiss(ctx, env)
+		}
 		return err
 	}
 	kind := op.Msg.Kind
@@ -115,6 +124,9 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		if aerr := r.Audit.Append(ctx, actorDaemon, ActionIn, detail); aerr != nil {
 			r.log().Warn("mail: audit failed", "event", "mail_error", "error", aerr)
 		}
+	}
+	if !dup && known && k.After != nil {
+		k.After(ctx, op)
 	}
 	// After commit (or for a duplicate, after rollback): ack.
 	r.ack(ctx, op.Msg.From, op.Msg.ID, !known)

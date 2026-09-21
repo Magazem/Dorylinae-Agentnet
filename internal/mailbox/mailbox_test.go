@@ -1,9 +1,11 @@
 package mailbox_test
 
 import (
+	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"os"
 	"path/filepath"
@@ -13,22 +15,46 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
+// newDB opens a migrated database in a temporary directory.
+func newDB(t *testing.T) *sql.DB {
+	t.Helper()
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "agentnet.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st.DB()
+}
+
 func newKeys(t *testing.T, dir string, now func() time.Time) (*mailbox.Keys, ed25519.PublicKey) {
+	t.Helper()
+	k, pub, _ := newKeysOn(t, dir, newDB(t), now)
+	return k, pub
+}
+
+// newKeysOn returns Keys for a fresh identity attached to db.
+func newKeysOn(t *testing.T, dir string, db *sql.DB, now func() time.Time) (*mailbox.Keys, ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sign := func(m []byte) ([]byte, error) { return ed25519.Sign(priv, m), nil }
-	return mailbox.New(dir, "file", pub, sign, now), pub
+	k := mailbox.New(dir, "file", pub, sign, now)
+	if err := k.Attach(context.Background(), db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	return k, pub, priv
 }
 
 func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	k, pub := newKeys(t, dir, func() time.Time { return now })
+	db := newDB(t)
+	k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
 
 	raw, err := k.Announcement()
 	if err != nil {
@@ -62,6 +88,9 @@ func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
 		t.Fatalf("second call changed the key: %v", err)
 	}
 	restarted := mailbox.New(dir, "file", pub, func(m []byte) ([]byte, error) { return nil, os.ErrClosed }, func() time.Time { return now.Add(time.Hour) })
+	if err := restarted.Attach(context.Background(), db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := restarted.Announcement(); err != nil || string(got) != string(raw) {
 		t.Fatalf("restart did not reuse the key: %v", err)
 	}
@@ -94,6 +123,9 @@ func TestNewKeyWhenPrivateKeyIsGoneOrAnnouncementExpired(t *testing.T) {
 func TestBadKeystoreModeIsAnError(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	k := mailbox.New(t.TempDir(), "bogus", pub, func(m []byte) ([]byte, error) { return ed25519.Sign(priv, m), nil }, nil)
+	if err := k.Attach(context.Background(), newDB(t), nil, nil); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := k.Announcement(); err == nil {
 		t.Fatal("expected an error for an unknown keystore mode")
 	}

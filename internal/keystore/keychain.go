@@ -61,7 +61,11 @@ func (k *Keychain) Set(secret []byte) error {
 
 // Delete removes the entry (used by tests and manual cleanup).
 func (k *Keychain) Delete() error {
-	return withTimeout(func() error { return keyring.Delete(Service, k.account) })
+	err := withTimeout(func() error { return keyring.Delete(Service, k.account) })
+	if errors.Is(err, keyring.ErrNotFound) {
+		return ErrNotFound
+	}
+	return err
 }
 
 func withTimeout(f func() error) error {

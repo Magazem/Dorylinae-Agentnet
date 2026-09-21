@@ -120,6 +120,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return fmt.Errorf("encode agent card: %w", err)
 	}
 	peerStore := peers.NewStore(st.DB())
+	peerStore.SetAudit(log)
 	idPub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		_ = ln.Close()
@@ -131,6 +132,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		mailboxMode = "file"
 	}
 	mailboxKeys := mailbox.New(p.Dir, mailboxMode, idPub, relayclient.NewKeystoreSigner(ks, idPub).Sign, nil)
+	if err := mailboxKeys.Attach(ctx, st.DB(), log, opts.Logger); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	if opts.MailboxKeys == nil {
+		opts.MailboxKeys = mailboxKeys
+	}
 	pairs := peers.NewManager(peers.Config{
 		Store:   peerStore,
 		Audit:   log,
@@ -152,6 +160,14 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return err
 	}
 	defer stopRelay()
+	if opts.RelayURL == "" {
+		// Without a relay nothing can be pushed, but old keys must still be deleted.
+		if rot, ok := opts.MailboxKeys.(ownKeys); ok {
+			rctx, stopRotate := context.WithCancel(ctx)
+			defer stopRotate()
+			go rot.Run(rctx)
+		}
+	}
 
 	started := time.Now()
 	srv := ipc.NewServer()
@@ -246,8 +262,8 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	sessions.SetSender(client)
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
-		rcv := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger)
-		handleMail, stopMail = startMail(ctx, rcv, client)
+		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger)
+		handleMail, stopMail = startMail(ctx, rcv, pusher, client, opts.MailboxKeys)
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})

@@ -72,6 +72,17 @@ CREATE TABLE mail_inbox (
 	PRIMARY KEY (from_key, id)
 );
 `},
+	{6, "mailbox_keys_own", `
+CREATE TABLE mailbox_keys_own (
+	key_id       TEXT PRIMARY KEY,
+	pub          TEXT NOT NULL,
+	created      TEXT NOT NULL,
+	not_after    TEXT NOT NULL,
+	retired      TEXT,
+	deleted      TEXT,
+	announcement TEXT NOT NULL CHECK (json_valid(announcement))
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

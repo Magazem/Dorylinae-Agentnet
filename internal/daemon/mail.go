@@ -13,6 +13,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 )
 
@@ -50,12 +51,54 @@ func (d peerDirectory) MailboxPub(peer string) ([]byte, bool) {
 	return pub, true
 }
 
-// newMailReceiver builds the receiver. keys supplies the own mailbox private
-// keys (created by pairing and rotation, tickets 0.8c and 1.0b).
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger) *mail.Receiver {
+// PeersWithKeys returns the paired peers that have a mailbox key, for the
+// rotation push.
+func (d peerDirectory) PeersWithKeys(ctx context.Context) ([]string, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT public_key FROM peers WHERE mailbox_keys <> '[]' ORDER BY public_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+// ownKeys is what the daemon needs of its own mailbox keys beyond mail.Keys
+// (implemented by *mailbox.Keys): the current announcement, the rotation hook
+// and the rotation job. Options.MailboxKeys without it gets no rotation.
+type ownKeys interface {
+	mail.Keys
+	Announcement() ([]byte, error)
+	OnRotate(func(announcement []byte))
+	Run(ctx context.Context)
+}
+
+// newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
+// the own mailbox private keys (created by pairing and rotation, tickets 0.8c
+// and 1.0b). Both need Sender, which startMail sets.
+func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
-	return &mail.Receiver{
+	priv := func() (ed25519.PrivateKey, error) {
+		seed, _, err := ks.Load()
+		if err != nil {
+			return nil, err
+		}
+		defer clear(seed)
+		if len(seed) != ed25519.SeedSize {
+			return nil, errors.New("stored identity key has the wrong length")
+		}
+		return ed25519.NewKeyFromSeed(seed), nil
+	}
+	pusher := &mail.Pusher{Priv: priv, Peers: dir, List: dir.PeersWithKeys, Log: lg}
+	rcv := &mail.Receiver{
 		Opener: &mail.Opener{
 			Self: selfKey, Peers: dir, Keys: keys,
 			Audit: mail.NewRejectAudit(log, lg),
@@ -63,29 +106,35 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		DB:    db,
 		Peers: dir,
 		Audit: log,
-		Priv: func() (ed25519.PrivateKey, error) {
-			seed, _, err := ks.Load()
-			if err != nil {
-				return nil, err
-			}
-			defer clear(seed)
-			if len(seed) != ed25519.SeedSize {
-				return nil, errors.New("stored identity key has the wrong length")
-			}
-			return ed25519.NewKeyFromSeed(seed), nil
+		Priv:  priv,
+		Log:   lg,
+		Kinds: map[string]mail.Kind{
+			// The nil hook is 1.0e: re-seal the outbox rows named in a key-miss retry list.
+			"keys": mail.KeysKind(peers.MergeMailboxKeysTx, nil),
 		},
-		Log: lg,
 	}
+	if rot, ok := keys.(ownKeys); ok {
+		km := &mail.KeyMiss{Pusher: pusher, Announcement: rot.Announcement, Log: lg}
+		rcv.OnKeyMiss = func(ctx context.Context, env envelope.Envelope) { km.Note(ctx, env.From, env.ID) }
+	}
+	return rcv, pusher
 }
 
 // startMail runs the receiver on its own goroutine and returns the function
 // the relay read loop calls for each mail envelope, plus a stop function.
-func startMail(ctx context.Context, rcv *mail.Receiver, client *relayclient.Client) (handle func(envelope.Envelope), stop func()) {
+func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, client *relayclient.Client, keys mail.Keys) (handle func(envelope.Envelope), stop func()) {
 	rcv.Sender = client
+	pusher.Sender = client
 	q := make(chan envelope.Envelope, mailQueue)
 	mctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go rcv.RunPrune(mctx)
+	if rot, ok := keys.(ownKeys); ok {
+		// A new key is pushed to every peer. The job starts after the hook is set.
+		// 1.0e: set pusher.Outbox here so the push is resent until acked.
+		rot.OnRotate(func(ann []byte) { go pusher.PushAll(mctx, ann) })
+		go rot.Run(mctx)
+	}
 	go func() {
 		defer close(done)
 		for {

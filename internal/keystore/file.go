@@ -78,3 +78,11 @@ func WriteOwnerOnly(path string, data []byte) (err error) {
 	}
 	return os.Rename(name, path)
 }
+
+// Delete removes the file. A missing file is not an error.
+func (f *File) Delete() error {
+	if err := os.Remove(f.Path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}

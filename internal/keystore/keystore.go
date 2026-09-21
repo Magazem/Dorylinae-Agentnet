@@ -81,3 +81,26 @@ func saveVerified(b Backend, secret []byte) error {
 	}
 	return nil
 }
+
+// Deleter is implemented by backends that can remove their secret.
+type Deleter interface {
+	Delete() error
+}
+
+// Delete removes the secret from every backend that can delete it. A secret
+// that is already absent is not an error. Unavailable backends (no keychain
+// service) are skipped, since nothing could have been stored there; any other
+// failure is returned after every backend was tried.
+func (s *Store) Delete() error {
+	var errs []error
+	for _, b := range s.backends {
+		d, ok := b.(Deleter)
+		if !ok {
+			continue
+		}
+		if err := d.Delete(); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrUnavailable) {
+			errs = append(errs, fmt.Errorf("keystore: delete from %s: %w", b.Name(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
