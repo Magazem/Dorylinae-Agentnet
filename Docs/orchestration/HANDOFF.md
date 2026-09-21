@@ -138,10 +138,10 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
   `git worktree remove --force`.
 - **Go** is at `%USERPROFILE%\tools\go\bin`, and is not on PATH by default in Bash.
   Use `export PATH="$USERPROFILE/tools/go/bin:$PATH"`.
-- **No cgo or gcc locally**, so `-race` only runs in CI. Nothing is pushed yet, so
-  **CI has never run the new matrix**.
+- **No cgo or gcc locally**, so `-race` only runs in CI. First CI run of the matrix (run 35601167726, `e3488f0`) FAILED: lint (~27 findings), race (identity e2e test buffer), Windows harness audit-row timing. Fix in flight on `w4/ci-fix` (W4-CIFix). Check CI with `gh run list --branch main` after every push.
+
 - **Python via `python` fails** (uv trampoline error). Use the Edit tool or Go.
-- A local golangci-lint gofmt complaint about `tools/verifycard` is most likely a
+- Local golangci-lint (built with go1.26) cannot load the config; CI lint is the real gate. Try `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...`.
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
 - Windows TempDir-cleanup flakes (AV holds deleted files) are fixed by `internal/testutil.TempDir` (`a01c877`). New tests must use it.
