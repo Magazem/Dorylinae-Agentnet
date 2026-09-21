@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-21, during Wave 2.
+Last updated: 2026-09-21, Wave 3 in flight.
 
 ## 1. How this team runs
 
@@ -79,17 +79,21 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | `51334e6` | This handoff file + `CLAUDE.md` pointer |
 | `8dd7297` | 0.8e `tools/verifyvectors` (`make verify-vectors`), all vectors reproduce |
 
-### In flight: Wave 2 (started 2026-09-21)
-| Ticket | Worker | Worktree / branch | Needs Opus review before merge |
+### Wave 2: done (2026-09-21)
+0.8b `a8cb0a3`; 0.8d `099054e` + `6c78619`; 0.8e `8dd7297`; 1.0c `9e3ddf3` + review fixes `eb7d39e` (strict timestamps, fuzz). Reviews: `Docs/review/08-wave2-security-review.md`, `08b-relay-v2-review.md`.
+
+### In flight: Wave 3 (started 2026-09-21)
+| Ticket | Worker | Worktree / branch | Opus review before merge |
 |---|---|---|---|
-| ~~0.8b fingerprints, trust, peers verify/remove~~ | merged `a8cb0a3` (migration 3 adds `peers.trust` + `mailbox_keys`; IPC errors `fingerprint_mismatch`, `bad_fingerprint`, `unknown_peer`) | — | — |
-| ~~0.8d pairing v2, relay side~~ | merged `099054e` + review fixes `6c78619` (pair_new 10/key/min → `pair_rate_limited`; `PairMaxCodes` 10000 → `pair_limit`) | — | — |
-| ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
-| 1.0c `internal/mail` seal/open | committed `baa55f6` on `w2/mail`; **in Opus review** (W2-MailReviewer → `Docs/review/08-wave2-security-review.md`) | `mail` / `w2/mail` | **yes** |
+| 0.8c pairing v2 daemon side (+ export agentcard canonical helpers, delete mail/canonical.go, first mailbox key, **migration 4** pair_used_codes, strict base64url) | W3-PairingDaemon | `pairing-daemon` / `w3/pairing-daemon` | **yes** |
+| 1.0d receiver dedupe + ack (**migration 5** mail_seen; relayclient mail bypass of seen-set) | W3-Dedupe | `dedupe` / `w3/dedupe` | no (touches receive path; spot-check) |
+| 1.0b mailbox key rotation/deletion | not started | — | dispatch AFTER 0.8c merges (depends on its first-key code) |
+
+Migration numbers are pre-assigned to avoid collisions: 4 = pair_used_codes (0.8c), 5 = mail_seen (1.0d). If 1.0d added a placeholder for 4, drop it when rebasing onto 0.8c.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
-### Next: Wave 3 (after Wave 2 is merged)
+### Wave 3 detail (reference)
 - **0.8c** pairing v2, daemon side. Carry the reviewer's follow-ups:
   - the MITM acceptance test now expects the **redeemer** to fail with `confirm_timeout`
     (not `bad_confirm`);
@@ -104,7 +108,7 @@ To see live status: `team_members`, `team_task_list`, `git worktree list`.
 ### Then: Wave 4
 - **1.0e** sender outbox, plus the two-daemon harness test: stop B; A sends; stop A;
   start B; start A; delivered exactly once, with a relay restart mid-test.
-  Needs an Opus review.
+  Needs an Opus review, which must also cover 1.0d's receive/dedupe/ack path end to end. 1.0e needs a `Reseal` API in internal/mail (1.0c review L5).
 - **1.0f** docs and CLI reconciliation (`status --json` shows outbox counts).
 - **M4**: write `tests/phase0-manual.md`. The **owner** runs it on two real machines.
 
