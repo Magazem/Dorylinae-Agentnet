@@ -16,9 +16,12 @@ import (
 // Well-known actors and actions.
 const (
 	ActorDaemon = "daemon"
+	ActorCLI    = "cli"
 
-	ActionDaemonStart = "daemon.start"
-	ActionDaemonStop  = "daemon.stop"
+	ActionDaemonStart      = "daemon.start"
+	ActionDaemonStop       = "daemon.stop"
+	ActionServiceInstall   = "service.install"
+	ActionServiceUninstall = "service.uninstall"
 )
 
 // Event is one row of the audit log.

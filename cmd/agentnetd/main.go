@@ -25,13 +25,21 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "install", "uninstall":
+			return runService(ctx, args[0], args[1:], stdout, stderr)
+		case "run":
+			args = args[1:]
+		}
+	}
 	name := "agentnetd"
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print version and exit")
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--home DIR] [--version]\n\nFlags:\n", summary, name)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--version]\n  %[2]s install [--home DIR] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n\nFlags (run):\n", summary, name)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -47,15 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	var (
-		p   paths.Paths
-		err error
-	)
-	if *home != "" {
-		p, err = paths.In(*home)
-	} else {
-		p, err = paths.Default()
-	}
+	p, err := resolvePaths(*home)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
