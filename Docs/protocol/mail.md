@@ -204,6 +204,16 @@ sealed and sent once, directly.
 
 ## Receiving: verification order
 
+**`relayclient` must hand up every `mail` envelope, including repeats of a `(from, id)`
+it has already handed up** (it still acks each one to the relay). Its in-memory seen-set
+([envelope.md §Offline queue](envelope.md#offline-queue)) applies to other types only.
+The mail layer needs to see repeats: a resend after a lost ack must reach
+[dedupe](#dedupe-and-inbox) so it is re-acked, and a re-sealed copy after a
+[key miss](#key-miss-recovery) has the same id as the copy that failed. With the seen-set
+in the way, both would be dropped silently until the id left the 8192-entry window, and the
+sender's row would end `expired` although the mail was delivered. This is a `relayclient`
+change, made in 1.0d.
+
 For each envelope with `type = mail` handed up by `relayclient`, the daemon runs these steps
 in order. The first failure rejects the envelope. Nothing is stored, no ack is sent, and the
 audit event is `mail.reject {peer, id, reason}`. That event is rate-limited like
@@ -223,9 +233,11 @@ audit event is `mail.reject {peer, id, reason}`. That event is rate-limited like
 | 9 | `msg.id` = envelope `id`, and it matches the `id` format | `id_mismatch` |
 | 10 | `v` = 1 | `malformed` |
 | 11 | `now − 30 d ≤ created ≤ now + 10 min` (receiver clock) | `stale` |
+| 12 | For kinds `ack` and `keys` only: `body` has exactly the members defined in [Ack](#ack) / [Kind `keys`](#kind-keys), every listed id matches the `id` format of [Message](#message), and the array lengths are within limits. For `keys`, the announcement verifies ([Announcement](#announcement), `identity` = `msg.from`) | `malformed` (`bad_keys` for the announcement) |
 
 Steps 6, 8 and 9 are also covered cryptographically (by `info`, `aad` and the signature). The
-explicit checks give precise reasons.
+explicit checks give precise reasons. Step 12 runs before dedupe, so a rejected `keys` mail
+is not recorded in `mail_seen` and a corrected resend is still processed.
 
 Then, by kind:
 
@@ -296,8 +308,10 @@ sender's newest mailbox key and has a fresh `id`.
 
 When B receives mail from paired peer A whose `key_id` is not live (step 3):
 
-1. B adds the envelope id to a per-peer `pending_retry` set, which is held in memory and
-   capped at 256 ids.
+1. If the envelope id matches the mail `id` format (`m-` + 32 lowercase hex), B adds it to
+   a per-peer `pending_retry` set, which is held in memory and capped at 256 ids. Any other
+   id is ignored (no reply): the payload is not yet authenticated at step 3, and a `keys`
+   mail whose `retry` held a malformed id would be rejected at step 12.
 2. If B has not sent a key-miss reply to A in the last **10 minutes**, B sends one now: a
    `keys` mail with its current announcement and `retry` = the set. It is sealed to A's
    newest mailbox key, sent directly and not outboxed. B then clears the set. Otherwise the

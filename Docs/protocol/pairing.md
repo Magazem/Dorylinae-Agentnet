@@ -27,11 +27,15 @@ step is an ordinary envelope of type `pair.confirm`.
 - **Goal:** when a pairing completes, each side has stored the *real* other side's
   identity key, Agent Card and mailbox key announcement. Otherwise pairing fails
   visibly and nothing is stored on the side that detects the failure.
-- **Residual risk (accepted):** the issuer sends its tag first. Anyone who redeems
-  the lookup, including the relay, gets one `tag_I` and can try to recover the secret
-  **offline** until the code expires (≤ 10 min). Argon2id stretching makes this
-  infeasible (see [KDF parameters](#kdf-parameters)). A PAKE (CPace) would remove it.
-  That is planned as v3 and is not part of v2.
+- **Residual risk (accepted):** the **redeemer** sends its tag first, and only after a
+  human has given it the code. A hostile relay that poses as the issuer gets that one
+  `tag_R` and can try to recover the secret **offline**. To fool the redeemer it must
+  succeed within the redeemer's 60 s confirm wait. To fool the issuer it must succeed
+  before the issuer's local 10-minute code TTL ends. Both windows are enforced by the
+  honest daemons' own clocks. The issuer never sends a tag until it has verified a
+  correct `tag_R`, so strangers who guess a lookup get nothing to attack offline.
+  Argon2id stretching makes the offline attack infeasible (see [KDF parameters](#kdf-parameters)).
+  A PAKE (CPace) would remove it. That is planned as v3 and is not part of v2.
 - **Out of scope:** endpoint compromise; a human who reads the code to the attacker;
   denial of service (the relay can always drop frames. Pairing then fails and the user
   retries).
@@ -100,9 +104,11 @@ tag_R = HMAC-SHA256(K, "redeemer\n" ‖ T)                     // 32 bytes
 
 ### KDF parameters
 
-The relay (or anyone who redeems the lookup) sees one `tag_I` and can test secret
-guesses offline. It has at most the code lifetime, **600 s**, to recover the secret. It
-must then complete a redemption with a forged `tag_R` before the issuer's local TTL ends.
+Only a hostile relay can obtain a tag to attack offline: the redeemer's `tag_R`, sent
+after the human has typed the code. It must then recover the secret within the
+redeemer's **60 s** confirm wait (to fool the redeemer), or before the issuer's local
+code TTL ends, at most **600 s** after issuance (to fool the issuer with a forged `tag_R`
+of its own). The table uses the longer, 600 s window.
 
 | Stretching | Attacker cost to reach success probability *p* in 600 s |
 |---|---|
@@ -111,8 +117,9 @@ must then complete a redemption with a forged `tag_R` before the issuer's local 
 
 Honest cost: one derivation per side per pairing, 64 MiB of RAM, about 0.1–0.5 s on a
 laptop. The parameters are RFC 9106's second recommended option with one lane instead of
-four. That is 4× cheaper for the honest side and has the same per-guess memory
-for the attacker. Changing any parameter is a protocol version change (v3).
+four. The total work and memory are the same as with four lanes; one lane only gives up
+multi-core parallelism, which keeps the derivation to one core. Changing any parameter is
+a protocol version change (v3).
 
 ## Flow
 
@@ -126,16 +133,22 @@ Issuer I (pair --new)                  relay                    Redeemer R (pair
                                                           (R computes K in parallel)
  <---- pair_peer{key_R, card_R, mbox_R}   pair_peer{key_I, card_I, mbox_I} ---->
  verify card_R, mbox_R; compute T                         verify card_I, mbox_I; compute T
- envelope pair.confirm{tag_I} ----------------------------------->  check tag_I
-                                                          ok: store I (trust=code)
  <-----------------------------------  envelope pair.confirm{tag_R}
  check tag_R
- ok: store R (trust=code); pair_cancel{lookup} -> relay
+ ok: store R (trust=code)
+ envelope pair.confirm{tag_I} ----------------------------------->  check tag_I
+ pair_cancel{lookup} -> relay                             ok: store I (trust=code)
 ```
 
-The issuer always sends its tag first. The redeemer never sends a tag before it has
-verified `tag_I`, so a redemption with a wrong secret teaches its sender nothing about
-`K`.
+The redeemer always sends its tag first. The issuer never sends a tag before it has
+verified a correct `tag_R`, so a redemption with a wrong secret (a stranger who guessed
+the lookup, or a typo) gets nothing that could be attacked offline. The redeemer sends
+exactly one tag per code (see [Redeemer](#redeemer-agentnet-pair-code)), so a hostile
+relay gets at most one `tag_R` sample and must use it within the windows described in
+[KDF parameters](#kdf-parameters). This order is what bounds those windows by the honest
+daemons' clocks: with the issuer sending first, a hostile relay could redeem the lookup as
+soon as `pair_new` arrives and keep cracking `tag_I` until the human finally types the code
+on the redeemer, however late that is.
 
 ## Relay frames (v2)
 
@@ -254,8 +267,9 @@ bytes. A `pair.confirm` is **accepted only** if all of these hold:
 
 1. There is a pending attempt whose peer key equals the envelope `from` and whose lookup
    equals `lookup`.
-2. The receiver is waiting for a tag on that attempt. The redeemer waits for `tag_I`.
-   The issuer waits for `tag_R` after it has sent `tag_I`.
+2. The receiver is waiting for a tag on that attempt. The issuer waits for `tag_R` from
+   the moment it has verified the attempt's `pair_peer`. The redeemer waits for `tag_I`
+   after it has sent `tag_R`.
 3. No `pair.confirm` has been accepted for that attempt yet. Each attempt takes exactly one.
 
 Anything else is dropped without a reply. The drop is logged at debug level
@@ -271,7 +285,7 @@ itself, using role `issuer` for a received `tag_I` and `redeemer` for a received
 ### Issuer (`agentnet pair --new`)
 
 1. Generate the code. Start computing `K` in the background. It must finish before the
-   first `tag_I` is sent.
+   first `tag_R` is checked.
 2. Send `pair_new{lookup, card, mbox, ref}`. Record `issued_at = now` locally.
 3. On `pair_code`, show the code as `LLLLL-SSSSS-SSSSS`. `pair` status and `--json` expose
    it as `code` while the pairing is pending, as in v1.
@@ -280,40 +294,53 @@ itself, using role `issuer` for a received `tag_I` and `redeemer` for a received
      equal the frame's `public_key`. Verify `mbox_R` as in [mail.md](mail.md#announcement):
      signature valid, `identity` equal to the frame's `public_key`, and times valid. On
      failure the attempt fails with `bad_card` or `bad_mbox`.
-   - Compute `T` and `tag_I`, then send `pair.confirm{tag_I}` to `key_R`.
+   - Compute `T`. Send nothing yet.
    - Wait up to **60 s** for `pair.confirm` from `key_R`. If `tag_R` is correct, the
      pairing **completes**: store the peer with `trust=code` and its announcement, then send
-     `pair_cancel{lookup}`. A wrong tag fails the attempt with `bad_confirm`. No tag within
-     60 s fails it with `confirm_timeout`.
-5. Attempts may overlap. The first attempt that completes ends the pairing, and every other
-   attempt is abandoned: later tags for them are dropped.
+     `pair.confirm{tag_I}` to `key_R`, then `pair_cancel{lookup}`. A wrong tag fails the
+     attempt with `bad_confirm` and sends nothing. No tag within 60 s fails it with
+     `confirm_timeout`.
+5. Attempts may overlap, up to the limit in [Attempts](#attempts-and-the-3-bad-tag-abort).
+   Received tags are checked one at a time (under the pairing's lock). The first attempt
+   that completes ends the pairing, and every other attempt is abandoned: later tags for
+   them are dropped unchecked.
 
 ### Redeemer (`agentnet pair <code>`)
 
 1. Normalise the input. 15 characters means v2. 10 characters means v1, and the redeemer
    proceeds only with `--v1` (see below). Otherwise the result is `ErrBadCode`.
-2. Send `pair_redeem{lookup, card, mbox, ref}` and compute `K` in the background.
-3. On `pair_peer`, verify `card_I` and `mbox_I` as above (`bad_card` / `bad_mbox`).
-   Compute `T`.
-4. Wait up to **60 s** for `pair.confirm` from `key_I` carrying `tag_I`. If the tag is
-   correct, **store the peer** (`trust=code`), then send `pair.confirm{tag_R}` and
-   complete. If it is wrong, fail with `bad_confirm` and send nothing. If no tag arrives,
-   fail with `confirm_timeout`.
-5. A redeemer pairing is a single attempt. It never waits for more than one `pair_peer`.
+2. **Single use.** If this daemon has already sent a `tag_R` for this exact code (same
+   lookup and secret) in the last 24 hours, fail with `code_used` and send nothing. The
+   redeemer keeps `SHA-256("dorylinae-pair-used-v2\n" ‖ code)` for every code it has sent
+   a tag for, in memory, for 24 hours (a daemon restart forgets them; accepted). This
+   stops a hostile relay from collecting a second `tag_R` sample, or stretching its
+   cracking window, by failing a pairing and waiting for the user to retry the same code.
+   A retry needs a new code from the issuer.
+3. Send `pair_redeem{lookup, card, mbox, ref}` and compute `K` in the background.
+4. On `pair_peer`, verify `card_I` and `mbox_I` as above (`bad_card` / `bad_mbox`).
+   Compute `T` and `tag_R`. Once `K` is ready, record the code as used (step 2), then
+   send `pair.confirm{tag_R}` to `key_I`.
+5. Wait up to **60 s** after sending `tag_R` for `pair.confirm` from `key_I` carrying
+   `tag_I`. If the tag is correct, **store the peer** (`trust=code`) and complete. If it is
+   wrong, fail with `bad_confirm`. If no tag arrives, fail with `confirm_timeout`.
+6. A redeemer pairing is a single attempt. It never waits for more than one `pair_peer`,
+   and sends at most one tag.
 
-If the redeemer's `tag_R` is lost, the redeemer has stored the issuer but the issuer has
-not stored the redeemer. The issuer's attempt times out and the user sees a failure there.
-Messages from the redeemer are then rejected as `unpaired` until they pair again.
-Re-pairing is idempotent on the redeemer side.
+If the issuer's `tag_I` is lost, the issuer has stored the redeemer but the redeemer has
+not stored the issuer. The redeemer's attempt times out and the user sees a failure there.
+Messages from the issuer are then rejected as `unpaired` until they pair again with a new
+code. Re-pairing is idempotent on the issuer side.
 
 ### Attempts and the 3-bad-tag abort
 
-An issuer's code allows at most **3 failed attempts**. A failed attempt is `bad_card`,
-`bad_mbox`, `bad_confirm` or `confirm_timeout`. On the third failure the pairing fails with
-`bad_confirm` (message "too many failed attempts") and the issuer sends `pair_cancel`.
-This caps a stranger who guesses the lookup, or a relay, at 3 `tag_I` samples per code.
-Offline attacks need only one sample, and online attacks (a forged `tag_R`) get at most
-3 chances of 2^-50 each.
+An issuer's code allows at most **3 attempts**, counted when each `pair_peer` arrives.
+A 4th and later `pair_peer` for the same code is ignored (logged at debug level). A
+failed attempt is `bad_card`, `bad_mbox`, `bad_confirm` or `confirm_timeout`. When the
+third attempt has failed, the pairing fails with `bad_confirm` (message "too many failed
+attempts") and the issuer sends `pair_cancel`. The issuer sends `tag_I` only on the one
+attempt that completes, so strangers and a hostile relay get no `tag_I` sample at all, and
+online attacks (a forged `tag_R`) get at most 3 chances of 2^-50 each. The same cap bounds
+the work a relay can cause by sending `pair_peer` frames.
 
 ### Local timers
 
@@ -323,7 +350,7 @@ The daemon does not trust the relay's clock or `expires`.
 |---|---|---|---|
 | Code TTL | issuer | `issued_at + 10 min` | fail `expired` (unless complete), `pair_cancel` |
 | Relay reply | both | 30 s after `pair_new` / `pair_redeem` without `pair_code` / `pair_peer` / `error` | fail `timeout` |
-| Confirm wait | both | 60 s after sending `tag_I` (issuer) or after `pair_peer` (redeemer) | attempt fails `confirm_timeout` |
+| Confirm wait | both | 60 s after `pair_peer` (issuer) or after sending `tag_R` (redeemer) | attempt fails `confirm_timeout` |
 
 An attempt that is still waiting when the code TTL ends is failed too. Finished pairings
 stay queryable for one hour. At most 16 pairings may be pending at once, as in v1.
@@ -332,7 +359,8 @@ stay queryable for one hour. At most 16 pairings may be pending at once, as in v
 
 These appear in `pair.fail` audit rows and in the pairing status `error.code`, alongside
 the relay codes above: `bad_card`, `bad_mbox` (new), `bad_confirm` (new), `confirm_timeout`
-(new), `relay_v1` (new), `pair_lookup_taken`, `store_error`, `timeout`, `expired`.
+(new), `relay_v1` (new), `code_used` (new), `pair_lookup_taken`, `store_error`, `timeout`,
+`expired`.
 
 ### Storage and trust states
 
@@ -485,7 +513,15 @@ tag_R  c645c221f9ca3c0e1ded71f2bc03294b7a0dc158245da4f83ebe211769dd69b9
        base64url: xkXCIfnKPA4d7XHyvAMpS3oNwVgkXaT4Pr4hF2ndabk
 ```
 
-Issuer's `pair.confirm` payload: the plaintext, then its standard base64 as it appears in `payload`.
+`pair.confirm` payloads: the plaintext, then its standard base64 as it appears in `payload`.
+Redeemer's (sent first):
+
+```
+{"lookup":"7KQ2M","tag":"xkXCIfnKPA4d7XHyvAMpS3oNwVgkXaT4Pr4hF2ndabk","v":2}
+eyJsb29rdXAiOiI3S1EyTSIsInRhZyI6InhrWENJZm5LUEE0ZDdYSHl2QU1wUzNvTndWZ2tYYVQ0UHI0aEYybmRhYmsiLCJ2IjoyfQ==
+```
+
+Issuer's:
 
 ```
 {"lookup":"7KQ2M","tag":"L1ByiTld6oJaJsEyfR8MvGuDeS1UOvYoblQNakCp7O4","v":2}

@@ -180,7 +180,9 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   again on the next connection. The daemon (`internal/relayclient`) keeps the
   last 8192 `(from, id)` pairs it handed up and drops repeats, still acking
   them. Together that is exactly-once delivery to the daemon's handlers within
-  that window. The window is in memory, so a daemon restarted between handling
+  that window. **Exception (ticket 1.0d):** envelopes of type `mail` bypass this
+  set and are handed up every time, because the mail layer dedupes persistently
+  and must see resends to re-ack them ([mail.md](mail.md#receiving-verification-order)). The window is in memory, so a daemon restarted between handling
   an envelope and acking it can see it again; the session layer's own replay
   protection ([session.md](session.md)) is the backstop, and for `mail` the
   receiver's persistent `(from, id)` dedupe ([mail.md](mail.md#dedupe-and-inbox)).
@@ -268,5 +270,6 @@ fails immediately with `ErrNotConnected`; nothing is buffered on the daemon side
 (the relay's [offline queue](#offline-queue) buffers for the *recipient*, not the sender).
 
 For every envelope received the client calls `OnEnvelope` (unless it has already
-handed up the same `(from, id)`, see the queue section) and then sends the `ack`.
+handed up the same `(from, id)` and the type is not `mail`, see the queue section) and
+then sends the `ack`.
 `queued` frames are delivered to `OnQueued`, not `OnControl`.

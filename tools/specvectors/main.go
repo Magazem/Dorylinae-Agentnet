@@ -247,9 +247,14 @@ func main() {
 	fmt.Printf("tag_I b64u  %s\n", b64u.EncodeToString(tagI))
 	fmt.Printf("tag_R       %x\n", tagR)
 	fmt.Printf("tag_R b64u  %s\n", b64u.EncodeToString(tagR))
-	confirm := canonical(map[string]any{"v": 2, "lookup": lookup, "tag": b64u.EncodeToString(tagI)})
-	fmt.Printf("pair.confirm plaintext (issuer) %s\n", confirm)
-	fmt.Printf("pair.confirm payload (base64)   %s\n", base64.StdEncoding.EncodeToString(confirm))
+	for _, c := range []struct {
+		role string
+		tag  []byte
+	}{{"redeemer", tagR}, {"issuer", tagI}} {
+		confirm := canonical(map[string]any{"v": 2, "lookup": lookup, "tag": b64u.EncodeToString(c.tag)})
+		fmt.Printf("pair.confirm plaintext (%s) %s\n", c.role, confirm)
+		fmt.Printf("pair.confirm payload (%s)   %s\n", c.role, base64.StdEncoding.EncodeToString(confirm))
+	}
 
 	fmt.Println("== mail (seal, random ephemeral)")
 	plain, info, aad := mailInputs(privI, keyI, keyR, mbR)
