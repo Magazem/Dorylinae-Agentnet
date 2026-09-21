@@ -175,6 +175,13 @@ nothing. The issuer then generates a **completely new code** (lookup and secret)
 `pair_new` again, at most 3 times. After that the pairing fails with `pair_lookup_taken`.
 The limit of 5 outstanding entries per key (`pair_limit`) counts v1 and v2 entries together.
 
+Every v2 `pair_new` counts towards a second per-key limiter, whatever its outcome: at most
+10 per key per minute, then `pair_rate_limited`. Without it, `pair_new` (answered
+`pair_lookup_taken` for an outstanding lookup) plus `pair_cancel` (which frees the slot at
+once) would let one key test every lookup for existence without touching the redemption
+limiter. The relay also holds at most 10000 entries in total (v1 and v2); past that
+`pair_new` gets `pair_limit`. An honest issuer sends at most 4 `pair_new` per pairing.
+
 ### `pair_code` (relay → daemon)
 
 ```json
@@ -233,8 +240,8 @@ expired.
 | Code | Meaning |
 |------|---------|
 | `pair_invalid` | Code/lookup unknown, expired, cancelled, used (v1) or exhausted (v2) |
-| `pair_rate_limited` | Too many failed redemptions from this key; retry after the window |
-| `pair_limit` | Issuer already has 5 outstanding codes |
+| `pair_rate_limited` | Too many failed redemptions, or too many v2 `pair_new`, from this key; retry after the window |
+| `pair_limit` | Issuer already has 5 outstanding codes, or the relay holds 10000 |
 | `pair_lookup_taken` | **New.** v2 `pair_new` with a lookup whose hash is already outstanding |
 | `pair_v1_disabled` | **New.** v1 `pair_new` (no `lookup`) or `pair_redeem` with `code`, on a relay without `--allow-pairing-v1` |
 | `bad_pairing` | Malformed frame: missing, oversize or non-object `card`/`mbox`; bad `lookup`; `lookup` and `code` both or neither present; oversize `ref`; own code |

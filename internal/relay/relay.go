@@ -43,8 +43,12 @@ type Options struct {
 	// PairFailLimit is the failed redemptions one key may make per PairFailWindow
 	// before it is rate limited. Default 5.
 	PairFailLimit int
-	// PairFailWindow is the rate limit window. Default 1m.
+	// PairFailWindow is the rate limit window. Default 1m. It also bounds v2
+	// pair_new requests to 10 per key per window.
 	PairFailWindow time.Duration
+	// PairMaxCodes caps the pairing codes outstanding on the whole relay; past
+	// it pair_new gets pair_limit. Default 10000.
+	PairMaxCodes int
 	// DisablePairingV1 refuses the v1 pairing frames (pair_new without lookup,
 	// pair_redeem with code) with pair_v1_disabled. The zero value keeps v1 on;
 	// cmd/relay sets it from --allow-pairing-v1.
@@ -94,7 +98,7 @@ func New(opts Options) *Server {
 // Open returns a Server, opening (or creating) the offline queue database.
 func Open(opts Options) (*Server, error) {
 	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}}
-	s.pairs = newPairings(opts.PairTTL, opts.PairFailLimit, opts.PairFailWindow)
+	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
 	s.pairs.v1 = !opts.DisablePairingV1
 	if s.now == nil {
 		s.now = time.Now

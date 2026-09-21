@@ -16,6 +16,8 @@ const (
 	defaultPairFailLimit    = 5
 	defaultPairFailWindow   = time.Minute
 	maxOutstandingPerKey    = 5
+	defaultPairMaxCodes     = 10000
+	maxPairNewV2PerWindow   = 10
 	limiterSweepThreshold   = 1024
 	pairCodeHashDomain      = "dorylinae-pair-code-v1\n"
 	pairEventIssue          = "pair_issue"
@@ -54,20 +56,27 @@ type pairEntry struct {
 
 // pairings holds outstanding codes and the redemption failure limiter.
 type pairings struct {
-	ttl time.Duration
+	ttl      time.Duration
+	maxCodes int // relay-wide cap on outstanding entries
 
 	mu      sync.Mutex
 	entries map[[sha256.Size]byte]*pairEntry
 
 	lim limiter
-	v1  bool // v1 frames enabled
+	// newLim counts every v2 pair_new. Without it, pair_new plus pair_cancel is
+	// a free existence oracle (pair_lookup_taken) that bypasses lim.
+	newLim limiter
+	v1     bool // v1 frames enabled
 
 	issued, redeemed, invalid, limited, taken atomic.Uint64
 }
 
-func newPairings(ttl time.Duration, failLimit int, failWindow time.Duration) *pairings {
+func newPairings(ttl time.Duration, maxCodes, failLimit int, failWindow time.Duration) *pairings {
 	if ttl <= 0 {
 		ttl = defaultPairTTL
+	}
+	if maxCodes <= 0 {
+		maxCodes = defaultPairMaxCodes
 	}
 	if failLimit <= 0 {
 		failLimit = defaultPairFailLimit
@@ -76,9 +85,11 @@ func newPairings(ttl time.Duration, failLimit int, failWindow time.Duration) *pa
 		failWindow = defaultPairFailWindow
 	}
 	return &pairings{
-		ttl:     ttl,
-		entries: map[[sha256.Size]byte]*pairEntry{},
-		lim:     limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
+		ttl:      ttl,
+		maxCodes: maxCodes,
+		entries:  map[[sha256.Size]byte]*pairEntry{},
+		lim:      limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
+		newLim:   limiter{limit: maxPairNewV2PerWindow, window: failWindow, buckets: map[string]*bucket{}},
 	}
 }
 
@@ -177,6 +188,16 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 	p := s.pairs
 	now := s.now()
 
+	if lookup != "" {
+		if !p.newLim.allow(c.key, now) {
+			p.limited.Add(1)
+			s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "peer", short(c.key))
+			s.reject(c, envelope.CodePairRateLimited, "too many pairing requests; try again later", ctl.Ref)
+			return
+		}
+		p.newLim.fail(c.key, now)
+	}
+
 	p.mu.Lock()
 	outstanding := 0
 	for h, e := range p.entries {
@@ -190,6 +211,12 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 	if outstanding >= maxOutstandingPerKey {
 		p.mu.Unlock()
 		s.reject(c, envelope.CodePairLimit, "too many outstanding pairing codes", ctl.Ref)
+		return
+	}
+	if len(p.entries) >= p.maxCodes {
+		p.mu.Unlock()
+		s.log.Info("pairing issue refused", "event", pairEventFail, "reason", "relay_full", "peer", short(c.key))
+		s.reject(c, envelope.CodePairLimit, "the relay has too many outstanding pairing codes; try again later", ctl.Ref)
 		return
 	}
 	if lookup != "" {

@@ -311,3 +311,47 @@ func TestPairV2RelayOutputHoldsNoSecretOrLookup(t *testing.T) {
 		}
 	}
 }
+
+// pair_new answers pair_lookup_taken for an outstanding lookup, and pair_cancel
+// frees the caller's slot at once. Uncapped, that pair would let one key probe
+// every lookup for free, bypassing the redemption limiter. So every v2 pair_new
+// counts: 10 per key per window.
+func TestPairV2NewIsRateLimited(t *testing.T) {
+	clock := newClock()
+	srv, url := start(t, relay.Options{Now: clock.Now, PairFailWindow: time.Minute})
+	a := newPeer(t)
+	ca := rawAuthed(t, url, a)
+	for i := 0; i < 10; i++ {
+		if r := issueV2(t, ca, a, "7KQ2M", "p"); r.Op != envelope.OpPairCode {
+			t.Fatalf("probe %d: got %+v", i+1, r)
+		}
+		send(t, ca, envelope.Control{Op: envelope.OpPairCancel, Lookup: "7KQ2M"})
+	}
+	send(t, ca, envelope.Control{Op: envelope.OpPairNew, Lookup: "AAAAA", Card: cardFor(a, "c"), Mbox: mboxFor(a, "m"), Ref: "11"})
+	expectError(t, ca, envelope.CodePairRateLimited, "11")
+	if st := srv.PairStats(); st.Issued != 10 || st.RateLimited != 1 {
+		t.Errorf("stats = %+v", st)
+	}
+	clock.Advance(time.Minute)
+	if r := issueV2(t, ca, a, "AAAAA", "ok"); r.Op != envelope.OpPairCode {
+		t.Fatalf("after window: got %+v", r)
+	}
+}
+
+func TestPairRelayWideCodeCap(t *testing.T) {
+	_, url := start(t, relay.Options{Now: newClock().Now, PairMaxCodes: 2})
+	a, b := newPeer(t), newPeer(t)
+	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
+	issueV2(t, ca, a, "AAAAA", "1")
+	issueV2(t, cb, b, "BBBBB", "2")
+	send(t, cb, envelope.Control{Op: envelope.OpPairNew, Lookup: "CCCCC", Card: cardFor(b, "c"), Mbox: mboxFor(b, "m"), Ref: "3"})
+	expectError(t, cb, envelope.CodePairLimit, "3")
+	send(t, ca, envelope.Control{Op: envelope.OpPairNew, Card: cardFor(a, "c"), Ref: "v1"})
+	expectError(t, ca, envelope.CodePairLimit, "v1")
+	// A cancel makes room again.
+	send(t, ca, envelope.Control{Op: envelope.OpPairCancel, Lookup: "AAAAA"})
+	time.Sleep(100 * time.Millisecond)
+	if r := issueV2(t, cb, b, "CCCCC", "4"); r.Op != envelope.OpPairCode {
+		t.Fatalf("got %+v", r)
+	}
+}
