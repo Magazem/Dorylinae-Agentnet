@@ -40,8 +40,8 @@ Last updated: 2026-09-21, Wave 4 in flight.
 5. **Merge gate:** `go build ./...`, `go vet ./...` and `go test ./... -count=1` pass
    in the worktree, the acceptance tests exist as automated tests, and any required
    review is clean. Then commit on the branch, rebase onto `main`, and `git merge --ff-only`.
-6. **Owner-authorized:** committing and merging to `main` after each wave passes review.
-   **Not authorized: `git push`, tags, releases.** Ask first.
+6. **Owner-authorized:** committing and merging to `main` after each wave passes review, **and pushing `main` to origin after merges** (authorized 2026-09-21).
+   **Not authorized: tags, releases, force-push.** Ask first.
 7. Every commit message ends with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 8. **Owner decisions below are final.** Reopen one only for a concrete security or
    correctness flaw, and flag it to the owner explicitly.
