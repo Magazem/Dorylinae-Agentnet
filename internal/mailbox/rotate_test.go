@@ -15,6 +15,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func liveCount(t *testing.T, db *sql.DB) int {
@@ -41,7 +42,7 @@ func keyIDOf(t *testing.T, raw []byte, identity string, now time.Time) mail.KeyI
 }
 
 func TestRotationSchedule(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	db := newDB(t)
 	t0 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	now := t0
@@ -106,7 +107,7 @@ func TestRotationSchedule(t *testing.T) {
 }
 
 func TestRotationAuditsAndRetiredKeyStillDecrypts(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	db := newDB(t)
 	t0 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	now := t0
@@ -145,7 +146,7 @@ func TestRotationAuditsAndRetiredKeyStillDecrypts(t *testing.T) {
 }
 
 func TestMoreThanThreeLiveDeletesOldestEarly(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	db := newDB(t)
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
@@ -170,13 +171,13 @@ func TestMoreThanThreeLiveDeletesOldestEarly(t *testing.T) {
 }
 
 func TestLegacyCurrentJSONImportedOnce(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	db := newDB(t)
 
 	// A key as 0.8c left it: secret in the file keystore and current.json.
-	_, pub, priv := newKeysOn(t, t.TempDir(), newDB(t), clock) // just an identity
+	_, pub, priv := newKeysOn(t, testutil.TempDir(t), newDB(t), clock) // just an identity
 	x, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func build(t *testing.T, pkg, out string) string {
@@ -35,7 +37,7 @@ func TestE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	bin := t.TempDir()
+	bin := testutil.TempDir(t)
 	cli := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnet", filepath.Join(bin, "agentnet"))
 	dmn := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnetd", filepath.Join(bin, "agentnetd"))
 	env := append(os.Environ(), "DORYLINAE_HOME="+home, "DORYLINAE_KEYSTORE=file")

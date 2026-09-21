@@ -9,6 +9,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 type listAudit struct{ peers []string }
@@ -23,7 +24,7 @@ func (a *listAudit) Append(_ context.Context, _, action string, detail any) erro
 // Review L6: one row with a non-canonical key must not make List fail.
 func TestListSkipsAndAuditsRowWithBadKey(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "a.db"))
+	st, err := store.Open(ctx, filepath.Join(testutil.TempDir(t), "a.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

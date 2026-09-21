@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -262,7 +263,7 @@ func (f *fakeRunner) Run(_ context.Context, args []string) ([]byte, error) {
 }
 
 func TestApplyInstallAndUninstall(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	plan := Plan{Platform: "test", Steps: []Step{
 		{Op: OpWrite, Path: filepath.Join(dir, "sub", "x.conf"), Content: "hello", Mode: 0o644},
 		{Op: OpRun, Args: []string{"do", "it"}},
@@ -272,7 +273,7 @@ func TestApplyInstallAndUninstall(t *testing.T) {
 	if err != nil || !res.Changed {
 		t.Fatalf("install apply: %+v, %v", res, err)
 	}
-	b, _ := os.ReadFile(filepath.Join(dir, "sub", "x.conf")) //nolint:gosec // path under t.TempDir()
+	b, _ := os.ReadFile(filepath.Join(dir, "sub", "x.conf")) //nolint:gosec // path under testutil.TempDir(t)
 	if string(b) != "hello" {
 		t.Errorf("file content = %q", b)
 	}
@@ -316,7 +317,7 @@ func TestApplyProbeSkipsWhenNotInstalled(t *testing.T) {
 }
 
 func TestApplyFailureStopsButCleansUp(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	xmlPath := filepath.Join(dir, "task.xml")
 	plan := Plan{Platform: "test", Steps: []Step{
 		{Op: OpWrite, Path: xmlPath, Content: "<x/>", Mode: 0o600, UTF16: true},

@@ -17,6 +17,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 type syncBuffer struct {
@@ -150,7 +151,7 @@ func readEnvelopeID(t *testing.T, c *websocket.Conn) string {
 }
 
 func TestQueuePersistsAcrossRestart(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "sub", "relay-queue.db") // the relay creates the directory
+	db := filepath.Join(testutil.TempDir(t), "sub", "relay-queue.db") // the relay creates the directory
 	pubA, privA, _ := ed25519.GenerateKey(rand.Reader)
 	pubB, privB, _ := ed25519.GenerateKey(rand.Reader)
 	keyA, keyB := envelope.KeyString(pubA), envelope.KeyString(pubB)
@@ -208,7 +209,7 @@ func TestQueuePersistsAcrossRestart(t *testing.T) {
 }
 
 func TestQueueDBOpenFailure(t *testing.T) {
-	dir := t.TempDir() // a directory is not a database file
+	dir := testutil.TempDir(t) // a directory is not a database file
 	var out, errb bytes.Buffer
 	if code := run(context.Background(), []string{"--listen", "127.0.0.1:0", "--queue-db", dir}, &out, &errb); code != 1 {
 		t.Fatalf("code = %d, want 1; stderr %q", code, errb.String())
@@ -222,7 +223,7 @@ func TestQueueDBOpenFailure(t *testing.T) {
 }
 
 func TestServesUntilCancelled(t *testing.T) {
-	t.Setenv("DORYLINAE_HOME", t.TempDir()) // keep the default queue database out of the real config dir
+	t.Setenv("DORYLINAE_HOME", testutil.TempDir(t)) // keep the default queue database out of the real config dir
 	var out, errb syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)

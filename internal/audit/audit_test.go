@@ -7,11 +7,12 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func TestAppendListAndAppendOnly(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "a.db"))
+	s, err := store.Open(ctx, filepath.Join(testutil.TempDir(t), "a.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

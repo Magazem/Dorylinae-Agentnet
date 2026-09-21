@@ -13,6 +13,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 type peerKeys map[string][]byte
@@ -60,7 +61,7 @@ func openStore(t *testing.T, path string) *store.Store {
 func newRecvFixture(t *testing.T) *recvFixture {
 	t.Helper()
 	sender, recip, o := fixture(t)
-	f := &recvFixture{t: t, path: filepath.Join(t.TempDir(), "r.db"), sender: sender, recip: recip, audits: &auditRec{}}
+	f := &recvFixture{t: t, path: filepath.Join(testutil.TempDir(t), "r.db"), sender: sender, recip: recip, audits: &auditRec{}}
 	f.st = openStore(t, f.path)
 	t.Cleanup(func() { _ = f.st.Close() })
 	f.build(o)

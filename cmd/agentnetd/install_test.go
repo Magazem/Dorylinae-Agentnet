@@ -13,6 +13,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // stubPlatform drops one file under a temp dir so the CLI wiring can be
@@ -50,8 +51,8 @@ func (r *recRunner) Run(_ context.Context, args []string) ([]byte, error) {
 
 func setup(t *testing.T) (home string, r *recRunner, def string) {
 	t.Helper()
-	home = filepath.Join(t.TempDir(), "home")
-	def = filepath.Join(t.TempDir(), "service.def")
+	home = filepath.Join(testutil.TempDir(t), "home")
+	def = filepath.Join(testutil.TempDir(t), "service.def")
 	r = &recRunner{}
 	old := newServiceDeps
 	newServiceDeps = func() (serviceDeps, error) {
@@ -110,7 +111,7 @@ func TestInstallUninstallLifecycleAndAudit(t *testing.T) {
 	if code, out, errs := invoke(t, "install", "--home", home); code != 0 {
 		t.Fatalf("install exit %d: %s %s", code, out, errs)
 	}
-	b, err := os.ReadFile(def) //nolint:gosec // path under t.TempDir()
+	b, err := os.ReadFile(def) //nolint:gosec // path under testutil.TempDir(t)
 	if err != nil || string(b) != "def" {
 		t.Fatalf("definition not written: %q %v", b, err)
 	}

@@ -2,13 +2,14 @@ package store
 
 import (
 	"context"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
 )
 
 func TestOpenAppliesMigrationsOnce(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "t.db")
+	path := filepath.Join(testutil.TempDir(t), "t.db")
 	for i := 0; i < 2; i++ {
 		s, err := Open(ctx, path)
 		if err != nil {
@@ -29,7 +30,7 @@ func TestOpenAppliesMigrationsOnce(t *testing.T) {
 
 func TestOpenRejectsNewerSchema(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "t.db")
+	path := filepath.Join(testutil.TempDir(t), "t.db")
 	s, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +48,7 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 // as trust=relay with no mailbox keys (Docs/protocol/pairing.md, migration).
 func TestMigrationAddsPeerTrust(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "old.db")
+	path := filepath.Join(testutil.TempDir(t), "old.db")
 	s, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)

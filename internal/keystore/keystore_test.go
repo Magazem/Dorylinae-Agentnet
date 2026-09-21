@@ -11,12 +11,13 @@ import (
 	"github.com/zalando/go-keyring"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 var secret = bytes.Repeat([]byte{0xAB}, 32)
 
 func TestFileRoundTripAndPermissions(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.key")
+	path := filepath.Join(testutil.TempDir(t), "identity.key")
 	f := keystore.NewFile(path)
 	if _, err := f.Get(); !errors.Is(err, keystore.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
@@ -54,7 +55,7 @@ func TestFileRefusesBroadPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mode bits do not apply on Windows")
 	}
-	path := filepath.Join(t.TempDir(), "identity.key")
+	path := filepath.Join(testutil.TempDir(t), "identity.key")
 	f := keystore.NewFile(path)
 	if err := f.Set(secret); err != nil {
 		t.Fatal(err)
@@ -68,7 +69,7 @@ func TestFileRefusesBroadPermissions(t *testing.T) {
 }
 
 func TestFileRejectsGarbage(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "identity.key")
+	path := filepath.Join(testutil.TempDir(t), "identity.key")
 	if err := keystore.WriteOwnerOnly(path, []byte("!!! not base64 !!!")); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestFileRejectsGarbage(t *testing.T) {
 
 func TestKeychainPreferredWhenAvailable(t *testing.T) {
 	keyring.MockInit()
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	kc := keystore.NewKeychain(keystore.AccountFor(dir))
 	fpath := filepath.Join(dir, "identity.key")
 	s := keystore.New(kc, keystore.NewFile(fpath))
@@ -102,7 +103,7 @@ func TestKeychainPreferredWhenAvailable(t *testing.T) {
 
 func TestFileFallbackWhenKeychainUnavailable(t *testing.T) {
 	keyring.MockInitWithError(errors.New("no secret service"))
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	fpath := filepath.Join(dir, "identity.key")
 	s := keystore.New(keystore.NewKeychain(keystore.AccountFor(dir)), keystore.NewFile(fpath))
 
@@ -121,7 +122,7 @@ func TestFileFallbackWhenKeychainUnavailable(t *testing.T) {
 
 func TestLoadNotFoundMentionsUnavailableKeychain(t *testing.T) {
 	keyring.MockInitWithError(errors.New("no secret service"))
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	s := keystore.New(keystore.NewKeychain(keystore.AccountFor(dir)), keystore.NewFile(filepath.Join(dir, "k")))
 	_, _, err := s.Load()
 	if !errors.Is(err, keystore.ErrNotFound) {

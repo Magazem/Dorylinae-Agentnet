@@ -15,6 +15,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 var now = time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
@@ -29,7 +30,7 @@ func fileStore(t *testing.T, dir string) *keystore.Store {
 }
 
 func TestFirstRunCreatesThenReuses(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	ks := fileStore(t, dir)
 
 	id1, rep, err := identity.LoadOrCreate(dir, ks, identity.Options{Name: "alpha", Harness: "codex"}, now)
@@ -61,7 +62,7 @@ func TestFirstRunCreatesThenReuses(t *testing.T) {
 }
 
 func TestKeyMaterialOnlyInKeystore(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	if _, _, err := identity.LoadOrCreate(dir, fileStore(t, dir), identity.Options{}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestKeyMaterialOnlyInKeystore(t *testing.T) {
 
 func TestKeychainUsedWhenAvailable(t *testing.T) {
 	keyring.MockInit()
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	ks, err := identity.NewKeystore(dir, "auto")
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +109,7 @@ func TestKeychainUsedWhenAvailable(t *testing.T) {
 
 func TestFallsBackToFileAndRecordsWhy(t *testing.T) {
 	keyring.MockInitWithError(errors.New("no secret service"))
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	ks, _ := identity.NewKeystore(dir, "auto")
 	id, rep, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
 	if err != nil {
@@ -132,7 +133,7 @@ func TestFallsBackToFileAndRecordsWhy(t *testing.T) {
 // t.TempDir cleanup then fails with "directory is not empty".
 
 func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
-	src := t.TempDir()
+	src := testutil.TempDir(t)
 	if _, _, err := identity.LoadOrCreate(src, fileStore(t, src), identity.Options{}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir := t.TempDir() // a card, but no key
+	dir := testutil.TempDir(t) // a card, but no key
 	if err := os.WriteFile(filepath.Join(dir, identity.CardFile), card, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +160,7 @@ func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
 }
 
 func TestMissingCardIsRecreatedForSameKey(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	ks := fileStore(t, dir)
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {
@@ -179,7 +180,7 @@ func TestMissingCardIsRecreatedForSameKey(t *testing.T) {
 }
 
 func TestTamperedCardFileRefusesToStart(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	ks := fileStore(t, dir)
 	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{Name: "alpha"}, now); err != nil {
 		t.Fatal(err)
@@ -199,7 +200,7 @@ func TestTamperedCardFileRefusesToStart(t *testing.T) {
 }
 
 func TestCardSignatureVerifies(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	if _, _, err := identity.LoadOrCreate(dir, fileStore(t, dir), identity.Options{}, now); err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +211,7 @@ func TestCardSignatureVerifies(t *testing.T) {
 }
 
 func TestNewKeystoreRejectsUnknownMode(t *testing.T) {
-	if _, err := identity.NewKeystore(t.TempDir(), "cloud"); err == nil {
+	if _, err := identity.NewKeystore(testutil.TempDir(t), "cloud"); err == nil {
 		t.Fatal("expected error")
 	}
 }

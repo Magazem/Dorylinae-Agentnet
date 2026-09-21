@@ -20,6 +20,8 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // secretForms lists the encodings under which the seed or the full private
@@ -58,7 +60,7 @@ func TestIdentityE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	bin := t.TempDir()
+	bin := testutil.TempDir(t)
 	cli := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnet", filepath.Join(bin, "agentnet"))
 	dmn := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnetd", filepath.Join(bin, "agentnetd"))
 	ver := build(t, "github.com/Magazem/Dorylinae-Agentnet/tools/verifycard", filepath.Join(bin, "verifycard"))

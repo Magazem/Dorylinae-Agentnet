@@ -98,6 +98,15 @@ func TestLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// mailbox.rotate is written by a background task, so whether it lands before
+	// the stop row depends on timing; it is not part of the lifecycle under test.
+	kept := evs[:0]
+	for _, e := range evs {
+		if e.Action != "mailbox.rotate" {
+			kept = append(kept, e)
+		}
+	}
+	evs = kept
 	if len(evs) != 3 || evs[0].Action != audit.ActionDaemonStart || evs[1].Action != identity.ActionCreate || evs[2].Action != audit.ActionDaemonStop {
 		t.Fatalf("audit events = %+v", evs)
 	}

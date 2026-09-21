@@ -20,6 +20,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 const annTimeFmt = "2006-01-02T15:04:05Z"
@@ -73,7 +74,7 @@ func newMNode(t *testing.T, clk *testClock) *mnode {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := t.TempDir()
+	cfg := testutil.TempDir(t)
 	ks := keystore.New(keystore.NewFile(filepath.Join(cfg, "identity.key")))
 	if _, _, err := ks.Save(priv.Seed()); err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -130,7 +131,7 @@ func TestReconnectsWithBackoff(t *testing.T) {
 
 func TestKeystoreSigner(t *testing.T) {
 	pub, priv := newKey(t)
-	ks := keystore.New(keystore.NewFile(filepath.Join(t.TempDir(), "identity.key")))
+	ks := keystore.New(keystore.NewFile(filepath.Join(testutil.TempDir(t), "identity.key")))
 	if _, _, err := ks.Save(priv.Seed()); err != nil {
 		t.Fatal(err)
 	}

@@ -1,12 +1,13 @@
 package paths
 
 import (
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
 )
 
 func TestDefaultHonoursEnv(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	t.Setenv(HomeEnv, dir)
 	p, err := Default()
 	if err != nil {
@@ -21,15 +22,15 @@ func TestDefaultHonoursEnv(t *testing.T) {
 }
 
 func TestEndpointDiffersPerDir(t *testing.T) {
-	a, _ := In(t.TempDir())
-	b, _ := In(t.TempDir())
+	a, _ := In(testutil.TempDir(t))
+	b, _ := In(testutil.TempDir(t))
 	if a.Endpoint == b.Endpoint {
 		t.Fatalf("endpoints collide: %s", a.Endpoint)
 	}
 }
 
 func TestEnsure(t *testing.T) {
-	p, err := In(filepath.Join(t.TempDir(), "a", "b"))
+	p, err := In(filepath.Join(testutil.TempDir(t), "a", "b"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,12 +16,13 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // newDB opens a migrated database in a temporary directory.
 func newDB(t *testing.T) *sql.DB {
 	t.Helper()
-	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "agentnet.db"))
+	st, err := store.Open(context.Background(), filepath.Join(testutil.TempDir(t), "agentnet.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +52,7 @@ func newKeysOn(t *testing.T, dir string, db *sql.DB, now func() time.Time) (*mai
 }
 
 func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	db := newDB(t)
 	k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
@@ -97,7 +98,7 @@ func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
 }
 
 func TestNewKeyWhenPrivateKeyIsGoneOrAnnouncementExpired(t *testing.T) {
-	dir := t.TempDir()
+	dir := testutil.TempDir(t)
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	cur := now
 	k, _ := newKeys(t, dir, func() time.Time { return cur })
@@ -122,7 +123,7 @@ func TestNewKeyWhenPrivateKeyIsGoneOrAnnouncementExpired(t *testing.T) {
 
 func TestBadKeystoreModeIsAnError(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	k := mailbox.New(t.TempDir(), "bogus", pub, func(m []byte) ([]byte, error) { return ed25519.Sign(priv, m), nil }, nil)
+	k := mailbox.New(testutil.TempDir(t), "bogus", pub, func(m []byte) ([]byte, error) { return ed25519.Sign(priv, m), nil }, nil)
 	if err := k.Attach(context.Background(), newDB(t), nil, nil); err != nil {
 		t.Fatal(err)
 	}

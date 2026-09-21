@@ -2,13 +2,14 @@ package store
 
 import (
 	"context"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
 )
 
 func TestMigration5CreatesMailTables(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "m.db"))
+	s, err := Open(ctx, filepath.Join(testutil.TempDir(t), "m.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

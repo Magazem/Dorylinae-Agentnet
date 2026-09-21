@@ -16,6 +16,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // startStoppable is start with an explicit stop, for restarting a relay on the same database.
@@ -178,7 +179,7 @@ func TestOfflineEnvelopesArriveOnceAndInOrder(t *testing.T) {
 }
 
 func TestQueueSurvivesRelayRestart(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "queue.db")
+	db := filepath.Join(testutil.TempDir(t), "queue.db")
 	a, b := newPeer(t), newPeer(t)
 
 	_, url1, stop1 := startStoppable(t, relay.Options{QueuePath: db})
