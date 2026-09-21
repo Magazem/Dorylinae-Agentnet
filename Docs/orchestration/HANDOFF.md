@@ -76,13 +76,15 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | `395ee48` | H2: relay `--queue-db` / `--queue-ttl`, persistent queue, restart test |
 | `322acd9` | CI: linux/macos/windows matrix, `-race` job, identity test flake fixed |
 | `a4fa53a`, `18cd191`, `b9dba62` | Specs 0.8a (pairing v2) and 1.0a (mail), review fixes, owner approvals |
+| `51334e6` | This handoff file + `CLAUDE.md` pointer |
+| `8dd7297` | 0.8e `tools/verifyvectors` (`make verify-vectors`), all vectors reproduce |
 
 ### In flight: Wave 2 (started 2026-09-21)
 | Ticket | Worker | Worktree / branch | Needs Opus review before merge |
 |---|---|---|---|
 | 0.8b fingerprints, trust, `peers verify/remove` | W2-Fingerprints | `fingerprints` / `w2/fingerprints` | no |
 | 0.8d pairing v2, relay side | W2-RelayV2 | `relay-v2` / `w2/relay-v2` | **yes** |
-| 0.8e independent vector checker (`tools/verifyvectors`) | W2-Vectors | `vectors` / `w2/vectors` | no |
+| ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
 | 1.0c `internal/mail` seal/open | W2-Mail | `mail` / `w2/mail` | **yes** |
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
@@ -114,6 +116,7 @@ To see live status: `team_members`, `team_task_list`, `git worktree list`.
   - M2: relay abuse limits and TLS. Must land before hosted relay 4.1.
   - The Low items.
 - 15 Low items from `Docs/review/07-spec-review.md` (14 not fixed).
+- Spec nits from 0.8e: pairing.md says card_I is "333 bytes" (correct, é is 2 bytes; clarify); state explicitly that u32 length prefixes count canonical bytes.
 
 Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options.md` §5.
 
