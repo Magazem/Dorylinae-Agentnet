@@ -42,3 +42,44 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 		t.Fatal("expected error for newer schema")
 	}
 }
+
+// A database created before the trust column existed keeps its peers, all
+// as trust=relay with no mailbox keys (Docs/protocol/pairing.md, migration).
+func TestMigrationAddsPeerTrust(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "old.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rewind to schema version 2 and insert a row as the old binary would.
+	for _, q := range []string{
+		`DROP TABLE peers`,
+		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
+			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
+			paired_at TEXT NOT NULL)`,
+		`DELETE FROM migrations WHERE version > 2`,
+		`INSERT INTO peers VALUES ('k1', 'old', 'h', '[]', '{}', '2026-01-02T03:04:05Z')`,
+	} {
+		if _, err := s.DB().ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = s.Close()
+
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var trust, mbox string
+	if err := s.DB().QueryRowContext(ctx, `SELECT trust, mailbox_keys FROM peers WHERE public_key = 'k1'`).Scan(&trust, &mbox); err != nil {
+		t.Fatal(err)
+	}
+	if trust != "relay" || mbox != "[]" {
+		t.Fatalf("trust = %q, mailbox_keys = %q; want relay, []", trust, mbox)
+	}
+	if _, err := s.DB().ExecContext(ctx, `UPDATE peers SET trust = 'bogus'`); err == nil {
+		t.Error("CHECK constraint accepted an unknown trust value")
+	}
+}

@@ -43,6 +43,8 @@ type IdentityResult struct {
 	Card       agentcard.Card `json:"card"`
 	Signature  string         `json:"signature"`
 	KeyBackend string         `json:"key_backend"`
+	// Fingerprint is fp(card.public_key) without spaces.
+	Fingerprint string `json:"fingerprint"`
 }
 
 // Options tune the daemon; the zero value is what agentnetd uses.
@@ -136,9 +138,14 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	srv := ipc.NewServer()
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
+	registerTrust(srv, peerStore, log)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
-		return IdentityResult{Card: sc.Card, Signature: sc.Signature, KeyBackend: id.KeyBackend()}, nil
+		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		return IdentityResult{Card: sc.Card, Signature: sc.Signature, KeyBackend: id.KeyBackend(), Fingerprint: fp}, nil
 	})
 	srv.Handle("status", func(context.Context, json.RawMessage) (any, error) {
 		return StatusResult{

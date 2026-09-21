@@ -42,6 +42,12 @@ CREATE TABLE peers (
 	paired_at  TEXT NOT NULL
 );
 `},
+	{3, "peers_trust", `
+ALTER TABLE peers ADD COLUMN trust TEXT NOT NULL DEFAULT 'relay'
+	CHECK (trust IN ('relay', 'code', 'fingerprint'));
+ALTER TABLE peers ADD COLUMN mailbox_keys TEXT NOT NULL DEFAULT '[]'
+	CHECK (json_valid(mailbox_keys));
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

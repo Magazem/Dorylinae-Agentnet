@@ -84,7 +84,7 @@ Failures print `agentnet: pairing failed: <message> (<code>)` on stderr.
 | `role` | `issuer` (`--new`) or `redeemer` (`<code>`) |
 | `state` | `pending`, `complete` or `failed` |
 | `code`, `expires` | Issuer only, while `pending` and once the relay issued the code (absent if the relay has not answered yet; poll again). Dropped when the pairing ends |
-| `peer` | On `complete`: `{"public_key","name","harness","skills","paired_at"}` |
+| `peer` | On `complete`: `{"public_key","name","harness","skills","paired_at","trust","fingerprint"}`. A v1 pairing is `trust` `relay`; compare `fingerprint` with the other machine and run `agentnet peers verify` |
 | `error` | On `failed`: `{"code","message"}`. Codes: the relay's (`pair_invalid`, `pair_rate_limited`, `pair_limit`, `peer_offline`, `peer_busy`, `bad_pairing`) or `bad_card`, `store_error`, `timeout`, `expired` |
 
 A request that fails before anything is sent prints

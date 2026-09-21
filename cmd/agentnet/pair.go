@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -53,7 +54,8 @@ Flags:
                {"ok":true,"pairing_id","role":"issuer|redeemer",
                 "state":"pending|complete|failed",
                 "code","expires"           (issuer, while pending),
-                "peer":{"public_key","name","harness","skills","paired_at"} (complete),
+                "peer":{"public_key","name","harness","skills","paired_at",
+                        "trust","fingerprint"} (complete),
                 "error":{"code","message"} (failed)}
                Failures that stop the request itself print
                {"ok":false,"error":{"code","message"}}.
@@ -121,7 +123,8 @@ Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 func printPair(w io.Writer, st daemon.PairStatus) {
 	switch {
 	case st.State == peers.StateComplete && st.Peer != nil:
-		_, _ = fmt.Fprintf(w, "Paired with %s (%s)\n  public key: %s\n", st.Peer.Name, st.Peer.Harness, st.Peer.PublicKey)
+		_, _ = fmt.Fprintf(w, "Paired with %s (%s)\n  public key:  %s\n  fingerprint: %s\n  trust:       %s\n",
+			st.Peer.Name, st.Peer.Harness, st.Peer.PublicKey, envelope.FormatFingerprint(st.Peer.Fingerprint), st.Peer.Trust)
 	case st.State == peers.StatePending && st.Role == peers.RoleIssuer && st.Code != "":
 		_, _ = fmt.Fprintf(w, "Pairing code: %s\nExpires:      %s\nPairing ID:   %s\n\nOn the other machine run: agentnet pair %s\nThen check here with:     agentnet peers\n",
 			formatCode(st.Code), st.Expires, st.ID, formatCode(st.Code))

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 )
@@ -35,7 +36,8 @@ Usage:
 Flags:
   --json    print machine-readable JSON on stdout:
             {"ok":true,"card":{"version","name","public_key","harness","skills","created"},
-             "signature":"<base64url>","key_backend":"keychain|file"}
+             "signature":"<base64url>","key_backend":"keychain|file",
+             "fingerprint":"<20 characters, no spaces>"}
 
 Verify the output independently with: go run ./tools/verifycard
 
@@ -78,8 +80,8 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 
 func printCard(w io.Writer, res daemon.IdentityResult) {
 	c := res.Card
-	_, _ = fmt.Fprintf(w, "name:        %s\nharness:     %s\npublic key:  %s\ncreated:     %s\nskills:      %s\nsignature:   %s\nkey storage: %s\n",
-		c.Name, c.Harness, c.PublicKey, c.Created, skillList(c.Skills), res.Signature, res.KeyBackend)
+	_, _ = fmt.Fprintf(w, "name:        %s\nharness:     %s\npublic key:  %s\nfingerprint: %s\ncreated:     %s\nskills:      %s\nsignature:   %s\nkey storage: %s\n",
+		c.Name, c.Harness, c.PublicKey, envelope.FormatFingerprint(res.Fingerprint), c.Created, skillList(c.Skills), res.Signature, res.KeyBackend)
 }
 
 func skillList(skills []agentcard.Skill) string {

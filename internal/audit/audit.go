@@ -22,6 +22,9 @@ const (
 	ActionDaemonStop       = "daemon.stop"
 	ActionServiceInstall   = "service.install"
 	ActionServiceUninstall = "service.uninstall"
+	ActionPeerVerify       = "peer.verify"
+	ActionPeerRemove       = "peer.remove"
+	ActionPeerVerifyFail   = "peer.verify_fail"
 )
 
 // Event is one row of the audit log.

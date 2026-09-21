@@ -28,6 +28,7 @@ agentnet identity [--json]
 name:        my-laptop
 harness:     custom
 public key:  <base64url>
+fingerprint: 2ED9 TGVE R471 63MC C451
 created:     2026-01-02T03:04:05Z
 skills:      (none)
 signature:   <base64url>
@@ -48,7 +49,8 @@ key storage: keychain
     "created": "2026-01-02T03:04:05Z"
   },
   "signature": "<base64url, 64 bytes>",
-  "key_backend": "keychain"
+  "key_backend": "keychain",
+  "fingerprint": "2ED9TGVER47163MCC451"
 }
 ```
 
@@ -57,6 +59,7 @@ key storage: keychain
 | `ok` | `true` |
 | `card`, `signature` | The signed Agent Card. Only `card` is signed |
 | `key_backend` | `keychain` or `file`: where the private key lives. Local, unsigned |
+| `fingerprint` | `fp(card.public_key)`: 20 characters without spaces (human output groups them 4-4-4-4-4). Read it to the other person so they can run `agentnet peers verify`; format in [../protocol/pairing.md](../protocol/pairing.md#fingerprints). Local, unsigned |
 
 Errors (exit non-zero) use the same shape as `agentnet status`:
 `{"ok": false, "error": {"code": "daemon_not_running", "message": "..."}}`.

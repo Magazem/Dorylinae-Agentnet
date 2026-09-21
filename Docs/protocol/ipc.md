@@ -107,7 +107,22 @@ relay refusal or a bad card is a status with `state: "failed"`.
 ### `peers`
 
 Params: none. Result: `{"peers": [{"public_key", "name", "harness", "skills",
-"paired_at"}]}`, see [../cli/peers.md](../cli/peers.md).
+"paired_at", "trust", "fingerprint"}]}`, see [../cli/peers.md](../cli/peers.md).
+`identity` also returns `"fingerprint"` (own key).
+
+### `peers_verify`
+
+Params: `{"peer": "<name or public key>", "fingerprint": "<as typed>"}`. The
+fingerprint is normalised and compared in constant time with `fp(peer key)`. On
+a match the peer's trust becomes `fingerprint`; result `{"peer": {...}}`. Errors:
+`bad_fingerprint` (not 20 characters of the alphabet), `fingerprint_mismatch`
+(nothing changed), `unknown_peer`, `ambiguous_peer`, `bad_request`.
+
+### `peers_remove`
+
+Params: `{"peer": "<name or public key>"}`. Deletes the peer; result
+`{"peer": {...the removed peer...}}`. Later session envelopes from that key are
+rejected as `unpaired`. Errors: `unknown_peer`, `ambiguous_peer`, `bad_request`.
 
 Pairing setup error codes: `no_relay` (daemon has no relay), `relay_unavailable`
 (not connected), `bad_code`, `unknown_pairing`, `too_many_pairings`;
@@ -152,6 +167,10 @@ the public key and key backend, never the private key.
 
 Pairing records `pair.start`, `pair.complete` and `pair.fail`; details are in
 [pairing.md](pairing.md#daemon-side-ticket-05b).
+
+`agentnet peers verify` records `peer.verify` (or `peer.verify_fail` on a wrong
+fingerprint) and `peers remove` records `peer.remove`, all with `actor = "cli"`
+and detail `{"peer": "<public key>", "name", "fingerprint", "trust"?}`.
 
 Sessions record `session.open` and `session.reject` (tampered, replayed,
 reordered, unpaired or malformed session envelopes); details are in

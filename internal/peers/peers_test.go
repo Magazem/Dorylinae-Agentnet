@@ -314,3 +314,35 @@ func TestStoreRepairKeepsFirstPairedAt(t *testing.T) {
 		t.Fatalf("peers = %+v", l)
 	}
 }
+
+func TestStoreAddNeverLowersTrust(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, time.Millisecond)
+	raw, key := signedCard(t, "p")
+	sc, err := agentcard.Verify(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := e.store.Add(ctx, sc, raw, now); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.peerList(t); l[0].Trust != peers.TrustRelay {
+		t.Fatalf("new peer trust = %q, want relay", l[0].Trust)
+	}
+	if err := e.store.SetTrust(ctx, key, peers.TrustFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetTrust(ctx, key, peers.TrustCode); err != nil { // lower: ignored
+		t.Fatal(err)
+	}
+	if err := e.store.Add(ctx, sc, raw, now); err != nil {
+		t.Fatal(err)
+	}
+	if l := e.peerList(t); l[0].Trust != peers.TrustFingerprint {
+		t.Fatalf("trust after re-add = %q, want fingerprint", l[0].Trust)
+	}
+	if err := e.store.SetTrust(ctx, "nope", peers.TrustCode); !errors.Is(err, peers.ErrNoPeer) {
+		t.Fatalf("SetTrust unknown = %v", err)
+	}
+}
