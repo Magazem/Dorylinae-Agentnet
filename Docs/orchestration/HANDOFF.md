@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-21, Wave 3 in flight.
+Last updated: 2026-09-21, Wave 4 in flight.
 
 ## 1. How this team runs
 
@@ -82,14 +82,17 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 ### Wave 2: done (2026-09-21)
 0.8b `a8cb0a3`; 0.8d `099054e` + `6c78619`; 0.8e `8dd7297`; 1.0c `9e3ddf3` + review fixes `eb7d39e` (strict timestamps, fuzz). Reviews: `Docs/review/08-wave2-security-review.md`, `08b-relay-v2-review.md`.
 
-### In flight: Wave 3 (started 2026-09-21)
-| Ticket | Worker | Worktree / branch | Opus review before merge |
-|---|---|---|---|
-| ~~0.8c pairing v2 daemon side~~ | merged `96ae3ac` + review fixes `e530aa3` (confirm/timer race). Review: `Docs/review/09-pairing-daemon-review.md` | — | — |
-| ~~1.0d receiver dedupe + ack~~ | merged `6835a6c` (placeholder migration replaced; real 4 = pair_used_codes, 5 = mail_seen + mail_inbox) | — | reviewed with 1.0e |
-| 1.0b mailbox key rotation, `keys` kind, key-miss, **migration 6** own-key table + import current.json, peers List L6 | W3-MailboxKeys | `mailbox-keys` / `w3/mailbox-keys` | reviewed with 1.0e |
+### Wave 3: done (2026-09-21)
+0.8c `96ae3ac` + `e530aa3`; 1.0d `6835a6c`; 1.0b `663eb76` (migration 6 mailbox_keys_own; rotation 7/7/21 d; `keys` kind; key-miss reply; mail receiver ON by default; peers.mailbox_keys keeps max 2 per spec). 1.0b and 1.0d have NOT had an Opus review yet: the 1.0e review must cover them.
 
-Migrations on main: 1–5. 6 is reserved for 1.0b. Assign numbers up front whenever two branches add migrations.
+### In flight: Wave 4 (started 2026-09-21)
+| Ticket | Worker | Worktree / branch | Opus review |
+|---|---|---|---|
+| 1.0e sender outbox (**migration 7**), Reseal, OnAck, key-miss re-seal, `status --json` outbox, two-daemon harness | W4-Outbox | `outbox` / `w4/outbox` | **yes, and it must also cover 1.0b + 1.0d** |
+| M4 manual two-machine checklist `tests/phase0-manual.md` + smoke scripts | W4-ManualTest | `manual-test` / `w4/manual-test` | no |
+| Windows TempDir flake elimination (tests only, maybe `internal/testutil`) | W4-WinFlakes | `win-flakes` / `w4/win-flakes` | no |
+
+After 1.0e merges: 1.0f docs/CLI reconciliation. Then the owner runs M4 on two machines.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
