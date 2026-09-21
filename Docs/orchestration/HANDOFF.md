@@ -88,7 +88,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 ### In flight: Wave 4 (started 2026-09-21)
 | Ticket | Worker | Worktree / branch | Opus review |
 |---|---|---|---|
-| 1.0e sender outbox (**migration 7**), Reseal, OnAck, key-miss re-seal, `status --json` outbox, two-daemon harness | W4-Outbox | `outbox` / `w4/outbox` | **yes, and it must also cover 1.0b + 1.0d** |
+| 1.0e sender outbox | committed on `w4/outbox`, rebased on main, full suite clean 3×, harness stable 5×. **In Opus review** (W4-DeliveryReviewer → `Docs/review/10-mail-delivery-review.md`), which covers 1.0b + 1.0d + 1.0e. Notes: IPC `mail_submit`; app kinds need `Options.MailKinds` (only `keys` built in); relay `peer_offline`/`peer_busy` → stays queued. | `outbox` / `w4/outbox` | **yes** |
 | ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
 | ~~Windows TempDir flakes~~ | merged `a01c877`: use `internal/testutil.TempDir(t)` instead of `t.TempDir()` in any test that writes files. At the 1.0e merge, switch its new tests to it. | — | — |
 
