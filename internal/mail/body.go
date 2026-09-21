@@ -134,8 +134,10 @@ func parseTime(v any) (time.Time, error) {
 	if !ok {
 		return time.Time{}, errors.New("must be a string")
 	}
+	// time.Parse accepts a fractional second even though the layout has none,
+	// so require the string to round-trip exactly.
 	t, err := time.Parse(timeFmt, s)
-	if err != nil {
+	if err != nil || t.Format(timeFmt) != s {
 		return time.Time{}, errors.New("must be RFC 3339 UTC with Z and whole seconds")
 	}
 	return t, nil

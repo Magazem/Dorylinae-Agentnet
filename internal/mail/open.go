@@ -241,12 +241,8 @@ func parseSigned(plain []byte) (gen map[string]any, msg Msg, sig []byte, err err
 		}
 		*dst = s
 	}
-	created, ok := gen["created"].(string)
-	if !ok {
-		return nil, Msg{}, nil, errors.New("created must be a string")
-	}
-	if msg.Created, err = time.Parse(timeFmt, created); err != nil {
-		return nil, Msg{}, nil, errors.New("created must be RFC 3339 UTC with Z and whole seconds")
+	if msg.Created, err = parseTime(gen["created"]); err != nil {
+		return nil, Msg{}, nil, fmt.Errorf("created: %w", err)
 	}
 	if !kindPattern.MatchString(msg.Kind) {
 		return nil, Msg{}, nil, errors.New("bad kind")
