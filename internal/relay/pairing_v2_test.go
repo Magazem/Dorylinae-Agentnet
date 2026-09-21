@@ -274,7 +274,7 @@ func TestPairV2RelayOutputHoldsNoSecretOrLookup(t *testing.T) {
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 
-	const lookup, secret = "7KQ2M", "9XHF4TRW8N"
+	const lookup, secret = "7KQ2M", "9XHF4TRW8N" //nolint:gosec // published test vector, not a credential
 	var frames []string
 	record := func(c envelope.Control) {
 		raw, _ := json.Marshal(c)

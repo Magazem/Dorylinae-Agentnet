@@ -70,7 +70,7 @@ func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
 	}
 
 	// The private key is in the keystore and matches the announced public key.
-	seed, err := os.ReadFile(filepath.Join(dir, mailbox.Dir, ann.KeyID.String()+".key"))
+	seed, err := os.ReadFile(filepath.Join(dir, mailbox.Dir, ann.KeyID.String()+".key")) //nolint:gosec // test reads its own temp dir
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestFirstKeyIsCreatedOnceAndAnnounced(t *testing.T) {
 	if err != nil || string(again) != string(raw) {
 		t.Fatalf("second call changed the key: %v", err)
 	}
-	restarted := mailbox.New(dir, "file", pub, func(m []byte) ([]byte, error) { return nil, os.ErrClosed }, func() time.Time { return now.Add(time.Hour) })
+	restarted := mailbox.New(dir, "file", pub, func([]byte) ([]byte, error) { return nil, os.ErrClosed }, func() time.Time { return now.Add(time.Hour) })
 	if err := restarted.Attach(context.Background(), db, nil, nil); err != nil {
 		t.Fatal(err)
 	}

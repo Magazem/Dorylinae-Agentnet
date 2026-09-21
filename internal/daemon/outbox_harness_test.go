@@ -332,6 +332,8 @@ func testOfflineDelivery(t *testing.T, restartRelay bool) {
 	if n := b.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '` + res.ID + `'`); n != 1 {
 		t.Fatalf("mail_seen rows = %d, want 1", n)
 	}
+	// The audit row is written asynchronously after the inbox row: poll for it.
+	harnessWait(t, "the mail.in audit row", func() bool { return b.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'mail.in'`) >= 1 })
 	if n := b.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'mail.in'`); n != 1 {
 		t.Fatalf("mail.in audit rows = %d, want 1", n)
 	}
@@ -370,7 +372,7 @@ func testOfflineDelivery(t *testing.T, restartRelay bool) {
 	}
 	r.stop()
 	for _, f := range []string{r.queue, r.queue + "-wal"} {
-		if raw, err := os.ReadFile(f); err == nil && leaksSecret(raw) {
+		if raw, err := os.ReadFile(f); err == nil && leaksSecret(raw) { //nolint:gosec // test reads its own temp-dir files
 			t.Errorf("%s contains the plaintext", filepath.Base(f))
 		}
 	}

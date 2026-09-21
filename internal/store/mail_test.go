@@ -2,9 +2,10 @@ package store
 
 import (
 	"context"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func TestMigration5CreatesMailTables(t *testing.T) {

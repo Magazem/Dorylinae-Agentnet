@@ -5,12 +5,13 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 var (

@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"testing"
 	"time"
 
@@ -222,17 +223,17 @@ func TestOutboxRefusals(t *testing.T) {
 	clk := &testClock{t: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
 	a, b := newMNode(t, clk), newMNode(t, clk)
 	ob := withOutbox(t, a, clk)
-	if _, err := ob.Submit(ctx, b.key, "note", nil); err != mail.ErrUnpaired {
+	if _, err := ob.Submit(ctx, b.key, "note", nil); !errors.Is(err, mail.ErrUnpaired) {
 		t.Errorf("unpaired: %v", err)
 	}
 	pair(t, a, b)
-	if _, err := ob.Submit(ctx, b.key, "ack", nil); err != mail.ErrKindNotSent {
+	if _, err := ob.Submit(ctx, b.key, "ack", nil); !errors.Is(err, mail.ErrKindNotSent) {
 		t.Errorf("ack: %v", err)
 	}
 	if _, err := a.db.Exec(`UPDATE peers SET mailbox_keys = '[]'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ob.Submit(ctx, b.key, "note", nil); err != mail.ErrNoMailboxKey {
+	if _, err := ob.Submit(ctx, b.key, "note", nil); !errors.Is(err, mail.ErrNoMailboxKey) {
 		t.Errorf("no key: %v", err)
 	}
 }

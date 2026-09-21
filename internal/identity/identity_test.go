@@ -143,7 +143,7 @@ func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
 	}
 
 	dir := testutil.TempDir(t) // a card, but no key
-	if err := os.WriteFile(filepath.Join(dir, identity.CardFile), card, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, identity.CardFile), card, 0o600); err != nil { //nolint:gosec // test writes into its own temp dir
 		t.Fatal(err)
 	}
 	_, _, err = identity.LoadOrCreate(dir, fileStore(t, dir), identity.Options{}, now)

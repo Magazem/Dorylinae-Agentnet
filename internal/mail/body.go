@@ -63,7 +63,7 @@ func checkKeysBody(body map[string]any, from string, now time.Time) error {
 		return errors.New("keys needs an announcement")
 	}
 	if err := verifyAnnouncement(ann, from, now); err != nil {
-		return fmt.Errorf("%w: %v", errBadAnnouncement, err)
+		return fmt.Errorf("%w: %w", errBadAnnouncement, err)
 	}
 	return nil
 }

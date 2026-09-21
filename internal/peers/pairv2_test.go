@@ -17,7 +17,7 @@ import (
 // The vectors of Docs/protocol/pairing.md §Test vectors.
 const (
 	vecLookup = "7KQ2M"
-	vecSecret = "9XHF4TRW8N"
+	vecSecret = "9XHF4TRW8N" //nolint:gosec // published test vector, not a credential
 	vecCardI  = `{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA"}`
 	vecCardR  = `{"card":{"created":"2026-01-02T03:05:00Z","harness":"claude-code","name":"bob-laptop","public_key":"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc","skills":[],"version":1},"signature":"iQYZKqktLeJmQ-5oOyZGlE0x0mOIQig-IehHbzqfg_vequeSqg_q1jHkj4up6ZEx3D6_la-yxcDzfWqaD0eHAg"}`
 	vecMboxI  = `{"announcement":{"created":"2026-01-02T03:00:00Z","identity":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","key_id":"67ca2ffd6fe9efab","not_after":"2026-01-16T03:00:00Z","pub":"eaYx7t4b-cmPEgMs3q3Q56B5OY_HhriMyEbsia-FpRo","v":1},"signature":"atOsE_ZJ-DFU33ceBR82Ws02HDvWF_Rslw6OqGxYgSQLn3E973R7yQ3doveCNdVLVitHrc7wksmLa7qIx50OBA"}`
@@ -31,15 +31,6 @@ const (
 	vecConfR = `eyJsb29rdXAiOiI3S1EyTSIsInRhZyI6InhrWENJZm5LUEE0ZDdYSHl2QU1wUzNvTndWZ2tYYVQ0UHI0aEYybmRhYmsiLCJ2IjoyfQ==`
 	vecConfI = `eyJsb29rdXAiOiI3S1EyTSIsInRhZyI6IkwxQnlpVGxkNm9KYUpzRXlmUjhNdkd1RGVTMVVPdllvYmxRTmFrQ3A3TzQiLCJ2IjoyfQ==`
 )
-
-func mustHex(t *testing.T, s string) []byte {
-	t.Helper()
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return b
-}
 
 func TestPairingVectors(t *testing.T) {
 	// The vector cards and announcements are valid and already canonical.

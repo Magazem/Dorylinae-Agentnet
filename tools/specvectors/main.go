@@ -101,7 +101,7 @@ func write(buf *bytes.Buffer, v any) {
 
 func u32(n int) []byte {
 	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], uint32(n))
+	binary.BigEndian.PutUint32(b[:], uint32(n)) //nolint:gosec // n is a small non-negative length
 	return b[:]
 }
 
@@ -215,7 +215,7 @@ func main() {
 	}
 
 	fmt.Println("== pairing v2")
-	lookup, secret := "7KQ2M", "9XHF4TRW8N"
+	lookup, secret := "7KQ2M", "9XHF4TRW8N" //nolint:gosec // published test vector, not a credential
 	fmt.Println("code        ", lookup+"-"+secret[:5]+"-"+secret[5:])
 	fmt.Printf("card_I      %s\n", cardI)
 	fmt.Printf("card_R      %s\n", cardR)

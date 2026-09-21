@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -95,7 +96,7 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log) {
 }
 
 func peerError(err error) error {
-	if err == peers.ErrNoPeer {
+	if errors.Is(err, peers.ErrNoPeer) {
 		return &ipc.Error{Code: CodeUnknownPeer, Message: "no such paired peer (see 'agentnet peers')"}
 	}
 	return err

@@ -78,8 +78,6 @@ func NormalizeCode(s string) (code string, v2 bool, ok bool) {
 	return "", false, false
 }
 
-func splitCode(code string) (lookup, secret string) { return code[:lookupLen], code[lookupLen:] }
-
 // deriveK is K = Argon2id(secret, "dorylinae-pair-v2\n" || lookup).
 func deriveK(lookup string, secret []byte) []byte {
 	salt := append([]byte(saltPrefix), lookup...)

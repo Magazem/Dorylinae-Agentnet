@@ -8,6 +8,7 @@ import (
 	"crypto/hpke"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -90,7 +91,7 @@ func wantReason(t *testing.T, err error, step int, reason string) {
 }
 
 func asReject(err error, re **RejectError) bool {
-	if r, ok := err.(*RejectError); ok {
+	if r := (*RejectError)(nil); errors.As(err, &r) {
 		*re = r
 		return true
 	}
@@ -444,7 +445,7 @@ func TestKeysBodyStep12(t *testing.T) {
 
 type recSink struct{ n int }
 
-func (r *recSink) Append(_ context.Context, actor, action string, detail any) error {
+func (r *recSink) Append(_ context.Context, actor, action string, _ any) error {
 	if actor != "daemon" || action != "mail.reject" {
 		panic("bad audit call")
 	}

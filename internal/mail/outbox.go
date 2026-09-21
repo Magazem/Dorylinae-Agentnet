@@ -85,8 +85,8 @@ type OutboxCounts struct {
 }
 
 type outboxRow struct {
-	id, to, frame, keyID, signed, state string
-	attempts                            int
+	id, to, frame string
+	attempts      int
 }
 
 func (o *Outbox) now() time.Time {

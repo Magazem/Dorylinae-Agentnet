@@ -286,7 +286,7 @@ func member2(envelope []byte, n1, n2 string) (inner1, sig, canon []byte, err err
 
 func u32(n int) []byte {
 	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], uint32(n))
+	binary.BigEndian.PutUint32(b[:], uint32(n)) //nolint:gosec // n is a small non-negative length
 	return b[:]
 }
 
@@ -350,22 +350,22 @@ type checker struct {
 
 func (c *checker) eq(name string, got, want []byte) {
 	if bytes.Equal(got, want) {
-		fmt.Fprintf(c.w, "PASS %s\n", name)
+		_, _ = fmt.Fprintf(c.w, "PASS %s\n", name)
 		return
 	}
 	c.fail++
-	fmt.Fprintf(c.w, "FAIL %s\n  got  %x\n  want %x\n", name, got, want)
+	_, _ = fmt.Fprintf(c.w, "FAIL %s\n  got  %x\n  want %x\n", name, got, want)
 }
 
 func (c *checker) eqs(name, got, want string) { c.eq(name, []byte(got), []byte(want)) }
 
 func (c *checker) ok(name string, cond bool, detail string) {
 	if cond {
-		fmt.Fprintf(c.w, "PASS %s\n", name)
+		_, _ = fmt.Fprintf(c.w, "PASS %s\n", name)
 		return
 	}
 	c.fail++
-	fmt.Fprintf(c.w, "FAIL %s: %s\n", name, detail)
+	_, _ = fmt.Fprintf(c.w, "FAIL %s: %s\n", name, detail)
 }
 
 func mustHex(c *checker, name, s string) []byte {
@@ -384,7 +384,7 @@ func run(w io.Writer, raw []byte) int {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&v); err != nil {
-		fmt.Fprintf(w, "FAIL vectors.json: %v\n", err)
+		_, _ = fmt.Fprintf(w, "FAIL vectors.json: %v\n", err)
 		return 1
 	}
 	pairing(c, &v)
@@ -640,7 +640,7 @@ func parseRFC3339Z(s string) (int64, error) {
 
 func main() {
 	if n := run(os.Stdout, vectorsJSON); n != 0 {
-		fmt.Fprintf(os.Stdout, "%d check(s) FAILED\n", n)
+		_, _ = fmt.Fprintf(os.Stdout, "%d check(s) FAILED\n", n)
 		os.Exit(1)
 	}
 	fmt.Println("all vectors reproduced")

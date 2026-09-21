@@ -98,7 +98,7 @@ func TestIdentityE2E(t *testing.T) {
 		}
 		stop := func() {
 			_ = d.Process.Kill()
-			_, _ = d.Process.Wait()
+			_ = d.Wait() // also waits for the output copiers, so the buffers are safe to read
 			captured = append(captured, out.Bytes(), errb.Bytes())
 		}
 		t.Cleanup(func() { _ = d.Process.Kill() })

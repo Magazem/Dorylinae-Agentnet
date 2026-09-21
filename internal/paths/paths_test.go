@@ -1,9 +1,10 @@
 package paths
 
 import (
-	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func TestDefaultHonoursEnv(t *testing.T) {

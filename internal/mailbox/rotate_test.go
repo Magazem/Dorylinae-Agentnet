@@ -151,14 +151,12 @@ func TestMoreThanThreeLiveDeletesOldestEarly(t *testing.T) {
 	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 	k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
 	identity := base64.RawURLEncoding.EncodeToString(pub)
-	var ids []mail.KeyID
 	for i := 0; i < 5; i++ {
 		raw, err := k.Announcement()
 		if err != nil {
 			t.Fatal(err)
 		}
 		id := keyIDOf(t, raw, identity, now)
-		ids = append(ids, id)
 		// Losing the secret makes the next Announcement create a new key.
 		if err := os.Remove(filepath.Join(dir, mailbox.Dir, id.String()+".key")); err != nil {
 			t.Fatal(err)
