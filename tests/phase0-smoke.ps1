@@ -1,8 +1,9 @@
 <#
 Phase 0 single-machine smoke test (Windows PowerShell 5.1+ / pwsh).
 Runs a local relay and two daemons (A, B) with separate config dirs, then: status, identity,
-pair v2, peers verify, ping, stop/start B, relay restart, peers remove. Prints PASS/FAIL per step.
-Does NOT cover: service install, reboot, real network, offline mail (see tests/phase0-manual.md).
+pair v2, peers verify, ping, stop/start B, offline mail (debug `note` kind; needs DORYLINAE_DEBUG=1,
+which the script sets for both daemons), relay restart, peers remove. Prints PASS/FAIL per step.
+Does NOT cover: service install, reboot, real network (see tests/phase0-manual.md).
 
 Usage: powershell -NoProfile -File tests\phase0-smoke.ps1 [-BinDir bin] [-Build]
 Exit code: 0 if all steps passed, 1 otherwise.
@@ -59,7 +60,7 @@ function Invoke-Prog([string]$exe, [string[]]$argv, [hashtable]$envs = @{}, [int
 
 function Ag([string]$who, [string[]]$argv) {
     $h = if ($who -eq 'A') { $homeA } else { $homeB }
-    Invoke-Prog $agentnet $argv @{ DORYLINAE_HOME = $h }
+    Invoke-Prog $agentnet $argv @{ DORYLINAE_HOME = $h; DORYLINAE_DEBUG = '1' }
 }
 
 # Start a long-running process with its own stdout/stderr files.
@@ -100,8 +101,9 @@ try {
     Step 'relay starts and listens' $up
 
     # 2. daemons + status
-    $envA = @{ DORYLINAE_HOME = $homeA; DORYLINAE_RELAY_URL = $relayUrl }
-    $envB = @{ DORYLINAE_HOME = $homeB; DORYLINAE_RELAY_URL = $relayUrl }
+    # DORYLINAE_DEBUG=1: the daemons accept the debug mail kind "note" (offline mail step)
+    $envA = @{ DORYLINAE_HOME = $homeA; DORYLINAE_RELAY_URL = $relayUrl; DORYLINAE_DEBUG = '1' }
+    $envB = @{ DORYLINAE_HOME = $homeB; DORYLINAE_RELAY_URL = $relayUrl; DORYLINAE_DEBUG = '1' }
     Start-Bg 'A' $agentnetd @('run') $envA
     Start-Bg 'B' $agentnetd @('run') $envB
     $sa = Wait-Status 'A'; $sb = Wait-Status 'B'
@@ -169,6 +171,23 @@ try {
     Step 'status: B has a new PID' ($pidB1 -ne $pidB2) "$pidB1 -> $pidB2"
     Step 'peers survive B restart' ((((Ag 'B' @('peers', '--json')).Out | ConvertFrom-Json).peers.Count) -eq 1)
     Step 'ping A -> B after B restart' (Wait-Ping 'A' $refB 40) $script:lastPing.Out
+
+    # 7b. offline mail: A sends while B is stopped; B receives it after restart and the ack reaches A.
+    # Both daemons run with DORYLINAE_DEBUG=1, so B understands the debug kind "note".
+    $r = Invoke-Prog $agentnet @('mail', 'send', "@$refB", '--kind', 'note', '--text', 'x') @{ DORYLINAE_HOME = $homeA; DORYLINAE_DEBUG = '0' }
+    Step 'mail send does not exist without DORYLINAE_DEBUG=1' (($r.Code -eq 2) -and ($r.Err -match 'unknown command')) $r.Err
+    Stop-Bg 'B'
+    Step 'status: B not running before offline mail (exit 3)' ((Ag 'B' @('status')).Code -eq 3)
+    $r = Ag 'A' @('mail', 'send', "@$refB", '--kind', 'note', '--text', 'sent while B was offline', '--json')
+    $mj = $null; try { $mj = $r.Out | ConvertFrom-Json } catch {}
+    Step 'mail send to stopped B is accepted as queued' (($r.Code -eq 0) -and $mj -and ($mj.ok -eq $true) -and ($mj.state -eq 'queued') -and ($mj.id -like 'm-*')) "$($r.Out) $($r.Err)"
+    $ob = ((Ag 'A' @('status', '--json')).Out | ConvertFrom-Json).outbox
+    Step 'status: outbox has the mail waiting' (($ob.queued + $ob.relayed) -ge 1) ($ob | ConvertTo-Json -Compress)
+    Step 'status: human output has an outbox line' ((Ag 'A' @('status')).Out -match 'outbox:\s+\d+ queued, \d+ relayed, \d+ expired')
+    Start-Bg 'B' $agentnetd @('run') $envB
+    Step 'status: B running again for mail' (Wait-Status 'B')
+    $drained = Wait-Until { $o = ((Ag 'A' @('status', '--json')).Out | ConvertFrom-Json).outbox; ($o.queued + $o.relayed) -eq 0 } 60
+    Step 'offline mail delivered: ack received, outbox drained' $drained
 
     # 8. relay restart
     Stop-Bg 'relay'

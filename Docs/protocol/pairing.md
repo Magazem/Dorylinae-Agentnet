@@ -83,7 +83,9 @@ tag_I = HMAC-SHA256(K, "issuer\n"   ‖ T)                     // 32 bytes
 tag_R = HMAC-SHA256(K, "redeemer\n" ‖ T)                     // 32 bytes
 ```
 
-- `u32(n)` is `n` as 4 bytes, big-endian.
+- `u32(n)` is `n` as 4 bytes, big-endian. In `u32(len X)`, `n` counts the **bytes** of the
+  canonical UTF-8 form of `X` (below), not characters: `é` counts 2. The lengths in the
+  test vectors are byte counts.
 - In Go: `argon2.IDKey([]byte(secret), salt, 3, 64*1024, 1, 32)` from
   `golang.org/x/crypto/argon2`. `threads` changes the output, so it is fixed at 1.
 - **`card_X`** is the canonical JSON ([agent-card.md §Canonical serialisation](agent-card.md#canonical-serialisation))
@@ -486,7 +488,7 @@ fp(key_R) 2P56 R8XN KZYG XBXC JB4S
 code      7KQ2M-9XHF4-TRW8N      lookup = "7KQ2M", secret = "9XHF4TRW8N"
 ```
 
-`card_I`: 333 bytes, canonical, UTF-8 (`é` is 2 bytes):
+`card_I`: 333 bytes (not characters: the name contains `é`, which is 2 bytes in UTF-8), canonical:
 
 ```
 {"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA"}

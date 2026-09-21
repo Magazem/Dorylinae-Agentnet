@@ -28,6 +28,12 @@ for the pong; if it has not arrived, the command exits 0 with `state:
 after 10 seconds with `timeout`, and the session is dropped so the next ping
 handshakes again (for example after the peer restarted).
 
+**An offline peer looks like a timeout.** The relay does not answer `peer_offline` for
+envelopes; it queues them for the peer ([envelope.md](../protocol/envelope.md#offline-queue)).
+A ping to a peer that is not connected therefore fails with `timeout` after 10 seconds
+(unless the peer comes back within that time). To send something that waits for an offline
+peer, use mail ([mail.md](mail.md)), not ping.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -65,7 +71,7 @@ Failures go to stderr.
 | `state` | `pending`, `complete` or `failed` |
 | `rtt_ms` | Complete only: time from sending the encrypted ping to receiving the pong, in milliseconds (excludes the handshake) |
 | `handshake` | `true` if a new session was set up for this ping |
-| `error` | Failed only: `{"code","message"}`; codes `timeout`, `peer_offline`, `handshake_failed`, `send_failed` |
+| `error` | Failed only: `{"code","message"}`; codes `timeout`, `handshake_failed`, `send_failed`, or a relay refusal such as `queue_full` |
 
 Requests that cannot be made print `{"ok":false,"error":{"code","message"}}`
 with code `unknown_peer`, `ambiguous_peer`, `no_relay`, `relay_unavailable`,

@@ -22,7 +22,11 @@ type stubPlatform struct{ file string }
 
 func (stubPlatform) Name() string { return "stub" }
 
-func (s stubPlatform) Install(service.Spec, service.Env) (service.Plan, error) {
+// lastSpec is the Spec most recently passed to stubPlatform.Install.
+var lastSpec service.Spec
+
+func (s stubPlatform) Install(spec service.Spec, _ service.Env) (service.Plan, error) {
+	lastSpec = spec
 	return service.Plan{Platform: "stub", Steps: []service.Step{
 		{Op: service.OpWrite, Path: s.file, Content: "def", Mode: 0o600},
 		{Op: service.OpRun, Args: []string{"stub", "start"}},
@@ -166,7 +170,7 @@ func TestInstallHelpAndUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--help exit %d", code)
 	}
-	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--dry-run]", "--dry-run", "--home"} {
+	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--relay URL] [--dry-run]", "--relay", "--dry-run", "--home"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
@@ -176,6 +180,41 @@ func TestInstallHelpAndUsage(t *testing.T) {
 	}
 	if code, _, _ := invoke(t, "uninstall", "--bogus"); code != 2 {
 		t.Errorf("bad flag: exit %d, want 2", code)
+	}
+}
+
+func TestInstallRelayFlagAndEnv(t *testing.T) {
+	home, _, _ := setup(t)
+	t.Setenv(RelayEnv, "")
+
+	if code, _, errs := invoke(t, "install", "--home", home, "--relay", "ws://10.0.0.1:8787"); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	if lastSpec.Relay != "ws://10.0.0.1:8787" {
+		t.Errorf("--relay: spec relay = %q", lastSpec.Relay)
+	}
+
+	t.Setenv(RelayEnv, "wss://env.example.com")
+	if code, _, errs := invoke(t, "install", "--home", home); code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	if lastSpec.Relay != "wss://env.example.com" {
+		t.Errorf("$%s default: spec relay = %q", RelayEnv, lastSpec.Relay)
+	}
+
+	if code, _, errs := invoke(t, "install", "--home", home, "--relay", ""); code != 0 || lastSpec.Relay != "" {
+		t.Errorf("empty --relay must override the env: exit %d, %q, %s", code, lastSpec.Relay, errs)
+	}
+
+	// uninstall takes no relay.
+	if code, _, _ := invoke(t, "uninstall", "--home", home, "--relay", "ws://x"); code != 2 {
+		t.Errorf("uninstall --relay: exit %d, want 2", code)
+	}
+}
+
+func TestRunLogFileFlag(t *testing.T) {
+	if code, out, _ := invoke(t, "run", "--help"); code != 0 || !strings.Contains(out, "--log-file") {
+		t.Errorf("run --help: exit %d, missing --log-file:\n%s", code, out)
 	}
 }
 

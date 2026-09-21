@@ -143,6 +143,9 @@ Unknown types are ignored. Later tickets add types; the envelope `type` stays
 - Sessions live only in memory. After a daemon restart the peer's messages for
   the old `sid` are rejected (`unknown_session`); a ping that gets no answer
   within 10 s drops the session so the next ping handshakes again.
+- **An offline peer is a timeout.** The relay queues session envelopes for a peer that is
+  not connected ([envelope.md](envelope.md#offline-queue)) instead of answering
+  `peer_offline`, so a ping to an offline peer simply fails with `timeout` after 10 s.
 
 ## Rejection
 

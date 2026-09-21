@@ -317,6 +317,75 @@ func TestPrune35Days(t *testing.T) {
 	}
 }
 
+// detailRec records the audit detail too.
+type detailRec struct{ events []map[string]string }
+
+func (d *detailRec) Append(_ context.Context, _, action string, detail any) error {
+	m, _ := detail.(map[string]string)
+	out := map[string]string{"action": action}
+	for k, v := range m {
+		out[k] = v
+	}
+	d.events = append(d.events, out)
+	return nil
+}
+
+// D10: mail older than ReceiveMaxAge is not stored, deduped or applied; it is
+// audited as stale and acked as unsupported.
+func TestReceiveMaxAge(t *testing.T) {
+	if ReceiveMaxAge != 14*24*time.Hour {
+		t.Fatal("ReceiveMaxAge must be 14 days")
+	}
+	f := newRecvFixture(t)
+	rec := &detailRec{}
+	f.rcv.Opener.Audit = NewRejectAudit(rec, nil)
+	ctx := context.Background()
+
+	aged := func(id string, age time.Duration) envelope.Envelope {
+		return env(f.sender, f.recip, sealTo(t, f.sender, f.recip, id, "request", map[string]any{"n": 1}, vectorNow.Add(-age)))
+	}
+
+	ok := aged("m-00000000000000000000000000000013", 13*24*time.Hour)
+	for i := 0; i < 2; i++ {
+		if err := f.rcv.Handle(ctx, ok); err != nil {
+			t.Fatalf("13 d old, delivery %d: %v", i, err)
+		}
+	}
+	if n := f.count(`SELECT COUNT(*) FROM mail_inbox`); n != 1 {
+		t.Fatalf("13 d: inbox rows = %d, want 1 (deduped on repeat)", n)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM mail_seen`); n != 1 {
+		t.Fatalf("13 d: mail_seen rows = %d, want 1", n)
+	}
+
+	stale := aged("m-00000000000000000000000000000015", 15*24*time.Hour)
+	err := f.rcv.Handle(ctx, stale)
+	if ReasonOf(err) != ReasonStale {
+		t.Fatalf("15 d old: err = %v, want stale reject", err)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM mail_inbox`); n != 1 {
+		t.Errorf("15 d: inbox rows = %d, stale mail was stored", n)
+	}
+	if n := f.count(`SELECT COUNT(*) FROM mail_seen`); n != 1 {
+		t.Errorf("15 d: mail_seen rows = %d, stale mail was deduped", n)
+	}
+	want := map[string]string{"action": ActionReject, "peer": f.sender.key, "id": "m-00000000000000000000000000000015", "reason": "stale"}
+	if len(rec.events) != 1 || !reflect.DeepEqual(rec.events[0], want) {
+		t.Errorf("audit = %v, want [%v]", rec.events, want)
+	}
+	if len(f.audits.events) != 1 {
+		t.Errorf("only the 13 d mail is mail.in audited, got %v", f.audits.events)
+	}
+
+	acks := f.ackBodies()
+	if len(acks) != 3 { // 13 d twice (ids), 15 d once (unsupported)
+		t.Fatalf("acks = %v", acks)
+	}
+	if got := idsOf(t, acks[2], "unsupported"); !reflect.DeepEqual(got, []string{"m-00000000000000000000000000000015"}) {
+		t.Errorf("stale ack unsupported = %v", got)
+	}
+}
+
 type auditEvent struct{ action string }
 
 type auditRec struct{ events []auditEvent }

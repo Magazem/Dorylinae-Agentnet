@@ -158,7 +158,9 @@ the name), `no_relay`, `relay_unavailable`, `unknown_ping`, `too_many_pings`;
 Params: `{"to": "<peer name or public key>", "kind": "<kind>", "body": {...}}`. `body` is
 optional and must be a JSON object. Result: `{"id": "m-...", "state": "queued"}`. The mail is
 signed, sealed and stored in the outbox; the call never waits for the relay (under 2 s). The
-daemon resends it until the peer acks it ([mail.md](mail.md#outbox)).
+daemon resends it until the peer acks it ([mail.md](mail.md#outbox)). A relay refusal such as
+`peer_offline` or `peer_busy` never fails the mail: it stays `queued`. The only CLI front end
+is the debug command `agentnet mail send` ([../cli/mail.md](../cli/mail.md)).
 
 Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the peer was
 paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or

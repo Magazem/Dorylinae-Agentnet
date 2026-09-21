@@ -59,13 +59,21 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 	fs.SetOutput(stderr)
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	dryRun := fs.Bool("dry-run", false, "print what would be written and run, then exit without changing anything")
+	relayURL := ""
+	if install {
+		fs.StringVar(&relayURL, "relay", os.Getenv(RelayEnv), "relay WebSocket URL baked into the service, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
+	}
 	fs.Usage = func() {
 		what := "Register agentnetd as a per-user service that starts at login (and start it now).\n" +
 			"Re-running replaces the existing definition."
 		if !install {
 			what = "Stop agentnetd and remove its per-user service. Safe to run when nothing is installed."
 		}
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  agentnetd %s [--home DIR] [--dry-run]\n\nFlags:\n", what, verb)
+		usage := "[--home DIR] [--dry-run]"
+		if install {
+			usage = "[--home DIR] [--relay URL] [--dry-run]"
+		}
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  agentnetd %s %s\n\nFlags:\n", what, verb, usage)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -91,7 +99,7 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
 	}
-	spec := service.Spec{Executable: deps.exe, Home: p.Dir}
+	spec := service.Spec{Executable: deps.exe, Home: p.Dir, Relay: relayURL}
 
 	build := deps.platform.Uninstall
 	if install {

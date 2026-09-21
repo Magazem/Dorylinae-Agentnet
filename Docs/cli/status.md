@@ -1,6 +1,7 @@
 # `agentnet status`
 
-Reports whether the local daemon (`agentnetd`) is running, its PID and uptime.
+Reports whether the local daemon (`agentnetd`) is running, its PID, uptime and how much
+mail is waiting in its outbox.
 Returns within 2 seconds even when the daemon is unresponsive.
 
 ```
@@ -27,7 +28,12 @@ agentnetd running
   pid:     4242
   uptime:  1m2s
   version: 0.0.0-dev
+  outbox:  0 queued, 0 relayed, 0 expired
 ```
+
+`outbox` counts the sender's mail by state ([../protocol/mail.md](../protocol/mail.md#outbox)):
+`queued` (not yet handed to the relay), `relayed` (handed over, no ack yet) and `expired`
+(no ack within 7 days: delivery unknown). Delivered and failed mail is not counted.
 
 Not running (stderr, exit 3):
 
@@ -40,7 +46,7 @@ agentnet: agentnetd is not running (endpoint: <path or pipe name>)
 Running (exit 0):
 
 ```json
-{"ok": true, "pid": 4242, "started_at": "2026-09-21T10:00:00Z", "uptime_seconds": 62.4, "version": "0.0.0-dev"}
+{"ok": true, "pid": 4242, "started_at": "2026-09-21T10:00:00Z", "uptime_seconds": 62.4, "version": "0.0.0-dev", "outbox": {"queued": 0, "relayed": 0, "expired": 0}}
 ```
 
 Error (stdout, non-zero exit):

@@ -72,31 +72,20 @@ Test-NetConnection 192.168.1.10 -Port 8787      # TcpTestSucceeded : True
 
 ## 2. Install the daemon as a service (A and B)
 
-Preview, then install:
+Preview, then install. `--relay` bakes the relay URL into the service definition (launchd, systemd and
+Task Scheduler do not inherit your shell, so `DORYLINAE_RELAY_URL` would not reach the service):
 ```bash
-bin/agentnetd install --dry-run
-bin/agentnetd install
+bin/agentnetd install --relay "$RELAY_URL" --dry-run
+bin/agentnetd install --relay "$RELAY_URL"
 ```
 ```powershell
-.\bin\agentnetd.exe install --dry-run
-.\bin\agentnetd.exe install
+.\bin\agentnetd.exe install --relay $env:RELAY_URL --dry-run
+.\bin\agentnetd.exe install --relay $env:RELAY_URL
 ```
-Expected: no admin/sudo needed; exit 0; the daemon starts immediately.
-
-> **Known gap to check:** the installed service runs `agentnetd run --home DIR` with **no `--relay`**, and
-> launchd/systemd do not inherit your shell. The daemon reads the relay from `DORYLINAE_RELAY_URL`. So make that
-> variable visible to the service, then restart it (steps below). Record whether this was needed.
-
-Give the service the relay URL:
-
-- **Windows (B and/or A):** `setx DORYLINAE_RELAY_URL "ws://192.168.1.10:8787"`, then **log off and on** (Task Scheduler picks up the user environment at logon), or run `schtasks /End /TN "Dorylinae agentnetd"` then `schtasks /Run /TN "Dorylinae agentnetd"` from a **new** shell after `setx`.
-- **Linux (systemd user):** `systemctl --user edit agentnetd` and add
-  `[Service]` / `Environment=DORYLINAE_RELAY_URL=ws://192.168.1.10:8787`, then `systemctl --user restart agentnetd`.
-  For start-at-boot without login: `loginctl enable-linger $USER`.
-- **macOS (launchd):** add an `EnvironmentVariables` dict with `DORYLINAE_RELAY_URL` to
-  `~/Library/LaunchAgents/dev.dorylinae.agentnetd.plist`, then
-  `launchctl bootout gui/$(id -u)/dev.dorylinae.agentnetd; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.dorylinae.agentnetd.plist`.
-  (`install` rewrites the plist, so re-add the variable after any re-install.)
+Expected: no admin/sudo needed; exit 0; the daemon starts immediately. The dry run shows `--relay <URL>` in the
+plist arguments, the systemd `ExecStart` line, or the task XML `Arguments` (on Windows also
+`--log-file <home>\agentnetd.log`). Re-running `install` with a different URL replaces the definition.
+For start-at-boot without login on Linux: `loginctl enable-linger $USER`.
 
 Then on each machine:
 ```bash
@@ -203,7 +192,8 @@ On A, with B stopped:
 ```bash
 agentnet ping @<B-name>; echo "exit=$?"
 ```
-Expected: fails (no pong; error such as `peer_offline` or `timeout`, up to 10 s), non-zero exit,
+Expected: fails with `timeout` after up to 10 s (the relay queues the envelope for an offline peer; it does
+not answer `peer_offline`), non-zero exit,
 and **no hang, crash or daemon exit on A** (`agentnet status` on A still running).
 Record the exact message: ________________________________
 [ ] PASS [ ] FAIL
@@ -260,19 +250,50 @@ record the result: ________________________
 
 Re-pair (repeat step 4 with a fresh code) to leave the machines in a paired state if you continue to step 11.
 
-## 11. Offline mail check (requires 1.0e)
+## 11. Offline mail
 
-**Skip until ticket 1.0e has landed and the binaries under test include it.** The exact commands come from
-1.0e's CLI doc (`Docs/cli/`); the intent is:
+Mail is the application message path: it waits for an offline peer and is acked. The only CLI for it is the
+debug command `agentnet mail send` ([Docs/cli/mail.md](../Docs/cli/mail.md)), which exists only with
+`DORYLINAE_DEBUG=1`. B's daemon must also run with `DORYLINAE_DEBUG=1` so it understands the debug kind `note`.
+The installed service does not inherit environment variables, so for this step run B's daemon in a console.
 
-1. Both paired and verified. Stop B's daemon (step 7 stop commands).
-2. On A, send a mail/message to B using the 1.0e command. Expected: accepted and queued (A does not error).
+You need A and B paired (step 4; if you removed the peer in step 10, re-pair first) and the relay from step 1
+running.
+
+1. **On B**, stop the service (step 7 stop commands), then start the daemon by hand with the debug variable
+   and leave it running in its own terminal:
+   ```bash
+   DORYLINAE_DEBUG=1 agentnetd run --relay "$RELAY_URL"
+   ```
+   ```powershell
+   $env:DORYLINAE_DEBUG = "1"; .\bin\agentnetd.exe run --relay $env:RELAY_URL
+   ```
+   On another B terminal `agentnet status` shows `agentnetd running`. Now stop that foreground daemon with Ctrl-C
+   (B is offline).
+2. **On A**, send a note to B:
+   ```bash
+   DORYLINAE_DEBUG=1 agentnet mail send @<B-name> --kind note --text "sent while B was offline"
+   agentnet status
+   ```
+   ```powershell
+   $env:DORYLINAE_DEBUG = "1"
+   .\bin\agentnet.exe mail send @<B-name> --kind note --text "sent while B was offline"
+   .\bin\agentnet.exe status
+   ```
+   Expected: `queued mail m-... to @<B-name> (queued)`, exit 0, instantly (A does not error or wait). `status` shows an
+   `outbox:` line with the mail counted under `queued` or `relayed`.
 3. Confirm the relay queued it: relay log (`--verbose`) shows the envelope stored, and `relay-queue.db` on A has grown.
-4. Start B's daemon. Expected: the message is delivered exactly once (no duplicate on a second reconnect),
-   A sees the acknowledgement.
-5. Optional: stop B again, send, restart the **relay** while B is down, start B: still delivered (queue survives restart).
+4. **On B**, start the daemon again the same way as in point 1 (with `DORYLINAE_DEBUG=1`). Wait up to about 10 s.
+   **On A**: `agentnet status` -> `outbox:  0 queued, 0 relayed, 0 expired`: the mail was delivered and acked. It is
+   not resent later (`status` stays at 0 after a further minute).
+5. Optional: stop B again, send another note, restart the **relay** while B is down (same `--queue-db`), start B:
+   still delivered (the queue survives a relay restart).
+6. When done, stop B's foreground daemon and start the service again (step 7 start commands).
 
-[ ] PASS [ ] FAIL [ ] skipped (1.0e not landed)   Command used: ______________________
+Also check without the variable: `agentnet mail send @<B-name> --kind note --text x` prints
+`agentnet: unknown command "mail"` and exits 2.
+
+[ ] PASS [ ] FAIL (queued while B offline)  [ ] PASS [ ] FAIL (delivered, outbox back to 0)  [ ] PASS [ ] FAIL (no `mail` command without the variable)
 
 ## Where to find logs
 
@@ -282,7 +303,7 @@ Re-pair (repeat step 4 with a fresh code) to leave the machines in a paired stat
 | Daemon, foreground run | that terminal's stderr (`agentnetd run --relay URL`) |
 | Daemon, macOS service | `~/Library/Application Support/dorylinae/agentnetd.log` (the `--home` dir is `~/Library/Application Support/dorylinae` by default; `agentnetd install --dry-run` prints the exact path) |
 | Daemon, Linux service | `journalctl --user -u agentnetd -e` |
-| Daemon, Windows task | the task writes no log file. Task state: `schtasks /Query /TN "Dorylinae agentnetd" /V /FO LIST` or Task Scheduler > History. To see daemon logs, stop the task and run `agentnetd.exe run` in a console |
+| Daemon, Windows task | `%APPDATA%\dorylinae\agentnetd.log` (the task passes `--log-file`; rotated at 1 MiB to `agentnetd.log.1`). Task state: `schtasks /Query /TN "Dorylinae agentnetd" /V /FO LIST` or Task Scheduler > History |
 | Service definition | Windows: `agentnetd install --dry-run` prints the task XML; Linux `~/.config/systemd/user/agentnetd.service`; macOS `~/Library/LaunchAgents/dev.dorylinae.agentnetd.plist` |
 | Config dir (DB, key file, audit) | `agentnetd --help` shows the default; Windows `%APPDATA%\dorylinae`, macOS `~/Library/Application Support/dorylinae`, Linux `~/.config/dorylinae` |
 | Relay queue | the `--queue-db` path from step 1 |
@@ -302,7 +323,7 @@ Re-pair (repeat step 4 with a fresh code) to leave the machines in a paired stat
 | 8 | Reboot B, new PID, auto-start | | | | |
 | 9 | Relay restart | | | | |
 | 10 | `peers remove` | | | | |
-| 11 | Offline mail (needs 1.0e) | | | | |
+| 11 | Offline mail (debug `note`, ends delivered) | | | | |
 
 Environment: commit ______  A OS/version ______  B OS/version ______  relay host ______  date ______
 

@@ -36,8 +36,8 @@ Flags:
                 "state":"pending|complete|failed",
                 "rtt_ms"                   (complete: encrypted round trip, ms),
                 "handshake"                (true if a new session was set up),
-                "error":{"code","message"} (failed: timeout, peer_offline,
-                                            handshake_failed, send_failed)}
+                "error":{"code","message"} (failed: timeout, handshake_failed,
+                                            send_failed)}
                Failures that stop the request itself print
                {"ok":false,"error":{"code","message"}} (unknown_peer,
                ambiguous_peer, no_relay, relay_unavailable, unknown_ping).
@@ -46,7 +46,8 @@ The peer must be paired (see 'agentnet peers'). The ping travels inside a
 Noise XX session through the relay, which sees only ciphertext. The command
 returns in under 2 seconds; if the pong has not arrived by then, state is
 "pending" and the ping ID can be polled with --status. A ping with no answer
-fails after 10 seconds.
+fails after 10 seconds with "timeout"; that is also what an offline peer
+looks like, because the relay queues the envelope for it.
 
 Exit codes: 0 ok (including pending), 1 error or ping failed, 2 usage,
 3 daemon not running.

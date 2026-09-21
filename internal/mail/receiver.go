@@ -25,6 +25,13 @@ const (
 	// StoreTimeFmt is the stored time format: RFC 3339 UTC, milliseconds.
 	StoreTimeFmt = "2006-01-02T15:04:05.000Z"
 
+	// ReceiveMaxAge is how old (by msg.created) an application mail may be and
+	// still be processed. The sender's outbox marks a row expired after
+	// OutboxExpiry (7 d), but the mail may still be processed until this has
+	// passed, so "expired" means delivery unknown. Older mail is neither
+	// stored, deduped nor applied.
+	ReceiveMaxAge = 14 * 24 * time.Hour
+
 	pruneInterval = 24 * time.Hour
 )
 
@@ -113,6 +120,17 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	k, known := r.Kinds[kind]
 	if kind == "keys" && !known {
 		return ErrNoKindHandler
+	}
+
+	// Older than the sender's outbox lifetime (14 d): the sender has already
+	// given up on it, so do not store, dedupe or apply it. Ack it as unsupported
+	// so a late resend stops.
+	if kind != "keys" && r.now().Sub(op.Msg.Created) > ReceiveMaxAge {
+		if r.Opener.Audit != nil {
+			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonStale)
+		}
+		r.ack(ctx, op.Msg.From, op.Msg.ID, true)
+		return reject(11, ReasonStale, nil)
 	}
 
 	dup, err := r.store(ctx, op, k, known)

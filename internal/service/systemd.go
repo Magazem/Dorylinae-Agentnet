@@ -49,12 +49,16 @@ func (s Systemd) Uninstall(_ Spec, env Env) (Plan, error) {
 
 // SystemdUnitFile renders the unit for spec.
 func SystemdUnitFile(spec Spec) string {
+	exec := systemdQuote(spec.Executable) + ` run --home ` + systemdQuote(spec.Home)
+	if spec.Relay != "" {
+		exec += ` --relay ` + systemdQuote(spec.Relay)
+	}
 	return `[Unit]
 Description=AgentNet daemon (agentnetd)
 
 [Service]
 Type=simple
-ExecStart=` + systemdQuote(spec.Executable) + ` run --home ` + systemdQuote(spec.Home) + `
+ExecStart=` + exec + `
 Restart=on-failure
 RestartSec=5
 

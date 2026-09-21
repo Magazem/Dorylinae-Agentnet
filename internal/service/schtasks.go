@@ -9,6 +9,9 @@ import (
 // TaskName is the Task Scheduler task name.
 const TaskName = "Dorylinae agentnetd"
 
+// LogFileName is the daemon log file inside the home directory.
+const LogFileName = "agentnetd.log"
+
 // Schtasks installs a per-user Task Scheduler task that runs at logon.
 //
 // A Windows service needs administrator rights to register; a task whose
@@ -51,7 +54,12 @@ func (s Schtasks) Uninstall(Spec, Env) (Plan, error) {
 
 // TaskXML renders the Task Scheduler definition for spec and env.
 func TaskXML(spec Spec, env Env) string {
+	// Task Scheduler captures no output, so the daemon writes its own log file.
 	args := "run --home " + windowsQuote(spec.Home)
+	if spec.Relay != "" {
+		args += " --relay " + windowsQuote(spec.Relay)
+	}
+	args += " --log-file " + windowsQuote(spec.Home+`\`+LogFileName)
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>

@@ -42,6 +42,12 @@ const (
 	MaxAge  = 30 * 24 * time.Hour
 	MaxSkew = 10 * time.Minute
 
+	// DebugEnv, set to 1, turns on debug-only behaviour: the daemon accepts the
+	// built-in DebugKind and `agentnet mail send` exists.
+	DebugEnv = "DORYLINAE_DEBUG"
+	// DebugKind is the built-in kind that only stores the mail to the inbox.
+	DebugKind = "note"
+
 	encLen  = 32
 	tagLen  = 16
 	msgTag  = "dorylinae-mail-v1\n"

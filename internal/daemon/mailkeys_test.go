@@ -23,6 +23,25 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
+func TestDebugNoteKindOnlyWithEnv(t *testing.T) {
+	build := func() map[string]mail.Kind {
+		rcv, _ := newMailReceiver(nil, nil, nil, make([]byte, ed25519.PublicKeySize), nil, nil)
+		return rcv.Kinds
+	}
+	t.Setenv(mail.DebugEnv, "")
+	if _, ok := build()[mail.DebugKind]; ok {
+		t.Error("note kind registered without DORYLINAE_DEBUG=1")
+	}
+	t.Setenv(mail.DebugEnv, "1")
+	k, ok := build()[mail.DebugKind]
+	if !ok || !k.Inbox || k.Apply != nil || k.After != nil {
+		t.Errorf("note kind = %+v, %v; want a bare inbox kind", k, ok)
+	}
+	if _, ok := build()["keys"]; !ok {
+		t.Error("keys kind lost")
+	}
+}
+
 const annTimeFmt = "2006-01-02T15:04:05Z"
 
 // mnode is one daemon's mail machinery over a real database and mailbox keys.

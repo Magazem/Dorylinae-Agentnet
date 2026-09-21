@@ -68,7 +68,7 @@ func LaunchdPlist(spec Spec) string {
 		<string>` + xmlEscape(spec.Executable) + `</string>
 		<string>run</string>
 		<string>--home</string>
-		<string>` + xmlEscape(spec.Home) + `</string>
+		<string>` + xmlEscape(spec.Home) + `</string>` + relayPlistArgs(spec) + `
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -87,4 +87,11 @@ func LaunchdPlist(spec Spec) string {
 </plist>
 `)
 	return b.String()
+}
+
+func relayPlistArgs(spec Spec) string {
+	if spec.Relay == "" {
+		return ""
+	}
+	return "\n\t\t<string>--relay</string>\n\t\t<string>" + xmlEscape(spec.Relay) + "</string>"
 }

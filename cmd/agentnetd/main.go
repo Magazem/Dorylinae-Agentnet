@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/logfile"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
@@ -43,8 +44,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	showVersion := fs.Bool("version", false, "print version and exit")
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	relayURL := fs.String("relay", os.Getenv(RelayEnv), "relay WebSocket URL, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
+	logFile := fs.String("log-file", "", "append log output to this file instead of stderr, rotating at 1 MiB to PATH.1")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--version]\n  %[2]s install [--home DIR] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n\nFlags (run):\n", summary, name)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--log-file PATH] [--version]\n  %[2]s install [--home DIR] [--relay URL] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n\nFlags (run):\n", summary, name)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -71,7 +73,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		<-ready
 		_, _ = fmt.Fprintf(stdout, "%s listening on %s (db: %s)\n", name, p.Endpoint, p.DB)
 	}()
-	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logOut := stderr
+	if *logFile != "" {
+		lf, err := logfile.Open(*logFile, logfile.MaxSize)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			return 1
+		}
+		defer func() { _ = lf.Close() }()
+		logOut = lf
+	}
+	logger := slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, Logger: logger}); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1

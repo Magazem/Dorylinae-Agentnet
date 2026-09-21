@@ -188,7 +188,9 @@ The minimum length is 57 bytes.
 
 ## Sending
 
-`agentnet` commands submit mail through the daemon. `mail.Submit(to, kind, body)`:
+`agentnet` commands submit mail through the daemon with the IPC method `mail_submit`
+([ipc.md](ipc.md#mail_submit)); the only CLI front end today is the debug command
+[`agentnet mail send`](../cli/mail.md). `mail.Submit(to, kind, body)`:
 
 1. `to` must be a paired peer (otherwise `unpaired`) with a non-empty `mailbox_keys`
    (otherwise `no_mailbox_key`: the peer was paired with v1 and must re-pair). Phase-1 policy
@@ -242,7 +244,24 @@ is not recorded in `mail_seen` and a corrected resend is still processed.
 Then, by kind:
 
 - **`ack`**: process it ([Ack](#ack)). It is not deduped, not stored in `mail_seen`, and never acked.
-- **Every other kind**: [dedupe](#dedupe-and-inbox), process, and ack.
+- **`keys`**: [dedupe](#dedupe-and-inbox), apply, and ack.
+- **Every other kind**: first the [receive age limit](#receive-age-limit), then dedupe, process, and ack.
+
+### Receive age limit
+
+Step 11 accepts `created` up to 30 days old, which keeps `mail_seen` pruning safe. Application
+mail has a tighter limit: `ReceiveMaxAge` = **14 days** (`internal/mail/receiver.go`), the
+bound on how long a sender can still be trying (relay queue TTL 7 d, then the 7 d outbox
+lifetime). A mail of any kind except `ack` and `keys` whose `now − created` exceeds 14 days
+(receiver clock) is:
+
+- **not stored, not deduped and not applied**: no `mail_seen` row, no inbox row, no `mail.in`;
+- audited as `mail.reject {peer, id, reason: "stale"}` (same rate limit as other rejects);
+- **acked under `unsupported`**, so a late resend stops instead of running for the rest of
+  the sender's 7 days.
+
+A mail exactly 13 days old is accepted, and deduped on repeat. The consequence for senders is
+described under [`expired`](#states).
 
 ## Dedupe and inbox
 
@@ -273,7 +292,8 @@ sender's newest mailbox key and has a fresh `id`.
 ```
 
 - `ids`: mail accepted and processed, or recognised as duplicates. `unsupported`: accepted
-  and recorded in `mail_seen`, but of a kind this daemon does not understand. Each member is
+  and recorded in `mail_seen`, but of a kind this daemon does not understand; also mail
+  refused by the [receive age limit](#receive-age-limit) (not recorded). Each member is
   optional and holds 1–256 ids when present. At least one must be present. No other members
   are allowed.
 - The receiver may hold acks for up to 1 s to batch them per peer.
@@ -291,6 +311,7 @@ sender's newest mailbox key and has a fresh `id`.
 |---|---|---|---|
 | `ack` | see [Ack](#ack) | no / no | 1.0d |
 | `keys` | see below | rotation push: yes / yes. Key-miss reply: no / yes | 1.0b, 1.0e |
+| `note` | `{"text": "..."}`, stored to `mail_inbox`, no other effect. **Debug only**: registered when the daemon runs with `DORYLINAE_DEBUG=1` | yes / yes | 1.0f |
 | `request`, `request.accept`, `request.decline`, `request.defer`, `result`, `grant`, … | defined by their tickets | yes / yes | Phase 1–2 |
 
 ### Kind `keys`
@@ -343,13 +364,20 @@ queued ──send ok──▶ relayed ──ack──▶ delivered
 | `queued` | Stored. No successful hand-off to the relay yet, or the relay refused it temporarily | no |
 | `relayed` | `relayclient.Send` succeeded and no `error` frame with `ref = id` arrived. This includes a `queued` frame from the relay and a silent direct forward | no |
 | `delivered` | Ack received | yes |
-| `expired` | Not acked within 7 days of `created`. Audit `mail.expired {peer, id, kind}` | yes |
+| `expired` | Not acked within 7 days of `created`: **delivery unknown**. The peer may still process the mail (until about `created + 14 d`, see [Receive age limit](#receive-age-limit)), or it may have processed it and the ack was lost. Audit `mail.expired {peer, id, kind}` | yes |
 | `failed` | Permanent failure. `error` holds the reason | yes |
 
 - Transitions to a final state clear `signed` and `frame`, so no plaintext stays at rest.
   Final rows are deleted 30 days after `updated`.
-- A relay `error` frame with `ref = id`: `queue_full` or `internal` → `queued` (keep backoff).
-  `bad_envelope` or `bad_sender` → `failed` (these indicate a bug).
+- A relay `error` frame with `ref = id`: `queue_full`, `internal`, `peer_offline` or
+  `peer_busy` → `queued` (keep backoff). The relay now queues mail for an offline peer instead
+  of answering `peer_offline`, but a relay that still does is treated the same way: the mail
+  stays queued and is never failed for it. `bad_envelope` or `bad_sender` → `failed` (these
+  indicate a bug).
+- **`expired` means delivery unknown, not "not delivered".** A caller must not assume the peer
+  never acted on it. Any Phase 1 code that resubmits after `expired` must therefore be
+  **idempotent**: the resubmission is a new mail with a new `id`, so the kind's own body must
+  carry whatever the receiver needs to recognise the repeat (for example a request id).
 - Peer removed (`peers remove`) → all its non-final rows become `failed` (`unpaired`).
 
 ### Sending and backoff
@@ -364,7 +392,8 @@ queued ──send ok──▶ relayed ──ack──▶ delivered
   (reconnect); all non-final rows to a peer on that peer's presence-online edge (1.2; a
   no-op hook until then); re-sealed rows (key-miss recovery).
 - Expiry is checked by the worker every minute: `created + 7 d ≤ now` → `expired`.
-- `agentnet status --json` reports `outbox: {queued, relayed, expired}` (1.0f).
+- `agentnet status` reports `outbox: {queued, relayed, expired}`: the `outbox` member of
+  `--json`, and an `outbox:` line in the human output ([status.md](../cli/status.md)) (1.0f).
 
 ## Tables
 
@@ -428,7 +457,7 @@ time order. `msg.created` stays in whole seconds.
 | Action | Actor | Detail |
 |---|---|---|
 | `mailbox.rotate` | daemon | `{key_id, retired}` (`retired`: key_id or `""`) |
-| `mail.reject` | daemon | `{peer, id, reason}` (rate-limited, see above) |
+| `mail.reject` | daemon | `{peer, id, reason}` (rate-limited, see above; reason `stale` also for the [receive age limit](#receive-age-limit)) |
 | `mail.in` | daemon | `{peer, id, kind}` |
 | `mail.expired` | daemon | `{peer, id, kind}` |
 

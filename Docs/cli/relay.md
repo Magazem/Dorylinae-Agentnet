@@ -6,7 +6,9 @@ or logs envelope payloads. Protocol: [../protocol/envelope.md](../protocol/envel
 
 Phase 0 runs it locally over plain `ws://` (no TLS). Envelopes for an offline
 peer are stored in a SQLite file and delivered in order when the peer
-reconnects; they survive a relay restart. Tickets 0.4, 0.7.
+reconnects; they survive a relay restart. The relay never answers `peer_offline` for an
+envelope, so an offline peer shows up to a sender as silence (a ping times out; mail stays
+queued and is acked later). Tickets 0.4, 0.7.
 
 ```
 relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]
@@ -54,6 +56,9 @@ The relay has no `--json` output.
 |---------|---------|
 | `--relay URL` | e.g. `ws://127.0.0.1:8787`. A URL without a path gets `/v1/connect` |
 | `DORYLINAE_RELAY_URL` | Same, used when `--relay` is not given |
+
+To make an installed service use a relay, pass `--relay` to `agentnetd install`
+([agentnetd-install.md](agentnetd-install.md)). All daemon flags: [agentnetd.md](agentnetd.md).
 
 With neither set, the daemon runs without a relay. The daemon keeps one
 persistent connection and reconnects with backoff (500 ms doubling to 30 s)

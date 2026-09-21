@@ -172,7 +172,7 @@ func TestTaskXML(t *testing.T) {
 	if task.Exec.Command != winSpec.Executable {
 		t.Errorf("command = %q", task.Exec.Command)
 	}
-	if want := `run --home C:\Users\ann\AppData\Roaming\dorylinae`; task.Exec.Args != want {
+	if want := `run --home C:\Users\ann\AppData\Roaming\dorylinae --log-file C:\Users\ann\AppData\Roaming\dorylinae\agentnetd.log`; task.Exec.Args != want {
 		t.Errorf("arguments = %q, want %q", task.Exec.Args, want)
 	}
 
@@ -182,6 +182,41 @@ func TestTaskXML(t *testing.T) {
 	})
 	if last := plan.Steps[2]; last.Op != OpRemove || !last.Cleanup {
 		t.Errorf("temp XML must be removed even when /Create fails: %+v", last)
+	}
+}
+
+func TestRelayBakedIntoDefinitions(t *testing.T) {
+	const relay = "wss://relay.example.com:8787/?a=1&b=2"
+
+	u := unixSpec
+	u.Relay = relay
+	plist := LaunchdPlist(u)
+	if !strings.Contains(plist, "\t\t<string>--relay</string>\n\t\t<string>wss://relay.example.com:8787/?a=1&amp;b=2</string>\n\t</array>") {
+		t.Errorf("plist lacks --relay:\n%s", plist)
+	}
+	if strings.Contains(plist, "--log-file") {
+		t.Error("launchd redirects output itself and must not pass --log-file")
+	}
+	unit := SystemdUnitFile(u)
+	if want := `ExecStart="/opt/dorylinae/agentnetd" run --home "/home/ann/.config/dorylinae" --relay "wss://relay.example.com:8787/?a=1&b=2"`; !strings.Contains(unit, want) {
+		t.Errorf("unit lacks --relay:\n%s", unit)
+	}
+	if strings.Contains(unit, "--log-file") {
+		t.Error("systemd logs to the journal and must not pass --log-file")
+	}
+
+	w := winSpec
+	w.Relay = relay
+	xmlDoc := TaskXML(w, winEnv)
+	if want := `--relay wss://relay.example.com:8787/?a=1&amp;b=2 --log-file `; !strings.Contains(xmlDoc, want) {
+		t.Errorf("task XML lacks --relay:\n%s", xmlDoc)
+	}
+
+	// Without a relay no flag is emitted.
+	for name, got := range map[string]string{"launchd": LaunchdPlist(unixSpec), "systemd": SystemdUnitFile(unixSpec), "schtasks": TaskXML(winSpec, winEnv)} {
+		if strings.Contains(got, "--relay") {
+			t.Errorf("%s: --relay emitted with no relay", name)
+		}
 	}
 }
 

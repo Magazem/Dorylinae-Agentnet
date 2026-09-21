@@ -56,6 +56,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPeers(args[1:], stdout, stderr)
 	case "ping":
 		return runPing(args[1:], stdout, stderr)
+	case "mail":
+		if debugEnabled() {
+			return runMail(args[1:], stdout, stderr)
+		}
+		fallthrough
 	default:
 		_, _ = fmt.Fprintf(stderr, "agentnet: unknown command %q\n\n", args[0])
 		usage(stderr)
@@ -64,6 +69,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
+	debug := ""
+	if debugEnabled() {
+		debug = "  mail      Debug only: queue a mail to a paired agent (mail send)\n"
+	}
 	_, _ = fmt.Fprintf(w, `%s
 
 Usage:
@@ -71,14 +80,14 @@ Usage:
   agentnet --version
 
 Commands:
-  status    Show whether the daemon is running, its PID and uptime
+  status    Show whether the daemon is running, its PID, uptime and outbox
   identity  Print this agent's signed Agent Card
   pair      Pair with another machine using a one-time code
   peers     List paired agents
   ping      Round-trip an encrypted message to a paired agent
-
+%s
 Run 'agentnet <command> --help' for command flags.
-`, summary)
+`, summary, debug)
 }
 
 // errBody is the machine-readable error under --json.
@@ -98,7 +107,7 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
 	fs.Usage = func() {
-		_, _ = fmt.Fprint(stdout, `Show whether agentnetd is running, with its PID and uptime.
+		_, _ = fmt.Fprint(stdout, `Show whether agentnetd is running, with its PID, uptime and outbox.
 
 Usage:
   agentnet status [--json]
@@ -140,7 +149,8 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 		return exitOK
 	}
 	up := time.Duration(res.UptimeSeconds * float64(time.Second)).Round(time.Second)
-	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n", res.PID, up, res.Version)
+	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n  outbox:  %d queued, %d relayed, %d expired\n",
+		res.PID, up, res.Version, res.Outbox.Queued, res.Outbox.Relayed, res.Outbox.Expired)
 	return exitOK
 }
 

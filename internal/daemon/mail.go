@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -112,6 +113,11 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 			// startMail replaces the nil hook with the outbox re-seal (1.0e).
 			"keys": mail.KeysKind(peers.MergeMailboxKeysTx, nil),
 		},
+	}
+	if os.Getenv(mail.DebugEnv) == "1" {
+		// Debug only: lets `agentnet mail send --kind note` exercise the mail
+		// path before Phase 1 brings real kinds. Stored to the inbox, nothing else.
+		rcv.Kinds[mail.DebugKind] = mail.Kind{Inbox: true}
 	}
 	if rot, ok := keys.(ownKeys); ok {
 		km := &mail.KeyMiss{Pusher: pusher, Announcement: rot.Announcement, Log: lg}

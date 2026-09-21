@@ -50,12 +50,23 @@ Outcome: two daemons on two machines are paired and exchange an encrypted ping t
 | Step | Deliverable | Acceptance test |
 | --- | --- | --- |
 | 0.1 Repo and skeleton | Go monorepo, `cmd/agentnet`, `cmd/agentnetd`, `cmd/relay`, shared `internal/` packages, CI that builds all three for macOS, Linux, Windows | `make build` produces three binaries on all platforms |
+| 0.1b Module path | Go module path `github.com/Magazem/Dorylinae-Agentnet`, imports updated | `go build ./...` passes with the new path |
 | 0.2 Daemon lifecycle | `agentnetd` starts, writes a SQLite DB in the config dir, listens on a local socket, installs itself as a service with `agentnetd install` | Service survives reboot; `agentnet status` reports the daemon PID and uptime |
+| 0.2a Daemon lifecycle, delivered | The 0.2 deliverable as built: SQLite store with append-only audit log, local IPC (unix socket / named pipe), per-user service via launchd, systemd or Task Scheduler (`agentnetd install [--relay URL]`, Windows log file `agentnetd.log`); documented in `Docs/cli/agentnetd*.md`, `status.md`, `protocol/ipc.md`. There is no 0.2b | Install, `agentnet status`, uninstall on each OS; "survives reboot" is a manual check (`tests/phase0-manual.md`) |
 | 0.3 Identity | Ed25519 keypair generated on first run, stored in the OS keychain (fallback: file with 0600), Agent Card signed with it | `agentnet identity --json` prints the card; signature verifies with a separate tool |
 | 0.4 Relay minimum | WebSocket server, authenticates a daemon by a signed challenge, keeps a connection registry, forwards envelopes by `to` | Two daemons connect; an envelope sent by A arrives at B unchanged |
 | 0.5 Pairing | `agentnet pair --new` prints a one-time code (relay-issued, 10-minute TTL); `agentnet pair <code>` on the other machine exchanges Agent Cards through the relay and stores the peer | Pair succeeds once; the same code fails a second time; both sides list the peer in `agentnet peers` |
+| 0.5a Pairing, relay half | The relay stores only a hash of the code, enforces the 10-minute TTL, single use and 5 failures per minute per key, and routes the Agent Cards | Relay unit tests: single use, expiry, brute-force limit |
+| 0.5b Pairing, daemon half | The daemon verifies the peer's card signature and that the card key equals the relay-authenticated key before storing the peer | Both sides list the peer; the same code fails a second time |
 | 0.6 Encrypted session | Noise XX handshake between paired daemons over relay envelopes; per-session keys; `agentnet ping @peer` round-trips an encrypted message | Relay logs show ciphertext only; a tampered envelope is rejected and logged |
 | 0.7 Offline queue | Relay stores envelopes for a disconnected peer up to 7 days, delivers on reconnect, in order | Stop B, send from A, start B: the message arrives once |
+| 0.8a Spec: pairing v2 | `protocol/pairing.md` rewrite: threat model, code format, Argon2id KDF, transcript, `pair.confirm`, test vectors | Doc reviewed; vectors included |
+| 0.8b Fingerprints and trust | `fp()`, fingerprints in `identity`/`peers`/`pair`, `peers.trust`, `agentnet peers verify` and `remove` | `peers verify` with a wrong fingerprint changes nothing; `remove` makes later `session.*` from that key `unpaired` |
+| 0.8c Pairing v2, daemon | Code generation, Argon2id key, tags, `pair.confirm`, 3-bad-tag abort, local TTL, `trust=code`, first mailbox key | Two daemons pair via v2 (`trust=code`); a MITM relay causes `bad_confirm` on both sides |
+| 0.8d Pairing v2, relay | Lookup-hash storage, `pair_lookup_taken`, `--allow-pairing-v1` | Relay unit tests: v2 redeem by lookup; v1 refused without the flag |
+| 0.8e Vectors and independent check | `tools/verifyvectors` recomputes K, T and tags from the vectors (`make verify-vectors`) | The tool reproduces the 0.8a vectors byte for byte |
+
+Phase 0 was followed by sealed mail (tickets 1.0a–1.0f, in the Phase 1 table). Ticket IDs with a letter (0.1b, 0.2a, 0.5a/b, 0.8a–e, 1.0a–f) split or extend the numbered rows above and are listed here so no ticket exists outside a phase table.
 
 What to decide before 0.1: language, and whether the relay is Go on Fly.io or Cloudflare Durable Objects (section 10). What not to build here: any UI, any command beyond `status`, `identity`, `pair`, `peers`, `ping`.
 
@@ -65,6 +76,12 @@ Outcome: I see my teammate is online, my agent sends their agent a task request 
 
 | Step | Deliverable | Acceptance test |
 | --- | --- | --- |
+| 1.0a Spec: mail | `protocol/mail.md`: mailbox keys and rotation, HPKE seal/open, verification order, ack, dedupe, outbox states, key-miss recovery | Doc reviewed, with open-side test vectors |
+| 1.0b Mailbox keys | Generate, store, sign announcements, rotate, delete after TTL; exchanged in pairing v2 | Forged announcement rejected; at most 3 live keys |
+| 1.0c `internal/mail` | Seal/Open with `crypto/hpke` and Ed25519, all verification checks, rate-limited `mail.reject` audit | Round trip; every tamper case rejected; vectors pass |
+| 1.0d Receiver dedupe and ack | `mail_seen`, single-transaction inbox insert, ack after commit, re-ack on duplicate, 14-day receive age limit | Same envelope 3 times gives 1 inbox row and 3 acks; a mail older than 14 days is not stored |
+| 1.0e Sender outbox | Outbox table, `mail_submit` returns `queued` in under 2 s, resend with backoff, `delivered`/`expired`/`failed`, key-miss re-seal | Two-daemon harness with a real relay: stop B, send from A, start B, outbox shows `delivered` |
+| 1.0f Docs and CLI reconciliation | Docs match behaviour; `agentnet status` shows outbox counts; `agentnetd install --relay`; Windows service log file; debug `agentnet mail send` and `note` kind (`DORYLINAE_DEBUG=1`); `expired` means delivery unknown | `status --json` has `outbox: {queued, relayed, expired}`; `tests/phase0-manual.md` step 11 ends `delivered` |
 | 1.1 Teams | A team is a named set of paired peers; `agentnet team create`, `team invite` (one-time code), `team list`. Presence and requests are scoped to a team | Two teams with one shared member; each sees only its own members |
 | 1.2 Presence, three levels | Daemon heartbeat every 30 s gives *daemon online*; a CLI call in the last 5 min gives *agent active*; OS idle under 10 min gives *human present*. `agentnet status --team x --json` lists members with all three and last-seen | Kill the daemon on B: A shows offline within 90 s. Run any command on B: A shows agent active within 30 s |
 | 1.3 Visibility controls | `agentnet presence --invisible`, `--only-team x`; the relay only broadcasts what the daemon publishes | Invisible peer shows last-seen only, never online |
@@ -140,6 +157,8 @@ Outcome: ten invited teams run on a relay you host, you can see what breaks with
 | 4.6 Telemetry, minimal | Relay-side counts only: connections, envelopes routed, queue depth, requests by type and urgency, accept and decline counts, time to accept. No content, no briefs. Opt-out flag | Metrics dashboard shows the section 9 numbers per team |
 | 4.7 Feedback loop | `agentnet feedback "..."` sends a note to you; a weekly 20-minute call with two teams; a public changelog | Every beta week ships one release with a changelog entry |
 | 4.8 Security review | One outside review of grant issuance, enforcement and the sensitive-grant rule before wave two | Findings fixed or documented; no bypass of enforcement remains |
+
+Note on 4.6: since application messages travel as sealed mail (`protocol/mail.md`), the relay sees only `type: "mail"` and its size, never the kind. Relay-side telemetry therefore counts only `mail` envelopes. Per-kind counts (requests by type and urgency, accepts, declines) are made daemon-side (`mail.in` audit events) and can only reach the dashboard by opt-in reporting from the daemon.
 
 The five-minute demo video is made at the start of this phase, not the end, and every feature that is not in the video is a candidate for cutting.
 

@@ -29,6 +29,9 @@ type Spec struct {
 	// Home is the absolute config directory, passed to the daemon as --home so
 	// the service does not depend on environment variables it will not inherit.
 	Home string
+	// Relay is the relay WebSocket URL passed to the daemon as --relay; empty
+	// means no relay.
+	Relay string
 }
 
 // Env carries the per-user facts a platform needs to place its files.
