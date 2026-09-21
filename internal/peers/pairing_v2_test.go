@@ -743,7 +743,7 @@ func TestV2LookupTakenReissuesNewCodeThreeTimes(t *testing.T) {
 		t.Fatal(err)
 	}
 	lookups := []string{issuerLookup(e, t)}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 3; i++ { // pairing.md: a new code at most 3 times, so at most 4 pair_new
 		e.m.HandleError(envelope.ErrorFrame{Code: envelope.CodeLookupTaken, Message: "taken", Ref: st.ID})
 		want := i + 2
 		waitFor(t, "second pair_new", func() bool {
@@ -761,7 +761,7 @@ func TestV2LookupTakenReissuesNewCodeThreeTimes(t *testing.T) {
 		lookups = append(lookups, e.send.sent[len(e.send.sent)-1].Lookup)
 		e.send.mu.Unlock()
 	}
-	if lookups[0] == lookups[1] || lookups[1] == lookups[2] {
+	if lookups[0] == lookups[1] || lookups[1] == lookups[2] || lookups[2] == lookups[3] {
 		t.Errorf("lookups repeated: %v", lookups)
 	}
 	e.m.HandleError(envelope.ErrorFrame{Code: envelope.CodeLookupTaken, Message: "taken", Ref: st.ID})

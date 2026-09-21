@@ -72,6 +72,7 @@ const (
 	maxAttempts      = 3
 	maxLookupRetries = 3
 	maxReasonLen     = 200
+	maxCodeLen       = 64
 	auditWriteBudget = 5 * time.Second
 	sendBudget       = 5 * time.Second
 	idPrefix         = "pair-"
@@ -196,6 +197,10 @@ type session struct {
 	attempts []*attempt // issuer: at most maxAttempts; redeemer: at most one
 	failures int
 	checkMu  sync.Mutex // serialises tag checks of one pairing
+	// completing is set once a tag has verified and the peer is being stored.
+	// From then on only checkConfirm may end the pairing, so a timer or relay
+	// error cannot report a failure for a pairing whose peer gets stored.
+	completing bool
 }
 
 // NewManager returns a Manager. cfg.Store, cfg.Audit and cfg.Card are required.
@@ -521,14 +526,20 @@ func (m *Manager) HandleControl(ctl envelope.Control) {
 func (m *Manager) HandleError(e envelope.ErrorFrame) {
 	m.mu.Lock()
 	s, ok := m.sessions[e.Ref]
+	// sends counts the first pair_new too: up to maxLookupRetries new codes after it.
 	retry := ok && s.st.State == StatePending && s.st.Role == RoleIssuer && s.st.Code == "" &&
-		e.Code == envelope.CodeLookupTaken && s.sends < maxLookupRetries
+		e.Code == envelope.CodeLookupTaken && s.sends <= maxLookupRetries
 	m.mu.Unlock()
 	if retry {
 		m.reissue(s)
 		return
 	}
-	m.finish(e.Ref, StateFailed, nil, &Failure{Code: e.Code, Message: e.Message})
+	// The relay chooses both strings; bound them before they reach the audit log.
+	code := e.Code
+	if len(code) > maxCodeLen {
+		code = strings.ToValidUTF8(code[:maxCodeLen], "")
+	}
+	m.finish(e.Ref, StateFailed, nil, &Failure{Code: code, Message: truncate(e.Message)})
 }
 
 // reissue answers pair_lookup_taken with a completely new code.
@@ -616,7 +627,9 @@ func (m *Manager) verifyPeer(ctl envelope.Control) (*peerMaterial, *Failure) {
 	if err != nil {
 		return nil, &Failure{Code: FailBadMbox, Message: truncate("rejected the peer's mailbox key announcement: " + err.Error())}
 	}
-	return &peerMaterial{key: ctl.PublicKey, sc: sc, rawCard: ctl.Card, card: card, mbox: mbox}, nil
+	// Store the canonical card, which the tags cover, not the relay's bytes:
+	// those may carry extra top-level members that no tag covers.
+	return &peerMaterial{key: ctl.PublicKey, sc: sc, rawCard: card, card: card, mbox: mbox}, nil
 }
 
 func (m *Manager) onPeer(ctl envelope.Control) {
@@ -708,7 +721,14 @@ func (m *Manager) onPeerIssuer(s *session, ctl envelope.Control) {
 	att.transcr = transcript(s.lookup, m.ownCard, pm.card, s.ownMbox, pm.mbox)
 	att.waiting = true
 	if !m.closed {
-		att.timer = time.AfterFunc(m.cfg.ConfirmWait, func() { m.attemptFailed(s, att, FailConfirmTimeout) })
+		att.timer = time.AfterFunc(m.cfg.ConfirmWait, func() {
+			m.mu.Lock()
+			accepted := att.accepted
+			m.mu.Unlock()
+			if !accepted { // an accepted tag decides the attempt itself
+				m.attemptFailed(s, att, FailConfirmTimeout)
+			}
+		})
 	}
 	m.mu.Unlock()
 }
@@ -716,7 +736,7 @@ func (m *Manager) onPeerIssuer(s *session, ctl envelope.Control) {
 // attemptFailed ends one issuer attempt. The third failed attempt fails the pairing.
 func (m *Manager) attemptFailed(s *session, att *attempt, code string) {
 	m.mu.Lock()
-	if s.st.State != StatePending || att.over {
+	if s.st.State != StatePending || att.over || s.completing {
 		m.mu.Unlock()
 		return
 	}
@@ -728,7 +748,11 @@ func (m *Manager) attemptFailed(s *session, att *attempt, code string) {
 	tooMany := s.failures >= maxAttempts
 	id := s.st.ID
 	m.mu.Unlock()
-	m.audit(context.Background(), audit.ActorDaemon, ActionPairAttemptFail, map[string]string{"id": id, "peer": att.peer, "code": code})
+	peer := att.peer // relay-chosen; audit it only if it is a well-formed key
+	if _, err := envelope.ParseKey(peer); err != nil {
+		peer = ""
+	}
+	m.audit(context.Background(), audit.ActorDaemon, ActionPairAttemptFail, map[string]string{"id": id, "peer": peer, "code": code})
 	if tooMany {
 		m.finish(id, StateFailed, nil, &Failure{Code: FailBadConfirm, Message: "too many failed attempts"})
 	}
@@ -851,6 +875,10 @@ func (m *Manager) HandleEnvelope(e envelope.Envelope) {
 		return
 	}
 	att.accepted = true // each attempt takes exactly one confirm
+	if att.timer != nil {
+		// The tag arrived in time; a slow K must not turn it into confirm_timeout.
+		att.timer.Stop()
+	}
 	kd := s.kd
 	m.mu.Unlock()
 	go m.checkConfirm(s, att, kd, tag)
@@ -889,9 +917,18 @@ func (m *Manager) checkConfirm(s *session, att *attempt, kd *kderiv, tag []byte)
 		}
 		return
 	}
+	// Claim the pairing: a timer or error frame that fired meanwhile has ended
+	// it (then nothing is stored), otherwise none can end it from now on.
+	m.mu.Lock()
+	if s.st.State != StatePending || att.over {
+		m.mu.Unlock()
+		return
+	}
+	s.completing = true
+	m.mu.Unlock()
 	peer, fail := m.store(att.sc, att.rawCard, TrustCode, att.mbox)
 	if fail != nil {
-		m.finish(id, StateFailed, nil, fail)
+		m.end(id, StateFailed, nil, fail, true)
 		return
 	}
 	if issuer {
@@ -902,14 +939,21 @@ func (m *Manager) checkConfirm(s *session, att *attempt, kd *kderiv, tag []byte)
 		}
 		cancel()
 	}
-	m.finish(id, StateComplete, peer, nil)
+	m.end(id, StateComplete, peer, nil, true)
 }
 
-// finish ends a pending pairing exactly once and audits the outcome.
+// finish ends a pending pairing exactly once and audits the outcome. It does
+// nothing while a verified tag is being completed.
 func (m *Manager) finish(id, state string, peer *Peer, fail *Failure) {
+	m.end(id, state, peer, fail, false)
+}
+
+// end is finish; completer is true only for checkConfirm, which may end a
+// pairing it has claimed.
+func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer bool) {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
-	if !ok || s.st.State != StatePending {
+	if !ok || s.st.State != StatePending || (s.completing && !completer) {
 		m.mu.Unlock()
 		return
 	}
