@@ -111,7 +111,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 - **No cgo or gcc locally**, so `-race` only runs in CI. First CI run of the matrix (run 35601167726, `e3488f0`) FAILED: lint (~27 findings), race (identity e2e test buffer), Windows harness audit-row timing. Fixed in `8dd7100` (pushed); CI re-run pending verification. Check CI with `gh run list --branch main` after every push.
 
 - **Python via `python` fails** (uv trampoline error). Use the Edit tool or Go.
-- Local golangci-lint (built with go1.26) cannot load the config; CI lint is the real gate. Try `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...`.
+- **Lint before merge.** The installed golangci-lint cannot load the config, but `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` works. Put it in every implementation task's acceptance criteria and run it yourself before merging; gofmt complaints that only exist because of CRLF are noise (check with `tr -d '' < f | gofmt -l`). CI failed on lint three times in a row on 2026-09-21 because this was skipped.
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
 - Windows TempDir-cleanup flakes (AV holds deleted files) are fixed by `internal/testutil.TempDir` (`a01c877`). New tests must use it.
