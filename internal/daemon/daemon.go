@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -57,6 +59,9 @@ type Options struct {
 	// RelayURL is the relay to keep a persistent connection to, e.g.
 	// ws://127.0.0.1:8787. Empty runs the daemon without a relay.
 	RelayURL string
+	// MailboxKeys gives the own mailbox private keys (0.8c, 1.0b). Nil disables
+	// the mail receiver: mail envelopes are then ignored.
+	MailboxKeys mail.Keys
 	// Logger receives relay connection events. Nil discards them.
 	Logger *slog.Logger
 }
@@ -141,7 +146,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return err
 	}
 	defer sessions.Close()
-	stopRelay, err := startRelay(ctx, id, ks, pairs, sessions, opts)
+	stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, opts)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -203,7 +208,7 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit.
-func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, opts Options) (stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, opts Options) (stop func(), err error) {
 	if opts.RelayURL == "" {
 		return func() {}, nil
 	}
@@ -211,6 +216,8 @@ func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, 
 	if err != nil {
 		return nil, fmt.Errorf("agent card public key: %w", err)
 	}
+	// handleMail is set before Run starts, so the read loop never races it.
+	var handleMail func(envelope.Envelope)
 	client, err := relayclient.New(relayclient.Config{
 		URL:    opts.RelayURL,
 		Signer: relayclient.NewKeystoreSigner(ks, pub),
@@ -218,6 +225,12 @@ func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, 
 
 		OnControl: pairs.HandleControl,
 		OnEnvelope: func(e envelope.Envelope) {
+			if e.Type == relayclient.MailType {
+				if handleMail != nil {
+					handleMail(e)
+				}
+				return
+			}
 			pairs.HandleEnvelope(e) // pair.confirm comes from a peer that is not paired yet
 			sessions.HandleEnvelope(e)
 		},
@@ -231,6 +244,11 @@ func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, 
 	}
 	pairs.SetSender(client)
 	sessions.SetSender(client)
+	stopMail := func() {}
+	if opts.MailboxKeys != nil {
+		rcv := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger)
+		handleMail, stopMail = startMail(ctx, rcv, client)
+	}
 	rctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -240,5 +258,6 @@ func startRelay(ctx context.Context, id *identity.Identity, ks *keystore.Store, 
 	return func() {
 		cancel()
 		<-done
+		stopMail()
 	}, nil
 }

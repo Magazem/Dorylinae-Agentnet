@@ -24,6 +24,9 @@ import (
 // ErrNotConnected is returned by Send while there is no authenticated connection.
 var ErrNotConnected = errors.New("relayclient: not connected to the relay")
 
+// MailType is the envelope type of sealed mail, which bypasses the seen-set.
+const MailType = "mail"
+
 const (
 	defaultMinBackoff = 500 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
@@ -245,7 +248,10 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	}
 	// The relay may redeliver an envelope whose ack it never saw (for example
 	// after a reconnect mid-flush). Hand each one up once, but always ack.
-	if c.seen.add(e.From, e.ID) && c.cfg.OnEnvelope != nil {
+	// Mail is the exception (Docs/protocol/mail.md): repeats must reach the mail
+	// layer so a resend after a lost ack is re-acked, so it bypasses the
+	// seen-set and the mail layer's (from, id) dedupe handles repeats.
+	if (e.Type == MailType || c.seen.add(e.From, e.ID)) && c.cfg.OnEnvelope != nil {
 		c.cfg.OnEnvelope(e)
 	}
 	c.ack(ctx, e)

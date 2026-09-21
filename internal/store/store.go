@@ -54,6 +54,24 @@ CREATE TABLE pair_used_codes (
 	used_at INTEGER NOT NULL
 );
 `},
+	{5, "mail_seen_inbox", `
+CREATE TABLE mail_seen (
+	from_key    TEXT NOT NULL,
+	id          TEXT NOT NULL,
+	received_at TEXT NOT NULL,
+	PRIMARY KEY (from_key, id)
+) WITHOUT ROWID;
+CREATE INDEX mail_seen_received ON mail_seen (received_at);
+CREATE TABLE mail_inbox (
+	from_key    TEXT NOT NULL,
+	id          TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	created     TEXT NOT NULL,
+	received_at TEXT NOT NULL,
+	signed      TEXT NOT NULL,
+	PRIMARY KEY (from_key, id)
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

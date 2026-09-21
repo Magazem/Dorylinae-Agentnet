@@ -54,6 +54,8 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 	}
 	// Rewind to schema version 2 and insert a row as the old binary would.
 	for _, q := range []string{
+		`DROP TABLE mail_seen`,
+		`DROP TABLE mail_inbox`,
 		`DROP TABLE peers`,
 		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
