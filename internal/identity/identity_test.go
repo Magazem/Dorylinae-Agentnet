@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"crypto/ed25519"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -125,40 +126,54 @@ func TestFallsBackToFileAndRecordsWhy(t *testing.T) {
 	}
 }
 
+// The two tests below build the "card without key" and "key without card"
+// states directly instead of deleting freshly written files: on Windows a
+// scanner can hold a just-deleted file open, leaving it delete-pending, and
+// t.TempDir cleanup then fails with "directory is not empty".
+
 func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
-	dir := t.TempDir()
-	ks := fileStore(t, dir)
-	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); err != nil {
+	src := t.TempDir()
+	if _, _, err := identity.LoadOrCreate(src, fileStore(t, src), identity.Options{}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(dir, identity.KeyFile)); err != nil {
+	card, err := os.ReadFile(filepath.Join(src, identity.CardFile)) //nolint:gosec // test reads its own temp dir
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+
+	dir := t.TempDir() // a card, but no key
+	if err := os.WriteFile(filepath.Join(dir, identity.CardFile), card, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = identity.LoadOrCreate(dir, fileStore(t, dir), identity.Options{}, now)
 	if !errors.Is(err, identity.ErrKeyLost) {
 		t.Fatalf("want ErrKeyLost, got %v", err)
 	}
-	// Nothing was overwritten.
-	if _, err := os.Stat(filepath.Join(dir, identity.CardFile)); err != nil {
-		t.Fatal(err)
+	// Nothing was overwritten and no key was created.
+	if got, err := os.ReadFile(filepath.Join(dir, identity.CardFile)); err != nil || string(got) != string(card) { //nolint:gosec // test reads its own temp dir
+		t.Fatalf("card changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, identity.KeyFile)); !os.IsNotExist(err) {
+		t.Fatal("a key must not be created when the card exists")
 	}
 }
 
 func TestMissingCardIsRecreatedForSameKey(t *testing.T) {
 	dir := t.TempDir()
 	ks := fileStore(t, dir)
-	id1, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	if _, _, err := ks.Save(seed); err != nil { // a key, but no card
+		t.Fatal(err)
+	}
+	id, rep, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(dir, identity.CardFile)); err != nil {
-		t.Fatal(err)
-	}
-	id2, rep, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !rep.Created || rep.Detail.KeyGenerated || id2.Card().Card.PublicKey != id1.Card().Card.PublicKey {
+	wantPub := base64.RawURLEncoding.EncodeToString(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+	if !rep.Created || rep.Detail.KeyGenerated || id.Card().Card.PublicKey != wantPub {
 		t.Fatalf("unexpected: %+v", rep)
 	}
 }
