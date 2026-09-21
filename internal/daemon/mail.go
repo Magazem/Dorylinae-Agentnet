@@ -109,7 +109,7 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		Priv:  priv,
 		Log:   lg,
 		Kinds: map[string]mail.Kind{
-			// The nil hook is 1.0e: re-seal the outbox rows named in a key-miss retry list.
+			// startMail replaces the nil hook with the outbox re-seal (1.0e).
 			"keys": mail.KeysKind(peers.MergeMailboxKeysTx, nil),
 		},
 	}
@@ -122,16 +122,22 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 
 // startMail runs the receiver on its own goroutine and returns the function
 // the relay read loop calls for each mail envelope, plus a stop function.
-func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, client *relayclient.Client, keys mail.Keys) (handle func(envelope.Envelope), stop func()) {
+func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, client *relayclient.Client, keys mail.Keys, ob *mail.Outbox) (handle func(envelope.Envelope), stop func()) {
 	rcv.Sender = client
 	pusher.Sender = client
+	ob.Sender = client
+	rcv.OnAck = ob.OnAck
+	rcv.Kinds["keys"] = mail.KeysKind(peers.MergeMailboxKeysTx, ob.Retry)
+	pusher.Outbox = func(ctx context.Context, peer string, body map[string]any) error {
+		_, err := ob.Submit(ctx, peer, "keys", body)
+		return err
+	}
 	q := make(chan envelope.Envelope, mailQueue)
 	mctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go rcv.RunPrune(mctx)
 	if rot, ok := keys.(ownKeys); ok {
 		// A new key is pushed to every peer. The job starts after the hook is set.
-		// 1.0e: set pusher.Outbox here so the push is resent until acked.
 		rot.OnRotate(func(ann []byte) { go pusher.PushAll(mctx, ann) })
 		go rot.Run(mctx)
 	}
@@ -155,4 +161,27 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 			cancel()
 			<-done
 		}
+}
+
+// newOutbox builds the sender outbox. Its Sender is set by startMail once the
+// relay client exists; until then rows stay queued.
+func newOutbox(db *sql.DB, log *audit.Log, ks *keystore.Store, lg *slog.Logger) *mail.Outbox {
+	dir := peerDirectory{db}
+	return &mail.Outbox{
+		DB:    db,
+		Peers: dir,
+		Audit: log,
+		Log:   lg,
+		Priv: func() (ed25519.PrivateKey, error) {
+			seed, _, err := ks.Load()
+			if err != nil {
+				return nil, err
+			}
+			defer clear(seed)
+			if len(seed) != ed25519.SeedSize {
+				return nil, errors.New("stored identity key has the wrong length")
+			}
+			return ed25519.NewKeyFromSeed(seed), nil
+		},
+	}
 }

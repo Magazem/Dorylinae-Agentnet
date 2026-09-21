@@ -33,6 +33,8 @@ type StatusResult struct {
 	StartedAt     string  `json:"started_at"`
 	UptimeSeconds float64 `json:"uptime_seconds"`
 	Version       string  `json:"version"`
+	// Outbox counts the sender outbox rows by state (Docs/protocol/mail.md §Outbox).
+	Outbox mail.OutboxCounts `json:"outbox"`
 }
 
 type auditDetail struct {
@@ -62,6 +64,10 @@ type Options struct {
 	// MailboxKeys gives the own mailbox private keys (0.8c, 1.0b). Nil disables
 	// the mail receiver: mail envelopes are then ignored.
 	MailboxKeys mail.Keys
+	// MailKinds are extra mail kinds the receiver understands, beyond keys
+	// (Phase 1 registers request, result and so on here). Mail of any other kind
+	// is acked as unsupported.
+	MailKinds map[string]mail.Kind
 	// Logger receives relay connection events. Nil discards them.
 	Logger *slog.Logger
 }
@@ -154,12 +160,17 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return err
 	}
 	defer sessions.Close()
-	stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, opts)
+	outbox := newOutbox(st.DB(), log, ks, opts.Logger)
+	stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts)
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
 	defer stopRelay()
+	octx, stopOutbox := context.WithCancel(ctx)
+	obDone := make(chan struct{})
+	go func() { defer close(obDone); outbox.Run(octx) }()
+	defer func() { stopOutbox(); <-obDone }()
 	if opts.RelayURL == "" {
 		// Without a relay nothing can be pushed, but old keys must still be deleted.
 		if rot, ok := opts.MailboxKeys.(ownKeys); ok {
@@ -174,6 +185,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
 	registerTrust(srv, peerStore, log)
+	registerMail(srv, outbox, peerStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -182,8 +194,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		}
 		return IdentityResult{Card: sc.Card, Signature: sc.Signature, KeyBackend: id.KeyBackend(), Fingerprint: fp}, nil
 	})
-	srv.Handle("status", func(context.Context, json.RawMessage) (any, error) {
+	srv.Handle("status", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		counts, err := outbox.Counts(ctx)
+		if err != nil {
+			return nil, err
+		}
 		return StatusResult{
+			Outbox:        counts,
 			PID:           os.Getpid(),
 			StartedAt:     started.UTC().Format(time.RFC3339),
 			UptimeSeconds: time.Since(started).Seconds(),
@@ -224,7 +241,7 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit.
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, opts Options) (stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options) (stop func(), err error) {
 	if opts.RelayURL == "" {
 		return func() {}, nil
 	}
@@ -250,7 +267,9 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 			pairs.HandleEnvelope(e) // pair.confirm comes from a peer that is not paired yet
 			sessions.HandleEnvelope(e)
 		},
+		OnReady: func() { outbox.OnReady(context.Background()) },
 		OnError: func(ef envelope.ErrorFrame) {
+			outbox.HandleError(ef)
 			pairs.HandleError(ef)
 			sessions.HandleError(ef)
 		},
@@ -263,7 +282,12 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
 		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger)
-		handleMail, stopMail = startMail(ctx, rcv, pusher, client, opts.MailboxKeys)
+		for k, v := range opts.MailKinds {
+			if k != "keys" && k != "ack" {
+				rcv.Kinds[k] = v
+			}
+		}
+		handleMail, stopMail = startMail(ctx, rcv, pusher, client, opts.MailboxKeys, outbox)
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})

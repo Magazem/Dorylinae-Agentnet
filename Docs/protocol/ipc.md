@@ -74,6 +74,7 @@ Result:
 | `started_at` | string | RFC 3339 UTC start time |
 | `uptime_seconds` | number | Seconds since start |
 | `version` | string | Daemon version |
+| `outbox` | object | `{queued, relayed, expired}`: sender outbox rows in each state ([mail.md](mail.md#outbox)) |
 
 ### `identity`
 
@@ -151,6 +152,17 @@ A ping status is `{"ping_id", "peer": {"public_key", "name"}, "state":
 Ping setup error codes: `unknown_peer`, `ambiguous_peer` (several peers share
 the name), `no_relay`, `relay_unavailable`, `unknown_ping`, `too_many_pings`;
 `bad_request` for missing params.
+
+### `mail_submit`
+
+Params: `{"to": "<peer name or public key>", "kind": "<kind>", "body": {...}}`. `body` is
+optional and must be a JSON object. Result: `{"id": "m-...", "state": "queued"}`. The mail is
+signed, sealed and stored in the outbox; the call never waits for the relay (under 2 s). The
+daemon resends it until the peer acks it ([mail.md](mail.md#outbox)).
+
+Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the peer was
+paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or
+kind `ack`.
 
 ## Compatibility
 

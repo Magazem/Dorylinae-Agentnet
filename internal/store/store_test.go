@@ -58,6 +58,7 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 		`DROP TABLE mail_seen`,
 		`DROP TABLE mail_inbox`,
 		`DROP TABLE mailbox_keys_own`,
+		`DROP TABLE outbox`,
 		`DROP TABLE peers`,
 		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),

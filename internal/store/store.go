@@ -83,6 +83,23 @@ CREATE TABLE mailbox_keys_own (
 	announcement TEXT NOT NULL CHECK (json_valid(announcement))
 );
 `},
+	{7, "outbox", `
+CREATE TABLE outbox (
+	id           TEXT PRIMARY KEY,
+	to_key       TEXT NOT NULL,
+	kind         TEXT NOT NULL,
+	created      TEXT NOT NULL,
+	key_id       TEXT,
+	signed       TEXT,
+	frame        TEXT,
+	state        TEXT NOT NULL CHECK (state IN ('queued','relayed','delivered','expired','failed')),
+	attempts     INTEGER NOT NULL DEFAULT 0,
+	next_attempt TEXT,
+	updated      TEXT NOT NULL,
+	error        TEXT
+);
+CREATE INDEX outbox_due ON outbox (state, next_attempt);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

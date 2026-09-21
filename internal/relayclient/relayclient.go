@@ -52,6 +52,9 @@ type Config struct {
 	// OnControl receives control frames other than error and queued (pair_code,
 	// pair_peer). Same rules as OnEnvelope. Nil drops them.
 	OnControl func(envelope.Control)
+	// OnReady is called each time the relay accepts the authentication (also
+	// after a reconnect). Same rules as OnEnvelope. Nil ignores it.
+	OnReady func()
 	// Logger receives connection events; it never sees payloads. Nil discards them.
 	Logger *slog.Logger
 	// MinBackoff and MaxBackoff bound the reconnect delay. Defaults 500ms and 30s.
@@ -187,6 +190,9 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 		c.mu.Unlock()
 	}()
 	c.log.Info("relay connected", "event", "relay_connect")
+	if c.cfg.OnReady != nil {
+		c.cfg.OnReady()
+	}
 
 	for {
 		typ, frame, err := conn.Read(ctx)

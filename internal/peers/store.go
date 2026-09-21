@@ -282,12 +282,25 @@ WHERE public_key = ?`, trust, trust, key)
 // Remove deletes the peer with this key. It returns ErrNoPeer if the key is
 // not paired.
 func (s *Store) Remove(ctx context.Context, key string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM peers WHERE public_key = ?`, key)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("peers: remove: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `DELETE FROM peers WHERE public_key = ?`, key)
 	if err != nil {
 		return fmt.Errorf("peers: remove: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNoPeer
+	}
+	// Mail still waiting for this peer can never be delivered (mail.md §Outbox).
+	if _, err := tx.ExecContext(ctx, `UPDATE outbox SET state = 'failed', error = 'unpaired', signed = NULL, frame = NULL,
+next_attempt = NULL, updated = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE to_key = ? AND state IN ('queued','relayed')`, key); err != nil {
+		return fmt.Errorf("peers: fail outbox rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("peers: remove: %w", err)
 	}
 	return nil
 }

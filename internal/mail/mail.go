@@ -168,8 +168,34 @@ func Seal(in SealInput) (Sealed, error) {
 		return Sealed{}, fmt.Errorf("mail: plaintext is %d bytes, over the %d limit", len(plain), MaxMailPlaintext)
 	}
 
-	kid := KeyIDOf(in.MailboxPub)
-	ecPub, err := ecdh.X25519().NewPublicKey(in.MailboxPub)
+	return sealPlain(from, in.To, in.ID, plain, in.MailboxPub)
+}
+
+// Reseal seals an already signed plaintext (Sealed.Signed, as kept by the
+// outbox) to another mailbox key, for key-miss recovery. It keeps the id and
+// created and does not sign again: the signature stays the one made at submit
+// time. from is the sender's own identity key.
+func Reseal(signed []byte, from, to string, mailboxPub []byte) (Sealed, error) {
+	if len(signed) > MaxMailPlaintext {
+		return Sealed{}, errors.New("mail: plaintext is over the size limit")
+	}
+	_, msg, _, err := parseSigned(signed)
+	if err != nil {
+		return Sealed{}, fmt.Errorf("mail: stored plaintext: %w", err)
+	}
+	if msg.From != from || msg.To != to {
+		return Sealed{}, errors.New("mail: stored plaintext is not from/to these keys")
+	}
+	return sealPlain(from, to, msg.ID, signed, mailboxPub)
+}
+
+// sealPlain HPKE-seals plain to mailboxPub with the spec's info and aad.
+func sealPlain(from, to, id string, plain, mailboxPub []byte) (Sealed, error) {
+	if len(mailboxPub) != encLen {
+		return Sealed{}, errors.New("mail: mailbox public key must be 32 bytes")
+	}
+	kid := KeyIDOf(mailboxPub)
+	ecPub, err := ecdh.X25519().NewPublicKey(mailboxPub)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: mailbox public key: %w", err)
 	}
@@ -177,11 +203,11 @@ func Seal(in SealInput) (Sealed, error) {
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: hpke public key: %w", err)
 	}
-	enc, sender, err := hpke.NewSender(pk, hpke.HKDFSHA256(), hpke.ChaCha20Poly1305(), buildInfo(from, in.To, kid))
+	enc, sender, err := hpke.NewSender(pk, hpke.HKDFSHA256(), hpke.ChaCha20Poly1305(), buildInfo(from, to, kid))
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: hpke sender: %w", err)
 	}
-	ct, err := sender.Seal([]byte(in.ID), plain)
+	ct, err := sender.Seal([]byte(id), plain)
 	if err != nil {
 		return Sealed{}, fmt.Errorf("mail: hpke seal: %w", err)
 	}
@@ -190,7 +216,7 @@ func Seal(in SealInput) (Sealed, error) {
 	payload = append(payload, kid[:]...)
 	payload = append(payload, enc...)
 	payload = append(payload, ct...)
-	return Sealed{ID: in.ID, KeyID: kid, Signed: plain, Payload: payload}, nil
+	return Sealed{ID: id, KeyID: kid, Signed: plain, Payload: payload}, nil
 }
 
 // buildInfo is the HPKE info string: tag, from, to and the raw key_id.
