@@ -62,6 +62,7 @@ Last updated: 2026-09-21, Wave 4 in flight.
 | D7 | Relay telemetry counts only `mail`; per-kind counts are kept daemon-side. | 06 §7 |
 | D8 | The spec-writer's 5 choices: canonical-JSON transcript; lookup kept until `pair_cancel`, TTL or 3 redemptions; errors `pair_lookup_taken` and `pair_v1_disabled`; 60 s confirm timeout counts as a failure; no check char; 0.8c creates the first mailbox key; mail key life 7 d current + 7 d retired, deleted at t+21 d; unknown kinds acked `unsupported`; outbox keeps signed plaintext for re-seal. | pairing.md, mail.md |
 | D9 | From the spec review: **the redeemer sends tag_R first**; the issuer counts attempts at `pair_peer` (max 3); the redeemer's 24 h used-code record is **persisted in SQLite** (`pair_used_codes`). | 06 §7, pairing.md |
+| D10 | Review 10 M3: outbox `expired` means **"delivery unknown"**; receivers reject app mail older than 14 d; Phase 1 resubmits must be idempotent. Being implemented in 1.0f. | mail.md (after 1.0f) |
 
 Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account binding
 (needed by 4.1/4.2); `Docs/` vs `docs/` casing; work rhythm (part-time vs full-time).
