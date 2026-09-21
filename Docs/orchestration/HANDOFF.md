@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-21, Waves 1-4 done; waiting on owner's two-machine run.
+Last updated: 2026-09-21, Phase 1 wave A in flight.
 
 ## 1. How this team runs
 
@@ -94,7 +94,15 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 ### Next
 1. **Owner** runs `tests/phase0-manual.md` on two real machines and sends back the results table. Fix whatever it finds.
 2. Then ask the owner whether to re-tag Phase 0 (e.g. `phase-0.1`). Tags need explicit OK.
-3. Phase 1 specs on `p1/specs` (worktree `p1-specs`): draft `5b70df3` + review fixes `5c6380a` (review 12: 15 Medium fixed, verdict ready). **Waiting for owner approval** of the specs and OD-P1-1..13; then merge `p1/specs` to main and dispatch the 11-phase1-tickets waves. Owner must then approve the specs and OD-P1-1..13 in `Docs/review/11-phase1-tickets.md`. Draft by P1-SpecWriter (Opus) → team.md, presence.md, request.md, notify.md, ipc/cli docs, `Docs/review/11-phase1-tickets.md`. Next: Opus adversarial review, owner approval, then implementation. Original note: Phase 1: write the protocol docs FIRST (`team.md`, `presence.md`, `request.md`, ipc additions), Opus review, owner approval, then tickets 1.1 Teams, 1.2 Presence, 1.4 Request (idempotent resubmits per D10).
+3. **Phase 1 in flight** (specs merged `b6e824b`, D11). Ticket plan: `Docs/review/11-phase1-tickets.md`. Branch names `p1/<x>`, worktrees under `AgentNet-wt/`.
+   | Work | Worker | Worktree | Review |
+   |---|---|---|---|
+   | Spec amendment per D11 (cancel, caps, 1.H, known limitations, audit, 1.7 vector) | P1-SpecAmend (Opus) | `spec-amend` | none (it is the owner-approved change); merge before 1.4a/1.6a start |
+   | 1.1a peers trust team (migration 8) | T-1.1a | `t1-1a` | **Opus** |
+   | 1.2a relay ephemeral envelopes | T-1.2a | `t1-2a` | **Opus** |
+   | 1.2d internal/idle | T-1.2d | `t1-2d` | no |
+   | 1.4b mail.ErrBadBody | T-1.4b | `t1-4b` | **Opus** |
+   Next after these: 1.1b (needs 1.1a + 1.4b merged, migration 9); 1.4a may be built once the amendment merges (merge after 1.2b, migration 11). Every implementation task includes the golangci-lint `go run` command in its acceptance.
 4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
