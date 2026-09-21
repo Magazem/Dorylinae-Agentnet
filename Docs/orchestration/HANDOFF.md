@@ -86,7 +86,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | Ticket | Worker | Worktree / branch | Opus review before merge |
 |---|---|---|---|
 | 0.8c pairing v2 daemon side (+ export agentcard canonical helpers, delete mail/canonical.go, first mailbox key, **migration 4** pair_used_codes, strict base64url) | W3-PairingDaemon | `pairing-daemon` / `w3/pairing-daemon` | **yes** |
-| 1.0d receiver dedupe + ack (**migration 5** mail_seen; relayclient mail bypass of seen-set) | W3-Dedupe | `dedupe` / `w3/dedupe` | no (touches receive path; spot-check) |
+| 1.0d receiver dedupe + ack | **committed `5f462f0` on `w3/dedupe`, NOT merged.** Has a NO-OP placeholder migration 4 (`placeholder_pair_used_codes`) in store.go. **Merge only after 0.8c**: rebase onto main, drop the placeholder in favour of 0.8c's real migration 4, add pair_used_codes to the DROP list in TestMigrationAddsPeerTrust, run full tests. Never merge the placeholder to main (a DB that applied it would skip the real 4). Worker retired. | `dedupe` / `w3/dedupe` | reviewed with 1.0e |
 | 1.0b mailbox key rotation/deletion | not started | — | dispatch AFTER 0.8c merges (depends on its first-key code) |
 
 Migration numbers are pre-assigned to avoid collisions: 4 = pair_used_codes (0.8c), 5 = mail_seen (1.0d). If 1.0d added a placeholder for 4, drop it when rebasing onto 0.8c.
