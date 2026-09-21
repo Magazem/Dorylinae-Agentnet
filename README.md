@@ -38,8 +38,9 @@ binaries on Linux, macOS and Windows.
 - **Project name:** Dorylinae. Binaries keep the plan's names.
 - **Go module path:** `github.com/Magazem/Dorylinae-Agentnet`. Changing it
   touches every import.
-- **Licence:** *not decided.* No `LICENSE` file yet. Plan recommendation:
-  Apache-2.0 for daemon and CLI, BSL or AGPL for the relay.
+- **Licence:** PolyForm Shield 1.0.0 (source-available, see `LICENSE`).
+  Free to read, audit and use, including against the hosted relay; not
+  for building a product that competes with Dorylinae.
 - **Stack:** as recommended in the plan (Go, Noise XX, Biscuit, Ed25519, SQLite).
 
 ## Toolchain used to build this skeleton (Windows 11)
