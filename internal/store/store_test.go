@@ -2,9 +2,10 @@ package store
 
 import (
 	"context"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"path/filepath"
 	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func TestOpenAppliesMigrationsOnce(t *testing.T) {
