@@ -7,7 +7,7 @@ verifier lives in `tools/verifycard` and shares no code with the daemon.
 The Agent Card is an A2A-style, self-signed description of one agent: who it is
 (name), how peers verify it (Ed25519 public key), what runs it (harness) and
 what it says it can do (declared skills). It is exchanged at pairing (ticket
-0.5) and is public data.
+0.5, confirmed by the code MAC from pairing v2, ticket 0.8) and is public data.
 
 ## Card
 
@@ -83,8 +83,16 @@ a signature over another Dorylinae message.
 5. Only then check the schema (version 1, field types and limits above).
 
 A valid signature proves the card was produced by the holder of the private
-key; it does not prove the name or harness are true. Trust in a key comes from
-pairing, not from the card.
+key; it does not prove the name or harness are true, and it does not prove the
+key belongs to the person you meant to pair with. The card itself never gives
+trust in a key. Trust comes from a **confirmed pairing**:
+
+- `code`: pairing v2. The code's secret MACs both cards.
+- `fingerprint`: a human compared the key fingerprint out of band.
+
+A card received through a v1 pairing (`trust=relay`) is only as trustworthy as
+the relay that carried it. A hostile relay can substitute its own key. See
+[pairing.md §Storage and trust states](pairing.md#storage-and-trust-states).
 
 ## Key storage
 

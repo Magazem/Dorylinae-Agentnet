@@ -42,6 +42,20 @@ base64url without padding (43 characters), the same form as `public_key` in the
 | `ts` | string | Sender's clock, RFC 3339. The relay checks that it parses, not that it is fresh |
 | `payload` | string | Opaque bytes, standard base64 (RFC 4648, with padding). May be `""` |
 
+### Envelope types
+
+The relay routes every type the same way. It never interprets `type`. The daemon
+dispatches on it:
+
+| `type` | Payload | Spec |
+|--------|---------|------|
+| `session.init`, `session.resp`, `session.fin`, `session.data` | Noise XX handshake / transport (interactive traffic only: ping, later live streams) | [session.md](session.md) |
+| `pair.confirm` | Pairing v2 key confirmation, `{"lookup","tag","v":2}` as canonical JSON (a MAC, not encrypted). Accepted only for a pending pairing, so it is exempt from the "paired peers only" rule | [pairing.md](pairing.md#pairconfirm-envelope) |
+| `mail` | `0x01 ‖ key_id(8) ‖ HPKE enc(32) ‖ ct`: every application message (requests, results, grants, acks, key updates). The kind is inside the ciphertext | [mail.md](mail.md#envelope) |
+
+A daemon drops envelopes of any other type, and envelopes of types other than
+`pair.confirm` from keys that are not paired peers.
+
 The character sets keep `team`, `type` and `id` safe to log. They are metadata,
 not content: do not put secrets in them.
 
@@ -131,8 +145,8 @@ across the queue: an envelope is never forwarded directly while older ones for
 the same recipient are still queued.
 
 Errors on a single envelope never close the connection. A daemon that sends a
-control frame after `auth` other than `ack` and the pairing requests `pair_new`
-and `pair_redeem` (see [pairing.md](pairing.md)) or a binary message has its
+control frame after `auth` other than `ack` and the pairing requests `pair_new`,
+`pair_redeem` and `pair_cancel` (see [pairing.md](pairing.md)) or a binary message has its
 connection closed with code 1008.
 
 ## Offline queue
@@ -168,7 +182,8 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   them. Together that is exactly-once delivery to the daemon's handlers within
   that window. The window is in memory, so a daemon restarted between handling
   an envelope and acking it can see it again; the session layer's own replay
-  protection ([session.md](session.md)) is the backstop.
+  protection ([session.md](session.md)) is the backstop, and for `mail` the
+  receiver's persistent `(from, id)` dedupe ([mail.md](mail.md#dedupe-and-inbox)).
 - **Sender retries.** Queueing the same `(from, to, id)` twice stores it once
   and answers `queued` both times, so a sender may safely retry an envelope it
   never saw acknowledged.
@@ -234,7 +249,7 @@ not share one file between relays.
 | `internal` | The relay could not store the envelope; dropped |
 | `peer_offline` | Pairing only: the code's issuer is not connected. No longer used for envelopes |
 | `peer_busy` | No longer sent (see [Offline queue](#offline-queue)); pairing replies may still use it |
-| `pair_invalid`, `pair_rate_limited`, `pair_limit`, `bad_pairing` | Pairing failures, see [pairing.md](pairing.md) (`peer_offline` / `peer_busy` are also used there) |
+| `pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `bad_pairing` | Pairing failures, see [pairing.md](pairing.md#errors) (`peer_offline` / `peer_busy` are also used there) |
 
 ## Logging rule
 

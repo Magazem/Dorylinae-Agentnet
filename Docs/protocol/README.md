@@ -12,8 +12,9 @@ Nothing is specified yet; Phase 0 adds the first documents.
 - [ipc.md](ipc.md): local CLI <-> daemon protocol (ticket 0.2a)
 - [agent-card.md](agent-card.md): signed Agent Card, canonical JSON, key storage (ticket 0.3)
 - [envelope.md](envelope.md): envelope format, relay authentication, forwarding and error frames (ticket 0.4)
-- [pairing.md](pairing.md): one-time pairing codes and Agent Card exchange through the relay (ticket 0.5a)
-- [session.md](session.md): Noise XX sessions, static-key binding to the identity, session envelopes, replay rejection (ticket 0.6)
+- [pairing.md](pairing.md): pairing v2: issuer-generated code, Argon2id + HMAC key confirmation, trust states, fingerprints (tickets 0.5a/b, 0.8a)
+- [session.md](session.md): Noise XX sessions for interactive traffic, static-key binding to the identity, session envelopes, replay rejection (ticket 0.6)
+- [mail.md](mail.md): sealed application messages: mailbox keys, HPKE seal/open, inner signature, ack, dedupe, outbox (ticket 1.0a)
 - [../cli/ping.md](../cli/ping.md): `agentnet ping` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.6)
 - [../cli/relay.md](../cli/relay.md): `relay` flags and exit codes, and how `agentnetd` connects to it
 - [../cli/pair.md](../cli/pair.md): `agentnet pair` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.5b)

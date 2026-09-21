@@ -10,6 +10,12 @@ the relay inside a Noise session. The relay routes the envelopes of
 payload is ciphertext and the relay cannot read, forge or undetectably change
 it.
 
+**Scope: interactive traffic only.** Sessions carry ping and, later, live
+streams, which are useful only while both daemons are online. Application messages
+(requests, decisions, results, grants, acks) do **not** use sessions. They travel
+as sealed [mail](mail.md), which needs no session and survives either daemon
+being offline. Session state is never persisted.
+
 ## Protocol name and keys
 
 ```
