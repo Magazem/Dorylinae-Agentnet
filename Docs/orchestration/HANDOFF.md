@@ -102,6 +102,7 @@ To see live status: `team_members`, `team_task_list`, `git worktree list`.
   - add the `pair_used_codes` table.
   Needs Opus security review.
 - **1.0b** mailbox keys: generate, store, signed announcements, rotation, deletion.
+  From 1.0d: 1.0b must register `Kinds["keys"]` (until then `keys` mail is neither stored nor acked, so senders retry) and wire key-miss recovery (step 3 reject). 1.0e must wire `OnAck` → outbox. Daemon `Options.MailboxKeys` nil means mail is ignored.
 - **1.0d** receiver dedupe and ack. **Include the relayclient change**: mail envelopes
   must bypass the `(from,id)` seen-set so resends get re-acked (review H2).
 
