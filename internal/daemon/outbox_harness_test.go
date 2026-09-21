@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,6 +30,27 @@ import (
 // persistent queue, started and stopped independently.
 
 const harnessSecret = "the-plaintext-marker-must-never-reach-the-relay"
+
+// leaksSecret reports whether b holds harnessSecret literally or in any
+// base64 or base64url encoding, at any byte alignment. A frame carries its
+// payload base64-encoded, so a literal search alone would miss a plaintext
+// payload (review 10).
+func leaksSecret(b []byte) bool {
+	if bytes.Contains(b, []byte(harnessSecret)) {
+		return true
+	}
+	for off := 0; off < 3; off++ {
+		src := append(make([]byte, off), harnessSecret...)
+		for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawURLEncoding} {
+			s := enc.EncodeToString(src)
+			// The first and last 4-character groups may mix in neighbouring bytes.
+			if bytes.Contains(b, []byte(s[4:len(s)-4])) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 type syncBuf struct {
 	mu sync.Mutex
@@ -113,6 +136,7 @@ type harnessNode struct {
 	p      paths.Paths
 	relay  *harnessRelay
 	key    string
+	logs   *syncBuf
 	cancel context.CancelFunc
 	done   chan error
 }
@@ -128,7 +152,7 @@ func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &harnessNode{t: t, name: name, p: p, relay: r}
+	n := &harnessNode{t: t, name: name, p: p, relay: r, logs: &syncBuf{}}
 	t.Cleanup(n.stop)
 	return n
 }
@@ -147,6 +171,7 @@ func (n *harnessNode) start() {
 			Keystore:  ks,
 			Identity:  &identity.Options{Name: n.name, Harness: "test-harness"},
 			RelayURL:  n.relay.url(),
+			Logger:    slog.New(slog.NewTextHandler(n.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			MailKinds: map[string]mail.Kind{"note": {Inbox: true}},
 		})
 	}()
@@ -333,13 +358,19 @@ func testOfflineDelivery(t *testing.T, restartRelay bool) {
 		t.Fatalf("inbox rows = %d, want 1", n)
 	}
 
-	// The relay only ever saw ciphertext: not in its logs, not in its queue file.
-	if strings.Contains(r.logs.String(), harnessSecret) {
+	// The relay only ever saw ciphertext: not in its logs, not in its queue
+	// file, in any encoding. Neither daemon logs the plaintext either.
+	if leaksSecret([]byte(r.logs.String())) {
 		t.Error("relay log contains the plaintext")
+	}
+	for _, n := range []*harnessNode{a, b} {
+		if leaksSecret([]byte(n.logs.String())) {
+			t.Errorf("%s's log contains the plaintext", n.name)
+		}
 	}
 	r.stop()
 	for _, f := range []string{r.queue, r.queue + "-wal"} {
-		if raw, err := os.ReadFile(f); err == nil && bytes.Contains(raw, []byte(harnessSecret)) {
+		if raw, err := os.ReadFile(f); err == nil && leaksSecret(raw) {
 			t.Errorf("%s contains the plaintext", filepath.Base(f))
 		}
 	}
@@ -373,11 +404,44 @@ func TestRelayQueueHoldsOnlyCiphertext(t *testing.T) {
 	harnessWait(t, "the envelope in the relay queue", func() bool {
 		return db.QueryRow(`SELECT frame FROM queue WHERE id = ?`, res.ID).Scan(&frame) == nil
 	})
-	if bytes.Contains(frame, []byte(harnessSecret)) {
+	if leaksSecret(frame) {
 		t.Fatal("queued frame contains the plaintext")
 	}
 	e, err := envelope.Parse(frame)
 	if err != nil || e.Type != "mail" || e.ID != res.ID || e.To != b.key || len(e.Payload) < mail.MinPayload || e.Payload[0] != mail.PayloadVersion {
 		t.Fatalf("queued envelope = %+v, %v", e, err)
+	}
+	// The decoded payload is version, key_id, enc and an AEAD ciphertext of
+	// exactly the signed plaintext A keeps, and the plaintext is not in it.
+	var signed, keyID string
+	if err := a.query(`SELECT signed, key_id FROM outbox WHERE id = '`+res.ID+`'`, &signed, &keyID); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(signed, harnessSecret) {
+		t.Fatal("A's outbox row does not hold the signed plaintext")
+	}
+	if leaksSecret(e.Payload) {
+		t.Fatal("the decoded payload contains the plaintext")
+	}
+	if len(e.Payload) != mail.MinPayload+len(signed) {
+		t.Fatalf("payload is %d bytes, want %d (the sealed signed plaintext)", len(e.Payload), mail.MinPayload+len(signed))
+	}
+	if got := hex.EncodeToString(e.Payload[1 : 1+mail.KeyIDLen]); got != keyID {
+		t.Fatalf("payload key_id %s, outbox key_id %s", got, keyID)
+	}
+}
+
+// The leak check itself finds an encoded plaintext at every alignment.
+func TestLeaksSecretFindsEncodings(t *testing.T) {
+	for _, prefix := range []string{"", "a", "ab", "abc"} {
+		plain := []byte(`{"msg":` + prefix + harnessSecret + `}`)
+		for _, s := range []string{string(plain), base64.StdEncoding.EncodeToString(plain), base64.RawURLEncoding.EncodeToString(plain)} {
+			if !leaksSecret([]byte(s)) {
+				t.Errorf("prefix %q: %s not detected", prefix, s)
+			}
+		}
+	}
+	if leaksSecret([]byte(base64.StdEncoding.EncodeToString([]byte("unrelated")))) {
+		t.Error("false positive")
 	}
 }

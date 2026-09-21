@@ -326,3 +326,51 @@ func TestRotationPushGoesThroughOutbox(t *testing.T) {
 		t.Fatalf("keys push state %s", s)
 	}
 }
+
+// Review 10: an ack only settles rows addressed to the acking peer. Another
+// paired peer (or a relay replaying its acks) cannot mark A's mail to B delivered.
+func TestOutboxAckFromOtherPeerIgnored(t *testing.T) {
+	ctx := context.Background()
+	clk := &testClock{t: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
+	a, b, c := newMNode(t, clk), newMNode(t, clk), newMNode(t, clk)
+	pair(t, a, b)
+	pair(t, a, c)
+	ob := withOutbox(t, a, clk)
+
+	res, err := ob.Submit(ctx, b.key, "note", map[string]any{"text": "for b only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := a.waitSent(t, 1)[0]
+	waitFor(t, "relayed", func() bool { s, _, _ := rowState(t, a, res.ID); return s == "relayed" })
+
+	pubA, ok := c.dir.MailboxPub(a.key)
+	if !ok {
+		t.Fatal("c has no mailbox key for a")
+	}
+	for _, member := range []string{"ids", "unsupported"} {
+		sl, err := mail.Seal(mail.SealInput{Priv: c.priv, To: a.key, MailboxPub: pubA, Kind: "ack",
+			Body: map[string]any{member: []string{res.ID}}, Created: clk.now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.rcv.Handle(ctx, toEnvelope(c, a.key, sl)); err != nil {
+			t.Fatal(err)
+		}
+		if s, _, left := rowState(t, a, res.ID); s != "relayed" || !left {
+			t.Fatalf("after C's %s ack: state %s, plaintext kept %v", member, s, left)
+		}
+	}
+
+	// B's real ack still settles it.
+	withOutbox(t, b, clk)
+	if err := b.rcv.Handle(ctx, env); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rcv.Handle(ctx, b.waitSent(t, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, _ := rowState(t, a, res.ID); s != "delivered" {
+		t.Fatalf("after B's ack: state %s", s)
+	}
+}

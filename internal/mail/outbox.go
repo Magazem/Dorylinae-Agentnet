@@ -421,10 +421,16 @@ WHERE id = ? AND to_key = ? AND state IN ('queued','relayed') AND signed IS NOT 
 		if err != nil {
 			continue
 		}
-		if _, err := o.DB.ExecContext(ctx,
-			`UPDATE outbox SET frame = ?, key_id = ?, updated = ? WHERE id = ? AND state IN ('queued','relayed')`,
-			frame, sl.KeyID.String(), stamp(now), id); err != nil {
+		// The row may have become final (ack, expiry, peer removed) or been
+		// re-sealed since the SELECT: then nothing is sent.
+		res, err := o.DB.ExecContext(ctx,
+			`UPDATE outbox SET frame = ?, key_id = ?, updated = ? WHERE id = ? AND to_key = ? AND key_id IS ? AND state IN ('queued','relayed')`,
+			frame, sl.KeyID.String(), stamp(now), id, peer, keyID)
+		if err != nil {
 			o.log().Warn("mail: outbox update", "event", "mail_error", "error", err)
+			continue
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
 		r.frame = frame
