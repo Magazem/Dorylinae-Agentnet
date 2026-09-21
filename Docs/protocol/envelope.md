@@ -52,6 +52,7 @@ dispatches on it:
 | `session.init`, `session.resp`, `session.fin`, `session.data` | Noise XX handshake / transport (interactive traffic only: ping, later live streams) | [session.md](session.md) |
 | `pair.confirm` | Pairing v2 key confirmation, `{"lookup","tag","v":2}` as canonical JSON (a MAC, not encrypted). Accepted only for a pending pairing, so it is exempt from the "paired peers only" rule | [pairing.md](pairing.md#pairconfirm-envelope) |
 | `mail` | `0x01 ‖ key_id(8) ‖ HPKE enc(32) ‖ ct`: every application message (requests, results, grants, acks, key updates). The kind is inside the ciphertext | [mail.md](mail.md#envelope) |
+| `presence` | Same layout as `mail`, kind `presence`, id `p-…`. **Ephemeral** (Phase 1, 1.2a): never queued, see below | [presence.md](presence.md#relay-ephemeral-envelopes) |
 
 A daemon drops envelopes of any other type, and envelopes of types other than
 `pair.confirm` from keys that are not paired peers.
@@ -120,6 +121,12 @@ WebSocket close code 1008. Frames before authentication are limited to 4 KiB.
 ```json
 {"op":"ready","public_key":"<key>"}
 ```
+
+From Phase 1 (1.2a) the relay adds `"features": ["ephemeral"]`. **Ephemeral** envelope
+types (only `presence`) are forwarded only to a connected recipient with room in its send
+buffer, regardless of backlog. Otherwise they are dropped silently: no `queued`, no
+`error`, never stored. The recipient does not `ack` them. Rate limit: 240 per minute per
+sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
 
 ### One connection per key
 

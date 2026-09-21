@@ -75,6 +75,39 @@ Result:
 | `uptime_seconds` | number | Seconds since start |
 | `version` | string | Daemon version |
 | `outbox` | object | `{queued, relayed, expired}`: sender outbox rows in each state ([mail.md](mail.md#outbox)) |
+| `presence` | object | Phase 1 (1.2c): `{"mode": "visible"\|"invisible"\|"only_team", "team"?: {"id","name"}, "relay": "connected"\|"disconnected"\|"unsupported"\|"none", "agent_active": bool, "human_present": bool\|null}`. The last two are this machine's own values, detected locally, even when not shared |
+| `team` | object | Only with the param `team` (Phase 1, 1.2c), see below |
+
+Params (Phase 1): `{"team"?: "<team ref>"}`. A team ref is a team id or a unique name of a
+team on this daemon ([team.md](team.md#local-names)). Without `team`, the result is as above.
+With it, `team` is added:
+
+```json
+{
+  "id": "t-0123456789abcdef0123456789abcdef",
+  "name": "backend",
+  "owner": "<key>",
+  "epoch": 3,
+  "state": "active",
+  "members": [
+    {
+      "name": "alice", "public_key": "<key>", "fingerprint": "2ED9TGVER47163MCC451",
+      "self": true, "owner": true, "trust": null,
+      "daemon_online": true, "agent_active": true, "human_present": null,
+      "last_seen": "2026-10-01T09:12:03Z",
+      "agent_last_active": "2026-10-01T09:12:03Z", "human_last_present": null
+    }
+  ]
+}
+```
+
+Members are listed owner first, then by `name`, then by `public_key`. For peers, the values
+come from [presence.md §Receiving](presence.md#receiving) (effective state at call time).
+`last_seen`, `agent_last_active` and `human_last_present` are RFC 3339 UTC with whole
+seconds, or `null`. `trust` is the peer's trust value. For `self`, `trust` is `null`,
+`daemon_online` is `relay == "connected"`, `last_seen` is now, and the other two come from
+the local values. A member that is not a peer (for example, not yet introduced) has
+`daemon_online: false` and every time `null`. Errors: `unknown_team`, `ambiguous_team`.
 
 ### `identity`
 
@@ -112,7 +145,7 @@ relay refusal, a bad card or mailbox key, a failed confirmation or a reused code
 ### `peers`
 
 Params: none. Result: `{"peers": [{"public_key", "name", "harness", "skills",
-"paired_at", "trust", "fingerprint"}]}`, see [../cli/peers.md](../cli/peers.md).
+"paired_at", "trust", "fingerprint", "introduced_by"}]}` (`introduced_by` from Phase 1, [team.md](team.md#introduced-peers)), see [../cli/peers.md](../cli/peers.md).
 `identity` also returns `"fingerprint"` (own key).
 
 ### `peers_verify`
@@ -166,6 +199,125 @@ Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the
 paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or
 kind `ack`.
 
+## Phase 1 methods
+
+These are specified in [team.md](team.md), [presence.md](presence.md),
+[request.md](request.md) and [notify.md](notify.md). Every method below returns within 2 s
+and never waits for the relay or a peer, except `team_invite` and `team_join`, which wait at
+most 1 s like `pair_new` and `pair_redeem`.
+
+**Agent activity.** The IPC server records the time of **every** request it dispatches (any
+method, including `status`), before the handler runs. This time drives *agent active*
+([presence.md](presence.md#levels)). A request that makes it active again, after 5 min or
+more without one, triggers an asynchronous presence send. The handler never waits for it.
+
+Common objects:
+
+- **team summary** `{"id", "name", "owner", "epoch", "state", "role": "owner"|"member", "members": <int>}`
+- **peer ref** `{"name", "public_key", "fingerprint"}`
+- **presence brief** `{"daemon_online": bool, "last_seen": "<time>"|null}`
+
+New error codes, which the CLI maps to exit 1 unless stated otherwise:
+
+| Code | Meaning |
+|---|---|
+| `unknown_team`, `ambiguous_team` | Team reference not found, or it matches several teams |
+| `team_exists` | `team_create`: an active team with that name exists |
+| `bad_team_name` | Not `^[a-z0-9][a-z0-9-]{0,31}$` |
+| `not_owner` | Operation needs the team owner |
+| `owner_cannot_leave` | `team_leave` by the owner (use `team_delete`) |
+| `not_member` | The peer is not a member of the team |
+| `team_inactive` | The team is `left`, `removed` or `dissolved` |
+| `team_full` | The team already has 32 members (`team_invite`) |
+| `no_shared_team`, `not_team_member` | `request_submit` team resolution |
+| `unverified_peer` | D5: `trust=relay` peer on a non-loopback relay |
+| `unknown_request`, `ambiguous_request` | Request reference not found, or it matches `in` rows from several peers (pass `from`) |
+| `bad_state` | Lifecycle transition, or `request_resend`, is not allowed in the current state |
+| `idempotency_conflict` | Same `idempotency_key` for this peer with different params |
+| `bad_webhook` | Webhook URL rejected (scheme, host or length) |
+
+### Teams
+
+| Method | Params | Result |
+|---|---|---|
+| `team_create` | `{"name"}` | `{"team": <team summary>}` |
+| `team_list` | `{"all"?: bool}` | `{"teams": [<team summary>]}`: `active` teams only unless `all`. Sorted by name, then id |
+| `team_show` | `{"team"}` | `{"team": <team summary> + "members": [{<peer ref>, "added", "owner": bool, "self": bool}]}`. Here `members` is the list, replacing the count |
+| `team_invite` | `{"team"}` | A pairing status ([pair_new](#pair_new)) plus `"team": {"id","name"}`. Owner only (`not_owner`). Errors as for `pair_new`, plus `team_full` and `team_inactive` |
+| `team_join` | `{"code"}` | A pairing status ([pair_redeem](#pair_redeem)). v2 codes only (`bad_code` for 10-character codes). On `complete`, the daemon writes the pending join and submits `team.join` |
+| `team_remove` | `{"team", "peer"}` | `{"team": <team summary>}`. Owner only. `not_member`, `bad_request` (removing self) |
+| `team_rename` | `{"team", "name"}` | `{"team": <team summary>}`. Owner only. `team_exists`, `bad_team_name` |
+| `team_leave` | `{"team"}` | `{"team": <team summary>}` (state `left`). `owner_cannot_leave` |
+| `team_delete` | `{"team"}` | `{"team": <team summary>}` (state `dissolved`). Owner only |
+
+`pair_status` also reports team invites and joins, with their `pairing_id`.
+
+### Presence
+
+| Method | Params | Result |
+|---|---|---|
+| `presence_get` | none | `{"mode", "team"?: {"id","name"}, "human_share": bool}` |
+| `presence_set` | `{"mode": "visible"\|"invisible"\|"only_team", "team"?: "<team ref>", "human_share"?: bool}` | Same as `presence_get`. `team` is required with `only_team` and forbidden otherwise (`bad_request`). The team must be `active`. Setting only `human_share` is allowed (`mode` may be omitted) |
+
+### Requests
+
+**`request_submit`**. Params:
+
+```json
+{"to": "<peer>", "type": "review", "team"?: "<team ref>", "title": "...", "brief": "...",
+ "urgency"?: "normal", "urgency_reason"?: "...",
+ "artifacts"?: [{"url"?, "branch"?, "commit"?, "path"?}],
+ "requested_grant"?: {"action", "resource", "note"?},
+ "deadline"?: "<RFC 3339 or duration>", "idempotency_key"?: "..."}
+```
+
+`urgency` defaults to `normal`. Result: the [submit result](request.md#submit-result-19).
+Errors: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer`,
+`unknown_team`, `ambiguous_team`, `no_shared_team`, `not_team_member`,
+`idempotency_conflict`, `bad_request` (with a message naming the field).
+
+**Request view** (used by the methods below):
+
+```json
+{
+  "id": "r-...", "direction": "in"|"out", "peer": <peer ref>, "team": {"id", "name"},
+  "type", "title", "brief", "urgency", "urgency_declared", "downgraded_by": "sender"|"receiver"|null,
+  "urgency_note"?: "...", "urgency_reason"?, "artifacts": [...], "requested_grant"?, "deadline"?,
+  "created", "received_at"?: "<in only>", "state", "state_at": "<time>"|null,
+  "deferred_until"?, "due"?: true, "decline_code"?, "reason"?, "note"?,
+  "priority"?: 3000,
+  "delivery"?: "queued"|"relayed"|"delivered"|"expired"|"failed"|"unknown",
+  "mail_id"
+}
+```
+
+`priority` and `due` are present on `in` views. `delivery` is present on `out` views: the
+outbox state of `mail_id`, or `unknown` once pruned. `out` views also carry `"presence":
+<presence brief>` for the peer.
+
+| Method | Params | Result |
+|---|---|---|
+| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup) |
+| `request_list` | `{"state"?, "team"?, "peer"?}` | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first |
+| `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` and its mail is `expired` or `failed` |
+| `inbox_list` | `{"team"?, "all"?: bool}` | `{"requests": [<in view>]}` in [inbox order](request.md#inbox-16) |
+| `request_accept` | `{"id", "from"?}` | `{"request": <in view>, "mail_id"}` |
+| `request_decline` | `{"id", "from"?, "reason"}` | Same. `reason` is required, 1–500 code points |
+| `request_defer` | `{"id", "from"?, "until": "<RFC 3339 or duration>"}` | Same. `until` must be in the future and at most 90 d away |
+| `request_complete` | `{"id", "from"?, "note"?}` | Same |
+
+Lifecycle errors: `unknown_request`, `ambiguous_request`, `bad_state`, `bad_request`.
+
+### Notifications
+
+| Method | Params | Result |
+|---|---|---|
+| `notify_get` | none | `{"desktop": bool, "events": {...}, "webhook": null \| {"url", "format", "title": bool, "pending": <int>, "failed_7d": <int>}}` |
+| `notify_set` | `{"desktop"?: bool, "events"?: {"<event>": bool}, "webhook_url"?: "<url>"\|"", "format"?, "title"?: bool, "rotate_secret"?: bool}` | `notify_get`'s result plus `"secret"?: "whsec_..."`, present only when a secret was just created or rotated. `webhook_url: ""` removes the webhook |
+| `notify_test` | none | `{"desktop": "shown"\|"failed"\|"disabled", "webhook": "queued"\|"none"}` |
+
+Errors: `bad_webhook`, `bad_request`.
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.
@@ -193,3 +345,6 @@ and detail `{"peer": "<public key>", "name", "fingerprint", "trust"?}`.
 Sessions record `session.open` and `session.reject` (tampered, replayed,
 reordered, unpaired or malformed session envelopes); details are in
 [session.md](session.md#rejection).
+
+Phase 1 events are listed in [team.md](team.md#audit), [presence.md](presence.md#audit),
+[request.md](request.md#audit-and-metrics) and [notify.md](notify.md#audit).

@@ -33,7 +33,8 @@ NAME       HARNESS  SKILLS  PAIRED                TRUST  FINGERPRINT            
 my-laptop  custom   review  2026-01-02T03:04:05Z  relay  2ED9 TGVE R471 63MC C451  <base64url>
 ```
 
-`TRUST` is `relay`, `code` or `fingerprint`. With no peers:
+`TRUST` is `relay`, `code` or `fingerprint`, or `team` for a peer introduced by a team
+owner (Phase 1, [../protocol/team.md](../protocol/team.md#introduced-peers)). With no peers:
 `No peers paired yet. Run 'agentnet pair --new' to start.`
 
 ## `--json` output
@@ -49,7 +50,8 @@ my-laptop  custom   review  2026-01-02T03:04:05Z  relay  2ED9 TGVE R471 63MC C45
       "skills": [{"id": "review", "name": "Code review", "description": ""}],
       "paired_at": "2026-01-02T03:04:05Z",
       "trust": "relay",
-      "fingerprint": "2ED9TGVER47163MCC451"
+      "fingerprint": "2ED9TGVER47163MCC451",
+      "introduced_by": null
     }
   ]
 }
@@ -63,6 +65,11 @@ groups them in fours).
 
 Existing peers from before this feature have `trust` `relay`, as does every
 peer from a v1 pairing.
+
+`introduced_by` (Phase 1) is the public key of the team owner who introduced the peer, or
+`null` for a directly paired peer. An introduced peer is removed automatically once it
+shares no active team with you. Pairing with it directly, or `peers verify`, makes it a
+permanent peer.
 
 ## `peers verify`
 

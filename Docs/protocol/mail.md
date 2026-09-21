@@ -312,7 +312,14 @@ sender's newest mailbox key and has a fresh `id`.
 | `ack` | see [Ack](#ack) | no / no | 1.0d |
 | `keys` | see below | rotation push: yes / yes. Key-miss reply: no / yes | 1.0b, 1.0e |
 | `note` | `{"text": "..."}`, stored to `mail_inbox`, no other effect. **Debug only**: registered when the daemon runs with `DORYLINAE_DEBUG=1` | yes / yes | 1.0f |
-| `request`, `request.accept`, `request.decline`, `request.defer`, `result`, `grant`, … | defined by their tickets | yes / yes | Phase 1–2 |
+| `team.roster`, `team.join`, `team.leave` | [team.md](team.md#kinds) | yes / yes | 1.1b |
+| `request`, `request.accept`, `request.decline`, `request.defer`, `request.complete` | [request.md](request.md) | yes / yes | 1.4c, 1.6a |
+| `result`, `grant`, … | defined by their tickets | yes / yes | Phase 2 |
+
+Presence heartbeats reuse this seal and signature with kind `presence`, but as envelope type
+`presence`, not `mail` ([presence.md](presence.md)). From 1.4b, an `Apply` error wrapping
+`mail.ErrBadBody` is recorded in `mail_seen`, audited `mail.reject` reason `bad_body` and
+acked as `unsupported` ([request.md §Invalid bodies](request.md#invalid-bodies)).
 
 ### Kind `keys`
 
