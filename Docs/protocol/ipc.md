@@ -299,7 +299,7 @@ outbox state of `mail_id`, or `unknown` once pruned. `out` views also carry `"pr
 |---|---|---|
 | `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup) |
 | `request_list` | `{"state"?, "team"?, "peer"?}` | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first |
-| `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` and its mail is `expired` or `failed` |
+| `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending`, its mail is `expired` or `failed`, and the request is under 21 d old |
 | `inbox_list` | `{"team"?, "all"?: bool}` | `{"requests": [<in view>]}` in [inbox order](request.md#inbox-16) |
 | `request_accept` | `{"id", "from"?}` | `{"request": <in view>, "mail_id"}` |
 | `request_decline` | `{"id", "from"?, "reason"}` | Same. `reason` is required, 1–500 code points |

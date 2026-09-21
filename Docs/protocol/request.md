@@ -104,7 +104,9 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
    `high` or `blocking` to `normal` and set `urgency_declared`.
 7. Build the object (`id` fresh, `created = now`). In **one SQLite transaction**, insert the
    `out` row (`state = pending`) and the outbox row. That needs `Outbox.SubmitTx(tx, to,
-   kind, body)`, added by 1.4c. Audit `request.submit`.
+   kind, body)`, added by 1.4c. Audit `request.submit`. If the insert hits the
+   `requests_idem` unique index (a concurrent submit with the same key won the race), roll
+   back and answer as step 4 against the winning row.
 8. Return the [submit result](#submit-result-19). The whole call must take **under 2 s** and
    must never wait for the relay or the peer.
 
@@ -152,9 +154,16 @@ Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept
      a sender that resent after `expired` what already happened. Audit `request.duplicate`.
    - with a different `body_hash`, keep the first one and change nothing. Audit `request.conflict
      {request, peer}`.
+   - with no row, and `now − request.created > 30 d` (receiver clock): [invalid](#invalid-bodies).
+     A resend re-wraps the old object in a new mail, which passes the 14-day mail limit, so
+     without this bound a request could surface months later as new. An honest sender never
+     resends after 21 d ([Idempotency](#idempotency)). Duplicates of a known id are still
+     recognised at any age.
 3. **Policy auto-decline.** The row is stored with `state = declined`, `decline_code`,
-   `state_seq = 1` and `first_response` NULL. After commit a `request.decline` with that
-   `code` is submitted and becomes `last_reply`. The codes, checked in order:
+   `state_seq = 1` and `first_response` NULL. In the **same transaction**, the
+   `request.decline` with that `code` and `seq = 1` is stored as `last_reply` and submitted
+   with `Outbox.SubmitTx(tx, …)`, so a crash cannot leave a declined row with no reply. The
+   codes, checked in order:
    - `unverified_peer`: the rule of Submitting step 2, applied to the sender (D5).
    - `unknown_team`: `team` is not a local team in state `active`.
    - `not_team_member`: `msg.from` or self is not in `team_members` of that team.
@@ -257,9 +266,10 @@ resubmission must be safe.
   ([Receiving](#receiving) step 2).
 - **`agentnet request resend <id>`** (IPC `request_resend`) resubmits the stored canonical
   `body` unchanged, in a new mail, and sets the `out` row's `mail_id` to it. It is allowed only
-  when the row is `pending` and its current mail is `expired` or `failed`. Otherwise it
-  returns `bad_state` (the mail is still in flight, or was delivered, or the request was already
-  answered). Audit `request.resend {request, peer, mail}`.
+  when the row is `pending`, its current mail is `expired` or `failed`, and `now <
+  request.created + 21 d`. Otherwise it returns `bad_state` (the mail is still in flight, or
+  was delivered, or the request was already answered, or it is too old: send a new request).
+  Audit `request.resend {request, peer, mail}`.
 - **Harness retries.** A harness that times out and runs the same `agentnet request` again
   would create a second request. `--idempotency-key K` (1–64 characters from
   `[A-Za-z0-9._:-]`, scoped per peer) makes the retry return the first request

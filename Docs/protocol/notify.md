@@ -68,7 +68,7 @@ A failure is logged (`event=notify_desktop_fail`) and audited once per hour at m
 | OS | Mechanism | Note |
 |---|---|---|
 | macOS | Exec `/usr/bin/osascript` with the script **fixed** and the text passed as `argv`: `osascript -e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' -e 'end run' -- <title> <body>` | Peer text is **never interpolated into AppleScript source**, so no quoting bugs can inject a script. The launchd user agent runs in the Aqua session, which is required |
-| Linux | D-Bus `org.freedesktop.Notifications.Notify` on the session bus, via exec `gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify agentnet 0 '' <title> <body> [] {} 5000`. Fall back to `notify-send -a agentnet -- <title> <body>` | Arguments go as argv, never through a shell. The systemd user unit inherits `DBUS_SESSION_BUS_ADDRESS` from the user manager. If there is no bus, it fails |
+| Linux | D-Bus `org.freedesktop.Notifications.Notify` on the session bus, via exec `gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications --method org.freedesktop.Notifications.Notify agentnet 0 '' <title> <body> [] {} 5000`. Fall back to `notify-send -a agentnet -- <title> <body>` | Arguments go as argv, never through a shell. `gdbus call` **parses each argument as GVariant text**, so `<title>` and `<body>` are passed as GVariant string literals the daemon builds itself: `'` + the text with `\` → `\\` and `'` → `\'` + `'`. Unencoded, a title such as `'x'` would be re-parsed. The body of a freedesktop notification may be interpreted as markup, so `&`, `<` and `>` in `<body>` become `&amp;`, `&lt;` and `&gt;` (for both gdbus and `notify-send`). The systemd user unit inherits `DBUS_SESSION_BUS_ADDRESS` from the user manager. If there is no bus, it fails |
 | Windows | A toast through Windows PowerShell with **fixed** script text. The two strings are passed base64-encoded (UTF-16LE) in the environment variables `AGENTNET_N_TITLE` and `AGENTNET_N_BODY`, and decoded and XML-escaped (`[Security.SecurityElement]::Escape`) inside the script. The AppUserModelID is PowerShell's (`{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe`) | Peer text never appears in the command line or the script source. It needs the interactive session. The Task Scheduler task runs "only when user is logged on" |
 
 The plan's `beeep` is **not** used. It builds AppleScript and PowerShell source by string
@@ -82,7 +82,16 @@ need no cgo and no new dependency.
 `agentnet notify --webhook URL` ([../cli/notify.md](../cli/notify.md)):
 
 - The URL must be `https://`, or `http://` only to a loopback host. At most 2048 bytes. There
-  is no user info in the URL.
+  is no user info in the URL. "Loopback host" means the literal `localhost`, `127.0.0.0/8` or
+  `::1`, not a name that resolves there.
+- **Dial-time address check** (SSRF). Any local process that can reach the IPC socket,
+  including an agent steered by a hostile request, can set the URL, so the check is made on
+  the address actually dialled (`net.Dialer.Control`), not on the name: an `https` URL may not
+  connect to link-local addresses (`169.254.0.0/16`, `fe80::/10`, including cloud metadata
+  at `169.254.169.254`), unspecified addresses, or multicast; an `http` URL may connect only
+  to loopback. A refused dial is a permanent failure (`error = "blocked_address"`). With a
+  proxy from the environment, the check applies to the proxy address, and the proxy is
+  trusted by the user's configuration.
 - On first set, and on `--rotate-secret`, the daemon generates a 32-byte secret from
   `crypto/rand` and prints it **once** as `whsec_` + base64url (no padding). Only the owner of
   the receiving endpoint needs it.
@@ -95,7 +104,9 @@ need no cgo and no new dependency.
 ### Secret
 
 Keystore secret (same backends as the identity): keychain service `dorylinae`, account
-`webhook-<id>`, or file `<config dir>/webhook.key` (owner-only). The value is the raw 32 bytes.
+`webhook` (there is one webhook per daemon), or file `<config dir>/webhook.key` (owner-only).
+The value is the raw 32 bytes. Rotation replaces it at once. Pending retries are signed with
+the new secret, so the receiver must be updated before the next attempt.
 
 ### Payload
 
@@ -125,8 +136,12 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
   requested grant, reasons, notes, public keys, deadline and `urgency_declared`.
 - `text`: the desktop title line (sanitised), without the title unless `title: true`, when
   `: <title>` is appended.
-- `slack` format: the generic object plus nothing. Slack incoming webhooks read `text` and
-  ignore other members. `discord` format: the generic object with `content` = `text` added.
+- `slack` format: the generic object, with `&`, `<` and `>` in `text` escaped as `&amp;`,
+  `&lt;` and `&gt;` (Slack's required escaping). Unescaped, a peer name or title such as
+  `<!channel>` or `<https://evil|click>` would ping a whole channel or render a disguised
+  link. Slack incoming webhooks read `text` and ignore other members. `discord` format: the
+  generic object with `content` = `text` added, plus `"allowed_mentions": {"parse": []}`
+  so that `@everyone`, `@here` and role or user mentions in peer text never ping anyone.
   Discord requires `content`. Signing and headers are identical for all formats.
 
 ### Signature
@@ -150,9 +165,12 @@ Headers:
 
 **Receiver verification** (documented for integrators, and implemented by the test
 receiver in `tests/`): recompute the signature with a constant-time compare, reject if
-`|now − timestamp| > 300 s`, and reject an `id` already seen within the last 24 h. The body
-`id` must equal the header. Slack and Discord cannot verify. The signature is for custom
-receivers. A retry re-signs with a new timestamp, and keeps the same `id` and body.
+`|now − timestamp| > 300 s`, and **do not process** an `id` already seen within the last
+24 h, but answer it `2xx`. A retry re-signs with a new timestamp and keeps the same `id` and
+body, so a receiver that processed a delivery whose response was lost must acknowledge the
+retry; answering it with a `4xx` would end the row `failed`. Remembering ids for 24 h covers
+the whole retry schedule. The body `id` must equal the header. Slack and Discord cannot
+verify. The signature is for custom receivers.
 
 ### Delivery
 

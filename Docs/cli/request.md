@@ -59,7 +59,8 @@ Beyond that, the request is sent as `normal` and the output says so (`urgency_de
 `urgency_note`). The recipient enforces the same budget for requests from you.
 
 `request resend <id>` re-sends the same request (same id) when its delivery is `expired`
-(delivery unknown after 7 days) or `failed` and no answer has arrived. The recipient
+(delivery unknown after 7 days) or `failed`, no answer has arrived, and the request is
+less than 21 days old (otherwise send a new request). The recipient
 recognises it by id: if it already answered, the answer is sent again. If it had not seen
 the request, it gets it now.
 

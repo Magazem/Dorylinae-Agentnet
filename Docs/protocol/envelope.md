@@ -123,10 +123,10 @@ WebSocket close code 1008. Frames before authentication are limited to 4 KiB.
 ```
 
 From Phase 1 (1.2a) the relay adds `"features": ["ephemeral"]`. **Ephemeral** envelope
-types (only `presence`) are forwarded only to a connected recipient with room in its send
-buffer, regardless of backlog. Otherwise they are dropped silently: no `queued`, no
-`error`, never stored. The recipient does not `ack` them. Rate limit: 240 per minute per
-sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
+types (only `presence`) are forwarded only to a connected recipient whose send buffer is at
+most half full, regardless of backlog. Otherwise they are dropped silently: no `queued`, no
+`error`, never stored. The recipient does not `ack` them, and `relayclient` hands them up
+without the seen-set. Rate limit: 600 per minute per sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
 
 ### One connection per key
 

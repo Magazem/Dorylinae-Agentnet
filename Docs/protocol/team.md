@@ -102,8 +102,14 @@ recorded in `mail_seen`, audited `mail.reject {reason: "bad_body"}`, acked as `u
 | `members[].mailbox` | the member's newest signed mailbox announcement known to the owner, or `null`. Verified as in [mail.md §Announcement](mail.md#announcement) with `identity` = `key`. A **time** failure (check 5) makes it `null` for that member (the owner's copy may be old); any other failure is `bad_body` |
 
 The owner sends the roster, as one outboxed mail per recipient, to every member except
-itself. On a removal it also sends it to the removed member, which learns it is out. The
-owner puts its own entry in `members` like any other.
+itself. On a removal it also sends a roster to the removed member, which learns it is out.
+**A roster sent to a key that is not a member lists only the owner** (same `id`, `name`,
+`epoch` and `state`), so a removed member does not learn the remaining members' new
+mailbox keys or later changes. The owner puts its own entry in `members` like any other.
+
+Every member learns every other member's card, fingerprint and mailbox announcement, and the
+team's name and epoch. That is inherent to introductions. Members do not learn which other
+teams a member belongs to.
 
 **Validation (receiver, inside `Apply`)**, in order; failure is `bad_body` unless noted:
 
@@ -113,12 +119,19 @@ owner puts its own entry in `members` like any other.
    (not `bad_body`): acked normally, nothing applied, audit `team.roster_ignored {team, peer,
    reason: "owner_trust"}`.
 4. Look up `teams.id`:
-   - **Unknown team.** Apply only if `team_pending_joins` has a live row for `owner = msg.from`
-     and `state = active` and the own key is in `members`. Consume the pending join (delete
-     the row). Otherwise ignore: `team.roster_ignored {reason: "not_invited"}`.
+   - **Unknown team.** Apply only if `team_pending_joins` has a live row with
+     `owner_key = msg.from`, `state = active`, and the own key is in `members`. Consume one
+     such row (the oldest `created`) by deleting it. Otherwise ignore:
+     `team.roster_ignored {reason: "not_invited"}`.
    - **Known team.** `teams.owner` must equal `msg.from` (else ignore,
      `reason: "not_owner"`). If `team.epoch ≤ teams.epoch`, ignore silently (idempotent
-     resend or reordering). If the local state is `left`, ignore (`reason: "left"`).
+     resend or reordering).
+   - **Known team, local state `left`, `removed` or `dissolved`** (and a higher epoch).
+     Re-entry needs the member's consent. Apply only under the same condition as an
+     unknown team: a live pending join from `msg.from`, `state = active`, and self in
+     `members`. Consume the row. Otherwise ignore (`reason: "left"`, `"removed"` or
+     `"dissolved"`). The owner therefore cannot put a member back into a team, or revive a
+     dissolved one, without a new invite. A member that left can rejoin with a new invite.
 
 **Apply** (same transaction):
 
@@ -181,8 +194,16 @@ join, because no `team_pending_joins` row is written and no `team.join` is sent.
 An owner whose team loses a member's presence for over 7 days may have sent that member a
 roster that expired. **Resync:** members report the epoch they hold for each team *owned by
 the recipient* in their presence heartbeat (`epochs`, [presence.md](presence.md#body)). When
-the owner sees a lower epoch than its own for an active member, it resubmits the current
-roster to that member, at most once per 10 minutes per member.
+the owner sees a lower epoch than its own for a team it owns (in any state), it resubmits
+the current roster to that peer, at most once per 10 minutes per peer and team. This also
+covers a **former** member that missed its removal roster (it was offline for over 14 days):
+it gets the owner-only roster and learns it is out. An id the owner does not own is ignored.
+
+**Removing the owner as a peer.** `peers remove` of a key that owns local teams sets every
+such team with local state `active` to `left` (audit `team.leave {team, reason:
+"owner_removed"}`, actor `cli`), sends presence goodbyes as for Leave, and runs GC. Rosters
+from a removed key can no longer arrive (mail step 1), so otherwise its introductions would
+stay trusted forever. No `team.leave` is sent (there is no longer a mailbox key to send it to).
 
 ## Local names
 
@@ -247,6 +268,10 @@ INSERT INTO peers_new (public_key, name, harness, skills, card, paired_at, trust
     SELECT public_key, name, harness, skills, card, paired_at, trust, mailbox_keys FROM peers;
 DROP TABLE peers;
 ALTER TABLE peers_new RENAME TO peers;
+-- Safe as one migration transaction: through migration 7 no table, index, trigger or view
+-- refers to peers, so DROP and RENAME cannot cascade or fail. Migration 8 must re-check
+-- this (sqlite_master) if a later branch adds such a reference first. The column list is
+-- explicit on both sides; SELECT * would copy by position.
 
 -- migration 9 (1.1b): teams
 CREATE TABLE teams (
@@ -275,11 +300,12 @@ CREATE TABLE team_invites (                         -- owner side
     used       TEXT
 );
 CREATE TABLE team_pending_joins (                   -- joiner side
-    owner_key TEXT PRIMARY KEY,
+    owner_key TEXT NOT NULL,
     lookup    TEXT NOT NULL,
     created   TEXT NOT NULL,
-    expires   TEXT NOT NULL
-);
+    expires   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, lookup)                 -- two invites from one owner can be pending
+) WITHOUT ROWID;
 ```
 
 `team_invites` rows are written only on `pair.complete` (the lookup-to-team mapping for a
@@ -301,7 +327,7 @@ cards, announcements or codes.
 | `team.member_add` | `{team, peer, epoch}` |
 | `team.member_remove` | `{team, peer, epoch}` |
 | `team.member_leave` | `{team, peer, epoch}` (owner, on `team.leave`) |
-| `team.leave` | `{team}` (member) |
+| `team.leave` | `{team, reason?}` (member; `reason: "owner_removed"` when caused by `peers remove` of the owner) |
 | `team.rename` | `{team, name, epoch}` |
 | `team.delete` | `{team, epoch}` |
 | `team.roster_apply` | `{team, epoch, added, removed, state}` |

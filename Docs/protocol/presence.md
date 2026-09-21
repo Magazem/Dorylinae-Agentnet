@@ -92,7 +92,7 @@ therefore safe.
 | `human` | integer | `1` present, `0` idle ≥ 10 min, `2` unknown **or not shared** ([Human sharing](#human-sharing)). `2` when `state = offline` |
 | `boot` | string | 16 lowercase hex, random per daemon start |
 | `seq` | integer | Per recipient, starts at 1 each boot, +1 per message to that recipient |
-| `interval` | integer | The sender's heartbeat period in seconds, 10–300 (default 30) |
+| `interval` | integer | The sender's heartbeat period in seconds, 1–300. The daemon uses `max(30, ⌈visible / 3⌉)` ([Sending](#sending)); values under 30 occur only with the test option `PresenceInterval` |
 | `epochs` | object | Team id → roster epoch held by the sender, **only** for `active` teams whose owner is the recipient ([team.md §Operations](team.md#operations), resync). 0–32 members; `{}` when none |
 | `pad` | string | Only `0` characters, length 0–1023, chosen so that `len(plaintext)` (the canonical signed object) is a **multiple of 256** |
 
@@ -125,9 +125,10 @@ exactly that many bytes, and the member order is fixed by canonical JSON.
    call `Outbox.OnPeerOnline(peer)` ([mail.md §Sending and backoff](mail.md#sending-and-backoff)).
    It sends every non-final outbox row to that peer now.
 7. **Roster resync** (owner only). For each `epochs` entry naming a team this daemon owns
-   that is `active` and has `from` as a member: if the entry is lower than the team's epoch,
-   and no roster was resubmitted to `from` for that team in the last 10 minutes, resubmit
-   the current roster to `from`.
+   (any state): if the entry is lower than the team's epoch, and no roster was resubmitted
+   to `from` for that team in the last 10 minutes, resubmit the current roster to `from`.
+   If `from` is no longer a member, that is the owner-only roster
+   ([team.md §Operations](team.md#operations)). Entries naming other teams are ignored.
 
 Presence is not deduped in `mail_seen`, not stored in `mail_inbox`, not acked, and not
 audited per message.
@@ -159,7 +160,12 @@ Peers without a mailbox key are skipped.
 
 **When:**
 
-- **Tick:** every `interval` (30 s) × U(0.9, 1.1), `state: online` to the whole visible set.
+- **Tick:** every `interval` × U(0.9, 1.1), `state: online` to the whole visible set.
+  `interval = max(30, ⌈|visible set| / 3⌉)` seconds, recomputed at each tick, so the tick
+  load stays at most about 180 envelopes a minute and under the relay limit below,
+  with room for the immediate sends. Up to 90 visible peers this is 30 s, and the 90 s
+  offline bound holds. Beyond that, peers see the longer `interval` in the body and
+  scale their online window with it.
 - **Immediately**, as `state: online` to the whole visible set: at daemon start (after relay
   `ready`), on every relay `ready`, and on the agent edge (an IPC call arriving when the
   last one was ≥ 5 min ago). The edge send runs asynchronously. The IPC call never waits for it.
@@ -179,12 +185,18 @@ Relay change (1.2a):
   `{"op":"ready","public_key":"<key>","features":["ephemeral"]}`. A daemon that sees no
   `features` member assumes none.
 - Envelope type `presence` is **ephemeral**. The relay forwards it if the recipient is
-  connected and its send buffer has room, **ignoring** any backlog (ordering does not apply
-  to ephemeral types). Otherwise it drops the envelope **silently**: no `queued`, no `error`,
-  never stored, not counted against queue limits. The relay still validates routing fields
-  and `from` (`bad_envelope`, `bad_sender`).
-- Rate limit: at most **240** ephemeral envelopes per minute per sending key. Excess envelopes
-  are dropped silently and counted in the log (`event=ephemeral_limited`, once a minute).
+  connected and its send buffer is **at most half full** (32 of the default 64 frames),
+  **ignoring** any backlog (ordering does not apply to ephemeral types). The other half is
+  reserved for mail and control frames, so a presence flood from many senders cannot push
+  a recipient's mail into the queue path. Otherwise the relay drops the envelope
+  **silently**: no `queued`, no `error`, never stored, not counted against queue limits. The
+  relay still validates routing fields and `from` (`bad_envelope`, `bad_sender`).
+- Rate limit: at most **600** ephemeral envelopes per minute per sending key (relay option
+  `EphemeralPerMinute`). Excess envelopes are dropped silently and counted in the log
+  (`event=ephemeral_limited`, once a minute).
+- `relayclient` hands `presence` envelopes up **without** the seen-set (like `mail`), and
+  never acks them. Presence has its own replay rule (Receiving step 4). Frequent heartbeats
+  would otherwise evict the `session.*` entries that the 8192-entry seen-set protects.
 - The logging rule is unchanged (no payload). Per-envelope log lines for ephemeral types are
   at debug level.
 

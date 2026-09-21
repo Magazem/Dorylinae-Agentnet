@@ -31,23 +31,27 @@ onto it.
 ## Tickets
 
 "Review" marks tickets that need an **Opus security review before merge** (HANDOFF rule 4).
+Review 12 added 1.1a (trust rank, peer GC, table rebuild), 1.2a (relay abuse surface), 1.4c
+(D5 and auto-decline) and 1.6a (lifecycle state from peers). Those four are small, so one
+reviewer can take each as soon as it is ready. They cannot be batched with their successor,
+which depends on them being merged.
 "∥" lists tickets that can run in parallel with this one once its dependencies are merged.
 
 | ID | Title | Depends on | Migration | Review | ∥ |
 |---|---|---|---|---|---|
-| 1.1a | Peers trust `team` + `introduced_by` | specs approved | 8 | — | 1.2a, 1.2d, 1.4b |
+| 1.1a | Peers trust `team` + `introduced_by` | specs approved | 8 | **yes** | 1.2a, 1.2d, 1.4b |
 | 1.1b | Team store and kinds `team.roster` / `team.join` / `team.leave` | 1.1a, 1.4b | 9 | **yes** | 1.2a, 1.2d |
 | 1.1c | Team IPC and CLI: create, list, show, remove, rename, leave, delete | 1.1b | — | — | 1.2b |
 | 1.1d | Team invite and join via pairing v2 | 1.1c | — | **yes** | 1.2b, 1.2c |
-| 1.2a | Relay ephemeral envelopes + `ready.features` | specs approved | — | — | 1.1a–d, 1.4b |
+| 1.2a | Relay ephemeral envelopes + `ready.features` | specs approved | — | **yes** | 1.1a–d, 1.4b |
 | 1.2b | Presence seal/open, body, order and replay rules | 1.1b, 1.2a | 10 | **yes** | 1.1c, 1.1d |
 | 1.2c | Presence engine: heartbeats, agent activity, offline, `status --team` | 1.2b, 1.1c | — | — | 1.1d, 1.2d |
 | 1.2d | `internal/idle` per-OS idle detection | specs approved | — | — | anything |
 | 1.3 | Visibility: `presence` command, modes, goodbye | 1.2c | — | — | 1.4a |
 | 1.4a | `internal/request`: schema, validation, canonical, `body_hash`, priority | 1.2b merged (migration order) | 11 | — | 1.3 |
 | 1.4b | `mail.ErrBadBody` receiver path | specs approved | — | **yes** | 1.1a, 1.2a, 1.2d |
-| 1.4c | `request` kind, `request_submit`, CLI `agentnet request` (1.5, 1.9) | 1.4a, 1.1d | — | — | 1.3 |
-| 1.6a | Lifecycle kinds, state machine, sender mirror, `request show/list/resend` | 1.4c | — | — | 1.8a |
+| 1.4c | `request` kind, `request_submit`, CLI `agentnet request` (1.5, 1.9) | 1.4a, 1.1d | — | **yes** | 1.3 |
+| 1.6a | Lifecycle kinds, state machine, sender mirror, `request show/list/resend` | 1.4c | — | **yes** | 1.8a |
 | 1.6b | Inbox: `inbox_list` order, CLI `inbox/accept/decline/defer/complete` | 1.6a | — | — | 1.7, 1.8a |
 | 1.7 | Urgency guards: sender and receiver budget, notes | 1.6b | — | — | 1.8a, 1.8b |
 | 1.8a | Desktop notifications, `notify` settings, `agentnet notify --desktop/--event/--test` | 1.6a | — | **yes** | 1.6b, 1.7 |
@@ -73,7 +77,8 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   `introduced_by`.
 - Add `peers.Store.Introduce(tx, member, owner)` and `peers.Store.GCIntroduced(tx) ([]removed,
   error)`, with the semantics of [team.md §Introduced peers](../protocol/team.md#introduced-peers).
-- Acceptance: migration 8 on a DB with rows at every trust level keeps all columns
+- Acceptance: migration 8 on a DB with rows at every trust level keeps all columns and the
+  row count, leaves no `peers_new`, and `PRAGMA integrity_check` is `ok`
   (`TestMigration8PreservesPeers`); `trust='team'` is accepted and ranks correctly; a v2
   re-pair raises `team` to `code` and clears `introduced_by`; `GCIntroduced` removes only
   introduced peers with no active team, and fails their outbox rows `unpaired`.
@@ -94,7 +99,11 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   removing self → state `removed` + GC; e2e with 3 daemons and 2 teams sharing one member
   (built with the functions, joins simulated through `team_pending_joins`): **each member
   sees only its own team's members** (`TestTwoTeamsSharedMember`); a replayed old roster
-  mail changes nothing.
+  mail changes nothing. From review 12: a higher-epoch roster for a team in local state
+  `left`, `removed` or `dissolved` is ignored without a pending join and applied with one
+  (rejoin after leave); two pending joins from one owner both succeed; the roster sent to a
+  removed member lists only the owner; `peers remove` of an owner sets its teams `left` and
+  GCs its introductions (this hooks the existing `peers_remove` handler).
 
 ### 1.1c Team IPC and CLI
 
@@ -123,7 +132,10 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   (expose features, no ack for `presence`), and tests.
 - Acceptance: `presence` to an offline peer is dropped with no `queued` or `error` frame and
   nothing stored (`Queued(key) == 0`); to a connected peer with a backlog it is forwarded
-  ahead of the backlog; the 241st in a minute is dropped; the relay log has no payload
+  ahead of the backlog; to a peer whose send buffer is over half full it is dropped while a
+  `mail` frame is still forwarded directly; the 601st in a minute is dropped
+  (`EphemeralPerMinute`); `relayclient` hands up 10 000 presence envelopes without evicting a
+  `session.*` id from the seen-set, and sends no `ack` for them; the relay log has no payload
   marker; an old client ignores `features`.
 
 ### 1.2b Presence seal/open (review)
@@ -134,7 +146,7 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   flags and 0–32 epochs; relabelling `presence` → `mail` fails at mail step 9, and `mail` →
   `presence` fails the kind check; replay of the same `(boot, seq)` → dropped; an old boot
   with an older `created` → dropped; a new boot → accepted; `created` 11 min old → dropped;
-  a rejected message writes no audit row.
+  `interval` 0 or 301 → dropped, 1 accepted; a rejected message writes no audit row.
 
 ### 1.2c Presence engine and `status --team`
 
@@ -153,7 +165,12 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   - The online edge sends B's queued outbox rows immediately (1.0e hook).
   - The `status --team x --json` shape matches ipc.md, including `self`.
   - Roster resync: a member with a lower epoch gets the roster again, at most once per
-    10 min.
+    10 min; a removed member reporting the old epoch gets the owner-only roster and ends
+    `removed`.
+  - `interval` is 30 s with 90 visible peers and 31 s with 91 (`max(30, ⌈n/3⌉)`).
+  - A new member gets an immediate heartbeat when a roster adds it (team.md after-commit).
+  - Leaving a team, or being removed, sends a goodbye to peers that leave the visible set
+    (the Leave operation of 1.1c gains its presence step here).
 
 ### 1.2d `internal/idle`
 
@@ -208,7 +225,10 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   - Not a team member → auto-decline `not_team_member` reaches the sender mirror (after 1.6a:
     stub the check here, and finish the assertion in 1.6a).
   - `--idempotency-key`: the same params → `duplicate: true`, one outbox row; different
-    params → `idempotency_conflict`.
+    params → `idempotency_conflict`; two concurrent submits with one key → one row, and the
+    loser gets `duplicate: true`.
+  - Auto-decline: the declined row, `last_reply` and the outbox row of the decline are in
+    one transaction (an injected failure after the insert leaves none of them).
 
 ### 1.6a Lifecycle and sender mirror
 
@@ -217,7 +237,9 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   out-of-order (`complete` before `accept`) ends `completed` on the sender;
   `request resend` after a forced `expired` → the receiver sees a duplicate and **re-sends
   the last answer**, and the sender mirror updates (`TestResendAfterExpiredIdempotent`, D10);
-  a conflicting body under the same id → `request.conflict`, first kept.
+  a conflicting body under the same id → `request.conflict`, first kept; `request resend`
+  of a request 21 d old → `bad_state`; a new request whose `created` is 31 d old →
+  `bad_body`, while a duplicate of a stored id of that age is still recognised.
 
 ### 1.6b Inbox
 
@@ -243,7 +265,9 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 - Acceptance (1.8): with a fake `Desktop`, the call arrives within **5 s** of the receiver
   commit (e2e); `Clean` table tests (controls, bidi, U+2028, truncation); per-OS command
   construction tests assert that **no peer text appears in the script source or the command
-  line** (osascript argv, gdbus argv, PowerShell environment); a manual check per OS in
+  line** (osascript argv, gdbus argv, PowerShell environment); the gdbus arguments are
+  GVariant string literals that round-trip titles containing `'`, `\`, `"` and `@s`, and the
+  Linux body has `&<>` escaped; a manual check per OS in
   `tests/phase1-manual.md`; event toggles are honoured.
 
 ### 1.8b Webhook (review)
@@ -254,8 +278,11 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   the printed secret (`TestWebhookSigned`); the body never contains the brief or artifacts,
   and contains the title only with `title: true`; a 500 then 200 → one retry then `sent`;
   a 404 → `failed`, no retry; a 302 → `failed`; an `http://` non-loopback URL →
-  `bad_webhook`; a replay with the same id is rejected by the reference verifier; `--webhook
-  off` deletes the secret and fails pending rows.
+  `bad_webhook`; a URL whose name resolves to `169.254.169.254` (fake resolver) fails
+  `blocked_address` at dial time; a replay with the same id is answered `2xx` by the
+  reference verifier without calling its handler twice, and a stale timestamp is rejected;
+  `slack` text escapes `<!channel>`, and `discord` carries `allowed_mentions: {parse: []}`;
+  `--webhook off` deletes the secret and fails pending rows.
 
 ### 1.9 Offline end-to-end and metrics
 

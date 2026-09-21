@@ -96,6 +96,11 @@ is paired again. Prints `Removed <name> (<fingerprint>)`; with `--json`,
 `{"ok": true, "peer": {...the removed peer...}}`. Error codes: `unknown_peer`,
 `ambiguous_peer`.
 
+Phase 1: removing a peer that **owns** teams you are in also leaves those teams locally, and
+removes the peers it introduced unless they share another active team with you
+([../protocol/team.md](../protocol/team.md#operations)). Removing an introduced peer that is
+still in one of your teams is undone by the owner's next roster. Leave the team instead.
+
 Both subcommands are recorded in the audit log as `peer.verify`,
 `peer.verify_fail` and `peer.remove` (see
 [../protocol/ipc.md](../protocol/ipc.md)).
