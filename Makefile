@@ -5,7 +5,7 @@ BIN_DIR := bin
 VERSION ?= 0.0.0-dev
 LDFLAGS := -X github.com/Magazem/Dorylinae-Agentnet/internal/version.Version=$(VERSION)
 
-.PHONY: build test lint vet
+.PHONY: build test lint vet verify-vectors
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/ $(addprefix ./cmd/,$(BINS))
@@ -18,3 +18,7 @@ vet:
 
 lint:
 	golangci-lint run ./...
+
+# Independent recomputation of the pairing and mail test vectors (Docs/protocol).
+verify-vectors:
+	go run ./tools/verifyvectors
