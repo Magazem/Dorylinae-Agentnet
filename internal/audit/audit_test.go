@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"dorylinae/internal/audit"
-	"dorylinae/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
 func TestAppendListAndAppendOnly(t *testing.T) {

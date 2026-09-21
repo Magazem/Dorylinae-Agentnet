@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"dorylinae/internal/daemon"
-	"dorylinae/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 )
 
 func shortHome(t *testing.T) paths.Paths {
@@ -57,6 +58,7 @@ func TestStatusNotRunning(t *testing.T) {
 }
 
 func TestStatusRunning(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
 	p := shortHome(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})

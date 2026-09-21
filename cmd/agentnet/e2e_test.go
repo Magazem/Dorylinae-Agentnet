@@ -36,9 +36,9 @@ func TestE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(home) })
 	bin := t.TempDir()
-	cli := build(t, "dorylinae/cmd/agentnet", filepath.Join(bin, "agentnet"))
-	dmn := build(t, "dorylinae/cmd/agentnetd", filepath.Join(bin, "agentnetd"))
-	env := append(os.Environ(), "DORYLINAE_HOME="+home)
+	cli := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnet", filepath.Join(bin, "agentnet"))
+	dmn := build(t, "github.com/Magazem/Dorylinae-Agentnet/cmd/agentnetd", filepath.Join(bin, "agentnetd"))
+	env := append(os.Environ(), "DORYLINAE_HOME="+home, "DORYLINAE_KEYSTORE=file")
 
 	status := func() (int, []byte, time.Duration) {
 		c := exec.Command(cli, "status", "--json")

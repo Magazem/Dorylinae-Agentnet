@@ -9,10 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"dorylinae/internal/audit"
-	"dorylinae/internal/paths"
-	"dorylinae/internal/service"
-	"dorylinae/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
 // serviceDeps are the machine-facing pieces of install/uninstall, replaceable in tests.

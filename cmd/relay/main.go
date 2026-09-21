@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"dorylinae/internal/version"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 func main() {

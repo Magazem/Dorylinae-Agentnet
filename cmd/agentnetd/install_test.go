@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"dorylinae/internal/audit"
-	"dorylinae/internal/service"
-	"dorylinae/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
 // stubPlatform drops one file under a temp dir so the CLI wiring can be
@@ -110,7 +110,8 @@ func TestInstallUninstallLifecycleAndAudit(t *testing.T) {
 	if code, out, errs := invoke(t, "install", "--home", home); code != 0 {
 		t.Fatalf("install exit %d: %s %s", code, out, errs)
 	}
-	if b, err := os.ReadFile(def); err != nil || string(b) != "def" {
+	b, err := os.ReadFile(def) //nolint:gosec // path under t.TempDir()
+	if err != nil || string(b) != "def" {
 		t.Fatalf("definition not written: %q %v", b, err)
 	}
 	if strings.Join(r.ran, ";") != "stub start" {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,10 +152,10 @@ func TestTaskXML(t *testing.T) {
 			WorkDir string `xml:"WorkingDirectory"`
 		} `xml:"Actions>Exec"`
 	}
-	// The declared UTF-16 encoding applies to the on-disk form; parse the text.
-	dec := xml.NewDecoder(strings.NewReader(w.Content))
-	dec.CharsetReader = func(string, io.Reader) (io.Reader, error) { return strings.NewReader(w.Content), nil }
-	if err := dec.Decode(&task); err != nil {
+	// The declared UTF-16 encoding applies to the on-disk form only; drop the
+	// declaration line and parse the text.
+	_, body, _ := strings.Cut(w.Content, "\n")
+	if err := xml.Unmarshal([]byte(body), &task); err != nil {
 		t.Fatalf("task XML does not parse: %v\n%s", err, w.Content)
 	}
 	if !task.Triggers.Logon.Enabled || task.Triggers.Logon.UserID != `DESKTOP\ann` {
@@ -273,7 +272,8 @@ func TestApplyInstallAndUninstall(t *testing.T) {
 	if err != nil || !res.Changed {
 		t.Fatalf("install apply: %+v, %v", res, err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, "sub", "x.conf")); string(b) != "hello" {
+	b, _ := os.ReadFile(filepath.Join(dir, "sub", "x.conf")) //nolint:gosec // path under t.TempDir()
+	if string(b) != "hello" {
 		t.Errorf("file content = %q", b)
 	}
 

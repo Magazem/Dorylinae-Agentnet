@@ -3,7 +3,7 @@ BINS    := agentnet agentnetd relay
 BIN_DIR := bin
 # Override for releases: make build VERSION=1.2.3
 VERSION ?= 0.0.0-dev
-LDFLAGS := -X dorylinae/internal/version.Version=$(VERSION)
+LDFLAGS := -X github.com/Magazem/Dorylinae-Agentnet/internal/version.Version=$(VERSION)
 
 .PHONY: build test lint vet
 

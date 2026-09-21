@@ -36,7 +36,7 @@ binaries on Linux, macOS and Windows.
 ## Project decisions
 
 - **Project name:** Dorylinae. Binaries keep the plan's names.
-- **Go module path:** `dorylinae` (placeholder, no remote yet). Changing it
+- **Go module path:** `github.com/Magazem/Dorylinae-Agentnet`. Changing it
   touches every import.
 - **Licence:** *not decided.* No `LICENSE` file yet. Plan recommendation:
   Apache-2.0 for daemon and CLI, BSL or AGPL for the relay.

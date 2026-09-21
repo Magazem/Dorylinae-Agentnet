@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"dorylinae/internal/ipc"
-	"dorylinae/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 )
 
 // shortHome returns a short temp dir: Unix socket paths are length limited.

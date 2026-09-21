@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"dorylinae/internal/daemon"
-	"dorylinae/internal/paths"
-	"dorylinae/internal/version"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 const summary = "AgentNet daemon: local coordination service for agents."

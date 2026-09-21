@@ -2,7 +2,7 @@
 
 ## Project
 
-AgentNet is a local-first coordination layer that allows agents running in different harnesses and on different machines to discover each other, exchange work safely, collaborate through bounded sessions, and produce signed decision records.
+AgentNet (project name: Dorylinae) is a local-first coordination layer that allows agents running in different harnesses and on different machines to discover each other, exchange work safely, collaborate through bounded sessions, and produce signed decision records.
 
 ## Source of Truth
 
@@ -60,6 +60,15 @@ A ticket is complete only when:
 3. Relevant `--help` and `--json` output is documented.
 4. Required audit-log behavior exists.
 5. The change has been manually tested where required.
+
+A phase is complete only when its final push ticket is done (see Repository and Push Policy).
+
+## Repository and Push Policy
+
+- Remote: `origin` = https://github.com/Magazem/Dorylinae-Agentnet. Go module path: `github.com/Magazem/Dorylinae-Agentnet` (ticket 0.1b aligns the code to it).
+- Every phase ends with a dedicated "push to origin" ticket that depends on all other tickets of that phase. It verifies a clean tree and passing build/vet/lint/tests, pushes the default branch (plain push, never force) and pushes an annotated tag `phase-N`.
+- The next phase's tickets must depend on that phase's push ticket.
+- A push failure is reported as a blocker; history is never rewritten to make a push succeed.
 
 ## Development Rules
 

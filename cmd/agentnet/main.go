@@ -11,10 +11,10 @@ import (
 	"os"
 	"time"
 
-	"dorylinae/internal/daemon"
-	"dorylinae/internal/ipc"
-	"dorylinae/internal/paths"
-	"dorylinae/internal/version"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 const summary = "AgentNet CLI: talks to the local agentnetd daemon."
@@ -48,6 +48,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "identity":
+		return runIdentity(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "agentnet: unknown command %q\n\n", args[0])
 		usage(stderr)
@@ -64,6 +66,7 @@ Usage:
 
 Commands:
   status    Show whether the daemon is running, its PID and uptime
+  identity  Print this agent's signed Agent Card
 
 Run 'agentnet <command> --help' for command flags.
 `, summary)

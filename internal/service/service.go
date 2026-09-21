@@ -11,6 +11,7 @@ package service
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -124,7 +125,7 @@ func (p Plan) Apply(ctx context.Context, r Runner) (Result, error) {
 		notInstalled bool
 	)
 	for _, s := range p.Steps {
-		if firstErr != nil && !(s.Op == OpRemove && s.Cleanup) {
+		if firstErr != nil && (s.Op != OpRemove || !s.Cleanup) {
 			continue
 		}
 		switch s.Op {
@@ -187,7 +188,7 @@ func encodeUTF16LE(s string) []byte {
 	out := make([]byte, 0, 2+2*len(u))
 	out = append(out, 0xFF, 0xFE) // BOM
 	for _, c := range u {
-		out = append(out, byte(c), byte(c>>8))
+		out = binary.LittleEndian.AppendUint16(out, c)
 	}
 	return out
 }

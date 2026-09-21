@@ -75,6 +75,15 @@ Result:
 | `uptime_seconds` | number | Seconds since start |
 | `version` | string | Daemon version |
 
+### `identity`
+
+Params: none (any params are ignored).
+
+Result: the signed Agent Card, see [agent-card.md](agent-card.md):
+`{"card": {...}, "signature": "<base64url>", "key_backend": "keychain|file"}`.
+The private key never appears in any IPC message; there is no method that
+returns or exports it.
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.
@@ -87,3 +96,7 @@ The `audit_events` table (`internal/audit`) records `daemon.start` and
 `daemon.stop` with `actor = "daemon"`. Detail JSON: `{"pid": N, "version": "..."}`.
 The table is append-only (triggers reject UPDATE and DELETE) and is not yet
 hash-chained; ticket 3.6 adds a chain column by migration.
+
+The daemon also records `identity.create` when it creates an identity or
+re-creates a missing card (detail in [agent-card.md](agent-card.md)); it holds
+the public key and key backend, never the private key.
