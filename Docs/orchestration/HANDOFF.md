@@ -85,7 +85,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | 0.8b fingerprints, trust, `peers verify/remove` | W2-Fingerprints | `fingerprints` / `w2/fingerprints` | no |
 | 0.8d pairing v2, relay side | W2-RelayV2 | `relay-v2` / `w2/relay-v2` | **yes** |
 | ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
-| 1.0c `internal/mail` seal/open | W2-Mail | `mail` / `w2/mail` | **yes** |
+| 1.0c `internal/mail` seal/open | committed `baa55f6` on `w2/mail`; **in Opus review** (W2-MailReviewer → `Docs/review/08-wave2-security-review.md`) | `mail` / `w2/mail` | **yes** |
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
@@ -93,7 +93,7 @@ To see live status: `team_members`, `team_task_list`, `git worktree list`.
 - **0.8c** pairing v2, daemon side. Carry the reviewer's follow-ups:
   - the MITM acceptance test now expects the **redeemer** to fail with `confirm_timeout`
     (not `bad_confirm`);
-  - export the canonical-JSON helpers from `internal/agentcard`;
+  - export the canonical-JSON helpers from `internal/agentcard` **and delete the copy in `internal/mail/canonical.go`**;
   - create the first mailbox key;
   - add the `pair_used_codes` table.
   Needs Opus security review.
