@@ -83,7 +83,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 | Ticket | Worker | Worktree / branch | Needs Opus review before merge |
 |---|---|---|---|
 | ~~0.8b fingerprints, trust, peers verify/remove~~ | merged `a8cb0a3` (migration 3 adds `peers.trust` + `mailbox_keys`; IPC errors `fingerprint_mismatch`, `bad_fingerprint`, `unknown_peer`) | — | — |
-| 0.8d pairing v2, relay side | W2-RelayV2 | `relay-v2` / `w2/relay-v2` | **yes** |
+| 0.8d pairing v2, relay side | committed `f06f841` on `w2/relay-v2` (rebased on main); **in Opus review** (W2-RelayReviewer → `Docs/review/08b-relay-v2-review.md`) | `relay-v2` / `w2/relay-v2` | **yes** |
 | ~~0.8e vector checker~~ | merged `8dd7297` | — | — |
 | 1.0c `internal/mail` seal/open | committed `baa55f6` on `w2/mail`; **in Opus review** (W2-MailReviewer → `Docs/review/08-wave2-security-review.md`) | `mail` / `w2/mail` | **yes** |
 
@@ -134,6 +134,9 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 - A local golangci-lint gofmt complaint about `tools/verifycard` is most likely a
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
+- Windows TempDir-cleanup test flakes still appear occasionally (identity, agentnetd) even after `322acd9`; filed on the board. Rerun once before blaming a change.
+- `gofmt -w` converts CRLF to LF across a whole worktree. Tell workers to run gofmt only on files they changed.
+- Merge order matters: rebase each remaining branch onto `main` after every merge.
 - Haiku summarizers were good enough for fact-gathering. Spot-check line counts and
   headings before trusting them (one reported "2000 lines" and wrote 464).
 - Workers' summaries are leads, not truth: verify key claims in code before reporting
