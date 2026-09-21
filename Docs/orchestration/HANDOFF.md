@@ -90,7 +90,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 |---|---|---|---|
 | 1.0e sender outbox (**migration 7**), Reseal, OnAck, key-miss re-seal, `status --json` outbox, two-daemon harness | W4-Outbox | `outbox` / `w4/outbox` | **yes, and it must also cover 1.0b + 1.0d** |
 | ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
-| Windows TempDir flake elimination (tests only, maybe `internal/testutil`) | W4-WinFlakes | `win-flakes` / `w4/win-flakes` | no |
+| ~~Windows TempDir flakes~~ | merged `a01c877`: use `internal/testutil.TempDir(t)` instead of `t.TempDir()` in any test that writes files. At the 1.0e merge, switch its new tests to it. | — | — |
 
 After 1.0e merges: 1.0f docs/CLI reconciliation, plus fill in step 11 of `tests/phase0-manual.md`, plus `agentnetd install --relay URL` (installed services get no relay URL today because launchd/systemd/schtasks do not inherit env), plus a Windows service log file. Then the owner runs M4 on two machines.
 
@@ -143,7 +143,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 - A local golangci-lint gofmt complaint about `tools/verifycard` is most likely a
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
-- Windows TempDir-cleanup test flakes still appear occasionally (identity, agentnetd) even after `322acd9`; filed on the board. Rerun once before blaming a change.
+- Windows TempDir-cleanup flakes (AV holds deleted files) are fixed by `internal/testutil.TempDir` (`a01c877`). New tests must use it.
 - `gofmt -w` converts CRLF to LF across a whole worktree. Tell workers to run gofmt only on files they changed.
 - Merge order matters: rebase each remaining branch onto `main` after every merge.
 - Haiku summarizers were good enough for fact-gathering. Spot-check line counts and
