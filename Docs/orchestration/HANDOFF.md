@@ -88,11 +88,11 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 ### In flight: Wave 4 (started 2026-09-21)
 | Ticket | Worker | Worktree / branch | Opus review |
 |---|---|---|---|
-| 1.0e sender outbox | committed on `w4/outbox`, rebased on main, full suite clean 3×, harness stable 5×. **In Opus review** (W4-DeliveryReviewer → `Docs/review/10-mail-delivery-review.md`), which covers 1.0b + 1.0d + 1.0e. Notes: IPC `mail_submit`; app kinds need `Options.MailKinds` (only `keys` built in); relay `peer_offline`/`peer_busy` → stays queued. | `outbox` / `w4/outbox` | **yes** |
+| ~~1.0e sender outbox~~ | merged `cdb9047` + review fixes `0052764` (retry/final race; harness plaintext checks now decode base64). Review `Docs/review/10-mail-delivery-review.md`: M3 needs an OWNER decision (meaning of `expired`), 7 Lows open. | — | — |
 | ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
 | ~~Windows TempDir flakes~~ | merged `a01c877`: use `internal/testutil.TempDir(t)` instead of `t.TempDir()` in any test that writes files. At the 1.0e merge, switch its new tests to it. | — | — |
 
-After 1.0e merges: 1.0f docs/CLI reconciliation, plus fill in step 11 of `tests/phase0-manual.md`, plus `agentnetd install --relay URL` (installed services get no relay URL today because launchd/systemd/schtasks do not inherit env), plus a Windows service log file. Then the owner runs M4 on two machines.
+1.0f is in flight (W4-DocsCLI, `docs-cli` / `w4/docs-cli`): docs/CLI reconciliation, plan table rows, `agentnetd install --relay`, Windows service log, `tests/phase0-manual.md` step 11, spec nits. No Opus review needed unless it touches crypto. Then the owner runs M4 on two machines.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
 
