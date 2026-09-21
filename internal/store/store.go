@@ -32,6 +32,16 @@ BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
 CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events
 BEGIN SELECT RAISE(ABORT, 'audit_events is append-only'); END;
 `},
+	{2, "peers", `
+CREATE TABLE peers (
+	public_key TEXT PRIMARY KEY,
+	name       TEXT NOT NULL,
+	harness    TEXT NOT NULL,
+	skills     TEXT NOT NULL CHECK (json_valid(skills)),
+	card       TEXT NOT NULL CHECK (json_valid(card)),
+	paired_at  TEXT NOT NULL
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

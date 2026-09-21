@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +18,9 @@ import (
 )
 
 const summary = "AgentNet daemon: local coordination service for agents."
+
+// RelayEnv supplies the relay URL when --relay is not given.
+const RelayEnv = "DORYLINAE_RELAY_URL"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -38,8 +42,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print version and exit")
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
+	relayURL := fs.String("relay", os.Getenv(RelayEnv), "relay WebSocket URL, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--version]\n  %[2]s install [--home DIR] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n\nFlags (run):\n", summary, name)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--version]\n  %[2]s install [--home DIR] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n\nFlags (run):\n", summary, name)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -66,7 +71,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		<-ready
 		_, _ = fmt.Fprintf(stdout, "%s listening on %s (db: %s)\n", name, p.Endpoint, p.DB)
 	}()
-	if err := daemon.Run(ctx, p, ready); err != nil {
+	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, Logger: logger}); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
 	}

@@ -84,6 +84,55 @@ Result: the signed Agent Card, see [agent-card.md](agent-card.md):
 The private key never appears in any IPC message; there is no method that
 returns or exports it.
 
+### `pair_new`
+
+Params: none. Asks the relay for a one-time code and waits at most one second.
+Result: a pairing status (below) with `role: "issuer"`, carrying `code` and
+`expires` if the relay answered in time.
+
+### `pair_redeem`
+
+Params: `{"code": "<code as typed>"}`. Redeems a code and waits at most one
+second. Result: a pairing status with `role: "redeemer"`.
+
+### `pair_status`
+
+Params: `{"pairing_id": "<id>"}`. Result: the pairing status.
+
+A pairing status is `{"pairing_id", "role": "issuer|redeemer", "state":
+"pending|complete|failed", "code"?, "expires"?, "peer"?, "error"?}`, described
+in [../cli/pair.md](../cli/pair.md). Setup failures (below) are IPC errors; a
+relay refusal or a bad card is a status with `state: "failed"`.
+
+### `peers`
+
+Params: none. Result: `{"peers": [{"public_key", "name", "harness", "skills",
+"paired_at"}]}`, see [../cli/peers.md](../cli/peers.md).
+
+Pairing setup error codes: `no_relay` (daemon has no relay), `relay_unavailable`
+(not connected), `bad_code`, `unknown_pairing`, `too_many_pairings`;
+`bad_request` for missing params.
+
+### `ping`
+
+Params: `{"peer": "<name or public key, optional leading @>"}`. Sends an
+encrypted ping over a Noise session ([session.md](session.md)), handshaking
+first if needed, and waits at most one second for the pong. Result: a ping
+status.
+
+### `ping_status`
+
+Params: `{"ping_id": "<id>"}`. Result: the ping status.
+
+A ping status is `{"ping_id", "peer": {"public_key", "name"}, "state":
+"pending|complete|failed", "rtt_ms"?, "handshake", "error"?}`, described in
+[../cli/ping.md](../cli/ping.md). A ping with no pong fails after 10 s
+(`timeout`); a relay refusal fails it with the relay's code (for example `queue_full`). Since ticket 0.7 an offline peer is not a refusal: the relay queues the handshake message and the ping times out unless the peer returns within 10 s.
+
+Ping setup error codes: `unknown_peer`, `ambiguous_peer` (several peers share
+the name), `no_relay`, `relay_unavailable`, `unknown_ping`, `too_many_pings`;
+`bad_request` for missing params.
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.
@@ -100,3 +149,10 @@ hash-chained; ticket 3.6 adds a chain column by migration.
 The daemon also records `identity.create` when it creates an identity or
 re-creates a missing card (detail in [agent-card.md](agent-card.md)); it holds
 the public key and key backend, never the private key.
+
+Pairing records `pair.start`, `pair.complete` and `pair.fail`; details are in
+[pairing.md](pairing.md#daemon-side-ticket-05b).
+
+Sessions record `session.open` and `session.reject` (tampered, replayed,
+reordered, unpaired or malformed session envelopes); details are in
+[session.md](session.md#rejection).

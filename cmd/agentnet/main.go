@@ -50,6 +50,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStatus(args[1:], stdout, stderr)
 	case "identity":
 		return runIdentity(args[1:], stdout, stderr)
+	case "pair":
+		return runPair(args[1:], stdout, stderr)
+	case "peers":
+		return runPeers(args[1:], stdout, stderr)
+	case "ping":
+		return runPing(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "agentnet: unknown command %q\n\n", args[0])
 		usage(stderr)
@@ -67,6 +73,9 @@ Usage:
 Commands:
   status    Show whether the daemon is running, its PID and uptime
   identity  Print this agent's signed Agent Card
+  pair      Pair with another machine using a one-time code
+  peers     List paired agents
+  ping      Round-trip an encrypted message to a paired agent
 
 Run 'agentnet <command> --help' for command flags.
 `, summary)
