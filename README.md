@@ -16,7 +16,9 @@ ticket 0.1**: a skeleton with no behaviour beyond `--help` and `--version`.
 | `cmd/agentnetd` | local daemon |
 | `cmd/relay` | relay server |
 | `internal/` | shared packages (placeholders for now) |
-| `docs/protocol/` | protocol and schema docs (written before the code that uses them) |
+| `Docs/protocol/` | protocol and schema docs (written before the code that uses them) |
+
+> Note: the plan and scope refer to docs/protocol/, but the existing plan lives in Docs/. On case-insensitive filesystems (Windows, macOS) they are the same directory, so the protocol docs sit at Docs/protocol/. Rename Docs/ to docs/ (owner decision) to match the plan on Linux.
 
 ## Build
 
