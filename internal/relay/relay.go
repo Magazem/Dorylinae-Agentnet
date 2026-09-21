@@ -45,6 +45,10 @@ type Options struct {
 	PairFailLimit int
 	// PairFailWindow is the rate limit window. Default 1m.
 	PairFailWindow time.Duration
+	// DisablePairingV1 refuses the v1 pairing frames (pair_new without lookup,
+	// pair_redeem with code) with pair_v1_disabled. The zero value keeps v1 on;
+	// cmd/relay sets it from --allow-pairing-v1.
+	DisablePairingV1 bool
 	// QueuePath is the SQLite file holding envelopes queued for offline peers.
 	// Empty keeps the queue in memory: it works, but is lost when the relay stops.
 	QueuePath string
@@ -91,6 +95,7 @@ func New(opts Options) *Server {
 func Open(opts Options) (*Server, error) {
 	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}}
 	s.pairs = newPairings(opts.PairTTL, opts.PairFailLimit, opts.PairFailWindow)
+	s.pairs.v1 = !opts.DisablePairingV1
 	if s.now == nil {
 		s.now = time.Now
 	}

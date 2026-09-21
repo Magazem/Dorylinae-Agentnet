@@ -45,8 +45,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("verbose", false, "also log every routed envelope (metadata only, never payloads)")
 	queueDB := fs.String("queue-db", "", "SQLite file holding envelopes queued for offline peers (default: relay-queue.db in the config directory)")
 	queueTTL := fs.Duration("queue-ttl", defaultQueueTTL, "how long a queued envelope waits for its recipient")
+	allowV1 := fs.Bool("allow-pairing-v1", false, "accept v1 pairing frames (relay-generated 10-character codes); default on when listening on loopback, off otherwise")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--verbose] [--version]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, envelope.ConnectPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, envelope.ConnectPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -71,6 +72,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 			return 2
 		}
+	}
+	v1 := *allowV1
+	explicit := false
+	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "allow-pairing-v1" })
+	if !explicit {
+		v1 = requireLoopback(*listen) == nil
 	}
 	if *queueTTL <= 0 {
 		_, _ = fmt.Fprintf(stderr, "%s: --queue-ttl must be positive\n", name)
@@ -100,7 +107,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		level = slog.LevelInfo
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL})
+	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, DisablePairingV1: !v1})
 	if err != nil {
 		_ = ln.Close()
 		_, _ = fmt.Fprintf(stderr, "%s: cannot open offline queue %s: %v\n", name, dbPath, err)

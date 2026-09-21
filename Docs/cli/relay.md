@@ -9,7 +9,7 @@ peer are stored in a SQLite file and delivered in order when the peer
 reconnects; they survive a relay restart. Tickets 0.4, 0.7.
 
 ```
-relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--verbose] [--version]
+relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]
 ```
 
 | Flag | Default | Meaning |
@@ -18,6 +18,7 @@ relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl
 | `--allow-non-loopback` | off | Permit `--listen` on a non-loopback address. Without it such an address is refused, because the Phase 0 relay has no TLS |
 | `--queue-db PATH` | `relay-queue.db` in the config dir (`$DORYLINAE_HOME`, else the OS user config dir + `dorylinae`) | SQLite file for envelopes queued for offline peers. Created, with its directory, if missing. If it cannot be opened the relay exits 1 with a message |
 | `--queue-ttl DURATION` | `168h` (7 days) | How long an envelope waits for its recipient before it is dropped. Must be positive |
+| `--allow-pairing-v1` | on if `--listen` is loopback, else off | Accept the v1 pairing frames (`pair_new` without `lookup`, `pair_redeem` with `code`). With it off they get `pair_v1_disabled`. Pass `--allow-pairing-v1=false` to turn it off on loopback. v2 pairing (lookup only, entry kept until `pair_cancel`, expiry or 3 redemptions) is always on. See [../protocol/pairing.md](../protocol/pairing.md#v1-compatibility) |
 | `--verbose` | off | Also log every connect, disconnect and routed envelope (routing metadata only: abbreviated keys, `type`, `id`, byte counts) |
 | `--version` | | Print the version and exit |
 | `--help`, `-h` | | Print usage and exit |

@@ -24,6 +24,7 @@ const (
 	OpPairCode   = "pair_code"
 	OpPairRedeem = "pair_redeem"
 	OpPairPeer   = "pair_peer"
+	OpPairCancel = "pair_cancel"
 )
 
 // ProtocolVersion is the relay protocol version.
@@ -44,6 +45,8 @@ const (
 	CodePairRateLimited = "pair_rate_limited"
 	CodePairLimit       = "pair_limit"
 	CodeBadPairing      = "bad_pairing"
+	CodeLookupTaken     = "pair_lookup_taken"
+	CodePairV1Disabled  = "pair_v1_disabled"
 )
 
 // NonceSize is the challenge nonce length in bytes.
@@ -60,12 +63,16 @@ type Control struct {
 	PublicKey string `json:"public_key,omitempty"`
 	Signature string `json:"signature,omitempty"`
 	Code      string `json:"code,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Ref       string `json:"ref,omitempty"`
+	// Lookup is the 5-character v2 pairing lookup. It is not the secret half.
+	Lookup  string `json:"lookup,omitempty"`
+	Message string `json:"message,omitempty"`
+	Ref     string `json:"ref,omitempty"`
 	// From is the sender key of the envelope an ack refers to (Ref is its id).
 	From string `json:"from,omitempty"`
 	// Card is an opaque signed Agent Card carried by pairing frames.
 	Card json.RawMessage `json:"card,omitempty"`
+	// Mbox is an opaque signed mailbox key announcement carried by v2 pairing frames.
+	Mbox json.RawMessage `json:"mbox,omitempty"`
 }
 
 // ErrorFrame is the decoded form of an error control frame.

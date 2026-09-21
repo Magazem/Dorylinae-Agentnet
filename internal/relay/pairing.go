@@ -12,18 +12,21 @@ import (
 
 // Pairing defaults, see Docs/protocol/pairing.md.
 const (
-	defaultPairTTL         = 10 * time.Minute
-	defaultPairFailLimit   = 5
-	defaultPairFailWindow  = time.Minute
-	maxOutstandingPerKey   = 5
-	limiterSweepThreshold  = 1024
-	pairCodeHashDomain     = "dorylinae-pair-code-v1\n"
-	pairEventIssue         = "pair_issue"
-	pairEventRedeem        = "pair_redeem"
-	pairEventFail          = "pair_fail"
-	pairReasonInvalid      = "invalid"
-	pairReasonRateLimited  = "rate_limited"
-	pairReasonIssuerAbsent = "issuer_offline"
+	defaultPairTTL          = 10 * time.Minute
+	defaultPairFailLimit    = 5
+	defaultPairFailWindow   = time.Minute
+	maxOutstandingPerKey    = 5
+	limiterSweepThreshold   = 1024
+	pairCodeHashDomain      = "dorylinae-pair-code-v1\n"
+	pairEventIssue          = "pair_issue"
+	pairEventRedeem         = "pair_redeem"
+	pairEventFail           = "pair_fail"
+	pairEventCancel         = "pair_cancel"
+	pairLookupHashDomain    = "dorylinae-pair-lookup-v2\n"
+	maxRedemptionsPerLookup = 3
+	pairReasonInvalid       = "invalid"
+	pairReasonRateLimited   = "rate_limited"
+	pairReasonIssuerAbsent  = "issuer_offline"
 )
 
 // PairStats are the relay's pairing counters. They hold no codes or cards.
@@ -32,6 +35,7 @@ type PairStats struct {
 	Redeemed    uint64
 	Invalid     uint64 // unknown, expired, used or malformed code
 	RateLimited uint64
+	LookupTaken uint64 // v2 pair_new refused because the lookup was outstanding
 }
 
 // pairEntry is one outstanding code. The code itself is never stored, only its hash.
@@ -40,6 +44,12 @@ type pairEntry struct {
 	issuerRef string
 	card      json.RawMessage
 	expires   time.Time
+
+	// v2 entries persist across redemptions (see redemptions) until cancelled,
+	// expired or exhausted. v1 entries are deleted on their one redemption.
+	v2          bool
+	mbox        json.RawMessage
+	redemptions int
 }
 
 // pairings holds outstanding codes and the redemption failure limiter.
@@ -50,8 +60,9 @@ type pairings struct {
 	entries map[[sha256.Size]byte]*pairEntry
 
 	lim limiter
+	v1  bool // v1 frames enabled
 
-	issued, redeemed, invalid, limited atomic.Uint64
+	issued, redeemed, invalid, limited, taken atomic.Uint64
 }
 
 func newPairings(ttl time.Duration, failLimit int, failWindow time.Duration) *pairings {
@@ -75,6 +86,10 @@ func hashCode(code string) [sha256.Size]byte {
 	return sha256.Sum256([]byte(pairCodeHashDomain + code))
 }
 
+func hashLookup(lookup string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(pairLookupHashDomain + lookup))
+}
+
 // PairStats returns a snapshot of the pairing counters.
 func (s *Server) PairStats() PairStats {
 	return PairStats{
@@ -82,6 +97,7 @@ func (s *Server) PairStats() PairStats {
 		Redeemed:    s.pairs.redeemed.Load(),
 		Invalid:     s.pairs.invalid.Load(),
 		RateLimited: s.pairs.limited.Load(),
+		LookupTaken: s.pairs.taken.Load(),
 	}
 }
 
@@ -93,6 +109,8 @@ func (s *Server) handleControl(c *conn, ctl *envelope.Control) bool {
 		s.pairNew(c, ctl)
 	case envelope.OpPairRedeem:
 		s.pairRedeem(c, ctl)
+	case envelope.OpPairCancel:
+		s.pairCancel(c, ctl)
 	case envelope.OpAck:
 		if err := s.q.ack(c.key, ctl.From, ctl.Ref); err != nil {
 			s.log.Warn("queue failed", "event", "queue_error", "op", "ack", "peer", short(c.key), "error", err)
@@ -114,11 +132,46 @@ func (s *Server) checkPairRequest(c *conn, ctl *envelope.Control) bool {
 		s.reject(c, envelope.CodeBadPairing, err.Error(), ctl.Ref)
 		return false
 	}
+	if ctl.Lookup != "" {
+		if err := envelope.CheckMbox(ctl.Mbox); err != nil {
+			s.reject(c, envelope.CodeBadPairing, err.Error(), ctl.Ref)
+			return false
+		}
+	}
 	return true
 }
 
+// v1Refused replies pair_v1_disabled and returns true if v1 is switched off.
+func (s *Server) v1Refused(c *conn, ref string) bool {
+	if s.pairs.v1 {
+		return false
+	}
+	s.reject(c, envelope.CodePairV1Disabled, "pairing v1 is disabled on this relay; use a v2 code", ref)
+	return true
+}
+
+// pairLookup normalises the lookup of a v2 request. It replies bad_pairing and
+// returns false if the lookup is malformed. An empty lookup (v1) is fine.
+func (s *Server) pairLookup(c *conn, ctl *envelope.Control) (string, bool) {
+	if ctl.Lookup == "" {
+		return "", true
+	}
+	lookup, ok := envelope.NormalizePairLookup(ctl.Lookup)
+	if !ok {
+		s.reject(c, envelope.CodeBadPairing, "lookup must be 5 characters of the pairing alphabet", ctl.Ref)
+	}
+	return lookup, ok
+}
+
 func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
+	if ctl.Lookup == "" && s.v1Refused(c, ctl.Ref) {
+		return
+	}
 	if !s.checkPairRequest(c, ctl) {
+		return
+	}
+	lookup, ok := s.pairLookup(c, ctl)
+	if !ok {
 		return
 	}
 	p := s.pairs
@@ -137,6 +190,26 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 	if outstanding >= maxOutstandingPerKey {
 		p.mu.Unlock()
 		s.reject(c, envelope.CodePairLimit, "too many outstanding pairing codes", ctl.Ref)
+		return
+	}
+	if lookup != "" {
+		h := hashLookup(lookup)
+		if p.entries[h] != nil {
+			p.mu.Unlock()
+			p.taken.Add(1)
+			s.log.Info("pairing lookup refused", "event", pairEventFail, "reason", "lookup_taken", "peer", short(c.key))
+			s.reject(c, envelope.CodeLookupTaken, "that lookup is already outstanding; generate a new code", ctl.Ref)
+			return
+		}
+		expires := now.Add(p.ttl)
+		p.entries[h] = &pairEntry{
+			issuer: c.key, issuerRef: ctl.Ref, expires: expires, v2: true,
+			card: append(json.RawMessage(nil), ctl.Card...), mbox: append(json.RawMessage(nil), ctl.Mbox...),
+		}
+		p.mu.Unlock()
+		p.issued.Add(1)
+		s.log.Info("pairing code issued", "event", pairEventIssue, "peer", short(c.key))
+		c.send(control(envelope.Control{Op: envelope.OpPairCode, Expires: expires.UTC().Format(time.RFC3339), Ref: ctl.Ref}))
 		return
 	}
 	var code string
@@ -167,7 +240,18 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 }
 
 func (s *Server) pairRedeem(c *conn, ctl *envelope.Control) {
+	if (ctl.Lookup == "") == (ctl.Code == "") {
+		s.reject(c, envelope.CodeBadPairing, "exactly one of lookup and code is required", ctl.Ref)
+		return
+	}
+	if ctl.Lookup == "" && s.v1Refused(c, ctl.Ref) {
+		return
+	}
 	if !s.checkPairRequest(c, ctl) {
+		return
+	}
+	lookup, ok := s.pairLookup(c, ctl)
+	if !ok {
 		return
 	}
 	p := s.pairs
@@ -187,12 +271,17 @@ func (s *Server) pairRedeem(c *conn, ctl *envelope.Control) {
 		s.reject(c, envelope.CodePairInvalid, "pairing code is invalid, expired or already used", ctl.Ref)
 	}
 
-	code, ok := envelope.NormalizePairCode(ctl.Code)
-	if !ok {
-		invalid()
-		return
+	var h [sha256.Size]byte
+	if lookup != "" {
+		h = hashLookup(lookup)
+	} else {
+		code, ok := envelope.NormalizePairCode(ctl.Code)
+		if !ok {
+			invalid()
+			return
+		}
+		h = hashCode(code)
 	}
-	h := hashCode(code)
 
 	p.mu.Lock()
 	e := p.entries[h]
@@ -221,17 +310,45 @@ func (s *Server) pairRedeem(c *conn, ctl *envelope.Control) {
 		s.reject(c, envelope.CodePeerOffline, "the code's issuer is not connected", ctl.Ref)
 		return
 	}
-	if !issuer.send(control(envelope.Control{Op: envelope.OpPairPeer, PublicKey: c.key, Card: ctl.Card, Ref: e.issuerRef})) {
+	if !issuer.send(control(envelope.Control{Op: envelope.OpPairPeer, PublicKey: c.key, Card: ctl.Card, Mbox: ctl.Mbox, Ref: e.issuerRef})) {
 		p.mu.Unlock()
 		s.reject(c, envelope.CodePeerBusy, "the code's issuer is not keeping up", ctl.Ref)
 		return
 	}
-	delete(p.entries, h)
+	if e.v2 {
+		e.redemptions++
+		if e.redemptions >= maxRedemptionsPerLookup {
+			delete(p.entries, h)
+		}
+	} else {
+		delete(p.entries, h)
+	}
 	p.mu.Unlock()
 
 	p.redeemed.Add(1)
 	s.log.Info("pairing completed", "event", pairEventRedeem, "issuer", short(e.issuer), "redeemer", short(c.key))
-	c.send(control(envelope.Control{Op: envelope.OpPairPeer, PublicKey: e.issuer, Card: e.card, Ref: ctl.Ref}))
+	c.send(control(envelope.Control{Op: envelope.OpPairPeer, PublicKey: e.issuer, Card: e.card, Mbox: e.mbox, Ref: ctl.Ref}))
+}
+
+// pairCancel deletes the sender's own v2 entry. It never replies and treats
+// unknown lookups and other keys' entries alike, so it is no oracle.
+func (s *Server) pairCancel(c *conn, ctl *envelope.Control) {
+	lookup, ok := envelope.NormalizePairLookup(ctl.Lookup)
+	if !ok {
+		return
+	}
+	h := hashLookup(lookup)
+	p := s.pairs
+	p.mu.Lock()
+	e := p.entries[h]
+	deleted := e != nil && e.v2 && e.issuer == c.key
+	if deleted {
+		delete(p.entries, h)
+	}
+	p.mu.Unlock()
+	if deleted {
+		s.log.Info("pairing cancelled", "event", pairEventCancel, "peer", short(c.key))
+	}
 }
 
 // limiter is a fixed-window failure counter per key.
