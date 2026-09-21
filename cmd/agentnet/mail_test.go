@@ -66,10 +66,7 @@ func TestMailSendNoteDelivered(t *testing.T) {
 
 	// The note lands in B's inbox and the ack marks A's outbox row delivered.
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if inboxCount(t, b, sent.ID) == 1 && outboxState(t, a, sent.ID) == mail.StateDelivered {
-			break
-		}
+	for inboxCount(t, b, sent.ID) != 1 || outboxState(t, a, sent.ID) != mail.StateDelivered {
 		if time.Now().After(deadline) {
 			t.Fatalf("not delivered: inbox=%d outbox=%q", inboxCount(t, b, sent.ID), outboxState(t, a, sent.ID))
 		}
