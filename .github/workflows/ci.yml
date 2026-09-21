@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make vet
+      - run: make test
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, goos: linux, ext: ""}
+          - {os: macos-latest, goos: darwin, ext: ""}
+          - {os: windows-latest, goos: windows, ext: ".exe"}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build all three binaries
+        shell: bash
+        run: make build
+      - name: Smoke test --version
+        shell: bash
+        run: |
+          for b in agentnet agentnetd relay; do
+            ./bin/$b${{ matrix.ext }} --version
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.goos }}
+          path: bin/
+
+  cross:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Cross-compile
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath ./cmd/...

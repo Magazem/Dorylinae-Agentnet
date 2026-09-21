@@ -1,0 +1,12 @@
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+*.db
+*.db-journal
+.orchestrator/
+.idea/
+.vscode/
+.DS_Store
