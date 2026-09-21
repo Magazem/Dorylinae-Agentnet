@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-21, Wave 4 in flight.
+Last updated: 2026-09-21, Waves 1-4 done; waiting on owner's two-machine run.
 
 ## 1. How this team runs
 
@@ -85,49 +85,18 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 0.8b `a8cb0a3`; 0.8d `099054e` + `6c78619`; 0.8e `8dd7297`; 1.0c `9e3ddf3` + review fixes `eb7d39e` (strict timestamps, fuzz). Reviews: `Docs/review/08-wave2-security-review.md`, `08b-relay-v2-review.md`.
 
 ### Wave 3: done (2026-09-21)
-0.8c `96ae3ac` + `e530aa3`; 1.0d `6835a6c`; 1.0b `663eb76` (migration 6 mailbox_keys_own; rotation 7/7/21 d; `keys` kind; key-miss reply; mail receiver ON by default; peers.mailbox_keys keeps max 2 per spec). 1.0b and 1.0d have NOT had an Opus review yet: the 1.0e review must cover them.
+0.8c `96ae3ac` + `e530aa3`; 1.0d `6835a6c`; 1.0b `663eb76` (migration 6 mailbox_keys_own; rotation 7/7/21 d; `keys` kind; key-miss reply; mail receiver ON by default; peers.mailbox_keys keeps max 2 per spec). 1.0b and 1.0d were reviewed together with 1.0e in `Docs/review/10-mail-delivery-review.md`.
 
-### In flight: Wave 4 (started 2026-09-21)
-| Ticket | Worker | Worktree / branch | Opus review |
-|---|---|---|---|
-| ~~1.0e sender outbox~~ | merged `cdb9047` + review fixes `0052764` (retry/final race; harness plaintext checks now decode base64). Review `Docs/review/10-mail-delivery-review.md`: M3 needs an OWNER decision (meaning of `expired`), 7 Lows open. | — | — |
-| ~~M4 manual checklist + smoke scripts~~ | merged `bfee756` (smoke 26/26 on Windows). Step 11 (offline mail) to be filled after 1.0e. Owner prep: relay LAN IP, port 8787 open, out-of-band channel for fingerprints, reboot of B | — | — |
-| ~~Windows TempDir flakes~~ | merged `a01c877`: use `internal/testutil.TempDir(t)` instead of `t.TempDir()` in any test that writes files. At the 1.0e merge, switch its new tests to it. | — | — |
+### Wave 4: done (2026-09-21)
+1.0e `cdb9047` + `0052764`; M4 `bfee756`; Windows flakes `a01c877`; CI fixes `8dd7100` + `be50cc2` (**CI fully green** on all jobs from `be50cc2`); 1.0f (redo) `13b4a6b` (install --relay, Windows service log, `agentnet mail send` + debug `note` kind under `DORYLINAE_DEBUG=1`, D10 14-day receive limit, docs/plan reconciled). Everything is pushed to origin/main.
 
-1.0f was LOST once (see hard rule 11) and is being REDONE by W4-DocsCLI-Redo in `docs-cli2` / `w4/docs-cli2` (same scope + D10 + debug `note` kind + `agentnet mail send`): docs/CLI reconciliation, plan table rows, `agentnetd install --relay`, Windows service log, `tests/phase0-manual.md` step 11, spec nits. No Opus review needed unless it touches crypto. Then the owner runs M4 on two machines.
+### Next
+1. **Owner** runs `tests/phase0-manual.md` on two real machines and sends back the results table. Fix whatever it finds.
+2. Then ask the owner whether to re-tag Phase 0 (e.g. `phase-0.1`). Tags need explicit OK.
+3. Phase 1: write the protocol docs FIRST (`team.md`, `presence.md`, `request.md`, ipc additions), Opus review, owner approval, then tickets 1.1 Teams, 1.2 Presence, 1.4 Request (idempotent resubmits per D10).
+4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
-
-### Wave 3 detail (reference)
-- **0.8c** pairing v2, daemon side. Carry the reviewer's follow-ups:
-  - the MITM acceptance test now expects the **redeemer** to fail with `confirm_timeout`
-    (not `bad_confirm`);
-  - export the canonical-JSON helpers from `internal/agentcard` **and delete the copy in `internal/mail/canonical.go`**;
-  - create the first mailbox key;
-  - add the `pair_used_codes` table.
-  Needs Opus security review.
-- **1.0b** mailbox keys: generate, store, signed announcements, rotation, deletion.
-  From 1.0d: 1.0b must register `Kinds["keys"]` (until then `keys` mail is neither stored nor acked, so senders retry) and wire key-miss recovery (step 3 reject). 1.0e must wire `OnAck` → outbox. Daemon `Options.MailboxKeys` nil means mail is ignored.
-- **1.0d** receiver dedupe and ack. **Include the relayclient change**: mail envelopes
-  must bypass the `(from,id)` seen-set so resends get re-acked (review H2).
-
-### Then: Wave 4
-- **1.0e** sender outbox, plus the two-daemon harness test: stop B; A sends; stop A;
-  start B; start A; delivered exactly once, with a relay restart mid-test.
-  Needs an Opus review, which must also cover 1.0d's receive/dedupe/ack path end to end. 1.0e needs a `Reseal` API in internal/mail (1.0c review L5).
-- **1.0f** docs and CLI reconciliation (`status --json` shows outbox counts).
-- **M4**: write `tests/phase0-manual.md`. The **owner** runs it on two real machines.
-
-### After that
-- Re-tag Phase 0 (ask the owner first), then write the Phase 1 protocol docs
-  (`team.md`, `presence.md`, `request.md`, ipc additions) **before** any Phase 1 code.
-- Remaining defects from `Docs/review/05-expert-review.md`:
-  - M1: the direct path is at-most-once; store-then-forward with ack.
-  - M2: relay abuse limits and TLS. Must land before hosted relay 4.1.
-  - The Low items.
-- 15 Low items from `Docs/review/07-spec-review.md` (14 not fixed).
-- 7 Low items from `Docs/review/08b-relay-v2-review.md`. Before 4.1: per-IP/account pairing limits (L5); make v1 pairing default-off for library callers of `relay.Options` (L1).
-- Spec nits from 0.8e: pairing.md says card_I is "333 bytes" (correct, é is 2 bytes; clarify); state explicitly that u32 length prefixes count canonical bytes.
 
 Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options.md` §5.
 
