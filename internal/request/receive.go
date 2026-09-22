@@ -365,7 +365,10 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
 	}
 	if out.newRow && !out.cancelled && !out.autoDecline && s.Notify != nil {
-		s.Notify(ctx, EventReceived, NotifyInfo{Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title})
+		s.Notify(ctx, EventReceived, NotifyInfo{
+			Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title,
+			RequestID: out.requestID, State: "pending", TeamID: out.teamID,
+		})
 	}
 	if s.Audit == nil {
 		return

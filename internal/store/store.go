@@ -226,6 +226,21 @@ CREATE TABLE request_cancels (
 ALTER TABLE requests ADD COLUMN result TEXT
 	CHECK (result IS NULL OR json_valid(result));  -- canonical(result); in and out rows
 `},
+	{13, "webhook_queue", `
+CREATE TABLE webhook_queue (
+    id           TEXT PRIMARY KEY,                 -- w-<32 hex>
+    event        TEXT NOT NULL,
+    body         TEXT NOT NULL,                    -- exact JSON bytes to send
+    state        TEXT NOT NULL CHECK (state IN ('pending', 'sent', 'failed')),
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    next_attempt TEXT,
+    created      TEXT NOT NULL,
+    updated      TEXT NOT NULL,
+    status       INTEGER,                          -- last HTTP status
+    error        TEXT
+);
+CREATE INDEX webhook_queue_due ON webhook_queue (state, next_attempt);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

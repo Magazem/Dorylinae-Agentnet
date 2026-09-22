@@ -334,7 +334,10 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
 	}
 	if out.result == "cancelled" && s.Notify != nil {
-		s.Notify(ctx, EventCancelled, NotifyInfo{Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title})
+		s.Notify(ctx, EventCancelled, NotifyInfo{
+			Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title,
+			RequestID: out.requestID, State: "cancelled", TeamID: out.teamID,
+		})
 	}
 	if s.Audit == nil {
 		return

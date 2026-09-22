@@ -301,6 +301,7 @@ func (s *Store) afterMirror(ctx context.Context, op *mail.Opened) {
 			s.Notify(ctx, event, NotifyInfo{
 				Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title,
 				Until: out.until, ResultStatus: out.resultStatus, HasResult: out.hasResult,
+				RequestID: out.requestID, State: out.state, TeamID: out.teamID,
 			})
 		}
 	}

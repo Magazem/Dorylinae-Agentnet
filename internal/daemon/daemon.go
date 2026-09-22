@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -269,7 +270,19 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	presenceReceiver.OnResync = presenceSender.MaybeResync
 
 	notifySettings := notify.NewSettings(st.DB())
-	notifyTrigger := &notify.Trigger{Settings: notifySettings, Audit: log, Log: opts.Logger}
+	webhookKS := webhookKeystore(p.Dir)
+	notifyWebhook := &notify.Webhook{
+		Settings: notifySettings,
+		Queue:    notify.NewQueue(st.DB()),
+		Secret:   webhookKS,
+		Audit:    log,
+		Log:      opts.Logger,
+	}
+	notifyTrigger := &notify.Trigger{Settings: notifySettings, Webhook: notifyWebhook, Audit: log, Log: opts.Logger}
+	wctx, stopWebhook := context.WithCancel(ctx)
+	whDone := make(chan struct{})
+	go func() { defer close(whDone); notifyWebhook.Run(wctx) }()
+	defer func() { stopWebhook(); <-whDone }()
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
@@ -312,7 +325,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	registerLifecycle(srv, reqStore, peerStore, teamStore)
-	registerNotify(srv, notifySettings, notify.Desktop{})
+	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -379,6 +392,19 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 		}
 	}
 	return id, ks, nil
+}
+
+// webhookKeystore builds the key storage for the webhook secret
+// (Docs/protocol/notify.md §Secret): keychain service "dorylinae", account
+// "webhook" (one webhook per daemon, unlike the per-config-dir identity
+// account), or file "webhook.key" in the config dir, owner-only. Honours
+// $DORYLINAE_KEYSTORE like the identity key does.
+func webhookKeystore(dir string) *keystore.Store {
+	file := keystore.NewFile(filepath.Join(dir, "webhook.key"))
+	if os.Getenv(identity.KeystoreEnv) == "file" {
+		return keystore.New(file)
+	}
+	return keystore.New(keystore.NewKeychain("webhook"), file)
 }
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned

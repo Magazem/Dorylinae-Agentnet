@@ -21,7 +21,7 @@ const notifyTestTimeout = 4 * time.Second
 // notifyBody is the machine-readable output of `notify [--json]`.
 type notifyBody struct {
 	OK bool `json:"ok"`
-	daemon.NotifyGetResult
+	daemon.NotifySetResult
 }
 
 // notifyTestBody is the machine-readable output of `notify --test [--json]`.
@@ -32,23 +32,35 @@ type notifyTestBody struct {
 
 var knownNotifyEvents = []string{"request.received", "request.accepted", "request.declined", "request.deferred", "request.completed", "request.cancelled"}
 
-const notifyUsage = `Configures desktop notifications.
+const notifyUsage = `Configures desktop notifications and the outgoing webhook.
 
 Usage:
-  agentnet notify [--json]                        show the settings
+  agentnet notify [--json]                                  show the settings
   agentnet notify --desktop on|off [--json]
-  agentnet notify --event <event>=on|off [--json]  repeatable
+  agentnet notify --event <event>=on|off [--json]           repeatable
+  agentnet notify --webhook URL [--format generic|slack|discord] [--webhook-title on|off] [--json]
+  agentnet notify --webhook off [--json]
+  agentnet notify --rotate-secret [--json]
   agentnet notify --test [--json]
 
 The events are request.received, request.accepted, request.declined,
 request.cancelled (on by default), request.deferred and request.completed
 (off by default).
 
+The webhook URL must be https:// (http:// only to localhost). When a webhook
+is first set, or on --rotate-secret, the signing secret is printed once
+(whsec_...). The body never contains the brief; it contains the title only
+with --webhook-title on.
+
 Flags:
-  --desktop on|off        turn desktop notifications on or off
-  --event EVENT=on|off    turn one event on or off; may be repeated
-  --test                  show a test notification
-  --json                  print machine-readable JSON on stdout
+  --desktop on|off             turn desktop notifications on or off
+  --event EVENT=on|off         turn one event on or off; may be repeated
+  --webhook URL|off            set or remove the webhook
+  --format generic|slack|discord  webhook payload format (default generic)
+  --webhook-title on|off       include the request title in the webhook (default off)
+  --rotate-secret               generate and print a new webhook signing secret
+  --test                       show a test notification and queue a test webhook
+  --json                        print machine-readable JSON on stdout
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
 `
@@ -90,6 +102,10 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
 	desktop := fs.String("desktop", "", `turn desktop notifications "on" or "off"`)
+	webhook := fs.String("webhook", "", `webhook URL, or "off" to remove it`)
+	format := fs.String("format", "", "webhook payload format: generic, slack or discord")
+	webhookTitle := fs.String("webhook-title", "", `include the request title in the webhook, "on" or "off"`)
+	rotateSecret := fs.Bool("rotate-secret", false, "generate and print a new webhook signing secret")
 	test := fs.Bool("test", false, "show a test notification")
 	events := make(eventFlags)
 	fs.Var(events, "event", "EVENT=on|off, repeatable")
@@ -106,8 +122,15 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 	if *desktop != "" && *desktop != "on" && *desktop != "off" {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", `--desktop must be "on" or "off"`)
 	}
-	if *test && (*desktop != "" || len(events) > 0) {
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--test cannot be combined with --desktop or --event")
+	if *webhookTitle != "" && *webhookTitle != "on" && *webhookTitle != "off" {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", `--webhook-title must be "on" or "off"`)
+	}
+	if *format != "" && *format != "generic" && *format != "slack" && *format != "discord" {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", `--format must be "generic", "slack" or "discord"`)
+	}
+	webhookSet := *webhook != "" || *format != "" || *webhookTitle != "" || *rotateSecret
+	if *test && (*desktop != "" || len(events) > 0 || webhookSet) {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--test cannot be combined with other flags")
 	}
 
 	if *test {
@@ -124,16 +147,30 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 
-	var res daemon.NotifyGetResult
-	if *desktop == "" && len(events) == 0 {
-		if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "notify_get", nil, &res); code != exitOK {
+	var res daemon.NotifySetResult
+	if *desktop == "" && len(events) == 0 && !webhookSet {
+		if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "notify_get", nil, &res.NotifyGetResult); code != exitOK {
 			return code
 		}
 	} else {
-		p := daemon.NotifySetParams{Events: map[string]bool(events)}
+		p := daemon.NotifySetParams{Events: map[string]bool(events), RotateSecret: *rotateSecret}
 		if *desktop != "" {
 			on := *desktop == "on"
 			p.Desktop = &on
+		}
+		if *webhook != "" {
+			url := *webhook
+			if url == "off" {
+				url = ""
+			}
+			p.WebhookURL = &url
+		}
+		if *format != "" {
+			p.Format = format
+		}
+		if *webhookTitle != "" {
+			on := *webhookTitle == "on"
+			p.Title = &on
 		}
 		if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "notify_set", p, &res); code != exitOK {
 			return code
@@ -141,7 +178,7 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(notifyBody{OK: true, NotifyGetResult: res})
+		_ = json.NewEncoder(stdout).Encode(notifyBody{OK: true, NotifySetResult: res})
 		return exitOK
 	}
 	desktopState := "off"
@@ -157,6 +194,18 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 	}
 	sort.Strings(on)
 	_, _ = fmt.Fprintf(stdout, "Events:   %s\n", strings.Join(on, ", "))
-	_, _ = fmt.Fprintln(stdout, "Webhook:  none")
+	if res.Webhook == nil {
+		_, _ = fmt.Fprintln(stdout, "Webhook:  none")
+	} else {
+		title := "off"
+		if res.Webhook.Title {
+			title = "on"
+		}
+		_, _ = fmt.Fprintf(stdout, "Webhook:  %s (%s, title %s), %d pending, %d failed in 7 days\n",
+			res.Webhook.URL, res.Webhook.Format, title, res.Webhook.Pending, res.Webhook.Failed7d)
+	}
+	if res.Secret != "" {
+		_, _ = fmt.Fprintf(stdout, "Secret:   %s\n", res.Secret)
+	}
 	return exitOK
 }

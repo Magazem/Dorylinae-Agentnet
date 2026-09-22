@@ -28,6 +28,9 @@ type NotifyInfo struct {
 	Until        time.Time // EventDeferred only
 	ResultStatus string    // EventCompleted only, with a result
 	HasResult    bool      // EventCompleted only
+	RequestID    string    // webhook payload only (1.8b)
+	State        string    // the request's state after this event; webhook payload only (1.8b)
+	TeamID       string    // webhook payload only; empty when not a team request (1.8b)
 }
 
 // NotifyFunc is called once, after commit, for each event in

@@ -31,12 +31,18 @@ type ShowFunc func(ctx context.Context, title, body string) error
 type Event struct {
 	Kind         string    // one of the Event* constants in settings.go
 	PeerName     string    // the peer's local name
+	PeerFP       string    // the peer's fingerprint (webhook payload only)
 	Type         string    // review, task or question
 	Urgency      string    // low, normal, high or blocking (EventReceived only)
 	Title        string    // the request title
 	Until        time.Time // EventDeferred only
 	ResultStatus string    // EventCompleted only, with a result: pass, fail, partial or n/a
 	HasResult    bool      // EventCompleted only
+	RequestID    string    // webhook payload only
+	State        string    // the request's state after this event; webhook payload only
+	TeamID       string    // webhook payload only; empty when not a team request
+	TeamName     string    // webhook payload only
+	CreatedAt    time.Time // when the event happened; webhook payload's "ts" and id timestamp
 }
 
 // Trigger dispatches lifecycle events to the desktop channel
@@ -46,6 +52,7 @@ type Event struct {
 type Trigger struct {
 	Settings *Settings
 	Show     ShowFunc  // nil uses Desktop{}.Show
+	Webhook  *Webhook  // nil disables the webhook channel (1.8b)
 	Audit    AuditSink // notify.fail; may be nil
 	Log      *slog.Logger
 	Now      func() time.Time // defaults to time.Now
@@ -127,6 +134,13 @@ func (t *Trigger) fire(ctx context.Context, ev Event) {
 		if err != nil || !on {
 			return
 		}
+	}
+	t.fireDesktop(ctx, ev)
+	t.fireWebhook(ctx, ev)
+}
+
+func (t *Trigger) fireDesktop(ctx context.Context, ev Event) {
+	if t.Settings != nil {
 		enabled, err := t.Settings.GetDesktopEnabled(ctx)
 		if err != nil || !enabled {
 			return
@@ -135,6 +149,15 @@ func (t *Trigger) fire(ctx context.Context, ev Event) {
 	title, body := buildText(ev)
 	if err := t.show()(ctx, title, body); err != nil {
 		t.reportFail(ctx, err)
+	}
+}
+
+func (t *Trigger) fireWebhook(ctx context.Context, ev Event) {
+	if t.Webhook == nil {
+		return
+	}
+	if err := t.Webhook.Enqueue(ctx, ev); err != nil {
+		t.log().Warn("notify: webhook enqueue failed", "event", "notify_webhook_enqueue_fail", "error", err)
 	}
 }
 
@@ -158,26 +181,52 @@ func (t *Trigger) reportFail(ctx context.Context, cause error) {
 // buildText renders the desktop title and body for ev
 // (Docs/protocol/notify.md §Text and sanitising).
 func buildText(ev Event) (title, body string) {
-	name := Clean(ev.PeerName, maxNameCodePoints)
+	title = titleLine(ev)
+	if ev.Kind == EventCompleted && ev.HasResult && ev.ResultStatus != "" {
+		title += fmt.Sprintf(" (%s)", ev.ResultStatus)
+	}
 	body = Clean(ev.Title, maxTitleCodePoints)
+	return title, body
+}
+
+// titleLine renders the event's title line without the completion status
+// suffix, shared by the desktop title (which always adds the suffix) and the
+// webhook "text" field (which adds it only with title:true,
+// Docs/protocol/notify.md §Payload).
+func titleLine(ev Event) string {
+	name := Clean(ev.PeerName, maxNameCodePoints)
 	switch ev.Kind {
 	case EventReceived:
-		title = fmt.Sprintf("%s %s request from %s", capitalize(ev.Urgency), ev.Type, name)
+		return fmt.Sprintf("%s %s request from %s", capitalize(ev.Urgency), ev.Type, name)
 	case EventAccepted:
-		title = fmt.Sprintf("%s accepted your %s request", name, ev.Type)
+		return fmt.Sprintf("%s accepted your %s request", name, ev.Type)
 	case EventDeclined:
-		title = fmt.Sprintf("%s declined your %s request", name, ev.Type)
+		return fmt.Sprintf("%s declined your %s request", name, ev.Type)
 	case EventDeferred:
-		title = fmt.Sprintf("%s deferred your %s request until %s", name, ev.Type, ev.Until.Local().Format("2006-01-02 15:04"))
+		return fmt.Sprintf("%s deferred your %s request until %s", name, ev.Type, ev.Until.Local().Format("2006-01-02 15:04"))
 	case EventCompleted:
-		title = fmt.Sprintf("%s completed your %s request", name, ev.Type)
-		if ev.HasResult && ev.ResultStatus != "" {
-			title += fmt.Sprintf(" (%s)", ev.ResultStatus)
-		}
+		return fmt.Sprintf("%s completed your %s request", name, ev.Type)
 	case EventCancelled:
-		title = fmt.Sprintf("%s cancelled their %s request", name, ev.Type)
+		return fmt.Sprintf("%s cancelled their %s request", name, ev.Type)
+	default:
+		return ""
 	}
-	return title, body
+}
+
+// buildWebhookText renders the webhook "text" field: the title line, plus
+// ": <title>" when title is true (Docs/protocol/notify.md §Payload).
+func buildWebhookText(ev Event, title bool) string {
+	if ev.Kind == EventTest {
+		return "agentnet test notification"
+	}
+	text := titleLine(ev)
+	if title && ev.Kind == EventCompleted && ev.HasResult && ev.ResultStatus != "" {
+		text += fmt.Sprintf(" (%s)", ev.ResultStatus)
+	}
+	if title {
+		text += ": " + Clean(ev.Title, maxTitleCodePoints)
+	}
+	return text
 }
 
 func capitalize(s string) string {

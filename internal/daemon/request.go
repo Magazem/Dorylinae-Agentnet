@@ -101,7 +101,7 @@ type RequestSubmitResult struct {
 // the sending path (Submit, called by request_submit below).
 func newRequestStore(db *sql.DB, self string, ob *mail.Outbox, log *audit.Log, ts *team.Store, nonLoopbackRelay bool, trigger *notify.Trigger, ps *peers.Store) *request.Store {
 	return &request.Store{
-		DB: db, Self: self, Outbox: ob, Audit: log, Notify: notifyAdapter(trigger, ps),
+		DB: db, Self: self, Outbox: ob, Audit: log, Notify: notifyAdapter(trigger, ps, ts),
 		TeamActive: func(ctx context.Context, tx *sql.Tx, teamID string) (bool, error) {
 			t, err := ts.GetTx(ctx, tx, teamID)
 			if err != nil {
