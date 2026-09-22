@@ -78,6 +78,8 @@ Resumed 2026-09-22 after park; the 1.4c WIP branch was finished and merged. Live
 
 **Owner idea (2026-09-22), pending answers:** "own-device helper" — a Claude Code on another device/environment acts as a sub-agent of the main one (e.g. run tests on another OS), same product primitives (self-pairing, requests, inbox, complete). Proposed: Phase 1 = optional size-capped **result payload on `request.complete`** (1.6a spec change) + make 1.H the same-owner two-device scenario; Phase 2 = auto-accept for own devices via scoped grants (RCE risk; opt-in). Owner (2026-09-22): must be scoped so nobody can be tricked into becoming a subordinate. Proposed rules (awaiting owner OK to record as D13): separate `device` trust (never from team/roster/pairing); dedicated link flow confirmed on BOTH devices; only the obeying device can make itself a helper and it holds the scope locally (types, repos/paths, commands, expiry); off by default, audited, revocable either side; out-of-scope requests fall back to normal inbox; one-way hierarchy. Phase 1: optional result payload on `request.complete` only; rest in Phase 2 with grants.
 
+**Owner ask (2026-09-22): consumer onboarding.** Wants install → one-time setup/login → one-command connect. Plan has it in Phase 4 (4.1 hosted relay, 4.2 accounts, 4.4 installers + doctor, 4.5 docs); connect is already one command (`team join <code>`). Proposed (awaiting answer): add an explicit Phase 4 acceptance test (clean machine, 3 commands, no config files, 3 OSes) and optionally an early `agentnet setup` wrapper after Phase 1 or during Phase 2.
+
 Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account binding
 (needed by 4.1/4.2); `Docs/` vs `docs/` casing; work rhythm (part-time vs full-time).
 
