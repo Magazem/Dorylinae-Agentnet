@@ -99,7 +99,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | Work | Worker | Worktree | Review |
    |---|---|---|---|
    | ~~Spec amendment per D11~~ | merged `e973b45` (cancel + tombstone + `request.cancelled` confirm kind; caps 64 KiB total `request_too_large`; 1.H; known limitations). Owner confirmed (D12): cancel gives **no** urgency-budget refund. | — | — |
-   | 1.1a peers trust team (migration 8) | committed `da9b4d3` on `p1/t1-1a`; in Opus review (R-1.1a → `Docs/review/14-1.1a-review.md`) | `t1-1a` | **Opus** |
+   | ~~1.1a peers trust team~~ | merged `eab33c6` + review fix `669dc67` (review 14). Rule for 1.1b: roster apply writes teams/team_members BEFORE GCIntroduced in the same tx. | — | — |
+   | 1.1b team store + kinds (migration 9) | T-1.1b | `t1-1b` | **Opus** |
    | 1.2a relay ephemeral envelopes | committed `0984bca` on `p1/t1-2a`; in Opus review (R-1.2a → `Docs/review/15-1.2a-review.md`) | `t1-2a` | **Opus** |
    | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
