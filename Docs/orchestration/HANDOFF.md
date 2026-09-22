@@ -6,19 +6,9 @@ every owner decision, and before you expect a context reset.
 
 Last updated: 2026-09-22, resumed after park.
 
-## 0. RESUME HERE (parked 2026-09-22; RESUMED same day — see §4 for live state)
+## 0. Status
 
-State at park:
-- **main** is pushed and CI-green up to `bc965e4` plus docs. Phase 1 merged: 1.1a, 1.1b, 1.1c, 1.1d, 1.2a, 1.2b, 1.2c, 1.2d, 1.3, 1.4a, 1.4b, spec amendment (D11/D12). Migrations 1–11 on main.
-- **Only open branch: `p1/t1-4c`** (worktree `AgentNet-wt/t1-4c`): 1.4c committed and rebased on main *before* 1.3 merged, plus the reviewer's uncommitted WIP (`Docs/review/19-1.4c-review.md` marked WIP, and any edits it listed). Resume: spawn a fresh Opus reviewer on that worktree with the original 1.4c review brief (see `team_task_list`, task "Review 1.4c") plus "continue from the WIP review file". Then commit, rebase onto main (expect conflicts in internal/daemon/daemon.go and status.go with 1.3: keep both sides), test x2, lint, merge, push.
-- WIP review (reviewer parked cleanly): 2 High, 2 Medium, 1 Low fixed so far; 5 Low open; details in `Docs/review/19-1.4c-review.md` on the branch. `TestRequestOfflineQueued` root cause was 1.2c wiring (relay link closed before goodbye on graceful stop); fixed in daemon.go. The tree was NOT rebuilt/re-run after the last edit: first step on resume is build + test x2 + lint. Branch `p1/t1-4c` is also pushed to origin (WIP commits; squash or keep, never merge WIP without the review finishing).
-- No other workers and no other worktrees. `git worktree list` should show only main and t1-4c.
-
-Next after 1.4c: **1.6a** (lifecycle kinds, state machine incl. request.cancel/cancelled per D11/D12, sender mirror, request show/list/resend; Opus review) → 1.6b inbox → 1.7 urgency (derive vector from formula) → 1.8a desktop notify (own code, no beeep) → 1.8b webhook (migration 13) → 1.9 → 1.H headless harness → 1.P push (tag only with owner OK).
-
-**Waiting on the owner (ask first thing on resume):**
-1. D13 and D14 approved 2026-09-22. Before dispatching 1.6a: have an Opus worker add the D14 result payload to request.md (size cap, fields, audit without content) and the 1.6a ticket.
-2. Owner runs `tests/phase0-manual.md` on two machines on the evening of 2026-09-22 (no second PC before then).
+Resumed 2026-09-22 after park; the 1.4c WIP branch was finished and merged. Live state is in §4. Owner still owes the Phase 0 two-machine run (`tests/phase0-manual.md`), planned for the evening of 2026-09-22.
 
 ## 1. How this team runs
 
@@ -125,7 +115,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
-   | 1.4c request kind + request_submit + CLI | WIP branch `p1/t1-4c` (9d9259f) verified to build + pass tests on resume; review being finished by R-1.4c-2 (Opus). | `t1-4c` | **Opus** |
+   | ~~1.4c request kind + submit + CLI~~ | merged (review 19: 2 High + 4 Medium fixed; goodbye now sent before relay close on graceful stop; 9 Lows open) | — | — |
+   | 1.6a lifecycle kinds + state machine + cancel (D11/D12) + result payload (D14, migration 12) + sender mirror + request show/list/resend | T-1.6a | `t1-6a` | **Opus** |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
