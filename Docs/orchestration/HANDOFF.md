@@ -125,7 +125,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.8a desktop notify~~ | merged `f96dde1` + review fixes `5b4819f` (review 21: notify-send backslash escaping, bounded notification queue) | — | — |
    | ~~CLI dash-key bug~~ | merged `4e27bc4` (parseInterspersed: only defined flags are flags; key-shaped tokens are positional; `--` supported) | — | — |
    | ~~1.8b webhook~~ | merged `61a0ec2` + review fixes `8eeea92` (review 22; loopback webhook URLs allowed: only local IPC sets the URL) | — | — |
-   | 1.9 offline e2e + audit no-content + docs reconciliation + tests/phase1-manual.md checklist | T-1.9 | `t1-9` | no |
+   | ~~1.9 offline e2e + audit no-content + docs~~ | merged `0e616ae` (no bugs found; README + phase1-manual checklist updated) | — | — |
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
