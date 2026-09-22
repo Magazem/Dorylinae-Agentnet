@@ -234,6 +234,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `unknown_request`, `ambiguous_request` | Request reference not found, or it matches `in` rows from several peers (pass `from`) |
 | `bad_state` | Lifecycle transition, `request_resend` or `request_cancel` is not allowed in the current state (the message names the state) |
 | `request_too_large` | `request_submit`: the canonical request object is over 65536 bytes ([request.md §Size limits](request.md#size-limits)) |
+| `result_too_large` | `request_complete`: the canonical `request.complete` body is over 65536 bytes ([request.md §Result payload](request.md#result-payload-d14)) |
 | `idempotency_conflict` | Same `idempotency_key` for this peer with different params |
 | `bad_webhook` | Webhook URL rejected (scheme, host or length) |
 
@@ -288,6 +289,7 @@ field).
   "created", "received_at"?: "<in only>", "state", "state_at": "<time>"|null,
   "deferred_until"?, "due"?: true, "decline_code"?, "reason"?, "note"?,
   "cancel"?: "requested"|"refused",
+  "result"?: {"status", "summary"?, "exit_code"?, "output"?, "artifacts"?, "output_bytes"},
   "priority"?: 3000,
   "delivery"?: "queued"|"relayed"|"delivered"|"expired"|"failed"|"unknown",
   "mail_id"
@@ -299,20 +301,26 @@ outbox state of `mail_id`, or `unknown` once pruned. `out` views also carry `"pr
 <presence brief>` for the peer. `state` may be `cancelled` on both sides. `cancel` is present
 on `out` views once the sender asked to cancel ([request.md §Cancel](request.md#cancel-od-p1-11)).
 For a cancelled `in` view, `reason` is the sender's cancel reason.
+`result` is present on `completed` views whose `request.complete` carried one
+([request.md §Result payload](request.md#result-payload-d14)), on both sides. It is the stored
+canonical result plus the derived `output_bytes` (0 without `output`). `request_show` and the
+lifecycle methods return it in full; `request_list` and `inbox_list` **omit `output`** and
+keep `output_bytes`, so list results stay small.
 
 | Method | Params | Result |
 |---|---|---|
-| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup) |
-| `request_list` | `{"state"?, "team"?, "peer"?}` (`state` includes `cancelled`) | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first |
+| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup). A `result` is shown in full, with `output` |
+| `request_list` | `{"state"?, "team"?, "peer"?}` (`state` includes `cancelled`) | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first. A `result` omits `output` |
 | `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` with no `cancel`, its mail is `expired` or `failed`, and the request is under 21 d old |
 | `request_cancel` | `{"id", "reason"?}` | `{"request": <out view>, "mail_id": "<cancel mail>"\|null, "duplicate": bool}`. Sender only (`out` rows; `unknown_request` otherwise). Allowed while the mirror state is `pending` or `deferred`. `bad_state` when it is `accepted`, `declined` or `completed`. Idempotent: an already `cancelled` row, or a cancel still in flight, returns `duplicate: true` and sends nothing. `reason`: 1–500 code points. Returns at once; the state becomes `cancelled` when the recipient confirms |
 | `inbox_list` | `{"team"?, "all"?: bool}` | `{"requests": [<in view>]}` in [inbox order](request.md#inbox-16) |
 | `request_accept` | `{"id", "from"?}` | `{"request": <in view>, "mail_id"}` |
 | `request_decline` | `{"id", "from"?, "reason"}` | Same. `reason` is required, 1–500 code points |
 | `request_defer` | `{"id", "from"?, "until": "<RFC 3339 or duration>"}` | Same. `until` must be in the future and at most 90 d away |
-| `request_complete` | `{"id", "from"?, "note"?}` | Same |
+| `request_complete` | `{"id", "from"?, "note"?, "result"?: {"status": "pass"\|"fail"\|"partial"\|"n/a", "summary"?, "exit_code"?, "output"?, "artifacts"?: [{"url"?, "branch"?, "commit"?, "path"?}]}}` | Same. `result` per [request.md §Result payload](request.md#result-payload-d14): `bad_request` naming the field (`result.output`, …), or `result_too_large` when the whole complete body is over 65536 bytes |
 
-Lifecycle errors: `unknown_request`, `ambiguous_request`, `bad_state`, `bad_request`.
+Lifecycle errors: `unknown_request`, `ambiguous_request`, `bad_state`, `bad_request`, and
+`result_too_large` (`request_complete` only).
 
 ### Notifications
 

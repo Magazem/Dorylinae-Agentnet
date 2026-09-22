@@ -56,10 +56,12 @@ Desktop text, where `Urgency` is capitalised and `(from)` is the local peer name
 | `request.accepted` | `<name> accepted your <type> request` | `<title>` |
 | `request.declined` | `<name> declined your <type> request` | `<title>` |
 | `request.deferred` | `<name> deferred your <type> request until <until, local time>` | `<title>` |
-| `request.completed` | `<name> completed your <type> request` | `<title>` |
+| `request.completed` | `<name> completed your <type> request`, plus ` (<status>)` when the completion carried a [result](request.md#result-payload-d14) | `<title>` |
 | `request.cancelled` | `<name> cancelled their <type> request` | `<title>` |
 
-The brief, reasons, notes and artifacts are **never** shown.
+The brief, reasons, notes and artifacts are **never** shown. Of a completion
+[result](request.md#result-privacy) (D14), only the `status` (`pass`, `fail`, `partial` or
+`n/a`) is shown; its summary, exit code, output and artifacts never are.
 
 ## Desktop
 
@@ -136,8 +138,13 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
 - `id`: `w-` + 32 hex, unique per delivery (the replay id). `ts`: when the event was created.
 - `request.title` is present **only** with `title: true`. Never included: the brief, artifacts,
   requested grant, reasons, notes, public keys, deadline and `urgency_declared`.
+- `request.result_status` (`pass`, `fail`, `partial` or `n/a`) is present only on
+  `request.completed` for a completion that carried a [result](request.md#result-payload-d14),
+  and **only with `title: true`** (OD-P1-9, D14). The result's summary, exit code, output and
+  artifacts are never included.
 - `text`: the desktop title line (sanitised), without the title unless `title: true`, when
-  `: <title>` is appended.
+  `: <title>` is appended. With `title: false` the ` (<status>)` suffix of
+  `request.completed` is left out too.
 - `slack` format: the generic object, with `&`, `<` and `>` in `text` escaped as `&amp;`,
   `&lt;` and `&gt;` (Slack's required escaping). Unescaped, a peer name or title such as
   `<!channel>` or `<https://evil|click>` would ping a whole channel or render a disguised
@@ -176,7 +183,7 @@ verify. The signature is for custom receivers.
 
 ### Delivery
 
-- Queue table `webhook_queue` (migration 12). Enqueue in the trigger, and a worker sends.
+- Queue table `webhook_queue` (migration 13; 12 is `requests_result`, D14). Enqueue in the trigger, and a worker sends.
 - `POST` with a 10 s timeout. **Redirects are not followed.** A 3xx is a permanent failure.
   Proxy from the environment (`http.ProxyFromEnvironment`). TLS verification is always on.
 - `2xx` → `sent`. `408`, `429`, `5xx` or a network error → retry. Other `4xx` → `failed`.
@@ -190,7 +197,7 @@ verify. The signature is for custom receivers.
   `"agentnet test notification"`) and shows a desktop notification.
 
 ```sql
--- migration 12 (1.8b): webhook_queue
+-- migration 13 (1.8b): webhook_queue
 CREATE TABLE webhook_queue (
     id           TEXT PRIMARY KEY,                 -- w-<32 hex>
     event        TEXT NOT NULL,
@@ -217,7 +224,9 @@ marks every pending row `failed` (`error = "removed"`).
 | Event, type, urgency, state | yes | yes |
 | Peer name, team name | yes (sanitised) | yes (sanitised), plus the fingerprint and team id |
 | Title | yes | only with `--webhook-title on` |
+| Completion result `status` (D14) | yes | only with `--webhook-title on` |
 | Brief, artifacts, reasons, notes, grant, keys | never | never |
+| Result summary, exit code, output, artifacts (D14) | never | never |
 
 ## Audit
 

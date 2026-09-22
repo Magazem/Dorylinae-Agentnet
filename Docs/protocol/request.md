@@ -2,7 +2,9 @@
 
 Status: **draft for review**. Covers Phase 1 tickets 1.4 (request object), 1.5 (the brief is
 written by the sender), 1.6 (inbox and lifecycle), 1.7 (urgency guards) and 1.9 (offline
-handling), plus `request.cancel` and the body size limits (owner decision D11). The ticket split is 1.4a–1.9 in
+handling), plus `request.cancel` and the body size limits (owner decision D11), and the
+optional [result payload](#result-payload-d14) on `request.complete` (owner decision D14).
+The ticket split is 1.4a–1.9 in
 [../review/11-phase1-tickets.md](../review/11-phase1-tickets.md). Nothing here is
 implemented yet. Change this document first.
 
@@ -85,7 +87,9 @@ members, the `{"request": …}` wrapper and the signature is under 67 KiB, so **
 always fits in one mail** with a wide margin. The mail cap is the transport backstop (and the
 relay frame limit). The request caps are the application limit: they keep `requests.body`,
 `mail_inbox`, the inbox view and IPC lines small, and they are what users and agents see.
-The lifecycle bodies are bounded by their own fields (`reason` 500, `note` 2000 code points).
+The lifecycle bodies are bounded by their own fields (`reason` 500, `note` 2000 code points),
+and `request.complete` with a [result](#result-payload-d14) by its own total cap of 65536
+bytes (`MaxCompleteBody`), so it also always fits in one mail.
 
 ### Requested grant
 
@@ -241,7 +245,7 @@ Each body is strict, with exactly the listed members:
 | `request.accept` | `{"at", "request", "seq"}` | |
 | `request.decline` | `{"at", "code", "reason"?, "request", "seq"}` | `code`: `user`, `not_team_member`, `unknown_team` or `unverified_peer`. `reason`: 1–500 code points, required when `code = user`, absent otherwise |
 | `request.defer` | `{"at", "request", "seq", "until"}` | `at < until ≤ at + 90 d` |
-| `request.complete` | `{"at", "note"?, "request", "seq"}` | `note`: 1–2000 code points |
+| `request.complete` | `{"at", "note"?, "request", "result"?, "seq"}` | `note`: 1–2000 code points. `result`: the optional [result payload](#result-payload-d14) (D14) |
 | `request.cancelled` | `{"at", "request", "seq"}` | Confirms a [cancel](#cancel-od-p1-11). Sent only by the recipient's daemon, never by a user action |
 
 `request` is the request id, `seq` is an integer ≥ 1 (the row's `state_seq` after this
@@ -283,13 +287,103 @@ pending ───────────▶ accepted ────────�
 Any other transition is `bad_state` at IPC (so `accept` of a `cancelled` request is
 `bad_state`). For each allowed action, in **one transaction**:
 update the `in` row (`state`, `state_seq += 1`, `state_at`, plus `deferred_until`,
-`decline_code = user` with `reason`, or `note`), set `first_response` and
+`decline_code = user` with `reason`, or `note` and `result`), set `first_response` and
 `first_response_at` if they are NULL and the action is `accept`, `decline` or `defer`, store
 the lifecycle mail as `last_reply`, and `Outbox.SubmitTx` the lifecycle mail. After commit,
 write the audit event ([Audit](#audit-and-metrics)).
 
 Phase 2 (2.1) replaces `accepted → completed` with a session. `request.complete` stays valid
 for requests that never open a session.
+
+### Result payload (D14)
+
+Owner decision D14: `request.complete` may carry an optional, size-capped `result`, so the
+recipient (a teammate, or later an own-device helper, D13) can return what it produced: a
+pass/fail status, a one-line summary, an exit code, a text output such as a test log, and
+artifact pointers. The result is **data for the sender's agent**. Neither daemon executes,
+fetches or acts on it, and it grants nothing.
+
+`result` is an object with `status` and any of the other members, and no others:
+
+| Member | Req. | Type | Rules |
+|---|---|---|---|
+| `status` | yes | string | `pass`, `fail`, `partial` or `n/a` |
+| `summary` | no | string | 1–280 code points, no control characters (one line) |
+| `exit_code` | no | integer | −2147483648 to 4294967295 (a POSIX signed or a Windows unsigned 32-bit code) |
+| `output` | no | string | 1–32768 bytes of UTF-8. No control characters except `\n` and `\t`, so no ESC: a peer's output cannot drive the sender's terminal |
+| `artifacts` | no | array | 1–20 artifacts in the [request artifact shape](#artifacts), with the same member rules. Absent, never empty |
+
+Optional members are absent, never `null` or empty. `result` is allowed only on
+`request.complete`. A `request.complete` without `result` is exactly the pre-D14 body, so a
+completion with only a note (or nothing) is unchanged.
+
+**Canonical form.** The complete body is canonical JSON like every body
+([mail.md](mail.md)), so `result` has its members sorted and integers written as-is.
+`canonical(result)` is what is stored ([Tables](#tables)) and shown, and `result_bytes =
+len(canonical(result))`, `output_bytes = len(output)` in UTF-8 (0 when absent).
+
+**Caps.** `internal/request.ValidateComplete` checks them. It is run by the recipient at
+`request_complete` and by the sender mirror on receipt ([Sender mirror](#sender-mirror) step 1):
+
+| Limit | Value | Recipient IPC error (CLI exit 1) | Sender mirror |
+|---|---|---|---|
+| `result.status` | one of the four values | `bad_request`, field `result.status` | `bad_body` |
+| `result.summary` | 1–280 code points (at most 1120 bytes) | `bad_request`, field `result.summary` | `bad_body` |
+| `result.exit_code` | −2147483648 to 4294967295 | `bad_request`, field `result.exit_code` | `bad_body` |
+| `result.output` | 1–32768 bytes of UTF-8 | `bad_request`, field `result.output` | `bad_body` |
+| `result.artifacts` count | 1–20 | `bad_request`, field `result.artifacts` | `bad_body` |
+| Each result artifact member | as in [Size limits](#size-limits): `url` 1–2048, `branch` 1–255, `commit` 7–64, `path` 1–1024 | `bad_request`, field `result.artifacts[i].<member>` | `bad_body` |
+| `note` | 1–2000 code points (unchanged) | `bad_request`, field `note` | `bad_body` |
+| **Total body** | `len(canonical(complete body))` ≤ **65536 bytes** (`MaxCompleteBody`) | **`result_too_large`** (the message gives the size and the limit) | `bad_body` |
+
+As for requests, the total is checked **after** the field checks: an output of 32768 `"`
+characters is 65536 bytes canonical on its own, and 20 maximal artifacts come to about
+68 KiB. A result that fails only the total cap must shrink its output or artifacts. The
+daemon never truncates. On receipt a failure is `mail.ErrBadBody`
+([Invalid bodies](#invalid-bodies)) and the mirror keeps its previous state; a
+well-behaved recipient never causes this, because it validates with the same code first. A
+complete body of 65536 bytes plus the `msg` members and the signature is under 67 KiB, so it
+always fits in one mail under `MaxMailPlaintext`.
+
+**Recipient (`request_complete {id, from?, note?, result?}`).** Validate as above, then, in
+the one transaction of the state change ([State machine](#state-machine-authoritative-on-the-recipient)),
+also store `canonical(result)` in the `in` row's `result`. The lifecycle mail is the row's
+`last_reply`, so every later echo (a duplicate request, a resend after `expired`, a refused
+cancel) re-sends the same body with the same result.
+
+**Sender.** [Sender mirror](#sender-mirror) step 4 stores `canonical(result)` in the `out`
+row's `result` when it applies the `complete`. A `complete` ignored by the `seq` rule changes
+nothing, including the result. The sender reads it with:
+
+- `agentnet request show <id>` (IPC `request_show`): the full `result`, including `output`,
+  plus the derived `output_bytes`;
+- `agentnet request list --json` (IPC `request_list`): `result` **without `output`**, with
+  `output_bytes`, so a list of many completed requests stays small (an agent calls `request
+  show` for the log);
+- the `request.completed` notification, which never carries the output
+  ([Result privacy](#result-privacy)).
+
+On the recipient, `inbox --all` (IPC `inbox_list`) shows the result it sent in the same
+reduced form as `request_list`, and `request show` shows it in full.
+
+**Cancel (D11).** A result exists only on `completed`, which is reachable only from
+`accepted`, so a cancelled request never has one, and [Cancel](#cancel-od-p1-11) is
+unchanged. A cancel refused after completion is answered by the stored `last_reply`, which
+carries the result; the mirror ignores it by `seq` and only sets `cancel = refused`.
+
+#### Result privacy
+
+The result is content, like the brief and the note:
+
+- **Audit:** never the status, summary, exit code, output or artifacts. Only the sizes
+  `result_bytes`, `output_bytes` and `artifacts` (a count) ([Audit](#audit-and-metrics)).
+- **Desktop notification:** `request.completed` may add the status, an enum shown on the
+  same terms as the title: `<name> completed your <type> request (fail)`. Never the summary,
+  exit code, output or artifacts ([notify.md](notify.md#text-and-sanitising)).
+- **Webhook:** never the summary, exit code, output or artifacts. `request.result_status`
+  is included **only when the owner opted in to titles** (`--webhook-title on`, OD-P1-9)
+  ([notify.md](notify.md#payload)).
+- **Daemon log:** never result text, only the sizes.
 
 ### Sender mirror
 
@@ -300,7 +394,8 @@ On `request.accept`, `decline`, `defer`, `complete` or `cancelled` from `msg.fro
    and audit `request.orphan {request, peer, kind}`.
 3. If `seq ≤ state_seq`, ignore it: it is a duplicate or arrived out of order.
 4. Otherwise set `state`, `state_seq = seq`, `state_at = at`, and `deferred_until`,
-   `decline_code` with `reason`, or `note`. **The sender does not check the transition.** The
+   `decline_code` with `reason`, or `note` and `result`
+   ([Result payload](#result-payload-d14)). **The sender does not check the transition.** The
    recipient is authoritative, and a higher `seq` always wins, so a `complete` that overtakes
    its `accept` still ends in `completed`.
 5. **Cancel refused.** If the row has `cancel = requested` and, after step 3 or 4, its
@@ -501,7 +596,7 @@ reports delivery (the outbox state of `mail_id`) and the lifecycle state separat
 Every accept, decline, defer, completion and cancel is logged with a timestamp (`audit_events.ts`)
 from day one. These rows are the daemon-side data for the metrics in plan §9 (time to accept,
 accept rate, requests per team per week) under D7. **Never** titles, briefs, reasons, notes,
-artifacts or bodies.
+artifacts, results or bodies.
 
 | Action | Side / actor | Detail |
 |---|---|---|
@@ -509,8 +604,8 @@ artifacts or bodies.
 | `request.resend` | sender / `cli` | `{request, peer, mail}` |
 | `request.in` | recipient / `daemon` | `{request, peer, team, type, urgency, urgency_declared?, downgraded_by?}` |
 | `request.auto_decline` | recipient / `daemon` | `{request, peer, team, code}` |
-| `request.accept`, `request.decline`, `request.defer`, `request.complete` | recipient / `cli` | `{request, peer, team, type, urgency, seq, age_s, code?, until?}`. `age_s` = whole seconds since `received_at`, which is the time-to-accept measure |
-| `request.state` | sender / `daemon` | `{request, peer, state, seq}` |
+| `request.accept`, `request.decline`, `request.defer`, `request.complete` | recipient / `cli` | `{request, peer, team, type, urgency, seq, age_s, code?, until?}`. `age_s` = whole seconds since `received_at`, which is the time-to-accept measure. `request.complete` with a result adds `result_bytes`, `output_bytes` and `artifacts` (a count) |
+| `request.state` | sender / `daemon` | `{request, peer, state, seq}`, plus `result_bytes`, `output_bytes` and `artifacts` when a result was stored |
 | `request.duplicate`, `request.conflict` | recipient / `daemon` | `{request, peer}` |
 | `request.orphan` | sender / `daemon` | `{request, peer, kind}` |
 | `request.cancel` | sender / `cli` | `{request, peer, mail}` |
@@ -518,7 +613,8 @@ artifacts or bodies.
 | `request.cancel_refused` | sender / `daemon` | `{request, peer, state}` |
 
 The cancel `reason` is content, like the decline `reason` and the `note`, and is never
-audited.
+audited. So is the whole [result](#result-privacy), including its `status` and
+`exit_code`: only its sizes are audited.
 
 ## Tables
 
@@ -571,6 +667,18 @@ CREATE TABLE request_cancels (
     PRIMARY KEY (peer, id)
 );
 ```
+
+```sql
+-- migration 12 (1.6a, D14): requests_result
+ALTER TABLE requests ADD COLUMN result TEXT
+    CHECK (result IS NULL OR json_valid(result));  -- canonical(result); in and out rows
+```
+
+`result` is NULL unless the row is `completed` by a `request.complete` that carried one. On
+`in` rows the result is also inside `last_reply`; the column exists so that views and list
+queries need not parse `last_reply`. Migration 11 is already merged, so the column comes in
+a new migration 12 (ticket 1.6a), and the webhook queue moves to migration 13
+([notify.md](notify.md#delivery)).
 
 For `out` rows, `urgency_declared` = `urgency` unless the sender downgraded. For `in` rows,
 it is the body's `urgency_declared` if present, else the body's `urgency`. Rows are kept

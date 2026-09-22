@@ -1,6 +1,6 @@
 # `agentnet request`
 
-Status: draft (Phase 1, 1.4, 1.5, 1.9; `cancel`: 1.6a, D11). Protocol: [../protocol/request.md](../protocol/request.md).
+Status: draft (Phase 1, 1.4, 1.5, 1.9; `cancel`: 1.6a, D11; the completion result: 1.6a, D14). Protocol: [../protocol/request.md](../protocol/request.md).
 
 Sends a teammate's agent a request (a review, a task or a question), and follows the
 requests you sent.
@@ -79,6 +79,15 @@ state. If the recipient accepted it just before your cancel arrived, `request sh
 nothing new while a cancel is in flight or done. Cancelling does not give back urgency
 budget.
 
+**Result (D14).** When the recipient completes a request with a result
+(`agentnet complete … --status …`, [inbox.md](inbox.md#result)), `request show <id>` prints
+it: the status, exit code and summary on one line, the artifacts, then the output. The
+output can hold only text, newlines and tabs, so it cannot move your terminal's cursor or
+change its colours. `request list` shows the status in a `RESULT` column, and `request list
+--json` gives the result **without its output** (with `output_bytes`); use `request show
+<id> --json` for the output. The result is what the other side reports: treat it like the
+note, not as proof that the work passed.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -97,8 +106,19 @@ Queued high review request r-0123456789abcdef0123456789abcdef to bob (team backe
   bob is offline, last seen 2026-10-01T09:12:00Z; it will be delivered when bob is back.
 
 $ agentnet request list
-ID                                  TO   TYPE    URGENCY  STATE     DELIVERY   CREATED
-r-0123456789abcdef0123456789abcdef  bob  review  high     accepted  delivered  2026-10-01T09:20:00Z
+ID                                  TO   TYPE    URGENCY  STATE      RESULT  DELIVERY   CREATED
+r-0123456789abcdef0123456789abcdef  bob  review  high     accepted   -       delivered  2026-10-01T09:20:00Z
+r-89abcdef0123456789abcdef01234567  bob  task    normal   completed  fail    delivered  2026-10-01T08:02:00Z
+
+$ agentnet request show r-89abcdef0123456789abcdef01234567
+r-89abcdef0123456789abcdef01234567  task to bob (team backend): Run the tests on Windows
+  state completed 2026-10-01T09:40:00Z, delivery delivered
+  note: Ran on Windows 11.
+  result: fail, exit 1: 3 of 212 tests failed
+  artifact: branch=fix/retry commit=1a2b3c4
+  output (1843 bytes):
+    --- FAIL: TestRetry (0.01s)
+    ...
 ```
 
 When downgraded, the output adds a line with `urgency_note`.
@@ -108,8 +128,10 @@ When downgraded, the output adds a line with `urgency_note`.
 - send: `{"ok": true, ...submit result}` ([../protocol/request.md](../protocol/request.md#submit-result-19)):
   `id`, `mail_id`, `status`, `duplicate`, `team`, `urgency`, `urgency_declared`?,
   `urgency_note`?, and `peer` {`name`, `public_key`, `daemon_online`, `last_seen`}.
-- `show`: `{"ok": true, "request": <request view>}`
-- `list`: `{"ok": true, "requests": [<request view>]}`
+- `show`: `{"ok": true, "request": <request view>}`, with the full `result` (including
+  `output`) when there is one
+- `list`: `{"ok": true, "requests": [<request view>]}`, where a `result` omits `output` and
+  keeps `output_bytes`
 - `resend`: `{"ok": true, "id", "mail_id", "status": "queued"}`
 - `cancel`: `{"ok": true, "request": <request view>, "mail_id": "m-…"|null, "duplicate": bool}`
 

@@ -38,7 +38,8 @@ onto it.
 | 9 | `teams` (`teams`, `team_members`, `team_invites`, `team_pending_joins`) | 1.1b |
 | 10 | `presence` (`presence_peers`, `settings`) | 1.2b |
 | 11 | `requests`, `request_cancels` | 1.4a |
-| 12 | `webhook_queue` | 1.8b |
+| 12 | `requests_result` (`requests.result` column, D14) | 1.6a |
+| 13 | `webhook_queue` (was 12 before D14) | 1.8b |
 
 ## Tickets
 
@@ -63,11 +64,11 @@ which depends on them being merged.
 | 1.4a | `internal/request`: schema, validation, size limits, canonical, `body_hash`, priority | specs approved to build; **merge** after 1.2b (migration order) | 11 | — | 1.1a–d, 1.3 |
 | 1.4b | `mail.ErrBadBody` receiver path | specs approved | — | **yes** | 1.1a, 1.2a, 1.2d |
 | 1.4c | `request` kind, `request_submit`, CLI `agentnet request` (1.5, 1.9) | 1.4a, 1.1d | — | **yes** | 1.3 |
-| 1.6a | Lifecycle kinds, state machine, sender mirror, `request.cancel`, `request show/list/resend/cancel` | 1.4c | — | **yes** | 1.8a |
+| 1.6a | Lifecycle kinds, state machine, sender mirror, `request.cancel`, completion result (D14), `request show/list/resend/cancel` | 1.4c | 12 | **yes** | 1.8a |
 | 1.6b | Inbox: `inbox_list` order, CLI `inbox/accept/decline/defer/complete` | 1.6a | — | — | 1.7, 1.8a |
 | 1.7 | Urgency guards: sender and receiver budget, notes | 1.6b | — | — | 1.8a, 1.8b |
 | 1.8a | Desktop notifications, `notify` settings, `agentnet notify --desktop/--event/--test` | 1.6a | — | **yes** | 1.6b, 1.7 |
-| 1.8b | Webhook: secret, signing, queue, retry | 1.8a | 12 | **yes** | 1.7 |
+| 1.8b | Webhook: secret, signing, queue, retry | 1.8a | 13 | **yes** | 1.7 |
 | 1.9 | Offline end-to-end and audit/metrics check | 1.7, 1.8b | — | — | 1.H |
 | 1.H | Headless agent harness run (Claude Code + one other harness) and the agent snippet | 1.6b | — | — | 1.7, 1.8a, 1.8b, 1.9 |
 | 1.P | Phase 1 push (`main` to origin; the `phase-1` tag **only with the owner's OK**) | all above, including **1.H** | — | — | — |
@@ -258,7 +259,10 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 
 ### 1.6a Lifecycle and sender mirror
 
-- Files: `internal/request`, `internal/daemon`, `cmd/agentnet/request.go`, and tests.
+- Files: `internal/request` (including `ValidateComplete` and `MaxCompleteBody`), migration 12
+  (`requests.result`), `internal/daemon`, `cmd/agentnet/request.go`, and tests. The
+  `agentnet complete` flags of the result are added with the rest of `complete` in 1.6b;
+  1.6a tests the result through IPC `request_complete`.
 - Acceptance: every allowed transition and every refused one (`bad_state`); a `seq`
   out-of-order (`complete` before `accept`) ends `completed` on the sender;
   `request resend` after a forced `expired` → the receiver sees a duplicate and **re-sends
@@ -287,6 +291,40 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   - `accept` of a `cancelled` request → `bad_state`; `request resend` with `cancel` set →
     `bad_state`;
   - budget: a cancelled `high` still counts toward both 7-day urgency budgets.
+- **Completion result (D14)**, per
+  [request.md §Result payload](../protocol/request.md#result-payload-d14): the optional
+  `result` on `request.complete`, migration 12, and the `result` member of the request view.
+  Acceptance:
+  - **a table test for every cap** of `ValidateComplete`, each at the limit (accepted) and
+    one over (rejected with the documented code and field name): `status` each of the four
+    values and one unknown value; `summary` 280 / 281 code points (and 280 four-byte code
+    points accepted) and a control character; `exit_code` −2147483648 and 4294967295
+    accepted, one beyond each rejected, and a fraction rejected; `output` 32768 / 32769
+    bytes (and a multi-byte character straddling the limit), with `\n` and `\t` accepted and
+    ESC (U+001B), `\r` and U+007F rejected; `artifacts` 1 and 20 / 21, and `[]` rejected;
+    each result artifact member at its min, max and max+1; `null` for any optional member
+    rejected; an unknown member rejected; `result` on any other lifecycle kind rejected;
+    total `canonical(complete body)` 65536 / 65537 bytes, built from fields that are each
+    valid → `result_too_large` at IPC and `mail.ErrBadBody` on the sender-mirror path (the
+    mirror keeps its previous state);
+  - a maximal valid complete body (65536 bytes) seals into one mail under
+    `MaxMailPlaintext`;
+  - **round trip** (e2e): B completes with every result member set → A's `out` row
+    `result` is byte-identical to `canonical(result)` on B's `in` row and inside B's
+    `last_reply` (`TestCompleteResultRoundTrip`);
+  - **the sender sees it**: A's `request_show` returns the full result with `output` and
+    the right `output_bytes`; A's `request_list` returns it without `output`, with
+    `output_bytes`; B's `inbox_list` with `all` likewise; a completion without a result
+    leaves the column NULL and the view without `result` (the pre-D14 behaviour);
+  - **oversize rejected**: an IPC `request_complete` over the total cap →
+    `result_too_large`, and over a field cap → `bad_request`; in both cases the row stays
+    `accepted` and nothing is sent;
+  - echoes: a duplicate request after completion, and a cancel refused after completion,
+    re-send the stored complete with the same result; the mirror ignores it by `seq` (and
+    sets `cancel = refused` for the cancel) without changing `result`;
+  - audit: `request.complete` and `request.state` carry `result_bytes`, `output_bytes` and
+    `artifacts`; no `audit_events` row contains marker strings placed in the summary,
+    output and artifact members, and none has a status or exit-code member.
 
 ### 1.6b Inbox
 
@@ -295,7 +333,12 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 - Acceptance (1.6): three requests `low`, `high`, `normal` → inbox order `high`, `normal`,
   `low` (`TestInboxOrder`). A deferred request is hidden until `until`, then `due: true`.
   `--all` shows answered and cancelled requests; a cancelled one is not in the default list.
-  `ambiguous_request` → `--from` resolves it.
+  `ambiguous_request` → `--from` resolves it. `agentnet complete` result flags
+  ([inbox.md §Result](../cli/inbox.md#result)): a result flag without `--status` → exit 2;
+  `--output-from-file` turns CRLF into LF and strips ANSI CSI sequences, and rejects another
+  control character or invalid UTF-8 with `bad_request`; `-` reads stdin; `--artifact`
+  uses the request `SPEC` parser; `request show` prints the result, and `request list` its
+  `RESULT` column.
 
 ### 1.7 Urgency guards
 
@@ -323,15 +366,18 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   GVariant string literals that round-trip titles containing `'`, `\`, `"` and `@s`, and the
   Linux body has `&<>` escaped; a manual check per OS in
   `tests/phase1-manual.md`; event toggles are honoured, including `request.cancelled` (on
-  by default, recipient side only).
+  by default, recipient side only); a `request.completed` with a result shows ` (<status>)`
+  and none of the result's summary, exit code, output or artifacts (D14).
 
 ### 1.8b Webhook (review)
 
-- Files: `internal/notify` (webhook, signing, queue worker), migration 12, keystore secret,
+- Files: `internal/notify` (webhook, signing, queue worker), migration 13, keystore secret,
   `cmd/agentnet/notify.go`, and tests.
 - Acceptance (1.8): an `httptest` receiver gets the payload, and the signature verifies with
   the printed secret (`TestWebhookSigned`); the body never contains the brief or artifacts,
-  and contains the title only with `title: true`; a 500 then 200 → one retry then `sent`;
+  and contains the title only with `title: true`; a `request.completed` carries
+  `request.result_status` only with `title: true`, and never the result's summary, exit
+  code, output or artifacts (D14); a 500 then 200 → one retry then `sent`;
   a 404 → `failed`, no retry; a 302 → `failed`; an `http://` non-loopback URL →
   `bad_webhook`; a URL whose name resolves to `169.254.169.254` (fake resolver) fails
   `blocked_address` at dial time; a replay with the same id is answered `2xx` by the
@@ -348,8 +394,8 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   shows it `cancelled`. The audit log on both sides has every event of
   [request.md §Audit](../protocol/request.md#audit-and-metrics), with timestamps, including
   `request.cancel` (sender) and `request.cancel_in` (recipient), and no title, brief, reason
-  or note text, **including the cancel reason** (`TestAuditHasNoContent`: the requests and
-  the cancel carry marker strings that must appear in no `audit_events` row). The docs match
+  or note text, **including the cancel reason** and the completion result (D14)
+  (`TestAuditHasNoContent`: the requests, the cancel and a completion result carry marker strings that must appear in no `audit_events` row). The docs match
   the behaviour.
 
 ### 1.H Headless agent harness run
