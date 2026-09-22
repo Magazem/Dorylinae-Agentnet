@@ -124,7 +124,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.6b inbox CLI~~ | merged. Low: accept/decline/defer `--from` passes a raw key (not resolved from a name); priority/due only computed in inbox_list. | — | — |
    | ~~1.8a desktop notify~~ | merged `f96dde1` + review fixes `5b4819f` (review 21: notify-send backslash escaping, bounded notification queue) | — | — |
    | CLI bug: base64url keys starting with `-` are parsed as flags (flaky TestPeersRemoveCascadesTeamMembership, ~1/32) | fix pending | — | no |
-   | 1.8b webhook (migration 13) | T-1.8b, building on `p1/t1-8a` (pre-review) | `t1-8b` | **Opus** |
+   | 1.8b webhook (migration 13) | committed `499f130` on `p1/t1-8b` (rebased with --onto main to drop the stale pre-review 1.8a commit); in Opus review (R-1.8b → `Docs/review/22-1.8b-review.md`). Watch: loopback always allowed for webhook URLs. | `t1-8b` | **Opus** |
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
@@ -154,6 +154,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 - **Before replacing a stuck worker, stop it first** (`team_interrupt_agent` with "stop editing, list your files") and wait for its reply. On 2026-09-22 a "stuck" 1.2c worker woke up after its replacement was spawned, and both edited the same worktree.
 - **A worker that stays idle with an empty worktree after its task is assigned is stuck.** Interrupting it once is fine; if it idles again, retire it, delete its task, spawn a fresh worker and create a NEW task for it.
 - **Before retiring a worker, mark all its tasks completed** (`team_task_update`), or it declines shutdown. Workers also report a missing worktree as a blocker after you merge and remove it; that is expected.
+- **Branches built on an unmerged branch:** after the base merges with review fixes, rebase with `git rebase --onto main <old-base-commit> <branch>` so the stale base commit is not replayed.
 - **Lint before merge.** The installed golangci-lint cannot load the config, but `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` works. Put it in every implementation task's acceptance criteria and run it yourself before merging; gofmt complaints that only exist because of CRLF are noise (check with `tr -d '\r' < f | gofmt -l`). CI failed on lint three times in a row on 2026-09-21 because this was skipped.
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
