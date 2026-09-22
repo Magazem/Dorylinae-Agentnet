@@ -185,3 +185,77 @@ func TestCancelIPCPendingConfirmed(t *testing.T) {
 		t.Errorf("B's pending rows = %d, want 0", n)
 	}
 }
+
+// TestInboxListIPC is the 1.6b acceptance test through IPC: three requests
+// (low, high, normal) from one sender list as high, normal, low, each
+// carrying a priority; a deferred request stays hidden until inbox_list
+// --all is used.
+func TestInboxListIPC(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	submit := func(urgency, reason string) string {
+		var sub daemon.RequestSubmitResult
+		a.call("request_submit", daemon.RequestSubmitParams{
+			To: b.key, Type: "task", Team: teamID, Title: "t", Brief: "What: x\n",
+			Urgency: urgency, UrgencyReason: reason,
+		}, &sub)
+		return sub.ID
+	}
+	lowID := submit("low", "")
+	highID := submit("high", "time sensitive")
+	normalID := submit("normal", "")
+
+	harnessWait(t, "B to see all three pending", func() bool {
+		return b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND state = 'pending'`) == 3
+	})
+
+	var inbox daemon.RequestListResult
+	b.call("inbox_list", map[string]any{}, &inbox)
+	if len(inbox.Requests) != 3 {
+		t.Fatalf("inbox_list = %d requests, want 3", len(inbox.Requests))
+	}
+	gotIDs := []string{inbox.Requests[0].ID, inbox.Requests[1].ID, inbox.Requests[2].ID}
+	wantIDs := []string{highID, normalID, lowID}
+	if gotIDs[0] != wantIDs[0] || gotIDs[1] != wantIDs[1] || gotIDs[2] != wantIDs[2] {
+		t.Fatalf("inbox order = %v, want %v", gotIDs, wantIDs)
+	}
+	for _, v := range inbox.Requests {
+		if v.Priority == nil {
+			t.Errorf("request %s: priority is absent", v.ID)
+		}
+	}
+
+	// A deferred request is hidden by default, and present under --all.
+	var acc daemon.RequestLifecycleResult
+	until := "2m"
+	b.call("request_defer", map[string]any{"id": normalID, "until": until}, &acc)
+
+	var afterDefer daemon.RequestListResult
+	b.call("inbox_list", map[string]any{}, &afterDefer)
+	for _, v := range afterDefer.Requests {
+		if v.ID == normalID {
+			t.Fatalf("deferred request %s is still in the default inbox", normalID)
+		}
+	}
+
+	var withAll daemon.RequestListResult
+	b.call("inbox_list", map[string]any{"all": true}, &withAll)
+	found := false
+	for _, v := range withAll.Requests {
+		if v.ID == normalID {
+			found = true
+			if v.State != "deferred" {
+				t.Errorf("deferred request state = %q, want deferred", v.State)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("inbox_list --all does not show the deferred request %s", normalID)
+	}
+}

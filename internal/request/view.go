@@ -132,6 +132,12 @@ type View struct {
 
 	MailID   string
 	Delivery string // out only: the outbox state of MailID, or "unknown"
+
+	// Priority, Due and UrgencyNote are set only by InboxList (Docs/protocol/request.md
+	// §Inbox (1.6)); zero/false/"" elsewhere.
+	Priority    int
+	Due         bool
+	UrgencyNote string
 }
 
 // toView decodes a storedRow into a View. It does not read the outbox

@@ -63,6 +63,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPing(args[1:], stdout, stderr)
 	case "request":
 		return runRequest(args[1:], stdout, stderr)
+	case "inbox":
+		return runInbox(args[1:], stdout, stderr)
+	case "accept":
+		return runAccept(args[1:], stdout, stderr)
+	case "decline":
+		return runDecline(args[1:], stdout, stderr)
+	case "defer":
+		return runDefer(args[1:], stdout, stderr)
+	case "complete":
+		return runComplete(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -95,6 +105,11 @@ Commands:
   team      Create and manage teams
   presence  Show or set who can see this machine's presence
   request   Send a teammate's agent a request
+  inbox     List the requests addressed to you
+  accept    Accept a request from your inbox
+  decline   Decline a request from your inbox
+  defer     Defer a request from your inbox
+  complete  Mark an accepted request complete, optionally with a result
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

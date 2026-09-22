@@ -99,6 +99,9 @@ type RequestView struct {
 	Note            string            `json:"note,omitempty"`
 	Cancel          string            `json:"cancel,omitempty"`
 	Result          *RequestResult    `json:"result,omitempty"`
+	Priority        *int              `json:"priority,omitempty"`
+	Due             *bool             `json:"due,omitempty"`
+	UrgencyNote     string            `json:"urgency_note,omitempty"`
 	Delivery        string            `json:"delivery,omitempty"`
 	MailID          string            `json:"mail_id"`
 }
@@ -167,6 +170,15 @@ func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, v request.
 		}
 		r.Result = res
 	}
+	if v.Priority != 0 {
+		p := v.Priority
+		r.Priority = &p
+	}
+	if v.Due {
+		due := true
+		r.Due = &due
+	}
+	r.UrgencyNote = v.UrgencyNote
 	return r
 }
 
@@ -230,9 +242,9 @@ type RequestCancelResult struct {
 
 // registerLifecycle wires the recipient-side lifecycle IPC (request_accept,
 // request_decline, request_defer, request_complete), request_cancel,
-// request_resend, request_show and request_list
-// (Docs/protocol/ipc.md §Requests). The CLI for accept/decline/defer/complete
-// is 1.6b; here only the IPC exists, tested directly.
+// request_resend, request_show, request_list and inbox_list
+// (Docs/protocol/ipc.md §Requests). The CLI for
+// inbox/accept/decline/defer/complete is 1.6b.
 func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *team.Store) {
 	srv.Handle("request_accept", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p idFromParams
@@ -362,6 +374,33 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 			f.Peer = peer.PublicKey
 		}
 		views, err := rs.List(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		results := make([]RequestView, len(views))
+		for i, v := range views {
+			results[i] = ViewResult(ctx, ps, ts, v, false)
+		}
+		return RequestListResult{Requests: results}, nil
+	})
+
+	srv.Handle("inbox_list", func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p struct {
+			Team string
+			All  bool
+		}
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+		}
+		f := request.InboxFilter{All: p.All}
+		if p.Team != "" {
+			t, err := resolveTeam(ctx, ts, p.Team)
+			if err != nil {
+				return nil, err
+			}
+			f.Team = t.ID
+		}
+		views, err := rs.InboxList(ctx, f)
 		if err != nil {
 			return nil, err
 		}
