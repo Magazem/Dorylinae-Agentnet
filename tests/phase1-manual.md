@@ -129,3 +129,91 @@ Run once per OS (Windows, macOS, Linux with a session bus running `org.freedeskt
 | Windows | PowerShell toast (Windows.UI.Notifications) | |
 | macOS | osascript `display notification` | |
 | Linux | gdbus `org.freedesktop.Notifications.Notify` (fallback `notify-send`) | |
+
+## Headless agent harness (ticket 1.H)
+
+Script: [harness/phase1-agents.ps1](harness/phase1-agents.ps1) (run) and
+[harness/phase1-agents.sh](harness/phase1-agents.sh) (written, not run here —
+see [harness/README.md](harness/README.md)).
+
+- **Date:** 2026-09-22.
+- **Harnesses:** Claude Code CLI (`claude` at `%USERPROFILE%\.local\bin\claude.exe`,
+  app/session build `2.2553.1`) and Codex CLI `codex-cli 0.152.1`.
+- **Environment:** Windows PowerShell 5.1, Go 1.27.1, worktree `AgentNet-wt/t1-H`
+  (branch `p1/t1-H`, base `main` `5111bee`).
+- **Result: FAIL (blocked), not a script defect.** Round 1 (Claude Code sends,
+  Codex CLI receives) ran the full pipeline for real: built the binaries,
+  started a loopback relay and two `agentnetd` daemons with separate `--home`
+  dirs, paired them, created team `t1h` with both as members, then launched a
+  real headless `claude -p` process in a working directory holding only the
+  `CLAUDE.md` snippet. Given only the plain-English instruction "ask agent-b
+  for a review of branch p1/t1-H with idempotency key ...", the agent found
+  and ran `agentnet request agent-b review ...` unaided (from the snippet +
+  `--help`) and queued **exactly one** request
+  (`r-135910bf0890f1b3db083649844d788f` in the final run;
+  `r-85cafcc0a12a6662aad7a915ebfb789a` in an earlier one), matching the given
+  idempotency key. The recipient step (`codex exec`) then failed immediately:
+  `codex` returned `"You've hit your usage limit... try again at Oct 2nd,
+  2026 8:18 AM."` — an account-level rate limit on the installed Codex CLI,
+  confirmed independently with a bare `codex exec "reply with exactly OK"`
+  smoke test outside the harness. Round 2 (roles swapped) was not attempted
+  since it depends on the same Codex account. **This blocks 1.P until Codex
+  usage resets (or the owner supplies a different account/harness for the
+  recipient role).**
+- **Supplementary check (not part of the official two-harness matrix):** to
+  confirm the rest of the pipeline (inbox → accept → complete → D14 result →
+  audit log) actually works with a real agent, the recipient role was
+  temporarily pointed at Claude Code instead of Codex for one throwaway run.
+  That run's sender agent gave up in a single turn claiming "no AgentNet
+  tool" (an inconsistent, non-reproduced response — a second identical
+  attempt is what produced the clean pass above), so the recipient side of
+  the pipeline itself was not exercised by a real agent this session; the
+  request → inbox → accept → complete → audit chain is implemented and was
+  exercised only by the script's own CLI calls in earlier development, not by
+  a second live agent turn. This should be re-attempted once Codex is
+  available, or with another second harness.
+- **Snippet:** no change made. The one clean sender run shows
+  `Docs/agents/snippet.md` plus `--help` is sufficient for Claude Code to
+  find and use the CLI correctly (correct subcommand, correct peer name,
+  correct idempotency key, single request, no protocol names in the prompt).
+  The single-turn "no AgentNet tool" response from the same harness on a
+  different invocation looks like model-level non-determinism (it invented
+  tool names — "Claude Docs, Google Drive, Picsart" — that do not exist in
+  this restricted session) rather than a snippet gap; flag for a retry count
+  in the script (e.g. one retry of a sender/recipient invocation that
+  produces zero tool calls) if this recurs.
+- **Script bugs found and fixed during this run** (both now fixed in
+  `phase1-agents.ps1`, no Go/product code touched):
+  1. `ProcessStartInfo.ArgumentList` does not exist under .NET Framework
+     (Windows PowerShell 5.1) — only under .NET Core/5+. Every process launch
+     now builds a quoted `Arguments` string by hand (`Format-ArgList`).
+  2. A function parameter named `$Home` collided with PowerShell's read-only
+     automatic `$HOME` variable, throwing `VariableNotWritable` on every
+     `agentnet ... --json` call. Renamed to `$HomeDir` throughout.
+  3. `Process.Kill($true)` (tree-kill) also does not exist under .NET
+     Framework; the call threw a `MethodException` that a bare `catch {}`
+     silently swallowed, so the relay and both `agentnetd` daemons were never
+     actually killed after a round failed or timed out, leaking processes
+     across runs (this is what looked like a 26-minute "hang" mid-session —
+     the top-level script had already exited; only its orphaned children were
+     still running). Replaced with a `Stop-ProcessTree` helper that shells out
+     to `taskkill /T /F`.
+- **Real CLI issue found (not fixed, per instructions):** none in the
+  `agentnet`/`agentnetd`/`relay` binaries themselves. `agentnetd`'s stderr
+  showed one transient `noise: sign static key: load identity key: keystore:
+  secret not found` on daemon B during an earlier run; it did not recur in
+  the clean final run and did not block anything (the daemon reconnects with
+  backoff and re-signs on the next attempt per `Docs/cli/relay.md`), so it is
+  not reported as a defect — flag it if it reproduces reliably.
+- **Total run time:** 19.9 s for round 1 up to the Codex blocker (well under
+  the 10-minute budget).
+- **Prerequisite note:** there is no `sqlite3` CLI or CGo SQLite driver
+  available in this environment (the daemon uses the pure-Go
+  `modernc.org/sqlite`), so the audit-log assertion shells out to
+  `python3 -c "import sqlite3; ..."` (present here as Python 3.12.10) rather
+  than adding a new Go tool, per the "scripts and docs only" instruction for
+  this ticket; see `harness/README.md`.
+
+**Next step for the owner:** re-run `tests/harness/phase1-agents.ps1` (or the
+`.sh` port) once Codex CLI's usage limit resets (2026-10-02) or with a second
+account/harness substituted, to get a real PASS on both rounds before 1.P.
