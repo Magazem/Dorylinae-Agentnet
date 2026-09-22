@@ -29,8 +29,9 @@ type Receiver struct {
 	Log    *slog.Logger
 	Now    func() time.Time // defaults to time.Now
 
-	mu       sync.Mutex
-	lastDrop map[string]time.Time
+	mu        sync.Mutex
+	lastDrop  map[string]time.Time
+	lastSweep time.Time
 }
 
 func (r *Receiver) now() time.Time {
@@ -90,6 +91,11 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) (accepted,
 	return true, e, "", nil
 }
 
+// maxDropPeers bounds the per-peer log limiter. Rejected senders are
+// attacker-chosen (step 1 rejects any unpaired key), so without a bound a
+// Sybil flood would grow the map without limit.
+const maxDropPeers = 1024
+
 // drop logs a rejection at debug level, at most once per peer per minute.
 func (r *Receiver) drop(peer, reason string) {
 	now := r.now()
@@ -100,6 +106,21 @@ func (r *Receiver) drop(peer, reason string) {
 	if last, seen := r.lastDrop[peer]; seen && now.Sub(last) < time.Minute {
 		r.mu.Unlock()
 		return
+	}
+	if len(r.lastDrop) >= maxDropPeers {
+		// Sweep at most once a minute, so a flood costs O(1) per frame.
+		if now.Sub(r.lastSweep) >= time.Minute {
+			r.lastSweep = now
+			for k, t := range r.lastDrop {
+				if now.Sub(t) >= time.Minute {
+					delete(r.lastDrop, k)
+				}
+			}
+		}
+		if len(r.lastDrop) >= maxDropPeers {
+			r.mu.Unlock() // still full of fresh entries: stay silent until they age out
+			return
+		}
 	}
 	r.lastDrop[peer] = now
 	r.mu.Unlock()

@@ -322,6 +322,10 @@ func removeTx(ctx context.Context, tx *sql.Tx, key string) error {
 next_attempt = NULL, updated = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE to_key = ? AND state IN ('queued','relayed')`, key); err != nil {
 		return fmt.Errorf("peers: fail outbox rows: %w", err)
 	}
+	// Presence state is deleted with the peer (presence.md §Tables).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM presence_peers WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("peers: delete presence: %w", err)
+	}
 	return nil
 }
 
