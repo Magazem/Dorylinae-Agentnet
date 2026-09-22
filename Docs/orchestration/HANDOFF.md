@@ -118,7 +118,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
    | ~~1.4c request kind + submit + CLI~~ | merged (review 19: 2 High + 4 Medium fixed; goodbye now sent before relay close on graceful stop; 9 Lows open) | — | — |
-   | 1.6a lifecycle kinds + state machine + cancel (D11/D12) + result payload (D14, migration 12) + sender mirror + request show/list/resend | committed `0cc090c` on `p1/t1-6a`; in Opus review (R-1.6a → `Docs/review/20-1.6a-review.md`). Notes: notify hooks deferred to 1.8a; request_list/show carry no presence. | `t1-6a` | **Opus** |
+   | ~~1.6a lifecycle + cancel + result~~ | merged `b6fd3a1` + review fixes `ae82f19` (review 20: 4 Medium fixed; 9 Lows open) | — | — |
    | 1.6b inbox CLI | T-1.6b, building on `p1/t1-6a` (pre-review) | `t1-6b` | no |
    | 1.8a desktop notify (own code) | T-1.8a, building on `p1/t1-6a` (pre-review) | `t1-8a` | **Opus** |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
