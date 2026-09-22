@@ -8,6 +8,8 @@ Last updated: 2026-09-22, resumed after park.
 
 ## 0. Status
 
+**Planned context reset after Phase 1 (owner, 2026-09-22).** Before it, the Orchestrator must: (1) merge and push everything, with CI green; (2) remove all worktrees and branches except `main`; (3) retire all workers and tidy the task board; (4) rewrite this file compactly: section 0 = current state + next steps, a Phase 1 summary table, move per-wave detail into `Docs/orchestration/history.md`; (5) update the Sticky Board and memory; (6) tell the owner it is safe to reset.
+
 Resumed 2026-09-22 after park; the 1.4c WIP branch was finished and merged. Live state is in §4. Owner still owes the Phase 0 two-machine run (`tests/phase0-manual.md`), planned for the evening of 2026-09-22.
 
 ## 1. How this team runs
