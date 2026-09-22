@@ -121,6 +121,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.6a lifecycle + cancel + result~~ | merged `b6fd3a1` + review fixes `ae82f19` (review 20: 4 Medium fixed; 9 Lows open) | — | — |
    | ~~1.6b inbox CLI~~ | merged. Low: accept/decline/defer `--from` passes a raw key (not resolved from a name); priority/due only computed in inbox_list. | — | — |
    | 1.8a desktop notify (own code) | T-1.8a, building on `p1/t1-6a` (pre-review) | `t1-8a` | **Opus** |
+   | 1.7 urgency guards | T-1.7 | `t1-7` | no |
+   | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
