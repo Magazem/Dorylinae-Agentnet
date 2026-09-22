@@ -107,9 +107,9 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | 1.1d team invite + join via pairing v2 | T-1.1d | `t1-1d` | **Opus** |
    | 1.2c presence engine | T-1.2c, building on `p1/t1-2c` = 1.2b branch + main merged in (pre-review) | `t1-2c` | no |
-   | 1.2b presence seal/open (migration 10) | committed `8bb144e` on `p1/t1-2b` (rebased on main); in Opus review (R-1.2b → `Docs/review/17-1.2b-review.md`). Deferred to 1.2c: sender loop, Outbox.OnPeerOnline wiring (Store.Accept returns `edge`), roster-resync (step 7). | `t1-2b` | **Opus** |
-   | 1.4a internal/request (migration 11) | committed on `p1/t1-4a` (worker retired); **held**: merge only after 1.1b (9) and 1.2b (10); branch has NO-OP placeholders for migrations **8, 9 and 10** — drop all three when rebasing and resolve store.go/store_test.go conflicts by keeping the real ones. No review needed. | `t1-4a` | no |
-   Merge order: 1.1b → rebase 1.1c and 1.2b onto main (pick up 1.1b review fixes) → 1.2b (after its review) → 1.4a (drop placeholders 8–10) → 1.1c. Then 1.1d (review) and 1.2c.
+   | ~~1.2b presence seal/open~~ | merged `9bbce13` + review fixes `4111b25` (review 17). Open Low for **1.3**: goodbye is 1 byte longer and seq/epoch digit counts vary, so ~1/256 heartbeats cross a 256-byte boundary; fix by padding to a fixed size (spec intent: size must not reveal flags). | — | — |
+   | ~~1.4a internal/request~~ | merged `28852f1` + `de5ee1c` (placeholders dropped; rewind test updated) | — | — |
+   Migrations on main: 1–11. Next free: 12 (webhook_queue, 1.8b). Every new migration must also add its tables to the DROP lists in BOTH rewind tests in internal/store/store_test.go.
 4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
