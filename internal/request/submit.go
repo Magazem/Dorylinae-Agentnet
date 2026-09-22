@@ -41,13 +41,17 @@ type SubmitParams struct {
 }
 
 // SubmitOutcome is enough to build the IPC "submit result"
-// (Docs/protocol/request.md §Submit result); the caller adds team name,
-// urgency_declared/urgency_note and peer presence.
+// (Docs/protocol/request.md §Submit result); the caller adds team name and
+// peer presence. UrgencyNote is set only on a fresh sender-side downgrade
+// (Docs/protocol/request.md §Urgency guards (1.7)); Request.UrgencyDeclared
+// carries the declared urgency in that case, and on a duplicate of an
+// earlier downgraded submission.
 type SubmitOutcome struct {
-	Request   *Request
-	MailID    string
-	Status    string // "queued", or the outbox delivery state for a duplicate
-	Duplicate bool
+	Request     *Request
+	MailID      string
+	Status      string // "queued", or the outbox delivery state for a duplicate
+	Duplicate   bool
+	UrgencyNote string
 }
 
 // Submit runs Docs/protocol/request.md §Submitting steps 4-8.
@@ -66,9 +70,17 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 	}
 
 	now := s.now()
+	urgency, note, err := s.senderUrgency(ctx, p.Urgency, now)
+	if err != nil {
+		return SubmitOutcome{}, err
+	}
+	var declared string
+	if note != "" {
+		declared = p.Urgency
+	}
 	req := &Request{
 		V: 1, ID: NewID(), From: p.From, To: p.To, Team: p.Team, Type: p.Type,
-		Title: p.Title, Brief: p.Brief, Urgency: p.Urgency, UrgencyReason: p.UrgencyReason,
+		Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
 		Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
 		Created: now.UTC().Truncate(time.Second),
 	}
@@ -101,6 +113,7 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 		}
 		return s.duplicateOutcome(ctx, row)
 	}
+	outcome.UrgencyNote = note
 	return outcome, nil
 }
 
@@ -127,7 +140,7 @@ INSERT INTO requests (
 	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
 	body, body_hash, state, state_seq, created, mail_id, idem_key, params_hash, updated
 ) VALUES ('out', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`,
-		p.To, req.ID, req.Team, req.Type, req.Urgency, req.Urgency,
+		p.To, req.ID, req.Team, req.Type, req.Urgency, outUrgencyDeclared(req),
 		string(canon), hash, wireTime(req.Created), sub.ID, idemKey, paramsHash, storeTime(now),
 	)
 	if err != nil {
@@ -141,6 +154,38 @@ INSERT INTO requests (
 	}
 	s.Outbox.Wake()
 	return SubmitOutcome{Request: req, MailID: sub.ID, Status: "queued"}, false, nil
+}
+
+// senderUrgency is Docs/protocol/request.md §Submitting step 6, §Urgency
+// guards (1.7): the sender-side courtesy budget, global across peers,
+// counted from this daemon's own out rows. note is non-empty only when it
+// downgraded urgency; DisableSenderBudget skips this so a test can drive
+// receiver-side enforcement instead.
+func (s *Store) senderUrgency(ctx context.Context, urgency string, now time.Time) (effective, note string, err error) {
+	if s.DisableSenderBudget || (urgency != UrgencyHigh && urgency != UrgencyBlocking) {
+		return urgency, "", nil
+	}
+	limit, _ := budgetLimit(urgency)
+	cutoff := wireTime(now.Add(-urgencyBudgetWindow))
+	var count int
+	if err := s.DB.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM requests WHERE direction = 'out' AND urgency = ? AND created >= ?`,
+		urgency, cutoff).Scan(&count); err != nil {
+		return "", "", fmt.Errorf("request: sender budget: %w", err)
+	}
+	if count >= limit {
+		return UrgencyNormal, submitUrgencyNote(urgency), nil
+	}
+	return urgency, "", nil
+}
+
+// outUrgencyDeclared is urgency_declared for an out row (Docs/protocol/request.md
+// §Tables): urgency unless the sender downgraded.
+func outUrgencyDeclared(req *Request) string {
+	if req.UrgencyDeclared != "" {
+		return req.UrgencyDeclared
+	}
+	return req.Urgency
 }
 
 func isUniqueConflict(err error) bool {

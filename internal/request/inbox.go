@@ -114,19 +114,3 @@ func (s *Store) urgentAcceptance(ctx context.Context, peer string, now time.Time
 	}
 	return n, a, nil
 }
-
-// urgencyNote derives the inbox's urgency_note from downgradedBy and the
-// declared urgency (Docs/protocol/request.md §Urgency guards (1.7)).
-func urgencyNote(downgradedBy, declared string) string {
-	if downgradedBy == "" {
-		return ""
-	}
-	budget := "5 high requests"
-	if declared == UrgencyBlocking {
-		budget = "2 blocking requests"
-	}
-	if downgradedBy == "sender" {
-		return "sent as normal: the sender's weekly budget of " + budget + " was used"
-	}
-	return "shown as normal: this sender has used its weekly budget of " + budget + " to you"
-}

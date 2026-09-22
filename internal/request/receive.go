@@ -55,6 +55,11 @@ type Store struct {
 	// TeamActive). A read error fails the apply (retryable), never open.
 	UnverifiedPeer func(tx *sql.Tx, peer string) (bool, error)
 
+	// DisableSenderBudget skips the sender-side urgency budget in Submit, so
+	// tests can exercise receiver-side enforcement of an unmodified urgency
+	// (Docs/protocol/request.md §Urgency guards (1.7)).
+	DisableSenderBudget bool
+
 	Now func() time.Time
 }
 
@@ -73,16 +78,18 @@ func badBody(format string, a ...any) error {
 // pointer (unique and stable across one Handle call), mirroring
 // internal/team's pendingRoster.
 type applyOutcome struct {
-	newRow      bool
-	autoDecline bool
-	conflict    bool
-	cancelled   bool   // stored cancelled via a tombstone (Docs/protocol/request.md §Cancel (OD-P1-11))
-	code        string // decline_code, when autoDecline
-	requestID   string
-	peer        string
-	teamID      string
-	typ         string
-	urgency     string
+	newRow          bool
+	autoDecline     bool
+	conflict        bool
+	cancelled       bool   // stored cancelled via a tombstone (Docs/protocol/request.md §Cancel (OD-P1-11))
+	code            string // decline_code, when autoDecline
+	requestID       string
+	peer            string
+	teamID          string
+	typ             string
+	urgency         string
+	urgencyDeclared string // set only when downgradedBy is set
+	downgradedBy    string // "", "sender" or "receiver"
 }
 
 var pendingApply sync.Map // map[*mail.Opened]*applyOutcome
@@ -167,19 +174,60 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 		return nil
 	}
 
+	urgency, declared, downgradedBy, err := s.receiverUrgency(ctx, tx, req, now)
+	if err != nil {
+		return err
+	}
+	var downgradedByArg any
+	if downgradedBy != "" {
+		downgradedByArg = downgradedBy
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO requests (
 	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
 	body, body_hash, state, state_seq, created, received_at, mail_id, updated
-) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
-		op.Msg.From, req.ID, req.Team, req.Type, req.Urgency, effectiveDeclared(req),
+) VALUES ('in', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+		op.Msg.From, req.ID, req.Team, req.Type, urgency, declared, downgradedByArg,
 		string(canon), hash, wireTime(req.Created), storeTime(now), op.Msg.ID, storeTime(now),
 	); err != nil {
 		return fmt.Errorf("request: insert in row: %w", err)
 	}
 	out.newRow = true
+	out.urgency = urgency
+	if downgradedBy != "" {
+		out.urgencyDeclared = declared
+		out.downgradedBy = downgradedBy
+	}
 	pendingApply.Store(op, out)
 	return nil
+}
+
+// receiverUrgency is Docs/protocol/request.md §Receiving step 4, §Urgency
+// guards (1.7): if the sender already downgraded (urgency_declared present
+// on the body), mirror that as downgraded_by "sender"; otherwise, for an
+// arriving high or blocking request, apply the per-sender receiver-side
+// budget, tamper-proof because it counts the receiver's own stored rows.
+func (s *Store) receiverUrgency(ctx context.Context, tx *sql.Tx, req *Request, now time.Time) (urgency, declared, downgradedBy string, err error) {
+	if req.UrgencyDeclared != "" {
+		return req.Urgency, req.UrgencyDeclared, "sender", nil
+	}
+	if req.Urgency != UrgencyHigh && req.Urgency != UrgencyBlocking {
+		return req.Urgency, req.Urgency, "", nil
+	}
+	limit, _ := budgetLimit(req.Urgency)
+	cutoff := storeTime(now.Add(-urgencyBudgetWindow))
+	var count int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM requests
+		WHERE direction = 'in' AND peer = ? AND urgency = ? AND received_at >= ?
+		  AND (decline_code IS NULL OR decline_code = 'user')`,
+		req.From, req.Urgency, cutoff).Scan(&count); err != nil {
+		return "", "", "", fmt.Errorf("request: receiver budget: %w", err)
+	}
+	if count >= limit {
+		return UrgencyNormal, req.Urgency, "receiver", nil
+	}
+	return req.Urgency, req.Urgency, "", nil
 }
 
 // effectiveDeclared is urgency_declared for an `in` row: the body's value if
@@ -329,7 +377,11 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 		_ = s.Audit.Append(ctx, "daemon", "request.auto_decline",
 			map[string]any{"request": out.requestID, "peer": out.peer, "team": out.teamID, "code": out.code})
 	default:
-		_ = s.Audit.Append(ctx, "daemon", "request.in",
-			map[string]any{"request": out.requestID, "peer": out.peer, "team": out.teamID, "type": out.typ, "urgency": out.urgency})
+		detail := map[string]any{"request": out.requestID, "peer": out.peer, "team": out.teamID, "type": out.typ, "urgency": out.urgency}
+		if out.downgradedBy != "" {
+			detail["urgency_declared"] = out.urgencyDeclared
+			detail["downgraded_by"] = out.downgradedBy
+		}
+		_ = s.Audit.Append(ctx, "daemon", "request.in", detail)
 	}
 }

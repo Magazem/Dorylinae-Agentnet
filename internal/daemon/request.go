@@ -191,6 +191,9 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 		}
 		if log != nil && !outcome.Duplicate {
 			detail := map[string]any{"request": outcome.Request.ID, "peer": peer.PublicKey, "team": t.ID, "type": outcome.Request.Type, "urgency": outcome.Request.Urgency, "mail": outcome.MailID}
+			if outcome.Request.UrgencyDeclared != "" {
+				detail["urgency_declared"] = outcome.Request.UrgencyDeclared
+			}
 			if aerr := log.Append(ctx, audit.ActorCLI, "request.submit", detail); aerr != nil {
 				return nil, aerr
 			}
@@ -199,6 +202,7 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 		return RequestSubmitResult{
 			ID: outcome.Request.ID, MailID: outcome.MailID, Status: outcome.Status, Duplicate: outcome.Duplicate,
 			Team: teamRefResult{ID: t.ID, Name: t.Name}, Urgency: outcome.Request.Urgency,
+			UrgencyDeclared: outcome.Request.UrgencyDeclared, UrgencyNote: outcome.UrgencyNote,
 			Peer: submitPeerResult{Name: peer.Name, PublicKey: peer.PublicKey, DaemonOnline: online, LastSeen: lastSeen},
 		}, nil
 	})
