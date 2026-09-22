@@ -313,7 +313,7 @@ sender's newest mailbox key and has a fresh `id`.
 | `keys` | see below | rotation push: yes / yes. Key-miss reply: no / yes | 1.0b, 1.0e |
 | `note` | `{"text": "..."}`, stored to `mail_inbox`, no other effect. **Debug only**: registered when the daemon runs with `DORYLINAE_DEBUG=1` | yes / yes | 1.0f |
 | `team.roster`, `team.join`, `team.leave` | [team.md](team.md#kinds) | yes / yes | 1.1b |
-| `request`, `request.accept`, `request.decline`, `request.defer`, `request.complete` | [request.md](request.md) | yes / yes | 1.4c, 1.6a |
+| `request`, `request.accept`, `request.decline`, `request.defer`, `request.complete`, `request.cancel`, `request.cancelled` | [request.md](request.md) | yes / yes | 1.4c, 1.6a |
 | `result`, `grant`, … | defined by their tickets | yes / yes | Phase 2 |
 
 Presence heartbeats reuse this seal and signature with kind `presence`, but as envelope type

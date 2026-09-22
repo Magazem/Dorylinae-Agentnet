@@ -1,6 +1,6 @@
 # 11: Phase 1 tickets (1.1–1.9)
 
-Status: draft for the Opus spec review and owner approval. Specs:
+Status: approved (D11, 2026-09-21), amended for D11. Specs:
 [team.md](../protocol/team.md), [presence.md](../protocol/presence.md),
 [request.md](../protocol/request.md), [notify.md](../protocol/notify.md), and additions to
 [ipc.md](../protocol/ipc.md), [mail.md](../protocol/mail.md) and
@@ -9,7 +9,19 @@ Status: draft for the Opus spec review and owner approval. Specs:
 [inbox](../cli/inbox.md), [notify](../cli/notify.md), [status](../cli/status.md) and
 [peers](../cli/peers.md).
 
-No ticket starts before the specs are approved (HANDOFF rule 3). Every ticket follows the
+The specs were **approved** on 2026-09-21 (owner decision D11), with OD-P1-11 changed to (b)
+`request.cancel`, request body size limits, ticket 1.H, and the known-limitations page
+[../beta/known-limitations.md](../beta/known-limitations.md).
+
+**Process (D11):**
+
+- **1.1a, 1.2a, 1.2d and 1.4b start now.** They depend only on the approved specs.
+- **1.4a may be built in parallel with 1.1** (1.1a–1.1d). It **merges only in migration
+  order**: its migration 11 lands after 9 (1.1b) and 10 (1.2b) are merged, so it waits or
+  is rebased onto them ([Migrations](#migrations-pre-assigned)).
+- Everything else starts when its dependencies below are merged.
+
+Every ticket follows the
 plan's exit criteria: acceptance tests are automated Go tests, `go vet` passes, the `--help`
 and `--json` output are documented, audit events exist, and new tests use
 `internal/testutil.TempDir`.
@@ -25,7 +37,7 @@ onto it.
 | 8 | `peers_trust_team` (peers rebuild: `trust` accepts `team`, adds `introduced_by`) | 1.1a |
 | 9 | `teams` (`teams`, `team_members`, `team_invites`, `team_pending_joins`) | 1.1b |
 | 10 | `presence` (`presence_peers`, `settings`) | 1.2b |
-| 11 | `requests` | 1.4a |
+| 11 | `requests`, `request_cancels` | 1.4a |
 | 12 | `webhook_queue` | 1.8b |
 
 ## Tickets
@@ -48,19 +60,21 @@ which depends on them being merged.
 | 1.2c | Presence engine: heartbeats, agent activity, offline, `status --team` | 1.2b, 1.1c | — | — | 1.1d, 1.2d |
 | 1.2d | `internal/idle` per-OS idle detection | specs approved | — | — | anything |
 | 1.3 | Visibility: `presence` command, modes, goodbye | 1.2c | — | — | 1.4a |
-| 1.4a | `internal/request`: schema, validation, canonical, `body_hash`, priority | 1.2b merged (migration order) | 11 | — | 1.3 |
+| 1.4a | `internal/request`: schema, validation, size limits, canonical, `body_hash`, priority | specs approved to build; **merge** after 1.2b (migration order) | 11 | — | 1.1a–d, 1.3 |
 | 1.4b | `mail.ErrBadBody` receiver path | specs approved | — | **yes** | 1.1a, 1.2a, 1.2d |
 | 1.4c | `request` kind, `request_submit`, CLI `agentnet request` (1.5, 1.9) | 1.4a, 1.1d | — | **yes** | 1.3 |
-| 1.6a | Lifecycle kinds, state machine, sender mirror, `request show/list/resend` | 1.4c | — | **yes** | 1.8a |
+| 1.6a | Lifecycle kinds, state machine, sender mirror, `request.cancel`, `request show/list/resend/cancel` | 1.4c | — | **yes** | 1.8a |
 | 1.6b | Inbox: `inbox_list` order, CLI `inbox/accept/decline/defer/complete` | 1.6a | — | — | 1.7, 1.8a |
 | 1.7 | Urgency guards: sender and receiver budget, notes | 1.6b | — | — | 1.8a, 1.8b |
 | 1.8a | Desktop notifications, `notify` settings, `agentnet notify --desktop/--event/--test` | 1.6a | — | **yes** | 1.6b, 1.7 |
 | 1.8b | Webhook: secret, signing, queue, retry | 1.8a | 12 | **yes** | 1.7 |
-| 1.9 | Offline end-to-end and audit/metrics check | 1.7, 1.8b | — | — | — |
-| 1.P | Phase 1 push (`main` to origin; the `phase-1` tag **only with the owner's OK**) | all above, plus the Phase 1 harness test | — | — | — |
+| 1.9 | Offline end-to-end and audit/metrics check | 1.7, 1.8b | — | — | 1.H |
+| 1.H | Headless agent harness run (Claude Code + one other harness) and the agent snippet | 1.6b | — | — | 1.7, 1.8a, 1.8b, 1.9 |
+| 1.P | Phase 1 push (`main` to origin; the `phase-1` tag **only with the owner's OK**) | all above, including **1.H** | — | — | — |
 
 Critical path: 1.1a → 1.1b → 1.1c → 1.1d → 1.4c → 1.6a → 1.6b → 1.7 → 1.9 (with 1.4b
-before 1.1b). 1.2a, 1.2d and 1.4b can start on day one.
+before 1.1b). 1.1a, 1.2a, 1.2d and 1.4b start now (see Process above). 1.H runs off the
+critical path once 1.6b is merged, and gates 1.P.
 
 ## Ticket details
 
@@ -193,11 +207,23 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 ### 1.4a `internal/request`
 
 - Files: new `internal/request` (types, `Validate`, canonical, `BodyHash`, `Priority(base,
-  n, a)`, artifact spec parser), migration 11, and tests.
-- Acceptance: a table test for every field rule in
-  [request.md §Request object](../protocol/request.md#request-object); the priority vectors
-  table; the artifact `SPEC` parser (`key=value` pairs and JSON); a fuzz test of `Validate`
-  against canonical round trip.
+  n, a)`, artifact spec parser, `MaxRequestBody`), migration 11 (`requests` with the
+  `cancel*` columns and state `cancelled`, and `request_cancels`), and tests.
+- Build may start now, in parallel with 1.1; merge only after 1.2b (migration order).
+- Acceptance:
+  - a table test for every field rule in
+    [request.md §Request object](../protocol/request.md#request-object);
+  - **a table test for every cap** in [request.md §Size limits](../protocol/request.md#size-limits),
+    each at the limit (accepted) and one over (rejected with the documented code and field
+    name): `title` 120 / 121 code points (and 120 four-byte code points accepted, 480 bytes);
+    `brief` 16384 / 16385 bytes (and a multi-byte character straddling the limit); 0 and 20 /
+    21 artifacts; each artifact member at its min and max and max+1 (`url` 2048, `branch`
+    255, `commit` 7 and 64, `path` 1024); `urgency_reason` 280 / 281; each
+    `requested_grant` member; total `canonical(request)` 65536 / 65537 bytes, built from
+    fields that are each valid → `request_too_large` (and `ErrBadBody` on the receive path);
+  - a maximal valid request (65536 bytes) seals into one mail under `MaxMailPlaintext`;
+  - the priority vectors table; the artifact `SPEC` parser (`key=value` pairs and JSON); a
+    fuzz test of `Validate` against canonical round trip.
 
 ### 1.4b `mail.ErrBadBody` (review)
 
@@ -216,8 +242,8 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
     byte-identical after canonicalisation; a relay-side tap sees only `type: mail` and no
     title or brief substring in any frame (`TestRequestFieldsIntactCiphertext`).
   - **1.5**: `agentnet request --help` contains the brief template;
-    `--brief-from-file -` reads stdin. The *headless Claude Code run* is a manual/harness step
-    recorded in `tests/phase1-manual.md`.
+    `--brief-from-file -` reads stdin. The *headless Claude Code run* is ticket
+    [1.H](#1h-headless-agent-harness-run).
   - **1.9**: with B stopped, `agentnet request` returns in **< 2 s** with `status: queued`,
     `daemon_online: false` and `last_seen` (`TestRequestOfflineQueued`).
   - D5: a `trust=relay` peer on a non-loopback relay URL → `unverified_peer`, and auto-decline
@@ -240,6 +266,27 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   a conflicting body under the same id → `request.conflict`, first kept; `request resend`
   of a request 21 d old → `bad_state`; a new request whose `created` is 31 d old →
   `bad_body`, while a duplicate of a stored id of that age is still recognised.
+- **`request.cancel` (D11, OD-P1-11 (b))**, per
+  [request.md §Cancel](../protocol/request.md#cancel-od-p1-11): the kinds `request.cancel` and
+  `request.cancelled`, the `cancelled` state, the sender-mirror step 5, IPC `request_cancel`
+  and CLI `agentnet request cancel <id> [--reason R]`. Acceptance (e2e unless noted):
+  - cancel of a `pending` and of a `deferred` request → recipient `cancelled`, sender mirror
+    `cancelled`, `request.cancelled` notification on the recipient, gone from `inbox`,
+    present in `inbox --all` (`TestCancelPendingAndDeferred`);
+  - cancel after `accept`, `decline` or `complete` known to the mirror → `bad_state` naming
+    the state, nothing sent; the race (recipient accepts, the cancel is sent before the
+    accept arrives) → recipient stays `accepted`, sender ends `accepted` with `cancel =
+    refused`, audit `request.cancel_refused` (`TestCancelRefusedAfterAccept`);
+  - idempotency: a second `cancel` while in flight or after `cancelled` → `duplicate: true`,
+    one cancel mail; a cancel mail forced `expired` → `cancel` sends a new one; a duplicate
+    cancel on the recipient changes nothing;
+  - cancel before the request arrives (request held back) → tombstone, `request.cancelled
+    seq 1`, then the request is stored `cancelled` with no notification and no inbox entry;
+    the 1001st tombstone from one sender is ignored; tombstones are pruned after 31 d (fake
+    clock);
+  - `accept` of a `cancelled` request → `bad_state`; `request resend` with `cancel` set →
+    `bad_state`;
+  - budget: a cancelled `high` still counts toward both 7-day urgency budgets.
 
 ### 1.6b Inbox
 
@@ -247,7 +294,8 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   `decline`, `defer`, `complete`), and tests.
 - Acceptance (1.6): three requests `low`, `high`, `normal` → inbox order `high`, `normal`,
   `low` (`TestInboxOrder`). A deferred request is hidden until `until`, then `due: true`.
-  `--all` shows answered requests. `ambiguous_request` → `--from` resolves it.
+  `--all` shows answered and cancelled requests; a cancelled one is not in the default list.
+  `ambiguous_request` → `--from` resolves it.
 
 ### 1.7 Urgency guards
 
@@ -255,8 +303,14 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 - Acceptance (1.7): with an honest sender, the 6th `high` in 7 days arrives as `normal` with
   `urgency_declared: high` and `downgraded_by: sender`; with the sender budget disabled
   (test option), the same with `downgraded_by: receiver`; the 3rd `blocking` likewise; the
-  budget frees up after 7 days (fake clock); the priority for a sender with 4 urgent answered
-  and 1 accepted is 2500 for `high`; auto-declines do not count against the budget.
+  budget frees up after 7 days (fake clock); auto-declines do not count against the budget.
+- Priority: a scenario in which one sender has 4 urgent requests answered and 1 of them
+  accepted first. The test **derives the expected priority from the formula in
+  [request.md §Effective priority](../protocol/request.md#effective-priority)**, written out
+  in the test (`2000 + ((base − 2) × 1000 × (a + 2)) / (n + 2)`, integer division), with
+  `n` and `a` counted from the scenario's own answers and `base` from the urgency. It must
+  **not** hard-code the result (no literal 2500), and must not call `request.Priority`, so a
+  wrong `Priority` or a wrong `n`/`a` query fails the test. It checks `high` and `blocking`.
 
 ### 1.8a Desktop notifications (review)
 
@@ -268,7 +322,8 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
   line** (osascript argv, gdbus argv, PowerShell environment); the gdbus arguments are
   GVariant string literals that round-trip titles containing `'`, `\`, `"` and `@s`, and the
   Linux body has `&<>` escaped; a manual check per OS in
-  `tests/phase1-manual.md`; event toggles are honoured.
+  `tests/phase1-manual.md`; event toggles are honoured, including `request.cancelled` (on
+  by default, recipient side only).
 
 ### 1.8b Webhook (review)
 
@@ -288,10 +343,44 @@ Each ticket lists: **files**, the **interface** it must not change, and **accept
 
 - Files: `tests/` (the e2e harness), `tests/phase1-manual.md`, and docs reconciliation.
 - Acceptance: stop B → A requests (< 2 s, `queued`) → start B → B's inbox has it, A's
-  `request show` → `delivered` → B accepts → A's mirror `accepted` and a notification. The
-  audit log on both sides has every event of
-  [request.md §Audit](../protocol/request.md#audit-and-metrics), with timestamps, and no
-  title or brief text (`TestAuditHasNoContent`). The docs match the behaviour.
+  `request show` → `delivered` → B accepts → A's mirror `accepted` and a notification. A
+  second request is sent and then **cancelled** by A while B is stopped, and B, on restart,
+  shows it `cancelled`. The audit log on both sides has every event of
+  [request.md §Audit](../protocol/request.md#audit-and-metrics), with timestamps, including
+  `request.cancel` (sender) and `request.cancel_in` (recipient), and no title, brief, reason
+  or note text, **including the cancel reason** (`TestAuditHasNoContent`: the requests and
+  the cancel carry marker strings that must appear in no `audit_events` row). The docs match
+  the behaviour.
+
+### 1.H Headless agent harness run
+
+- Depends on 1.6b (the whole request → inbox → accept → complete path exists in the CLI).
+  Runs in parallel with 1.7, 1.8a, 1.8b and 1.9. **1.P depends on it.**
+- Files: `tests/harness/phase1-agents.sh` and `tests/harness/phase1-agents.ps1` (the
+  scripts), `tests/harness/README.md` (prerequisites and how to run), the agent snippet
+  [../agents/snippet.md](../agents/snippet.md), and the result record in
+  `tests/phase1-manual.md`.
+- The script starts a loopback relay and two daemons (A and B) with separate config
+  directories, pairs them, creates a team, then drives **real agents headless**:
+  - agent A (sender) is told in plain words to ask B's agent for a review of a given
+    branch, with a stated `--idempotency-key`;
+  - agent B (recipient) is told to check its AgentNet inbox, accept what is there, do
+    nothing else, then mark it complete with a short note.
+  Each agent's working directory holds only the snippet (as `CLAUDE.md` for Claude Code,
+  `AGENTS.md` for the other harness). The prompts do not name any `agentnet` subcommand:
+  the agent must find them from the snippet and `--help`.
+- Harnesses: **Claude Code** (`claude -p`, non-interactive, with a tool allowlist that
+  permits only the `agentnet` binary) and **one other** (Codex CLI `codex exec`, or another
+  headless harness if Codex is unavailable, named in the record). The run is done twice,
+  with the roles swapped, so each harness is once sender and once recipient.
+- Acceptance (asserted by the script from `--json` output, not from agent text):
+  A's `request show` ends `completed` with the note; B's `inbox --all` shows it `completed`;
+  exactly one request exists (no duplicate from agent retries); the audit logs hold
+  `request.submit`, `request.in`, `request.accept`, `request.complete` and `request.state`;
+  the whole run finishes within 10 minutes. The script exits non-zero on any failure.
+- Not in CI (it needs model API keys and installed harnesses). It is run by hand before 1.P,
+  and the record in `tests/phase1-manual.md` states the date, the harness versions, pass or
+  fail, and any snippet change it needed.
 
 ## Owner decisions needed
 
@@ -310,6 +399,6 @@ recommendation, so approving the specs as they are accepts every recommendation 
 | OD-P1-8 | Inviting an already-paired peer without a code | (a) code only in Phase 1 (re-pairing through the code is harmless); (b) also `team add @peer` with an accept step | **(a)**. It is one path to build and review |
 | OD-P1-9 | Webhook payload privacy | title off by default (opt-in), or on by default. The brief is never included either way | **Off by default**. Webhooks usually post to third-party chat |
 | OD-P1-10 | The owner's device is lost | (a) no ownership transfer in Phase 1: members leave and someone re-creates the team; (b) add transfer | **(a)**. Revisit if beta teams hit it |
-| OD-P1-11 | The sender cancels (withdraws) a request | (a) not in Phase 1; (b) add `request.cancel` | **(a)**. It is not in the plan. The recipient can decline |
+| OD-P1-11 | The sender cancels (withdraws) a request | (a) not in Phase 1; (b) add `request.cancel` | **(b) — owner decision D11.** Allowed while the recipient has it `pending` or `deferred`, refused after accept, decline or complete, costs and refunds no budget. Specified in [request.md §Cancel](../protocol/request.md#cancel-od-p1-11), built in 1.6a |
 | OD-P1-12 | "Completion" before Phase 2 sessions exist | (a) `request.complete` kind now, and Phase 2 keeps it for session-less requests; (b) no completion until 2.1 | **(a)**. The plan requires completion to be logged from day one |
 | OD-P1-13 | Desktop notifier library | (a) own ~150-line per-OS code that never interpolates peer text; (b) `beeep` (the plan's suggestion), which formats AppleScript and PowerShell source from strings | **(a)**. This is a security reason (script injection through the request title) |

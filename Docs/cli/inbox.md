@@ -15,7 +15,7 @@ agentnet complete <id> [--note N] [--from <peer>] [--json]
 | Flag | Meaning |
 |---|---|
 | `--team TEAM` | `inbox`: only requests in that team |
-| `--all` | `inbox`: every received request, including answered ones and deferred ones not yet due |
+| `--all` | `inbox`: every received request, including answered, cancelled and deferred ones not yet due |
 | `--reason R` | Required for `decline`. 1–500 characters, sent to the requester |
 | `--until T` | Required for `defer`. RFC 3339 time or a duration (`2h`, `3d`), at most 90 days ahead |
 | `--note N` | `complete`: optional, up to 2000 characters, sent to the requester |
@@ -44,7 +44,13 @@ with `urgency_declared` and a note.
 | `defer` | `pending` or `deferred` | `deferred` until `T` |
 | `complete` | `accepted` | `completed` (final) |
 
-Anything else fails with `bad_state` and changes nothing. Each answer is queued to the
+The sender can **cancel** a `pending` or `deferred` request (`agentnet request cancel`,
+[../protocol/request.md](../protocol/request.md#cancel-od-p1-11)). It then becomes `cancelled` (final), leaves `inbox`, shows under
+`inbox --all` with the sender's reason, and a `request.cancelled` notification fires. A
+request you already accepted cannot be cancelled by the sender.
+
+Anything else fails with `bad_state` and changes nothing (so answering a `cancelled`
+request is `bad_state`). Each answer is queued to the
 requester at once (under 2 s, even if the requester is offline) and logged with a timestamp.
 
 ## Exit codes

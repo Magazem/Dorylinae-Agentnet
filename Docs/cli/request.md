@@ -1,6 +1,6 @@
 # `agentnet request`
 
-Status: draft (Phase 1, 1.4, 1.5, 1.9). Protocol: [../protocol/request.md](../protocol/request.md).
+Status: draft (Phase 1, 1.4, 1.5, 1.9; `cancel`: 1.6a, D11). Protocol: [../protocol/request.md](../protocol/request.md).
 
 Sends a teammate's agent a request (a review, a task or a question), and follows the
 requests you sent.
@@ -13,10 +13,11 @@ agentnet request <peer> <type> --title T (--brief B | --brief-from-file F)
 agentnet request show <id> [--from <peer>] [--json]
 agentnet request list [--state S] [--team TEAM] [--peer <peer>] [--json]
 agentnet request resend <id> [--json]
+agentnet request cancel <id> [--reason R] [--json]
 ```
 
 `<peer>` is a peer name or public key, with an optional `@`. A peer literally named `show`,
-`list` or `resend` must be written with `@`. `<type>` is `review`, `task` or `question`.
+`list`, `resend` or `cancel` must be written with `@`. `<type>` is `review`, `task` or `question`.
 
 | Flag | Meaning |
 |---|---|
@@ -30,7 +31,8 @@ agentnet request resend <id> [--json]
 | `--deadline D` | RFC 3339 time, or a duration from now (`90m`, `2h`, `3d`) |
 | `--team TEAM` | Needed only when you share several teams with the peer |
 | `--idempotency-key K` | 1–64 characters of `[A-Za-z0-9._:-]`. Running the same command again with the same key returns the first request instead of sending a second one. Recommended for agents that retry |
-| `--state S` | `list`: `pending`, `accepted`, `declined`, `deferred` or `completed` |
+| `--state S` | `list`: `pending`, `accepted`, `declined`, `deferred`, `completed` or `cancelled` |
+| `--reason R` | `cancel`: optional, 1–500 characters, shown to the recipient |
 | `--from <peer>` | `show`: pick the sender when the id matches requests from several peers |
 | `--json` | Machine-readable output on stdout |
 
@@ -62,13 +64,26 @@ Beyond that, the request is sent as `normal` and the output says so (`urgency_de
 (delivery unknown after 7 days) or `failed`, no answer has arrived, and the request is
 less than 21 days old (otherwise send a new request). The recipient
 recognises it by id: if it already answered, the answer is sent again. If it had not seen
-the request, it gets it now.
+the request, it gets it now. A request you asked to cancel cannot be resent.
+
+**Size limits:** title 120 characters, brief 16 KiB, 20 artifacts, and 64 KiB for the whole
+request once encoded. Over the total gives `request_too_large`: shorten the brief or send
+fewer artifacts ([../protocol/request.md](../protocol/request.md#size-limits)).
+
+`request cancel <id>` withdraws a request the recipient has not accepted yet (its state is
+`pending` or `deferred`). It returns at once. The state becomes `cancelled` when the
+recipient's daemon confirms, and the request leaves the recipient's inbox. Once the request
+is `accepted`, `declined` or `completed`, `cancel` fails with `bad_state` and names the
+state. If the recipient accepted it just before your cancel arrived, `request show` reports
+`cancel: refused` with the recipient's state. Running `cancel` again is safe: it sends
+nothing new while a cancel is in flight or done. Cancelling does not give back urgency
+budget.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
-| 0 | Queued (or `duplicate` for an idempotency key), shown, listed or resent |
+| 0 | Queued (or `duplicate` for an idempotency key), shown, listed, resent or cancel sent (or `duplicate`) |
 | 1 | Error (see the codes below) |
 | 2 | Usage error (missing `--title`, both or neither brief flag, a bad flag value) |
 | 3 | Daemon not running |
@@ -96,15 +111,20 @@ When downgraded, the output adds a line with `urgency_note`.
 - `show`: `{"ok": true, "request": <request view>}`
 - `list`: `{"ok": true, "requests": [<request view>]}`
 - `resend`: `{"ok": true, "id", "mail_id", "status": "queued"}`
+- `cancel`: `{"ok": true, "request": <request view>, "mail_id": "m-…"|null, "duplicate": bool}`
+
+Human output of `cancel`: `Cancel sent for r-… to bob (waiting for bob's daemon to
+confirm)`, or `r-… is already cancelled`, or `Cancel already sent for r-…`.
 
 The request view is defined in [../protocol/ipc.md](../protocol/ipc.md#requests).
 
 Error codes: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer` (the peer
 was paired with v1 on a hosted relay: re-pair or run `peers verify`), `unknown_team`,
 `ambiguous_team`, `no_shared_team`, `not_team_member`, `idempotency_conflict`,
+`request_too_large`,
 `unknown_request`, `ambiguous_request`, `bad_state`, `bad_request`, `daemon_not_running`
 (exit 3) and `usage` (exit 2).
 
 ## Audit
 
-`request.submit` and `request.resend` ([../protocol/request.md](../protocol/request.md#audit-and-metrics)).
+`request.submit`, `request.resend` and `request.cancel` ([../protocol/request.md](../protocol/request.md#audit-and-metrics)).

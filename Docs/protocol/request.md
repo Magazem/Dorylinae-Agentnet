@@ -2,15 +2,17 @@
 
 Status: **draft for review**. Covers Phase 1 tickets 1.4 (request object), 1.5 (the brief is
 written by the sender), 1.6 (inbox and lifecycle), 1.7 (urgency guards) and 1.9 (offline
-handling). The ticket split is 1.4a–1.9 in
+handling), plus `request.cancel` and the body size limits (owner decision D11). The ticket split is 1.4a–1.9 in
 [../review/11-phase1-tickets.md](../review/11-phase1-tickets.md). Nothing here is
 implemented yet. Change this document first.
 
 A **request** is a unit of work one agent asks another for: a review, a task or a question.
 It travels as sealed mail ([mail.md](mail.md)), kind `request`. The recipient answers with
 the lifecycle kinds `request.accept`, `request.decline`, `request.defer` and
-`request.complete`. The **recipient's daemon is authoritative** for the state. The sender
-keeps a mirror.
+`request.complete`. The sender may withdraw a request that is not yet accepted with
+`request.cancel` ([Cancel](#cancel-od-p1-11), owner decision D11), which the recipient
+confirms with `request.cancelled`. The **recipient's daemon is authoritative** for the
+state. The sender keeps a mirror.
 
 Conventions follow [mail.md](mail.md): `<key>` is an identity key, wire times are RFC 3339
 UTC with `Z` and whole seconds, SQLite times carry milliseconds, JSON is canonical, and
@@ -57,6 +59,34 @@ Each artifact is an object with **at least one** of these members, and no others
 Artifacts are pointers. They grant nothing. The recipient's agent fetches them with its own
 access (Phase 2 grants add scoped access).
 
+### Size limits
+
+Every limit below is checked by `internal/request.Validate`, which both sides run: the
+sender at `request_submit` (Submitting step 5), the recipient in `Apply` (Receiving step 1).
+
+| Limit | Value | Sender error (IPC / CLI exit 1) | Recipient |
+|---|---|---|---|
+| `title` length | 1–120 code points (so at most 480 bytes of UTF-8) | `bad_request`, field `title` | `bad_body` |
+| `brief` length | 1–16384 bytes of UTF-8, after CRLF → LF | `bad_request`, field `brief` | `bad_body` |
+| `urgency_reason` length | 1–280 code points | `bad_request`, field `urgency_reason` | `bad_body` |
+| Artifact count | 0–20 | `bad_request`, field `artifacts` | `bad_body` |
+| Each artifact field | `url` 1–2048 bytes, `branch` 1–255 bytes, `commit` 7–64 characters, `path` 1–1024 bytes ([Artifacts](#artifacts)) | `bad_request`, field `artifacts[i].<member>` | `bad_body` |
+| `requested_grant` fields | `action` 1–64, `resource` 1–512 bytes, `note` 1–280 code points | `bad_request`, field `requested_grant.<member>` | `bad_body` |
+| **Total body** | `len(canonical(request))` ≤ **65536 bytes** (`MaxRequestBody`) | **`request_too_large`** (the message gives the size and the limit) | `bad_body` |
+
+The total cap is checked **after** the field checks, because the field maxima add up to more
+than 64 KiB once JSON escaping is counted (a brief of 16384 `"` characters is 32768 bytes
+canonical). A request that fails only the total cap must shrink its brief or artifacts.
+
+**Relation to the mail cap.** The mail layer already bounds every message:
+`canonical(signed)` ≤ 716800 bytes (`MaxMailPlaintext`), and the sealed payload is at most
+716800 + 57 bytes ([mail.md §Message](mail.md#message)). A request of 65536 bytes plus the `msg`
+members, the `{"request": …}` wrapper and the signature is under 67 KiB, so **a valid request
+always fits in one mail** with a wide margin. The mail cap is the transport backstop (and the
+relay frame limit). The request caps are the application limit: they keep `requests.body`,
+`mail_inbox`, the inbox view and IPC lines small, and they are what users and agents see.
+The lifecycle bodies are bounded by their own fields (`reason` 500, `note` 2000 code points).
+
 ### Requested grant
 
 `{"action": "repo.read", "resource": "github.com/org/repo#feat-x", "note": "..."}`. Here
@@ -97,7 +127,8 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
    `duplicate: true` and do **not** send again. If different, fail with
    `idempotency_conflict`.
 5. Validate every field ([Request object](#request-object)). A failure is `bad_request`
-   with a message naming the field. `deadline` may be an RFC 3339 time or a duration
+   with a message naming the field. Then check the total size of the built object
+   ([Size limits](#size-limits)): over 65536 bytes is `request_too_large`. `deadline` may be an RFC 3339 time or a duration
    (`90m`, `2h`, `3d`: Go `time.ParseDuration`, plus a `d` suffix meaning 24 h) resolved
    against `now`, and the result is truncated to whole seconds.
 6. **Sender-side urgency budget** ([Urgency guards](#urgency-guards-17)). This may downgrade
@@ -145,8 +176,9 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
 Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept in
 `mail_inbox` as proof. `Apply` runs inside the mail dedupe transaction:
 
-1. **Strict body** ([Request object](#request-object)), `from = msg.from`, `to = msg.to`, and
-   `created ≤ msg.created`. A failure is [invalid](#invalid-bodies).
+1. **Strict body** ([Request object](#request-object)), including every
+   [size limit](#size-limits), `from = msg.from`, `to = msg.to`, and `created ≤ msg.created`.
+   A failure is [invalid](#invalid-bodies).
 2. **Wire idempotency.** If an `in` row exists for `(msg.from, id)`:
    - with the same `body_hash`, it is a **duplicate**. Change nothing. After commit, if the row's
      state is not `pending` and its `last_reply` was not re-sent in the last 10 minutes,
@@ -159,6 +191,11 @@ Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept
      without this bound a request could surface months later as new. An honest sender never
      resends after 21 d ([Idempotency](#idempotency)). Duplicates of a known id are still
      recognised at any age.
+   - with no row, and a [cancel tombstone](#cancel-od-p1-11) for `(msg.from, id)`: store the
+     row with `state = cancelled`, `state_seq = 1`, `first_response` NULL, `reason` from the
+     tombstone, and
+     `last_reply` = the `request.cancelled` with `seq = 1` that the tombstone already sent
+     (it is **not** submitted again). Delete the tombstone. No notification. Skip steps 3–5.
 3. **Policy auto-decline.** The row is stored with `state = declined`, `decline_code`,
    `state_seq = 1` and `first_response` NULL. In the **same transaction**, the
    `request.decline` with that `code` and `seq = 1` is stored as `last_reply` and submitted
@@ -205,32 +242,46 @@ Each body is strict, with exactly the listed members:
 | `request.decline` | `{"at", "code", "reason"?, "request", "seq"}` | `code`: `user`, `not_team_member`, `unknown_team` or `unverified_peer`. `reason`: 1–500 code points, required when `code = user`, absent otherwise |
 | `request.defer` | `{"at", "request", "seq", "until"}` | `at < until ≤ at + 90 d` |
 | `request.complete` | `{"at", "note"?, "request", "seq"}` | `note`: 1–2000 code points |
+| `request.cancelled` | `{"at", "request", "seq"}` | Confirms a [cancel](#cancel-od-p1-11). Sent only by the recipient's daemon, never by a user action |
 
 `request` is the request id, `seq` is an integer ≥ 1 (the row's `state_seq` after this
-change), and `at` is the recipient's time of the change. All four kinds are outboxed, acked
+change), and `at` is the recipient's time of the change. All five kinds are outboxed, acked
 and registered with `Inbox: true`.
+
+### Kind (sender → recipient)
+
+| Kind | Body | Extra rules |
+|---|---|---|
+| `request.cancel` | `{"at", "reason"?, "request"}` | `at`: the sender's time, ≤ `msg.created`. `reason`: 1–500 code points, no control characters except `\n` |
+
+It carries **no `seq`**: `seq` counts the recipient's state changes, which the sender does
+not own. It is outboxed, acked and registered with `Inbox: true`, and it is idempotent by
+`(msg.from, request)` ([Cancel](#cancel-od-p1-11)).
 
 ### State machine (authoritative on the recipient)
 
 ```
             accept              complete
 pending ───────────▶ accepted ───────────▶ completed
-   │  │                ▲
-   │  │ defer          │ accept
-   │  └────────▶ deferred ──┐ defer (again)
-   │                │  ▲────┘
-   │ decline        │ decline
-   └───────▶ declined ◀┘
+ │ │  │                ▲
+ │ │  │ defer          │ accept
+ │ │  └────────▶ deferred ──┐ defer (again)
+ │ │                │ │ ▲────┘
+ │ │ decline        │ │ decline
+ │ └───────▶ declined ◀┘ │
+ │ cancel (sender)       │ cancel (sender)
+ └───────▶ cancelled ◀───┘
 ```
 
 | From | Allowed |
 |---|---|
-| `pending` | `accept`, `decline`, `defer` |
-| `deferred` | `accept`, `decline`, `defer` |
+| `pending` | `accept`, `decline`, `defer`; `cancel` (sender's mail) |
+| `deferred` | `accept`, `decline`, `defer`; `cancel` (sender's mail) |
 | `accepted` | `complete` |
-| `declined`, `completed` | nothing (final) |
+| `declined`, `completed`, `cancelled` | nothing (final) |
 
-Any other transition is `bad_state` at IPC. For each allowed action, in **one transaction**:
+Any other transition is `bad_state` at IPC (so `accept` of a `cancelled` request is
+`bad_state`). For each allowed action, in **one transaction**:
 update the `in` row (`state`, `state_seq += 1`, `state_at`, plus `deferred_until`,
 `decline_code = user` with `reason`, or `note`), set `first_response` and
 `first_response_at` if they are NULL and the action is `accept`, `decline` or `defer`, store
@@ -242,7 +293,7 @@ for requests that never open a session.
 
 ### Sender mirror
 
-On `request.accept`, `decline`, `defer` or `complete` from `msg.from`:
+On `request.accept`, `decline`, `defer`, `complete` or `cancelled` from `msg.from`:
 
 1. Strict body. A failure is `bad_body`.
 2. Find the `out` row `(peer = msg.from, id = body.request)`. If there is none, ack and ignore,
@@ -252,8 +303,94 @@ On `request.accept`, `decline`, `defer` or `complete` from `msg.from`:
    `decline_code` with `reason`, or `note`. **The sender does not check the transition.** The
    recipient is authoritative, and a higher `seq` always wins, so a `complete` that overtakes
    its `accept` still ends in `completed`.
+5. **Cancel refused.** If the row has `cancel = requested` and, after step 3 or 4, its
+   `state` is `accepted`, `declined` or `completed`, set `cancel = refused`. This runs even
+   when step 3 ignored the mail, because a refused cancel is answered by re-sending a reply
+   the sender may already hold ([Cancel](#cancel-od-p1-11)).
 
-After commit: audit `request.state {request, peer, state, seq}`, and [notify](notify.md).
+After commit: audit `request.state {request, peer, state, seq}` (when step 4 applied),
+`request.cancel_refused {request, peer, state}` (when step 5 applied), and
+[notify](notify.md).
+
+### Cancel (OD-P1-11)
+
+Owner decision D11: the sender may withdraw a request the recipient has not taken on. IPC
+`request_cancel` ([ipc.md](ipc.md#requests)), CLI `agentnet request cancel <id>`
+([../cli/request.md](../cli/request.md)).
+
+**Rules chosen:**
+
+| Recipient state | Result |
+|---|---|
+| no row yet (the request is late, lost, or overtaken by the cancel) | Cancelled: a **tombstone** is kept, and the request is stored `cancelled` if it arrives |
+| `pending`, `deferred` | **Cancelled** (final) |
+| `cancelled` | Nothing changes (idempotent). The last reply is echoed |
+| `accepted`, `declined`, `completed` | **Refused.** The state stands; the sender learns it from the echoed reply |
+
+- **Budget.** A cancel counts against no budget and is not rate-limited beyond mail itself.
+  It also **refunds nothing**: the cancelled request stays in the sender-side and
+  receiver-side 7-day urgency counts ([Urgency guards](#urgency-guards-17)), otherwise
+  `high` + cancel would reset the budget. `first_response` is not changed by a cancel, so
+  the [effective priority](#effective-priority) counts are unchanged too (a cancelled row
+  with `first_response` NULL is not in `n`).
+- **After accept the sender cannot cancel.** The way out is to ask, outside AgentNet, for
+  the recipient to stop; the recipient then completes it (with a note).
+
+**Sender (`request_cancel {id, reason?}`)**, in one transaction on the `out` row:
+
+1. No `out` row with that id: `unknown_request`.
+2. `state = cancelled`: return the row with `duplicate: true` and send nothing.
+3. `state` is `accepted`, `declined` or `completed` (as the mirror knows it): `bad_state`,
+   and the message names the state ("bob already accepted r-…"). Nothing is sent.
+4. `cancel = requested` and the current cancel mail (`cancel_mail_id`) is `queued`,
+   `relayed` or `delivered`: return the row with `duplicate: true`. Nothing is sent.
+5. Otherwise (state `pending` or `deferred`, and no cancel in flight: none yet, or the last
+   one `expired` or `failed`): build `request.cancel` (`at = now`, `reason` if given, checked
+   as above, else `bad_request`), `Outbox.SubmitTx` it, and set `cancel = requested`,
+   `cancel_at = now`, `cancel_mail_id`. Audit `request.cancel {request, peer, mail}`.
+
+The `out` row's `state` does **not** change here: the recipient is authoritative, and the
+mirror moves to `cancelled` only on `request.cancelled`. The view shows `cancel:
+"requested"` meanwhile. `request_resend` refuses a row with `cancel` set (`bad_state`).
+
+**Recipient (`Apply` of `request.cancel`)**, inside the mail dedupe transaction:
+
+1. Strict body. A failure is [invalid](#invalid-bodies).
+2. Find the `in` row `(msg.from, body.request)`:
+   - `pending` or `deferred`: set `state = cancelled`, `state_seq += 1`, `state_at = now`,
+     `reason` = the body's `reason` (or NULL); leave `first_response` alone; store
+     `request.cancelled {at: now, request, seq: state_seq}` as `last_reply` and
+     `Outbox.SubmitTx` it.
+   - `cancelled`, `accepted`, `declined` or `completed`: change nothing. After commit,
+     re-submit `last_reply` under the same 10-minute rule as a duplicate request
+     ([Receiving](#receiving) step 2). For `accepted`, `declined` and `completed` this is
+     the refusal: the sender mirror sees a final or accepted state while `cancel =
+     requested` (Sender mirror step 5).
+   - **No row:** if no tombstone exists for `(msg.from, request)`, insert one into
+     `request_cancels` and submit `request.cancelled {at: now, request, seq: 1}`. A later
+     request with that id is stored `cancelled` ([Receiving](#receiving) step 2). A sender
+     may hold at most **1000** tombstones on this daemon: beyond that the cancel is acked and
+     ignored, with audit `request.cancel_in {result: "tombstone_limit"}`. Tombstones older
+     than 31 d are pruned (a request that old is refused as new anyway).
+3. After commit: audit `request.cancel_in {request, peer, result, state}`, where `result`
+   is `cancelled`, `refused`, `duplicate`, `early` (tombstone) or `tombstone_limit`, and
+   `state` is the row's state before the cancel (absent for no row). For `cancelled`, also
+   [notify](notify.md) `request.cancelled` so a human or agent who saw the request stops.
+
+**Ordering, resend and inbox.**
+
+- `request.cancel` is a separate mail from the request, so it can arrive first, which is the
+  tombstone case. The tombstone reply uses `seq = 1`, and the stored row then also has
+  `state_seq = 1` in state `cancelled`, so the mirror sees one consistent `seq`.
+- Recipient races are serialised by the `in` row's transaction: whichever of a local
+  `accept` and an arriving `cancel` commits first wins. If `accept` wins, the cancel is
+  refused. If `cancel` wins, the `accept` gets `bad_state`.
+- The sender's mirror follows the usual `seq` rule. If an `accept` (`seq` n) and the refusal
+  echo of it both arrive, the second is ignored by step 3 but still sets `cancel = refused`
+  (step 5).
+- A cancelled request leaves the default `inbox_list` (it is not `pending` or due
+  `deferred`). `inbox --all` shows it with `state: cancelled` and the sender's `reason`.
+- `request_resend` of a cancelled request, or one with a cancel in flight, is `bad_state`.
 
 ## Idempotency
 
@@ -266,15 +403,16 @@ resubmission must be safe.
   ([Receiving](#receiving) step 2).
 - **`agentnet request resend <id>`** (IPC `request_resend`) resubmits the stored canonical
   `body` unchanged, in a new mail, and sets the `out` row's `mail_id` to it. It is allowed only
-  when the row is `pending`, its current mail is `expired` or `failed`, and `now <
-  request.created + 21 d`. Otherwise it returns `bad_state` (the mail is still in flight, or
+  when the row is `pending`, has no `cancel`, its current mail is `expired` or `failed`,
+  and `now < request.created + 21 d`. Otherwise it returns `bad_state` (the mail is still in flight, or
   was delivered, or the request was already answered, or it is too old: send a new request).
   Audit `request.resend {request, peer, mail}`.
 - **Harness retries.** A harness that times out and runs the same `agentnet request` again
   would create a second request. `--idempotency-key K` (1–64 characters from
   `[A-Za-z0-9._:-]`, scoped per peer) makes the retry return the first request
   ([Submitting](#submitting) step 4). The key is local, never sent, and kept as long as the row.
-- Lifecycle mails are idempotent through `seq`.
+- Lifecycle mails are idempotent through `seq`. `request.cancel` is idempotent through the
+  recipient's state and tombstones ([Cancel](#cancel-od-p1-11)).
 
 ## Inbox (1.6)
 
@@ -360,7 +498,7 @@ reports delivery (the outbox state of `mail_id`) and the lifecycle state separat
 
 ## Audit and metrics
 
-Every accept, decline, defer and completion is logged with a timestamp (`audit_events.ts`)
+Every accept, decline, defer, completion and cancel is logged with a timestamp (`audit_events.ts`)
 from day one. These rows are the daemon-side data for the metrics in plan §9 (time to accept,
 accept rate, requests per team per week) under D7. **Never** titles, briefs, reasons, notes,
 artifacts or bodies.
@@ -375,6 +513,12 @@ artifacts or bodies.
 | `request.state` | sender / `daemon` | `{request, peer, state, seq}` |
 | `request.duplicate`, `request.conflict` | recipient / `daemon` | `{request, peer}` |
 | `request.orphan` | sender / `daemon` | `{request, peer, kind}` |
+| `request.cancel` | sender / `cli` | `{request, peer, mail}` |
+| `request.cancel_in` | recipient / `daemon` | `{request, peer, result, state?}`. `result`: `cancelled`, `refused`, `duplicate`, `early` or `tombstone_limit`. For `cancelled`, also `team`, `type`, `urgency`, `seq` and `age_s` |
+| `request.cancel_refused` | sender / `daemon` | `{request, peer, state}` |
+
+The cancel `reason` is content, like the decline `reason` and the `note`, and is never
+audited.
 
 ## Tables
 
@@ -391,12 +535,12 @@ CREATE TABLE requests (
     downgraded_by     TEXT CHECK (downgraded_by IN ('sender', 'receiver')),
     body              TEXT NOT NULL CHECK (json_valid(body)),   -- canonical request object
     body_hash         TEXT NOT NULL,
-    state             TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'declined', 'deferred', 'completed')),
+    state             TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'declined', 'deferred', 'completed', 'cancelled')),
     state_seq         INTEGER NOT NULL DEFAULT 0,
     state_at          TEXT,
     deferred_until    TEXT,
     decline_code      TEXT,
-    reason            TEXT,
+    reason            TEXT,                       -- decline reason, or the sender's cancel reason
     note              TEXT,
     first_response    TEXT CHECK (first_response IN ('accept', 'decline', 'defer')),
     first_response_at TEXT,
@@ -407,6 +551,9 @@ CREATE TABLE requests (
     last_reply_sent   TEXT,                       -- in: last echo time
     idem_key          TEXT,                       -- out only
     params_hash       TEXT,                       -- out only
+    cancel            TEXT CHECK (cancel IN ('requested', 'refused')),  -- out only
+    cancel_at         TEXT,                       -- out only
+    cancel_mail_id    TEXT,                       -- out only: current request.cancel mail
     updated           TEXT NOT NULL,
     PRIMARY KEY (direction, peer, id)
 );
@@ -414,6 +561,15 @@ CREATE UNIQUE INDEX requests_idem ON requests (peer, idem_key)
     WHERE direction = 'out' AND idem_key IS NOT NULL;
 CREATE INDEX requests_state ON requests (direction, state);
 CREATE INDEX requests_peer_time ON requests (direction, peer, received_at);
+
+-- recipient side: cancels that arrived before their request (Cancel, OD-P1-11)
+CREATE TABLE request_cancels (
+    peer        TEXT NOT NULL,                    -- sender
+    id          TEXT NOT NULL,                    -- r-<32 hex>
+    reason      TEXT,
+    received_at TEXT NOT NULL,                    -- pruned after 31 d
+    PRIMARY KEY (peer, id)
+);
 ```
 
 For `out` rows, `urgency_declared` = `urgency` unless the sender downgraded. For `in` rows,

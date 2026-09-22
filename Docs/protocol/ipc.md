@@ -232,7 +232,8 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `no_shared_team`, `not_team_member` | `request_submit` team resolution |
 | `unverified_peer` | D5: `trust=relay` peer on a non-loopback relay |
 | `unknown_request`, `ambiguous_request` | Request reference not found, or it matches `in` rows from several peers (pass `from`) |
-| `bad_state` | Lifecycle transition, or `request_resend`, is not allowed in the current state |
+| `bad_state` | Lifecycle transition, `request_resend` or `request_cancel` is not allowed in the current state (the message names the state) |
+| `request_too_large` | `request_submit`: the canonical request object is over 65536 bytes ([request.md §Size limits](request.md#size-limits)) |
 | `idempotency_conflict` | Same `idempotency_key` for this peer with different params |
 | `bad_webhook` | Webhook URL rejected (scheme, host or length) |
 
@@ -274,7 +275,8 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 `urgency` defaults to `normal`. Result: the [submit result](request.md#submit-result-19).
 Errors: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer`,
 `unknown_team`, `ambiguous_team`, `no_shared_team`, `not_team_member`,
-`idempotency_conflict`, `bad_request` (with a message naming the field).
+`idempotency_conflict`, `request_too_large`, `bad_request` (with a message naming the
+field).
 
 **Request view** (used by the methods below):
 
@@ -285,6 +287,7 @@ Errors: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer`,
   "urgency_note"?: "...", "urgency_reason"?, "artifacts": [...], "requested_grant"?, "deadline"?,
   "created", "received_at"?: "<in only>", "state", "state_at": "<time>"|null,
   "deferred_until"?, "due"?: true, "decline_code"?, "reason"?, "note"?,
+  "cancel"?: "requested"|"refused",
   "priority"?: 3000,
   "delivery"?: "queued"|"relayed"|"delivered"|"expired"|"failed"|"unknown",
   "mail_id"
@@ -293,13 +296,16 @@ Errors: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer`,
 
 `priority` and `due` are present on `in` views. `delivery` is present on `out` views: the
 outbox state of `mail_id`, or `unknown` once pruned. `out` views also carry `"presence":
-<presence brief>` for the peer.
+<presence brief>` for the peer. `state` may be `cancelled` on both sides. `cancel` is present
+on `out` views once the sender asked to cancel ([request.md §Cancel](request.md#cancel-od-p1-11)).
+For a cancelled `in` view, `reason` is the sender's cancel reason.
 
 | Method | Params | Result |
 |---|---|---|
 | `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup) |
-| `request_list` | `{"state"?, "team"?, "peer"?}` | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first |
-| `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending`, its mail is `expired` or `failed`, and the request is under 21 d old |
+| `request_list` | `{"state"?, "team"?, "peer"?}` (`state` includes `cancelled`) | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first |
+| `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` with no `cancel`, its mail is `expired` or `failed`, and the request is under 21 d old |
+| `request_cancel` | `{"id", "reason"?}` | `{"request": <out view>, "mail_id": "<cancel mail>"\|null, "duplicate": bool}`. Sender only (`out` rows; `unknown_request` otherwise). Allowed while the mirror state is `pending` or `deferred`. `bad_state` when it is `accepted`, `declined` or `completed`. Idempotent: an already `cancelled` row, or a cancel still in flight, returns `duplicate: true` and sends nothing. `reason`: 1–500 code points. Returns at once; the state becomes `cancelled` when the recipient confirms |
 | `inbox_list` | `{"team"?, "all"?: bool}` | `{"requests": [<in view>]}` in [inbox order](request.md#inbox-16) |
 | `request_accept` | `{"id", "from"?}` | `{"request": <in view>, "mail_id"}` |
 | `request_decline` | `{"id", "from"?, "reason"}` | Same. `reason` is required, 1–500 code points |

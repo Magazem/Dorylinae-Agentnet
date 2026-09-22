@@ -17,6 +17,7 @@ crosses the relay.
 | `request.declined` | The sender mirror applies `request.decline` (any `code`) | on |
 | `request.deferred` | The sender mirror applies `request.defer` | off |
 | `request.completed` | The sender mirror applies `request.complete` | off |
+| `request.cancelled` | The **recipient** commits a `pending` or `deferred` request as `cancelled` by its sender ([request.md §Cancel](request.md#cancel-od-p1-11)). Not for a cancel that arrives before its request, and not on the sender side | on |
 
 A mirror update that is ignored (`seq` not higher) fires nothing. The trigger runs in the mail
 kind's `After` hook ([mail.md](mail.md), `internal/mail.Kind.After`). It enqueues work and
@@ -29,7 +30,7 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
 
 ```json
 "notify.events":  {"request.received": true, "request.accepted": true, "request.declined": true,
-                   "request.deferred": false, "request.completed": false}
+                   "request.deferred": false, "request.completed": false, "request.cancelled": true}
 "notify.desktop": {"enabled": true}
 "notify.webhook": {"url": "https://...", "format": "generic", "title": false}
 ```
@@ -56,6 +57,7 @@ Desktop text, where `Urgency` is capitalised and `(from)` is the local peer name
 | `request.declined` | `<name> declined your <type> request` | `<title>` |
 | `request.deferred` | `<name> deferred your <type> request until <until, local time>` | `<title>` |
 | `request.completed` | `<name> completed your <type> request` | `<title>` |
+| `request.cancelled` | `<name> cancelled their <type> request` | `<title>` |
 
 The brief, reasons, notes and artifacts are **never** shown.
 

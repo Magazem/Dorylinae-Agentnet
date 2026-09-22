@@ -14,8 +14,8 @@ agentnet notify --rotate-secret [--json]
 agentnet notify --test [--json]
 ```
 
-The events are `request.received`, `request.accepted`, `request.declined` (on by default),
-`request.deferred` and `request.completed` (off by default).
+The events are `request.received`, `request.accepted`, `request.declined`, `request.cancelled` (on by
+default), `request.deferred` and `request.completed` (off by default).
 
 The webhook URL must be `https://` (`http://` only to localhost). When a webhook is first
 set, or on `--rotate-secret`, the command prints the signing secret **once**
