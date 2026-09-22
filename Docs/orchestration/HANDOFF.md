@@ -65,6 +65,7 @@ Last updated: 2026-09-21, Phase 1 wave A in flight.
 | D9 | From the spec review: **the redeemer sends tag_R first**; the issuer counts attempts at `pair_peer` (max 3); the redeemer's 24 h used-code record is **persisted in SQLite** (`pair_used_codes`). | 06 §7, pairing.md |
 | D10 | Review 10 M3: outbox `expired` means **"delivery unknown"**; receivers reject app mail older than 14 d; Phase 1 resubmits must be idempotent. Being implemented in 1.0f. | mail.md (after 1.0f) |
 | D11 | Phase 1 specs APPROVED (2026-09-21) with OD-P1-1..13 as recommended EXCEPT **OD-P1-11 → (b): add `request.cancel`** — allowed from delivered and deferred, refused after accept, counts against nothing. OD-P1-1 (single owner) and OD-P1-10 (lost owner device kills the team) stay, but must be written up as **known limitations in the beta docs**. Additions: **ticket 1.H** (scripted headless run in Claude Code + one other harness: request → inbox → accept → complete, plus a minimal CLAUDE.md/AGENTS.md snippet; 1.P depends on it); **request body caps** (brief length, artifact count, title length) in request.md and covered by 1.4a table test; **request.cancel** in the 1.9 audit list and `TestAuditHasNoContent`; 1.7 test derives the priority vector from the request.md formula (no magic 2500). Process: 1.2a, 1.2d, 1.4b (and 1.1a) start now; **1.4a may be built in parallel with 1.1 but merges only in migration order**. Owner expects Phase 1 to take 6–8 weeks at ~10 h/week; the Opus review queue is the bottleneck. | 11-phase1-tickets.md, request.md |
+| D12 | `request.cancel` does **not** refund urgency budget (prevents high+cancel resetting the weekly count). | request.md |
 
 Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account binding
 (needed by 4.1/4.2); `Docs/` vs `docs/` casing; work rhythm (part-time vs full-time).
@@ -97,7 +98,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
 3. **Phase 1 in flight** (specs merged `b6e824b`, D11). Ticket plan: `Docs/review/11-phase1-tickets.md`. Branch names `p1/<x>`, worktrees under `AgentNet-wt/`.
    | Work | Worker | Worktree | Review |
    |---|---|---|---|
-   | ~~Spec amendment per D11~~ | merged `e973b45` (cancel + tombstone + `request.cancelled` confirm kind; caps 64 KiB total `request_too_large`; 1.H; known limitations). Open owner question: cancel gives **no** urgency-budget refund (amender default). | — | — |
+   | ~~Spec amendment per D11~~ | merged `e973b45` (cancel + tombstone + `request.cancelled` confirm kind; caps 64 KiB total `request_too_large`; 1.H; known limitations). Owner confirmed (D12): cancel gives **no** urgency-budget refund. | — | — |
    | 1.1a peers trust team (migration 8) | committed `da9b4d3` on `p1/t1-1a`; in Opus review (R-1.1a → `Docs/review/14-1.1a-review.md`) | `t1-1a` | **Opus** |
    | 1.2a relay ephemeral envelopes | committed `0984bca` on `p1/t1-2a`; in Opus review (R-1.2a → `Docs/review/15-1.2a-review.md`) | `t1-2a` | **Opus** |
    | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
