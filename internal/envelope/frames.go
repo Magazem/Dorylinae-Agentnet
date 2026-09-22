@@ -30,6 +30,17 @@ const (
 // ProtocolVersion is the relay protocol version.
 const ProtocolVersion = 1
 
+// FeatureEphemeral is the ready feature that says the relay forwards ephemeral
+// envelope types without queueing them (Docs/protocol/presence.md).
+const FeatureEphemeral = "ephemeral"
+
+// TypePresence is the ephemeral envelope type of presence heartbeats.
+const TypePresence = "presence"
+
+// IsEphemeral reports whether envelopes of type t are never queued, never
+// acked and not deduplicated by the relay client.
+func IsEphemeral(t string) bool { return t == TypePresence }
+
 // Error codes carried by an ErrorFrame.
 const (
 	CodeAuthFailed  = "auth_failed"
@@ -62,7 +73,10 @@ type Control struct {
 	Expires   string `json:"expires,omitempty"`
 	PublicKey string `json:"public_key,omitempty"`
 	Signature string `json:"signature,omitempty"`
-	Code      string `json:"code,omitempty"`
+	// Features lists the optional relay features a ready frame advertises. Older
+	// clients ignore the member.
+	Features []string `json:"features,omitempty"`
+	Code     string   `json:"code,omitempty"`
 	// Lookup is the 5-character v2 pairing lookup. It is not the secret half.
 	Lookup  string `json:"lookup,omitempty"`
 	Message string `json:"message,omitempty"`

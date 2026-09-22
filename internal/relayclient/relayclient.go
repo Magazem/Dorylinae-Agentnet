@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
+	"slices"
 	"sync"
 	"time"
 
@@ -70,6 +71,8 @@ type Client struct {
 	mu   sync.Mutex
 	conn *websocket.Conn // non-nil only while authenticated
 	seen *seenSet        // envelopes already handed to OnEnvelope
+
+	features []string // from the latest ready frame; guarded by mu
 }
 
 // New validates cfg and returns a Client. Call Run to connect.
@@ -175,7 +178,7 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(envelope.MaxFrameBytes)
 
-	err = c.handshake(hctx, conn)
+	ready, err := c.handshake(hctx, conn)
 	cancel()
 	if err != nil {
 		return false, err
@@ -183,10 +186,12 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 
 	c.mu.Lock()
 	c.conn = conn
+	c.features = ready.Features
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
+		c.features = nil
 		c.mu.Unlock()
 	}()
 	c.log.Info("relay connected", "event", "relay_connect")
@@ -206,24 +211,39 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	}
 }
 
-func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
+// handshake authenticates and returns the relay's ready frame.
+func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (envelope.Control, error) {
 	ch, err := readControl(ctx, conn, envelope.OpChallenge)
 	if err != nil {
-		return err
+		return envelope.Control{}, err
 	}
 	nonce, err := envelope.DecodeNonce(ch.Nonce)
 	if err != nil {
-		return err
+		return envelope.Control{}, err
 	}
 	auth, err := envelope.SignAuth(c.pub, nonce, c.cfg.Signer.Sign)
 	if err != nil {
-		return fmt.Errorf("sign challenge: %w", err)
+		return envelope.Control{}, fmt.Errorf("sign challenge: %w", err)
 	}
 	if err := writeControl(ctx, conn, auth); err != nil {
-		return err
+		return envelope.Control{}, err
 	}
-	_, err = readControl(ctx, conn, envelope.OpReady)
-	return err
+	return readControl(ctx, conn, envelope.OpReady)
+}
+
+// Features returns the optional features the relay advertised in its latest
+// ready frame; nil while disconnected or when the relay advertised none.
+func (c *Client) Features() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.features)
+}
+
+// HasFeature reports whether the connected relay advertised feature.
+func (c *Client) HasFeature(feature string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Contains(c.features, feature)
 }
 
 func (c *Client) dispatch(ctx context.Context, frame []byte) {
@@ -250,6 +270,16 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	e, err := envelope.Parse(frame)
 	if err != nil {
 		c.log.Warn("ignoring invalid envelope from relay", "error", err)
+		return
+	}
+	// Ephemeral envelopes (presence) are never queued by the relay, so there is
+	// nothing to ack, and they must not touch the seen-set: a heartbeat flood
+	// would evict the session.* ids it protects. The presence layer has its own
+	// replay rule.
+	if envelope.IsEphemeral(e.Type) {
+		if c.cfg.OnEnvelope != nil {
+			c.cfg.OnEnvelope(e)
+		}
 		return
 	}
 	// The relay may redeliver an envelope whose ack it never saw (for example

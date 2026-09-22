@@ -64,16 +64,23 @@ type Options struct {
 	QueueMaxBytes     int64
 	// SweepInterval is how often expired envelopes are purged. Default 1m.
 	SweepInterval time.Duration
+	// EphemeralPerMinute caps ephemeral envelopes (presence) per sending key per
+	// minute; the excess is dropped silently. Default 600.
+	EphemeralPerMinute int
+	// EphemeralMaxBytes drops ephemeral frames larger than this. Default 8 KiB.
+	EphemeralMaxBytes int
 }
 
 // Server is an http.Handler serving the relay protocol.
 type Server struct {
-	log   *slog.Logger
-	ttl   time.Duration
-	queue int
-	now   func() time.Time
-	pairs *pairings
-	q     *queue
+	log    *slog.Logger
+	ttl    time.Duration
+	queue  int
+	now    func() time.Time
+	pairs  *pairings
+	q      *queue
+	eph    *ephemeralLimiter
+	ephMax int
 
 	mu    sync.Mutex
 	conns map[string]*conn // keyed by wire public key
@@ -124,6 +131,14 @@ func Open(opts Options) (*Server, error) {
 	if opts.SweepInterval <= 0 {
 		opts.SweepInterval = defaultSweepInterval
 	}
+	if opts.EphemeralPerMinute <= 0 {
+		opts.EphemeralPerMinute = defaultEphemeralPerMinute
+	}
+	if opts.EphemeralMaxBytes <= 0 {
+		opts.EphemeralMaxBytes = defaultEphemeralMaxBytes
+	}
+	s.eph = newEphemeralLimiter(opts.EphemeralPerMinute, s.now)
+	s.ephMax = opts.EphemeralMaxBytes
 	q, err := openQueue(opts.QueuePath, opts.QueueTTL, opts.QueueMaxEnvelopes, opts.QueueMaxBytes, s.now)
 	if err != nil {
 		return nil, err
@@ -262,7 +277,7 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	defer s.unregister(c)
 	s.log.Info("peer connected", "event", "connect", "peer", short(c.key))
 
-	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key}))
+	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}))
 	go c.writeLoop(ctx, cancel)
 	if s.drainStep(c) { // first batch inline so an idle queue is settled before we read
 		go s.drain(c)
@@ -303,6 +318,10 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 	}
 	if h.From != sender.key {
 		s.reject(sender, envelope.CodeBadSender, "from does not match the authenticated key", h.ID)
+		return true
+	}
+	if envelope.IsEphemeral(h.Type) {
+		s.routeEphemeral(sender, h, frame)
 		return true
 	}
 	s.mu.Lock()

@@ -53,6 +53,16 @@ func (c *conn) direct(frame []byte) directResult {
 	return directSent
 }
 
+// directEphemeral forwards an ephemeral frame immediately, ignoring any queued
+// backlog, but only while the send buffer is at most half full. The other half
+// stays free for mail and control frames. False means the frame was dropped.
+func (c *conn) directEphemeral(frame []byte) bool {
+	if len(c.out) > cap(c.out)/2 {
+		return false
+	}
+	return c.send(frame)
+}
+
 // send queues a frame without blocking; false means the queue is full.
 func (c *conn) send(frame []byte) bool {
 	select {
