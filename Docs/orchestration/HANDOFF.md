@@ -123,7 +123,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.6a lifecycle + cancel + result~~ | merged `b6fd3a1` + review fixes `ae82f19` (review 20: 4 Medium fixed; 9 Lows open) | — | — |
    | ~~1.6b inbox CLI~~ | merged. Low: accept/decline/defer `--from` passes a raw key (not resolved from a name); priority/due only computed in inbox_list. | — | — |
    | ~~1.8a desktop notify~~ | merged `f96dde1` + review fixes `5b4819f` (review 21: notify-send backslash escaping, bounded notification queue) | — | — |
-   | CLI bug: base64url keys starting with `-` are parsed as flags (flaky TestPeersRemoveCascadesTeamMembership, ~1/32) | fix pending | — | no |
+   | ~~CLI dash-key bug~~ | merged `4e27bc4` (parseInterspersed: only defined flags are flags; key-shaped tokens are positional; `--` supported) | — | — |
    | 1.8b webhook (migration 13) | committed `499f130` on `p1/t1-8b` (rebased with --onto main to drop the stale pre-review 1.8a commit); in Opus review (R-1.8b → `Docs/review/22-1.8b-review.md`). Watch: loopback always allowed for webhook URLs. | `t1-8b` | **Opus** |
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
@@ -151,7 +151,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 
 - **Python via `python` fails** (uv trampoline error). Use the Edit tool or Go.
 - **Paused workers.** On 2026-09-22 all five Phase 1 workers were paused by "could not process queued message after 3 delivery attempts" (runtime restart). Their partial work survived in the worktrees. Recovery: `team_interrupt_agent` each one with "resume task X from the files already in your worktree; do not start over". Never respawn or clear a worktree for this.
-- **Before replacing a stuck worker, stop it first** (`team_interrupt_agent` with "stop editing, list your files") and wait for its reply. On 2026-09-22 a "stuck" 1.2c worker woke up after its replacement was spawned, and both edited the same worktree.
+- **Before replacing a stuck worker, stop it first** (`team_interrupt_agent` with "stop editing, list your files") and wait for its reply. On 2026-09-22 a "stuck" 1.2c worker woke up after its replacement was spawned, and both edited the same worktree. **Wait for the system message "Teammate X was removed" before creating the replacement task:** the task board is visible to every worker, and on 2026-09-22 a "stopped" worker found its successor's task on the board and edited the same files again.
 - **A worker that stays idle with an empty worktree after its task is assigned is stuck.** Interrupting it once is fine; if it idles again, retire it, delete its task, spawn a fresh worker and create a NEW task for it.
 - **Before retiring a worker, mark all its tasks completed** (`team_task_update`), or it declines shutdown. Workers also report a missing worktree as a blocker after you merge and remove it; that is expected.
 - **Branches built on an unmerged branch:** after the base merges with review fixes, rebase with `git rebase --onto main <old-base-commit> <branch>` so the stale base commit is not replayed.
