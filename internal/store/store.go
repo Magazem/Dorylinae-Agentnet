@@ -175,6 +175,53 @@ CREATE TABLE settings (
     updated TEXT NOT NULL
 );
 `},
+	{11, "requests", `
+CREATE TABLE requests (
+	direction         TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+	peer              TEXT NOT NULL,              -- in: sender; out: recipient
+	id                TEXT NOT NULL,              -- r-<32 hex>
+	team_id           TEXT NOT NULL,
+	type              TEXT NOT NULL CHECK (type IN ('review', 'task', 'question')),
+	urgency           TEXT NOT NULL CHECK (urgency IN ('low', 'normal', 'high', 'blocking')),
+	urgency_declared  TEXT NOT NULL CHECK (urgency_declared IN ('low', 'normal', 'high', 'blocking')),
+	downgraded_by     TEXT CHECK (downgraded_by IN ('sender', 'receiver')),
+	body              TEXT NOT NULL CHECK (json_valid(body)),   -- canonical request object
+	body_hash         TEXT NOT NULL,
+	state             TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'declined', 'deferred', 'completed', 'cancelled')),
+	state_seq         INTEGER NOT NULL DEFAULT 0,
+	state_at          TEXT,
+	deferred_until    TEXT,
+	decline_code      TEXT,
+	reason            TEXT,                       -- decline reason, or the sender's cancel reason
+	note              TEXT,
+	first_response    TEXT CHECK (first_response IN ('accept', 'decline', 'defer')),
+	first_response_at TEXT,
+	created           TEXT NOT NULL,              -- request.created
+	received_at       TEXT,                       -- in only
+	mail_id           TEXT NOT NULL,              -- out: current carrying mail; in: first mail
+	last_reply        TEXT CHECK (last_reply IS NULL OR json_valid(last_reply)),  -- in: {"kind","body"}
+	last_reply_sent   TEXT,                       -- in: last echo time
+	idem_key          TEXT,                       -- out only
+	params_hash       TEXT,                       -- out only
+	cancel            TEXT CHECK (cancel IN ('requested', 'refused')),  -- out only
+	cancel_at         TEXT,                       -- out only
+	cancel_mail_id    TEXT,                       -- out only: current request.cancel mail
+	updated           TEXT NOT NULL,
+	PRIMARY KEY (direction, peer, id)
+);
+CREATE UNIQUE INDEX requests_idem ON requests (peer, idem_key)
+	WHERE direction = 'out' AND idem_key IS NOT NULL;
+CREATE INDEX requests_state ON requests (direction, state);
+CREATE INDEX requests_peer_time ON requests (direction, peer, received_at);
+
+CREATE TABLE request_cancels (
+	peer        TEXT NOT NULL,                    -- sender
+	id          TEXT NOT NULL,                    -- r-<32 hex>
+	reason      TEXT,
+	received_at TEXT NOT NULL,                    -- pruned after 31 d
+	PRIMARY KEY (peer, id)
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.
