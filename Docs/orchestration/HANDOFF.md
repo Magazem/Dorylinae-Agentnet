@@ -104,8 +104,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.2a relay ephemeral envelopes~~ | merged `3b24ff4` + review fixes `3699c9b` (review 15). Rule for 1.2b: reject an unknown `from` BEFORE HPKE open / signature check (Sybil flood cost). | — | — |
    | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
-   | 1.1c team IPC + CLI | T-1.1c, building on `p1/t1-1b` (pre-review) | `t1-1c` | no |
-   | 1.2b presence seal/open (migration 10) | T-1.2b, building on `p1/t1-1b` (pre-review) | `t1-2b` | **Opus** |
+   | 1.1c team IPC + CLI | done in worktree (uncommitted); follow-up L12 (owner peers remove cascades) in progress by T-1.1c | `t1-1c` | no |
+   | 1.2b presence seal/open (migration 10) | committed `8bb144e` on `p1/t1-2b` (rebased on main); in Opus review (R-1.2b → `Docs/review/17-1.2b-review.md`). Deferred to 1.2c: sender loop, Outbox.OnPeerOnline wiring (Store.Accept returns `edge`), roster-resync (step 7). | `t1-2b` | **Opus** |
    | 1.4a internal/request (migration 11) | committed on `p1/t1-4a` (worker retired); **held**: merge only after 1.1b (9) and 1.2b (10); branch has NO-OP placeholders for migrations **8, 9 and 10** — drop all three when rebasing and resolve store.go/store_test.go conflicts by keeping the real ones. No review needed. | `t1-4a` | no |
    Merge order: 1.1b → rebase 1.1c and 1.2b onto main (pick up 1.1b review fixes) → 1.2b (after its review) → 1.4a (drop placeholders 8–10) → 1.1c. Then 1.1d (review) and 1.2c.
 4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
