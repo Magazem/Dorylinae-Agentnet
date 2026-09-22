@@ -195,6 +195,7 @@ type cancelOutcome struct {
 	hadRow               bool
 	state                string
 	teamID, typ, urgency string
+	title                string
 	seq                  int
 }
 
@@ -245,7 +246,11 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		return fmt.Errorf("request: read in row: %w", err)
 	}
 
-	out := &cancelOutcome{requestID: reqID, peer: op.Msg.From, hadRow: true, state: row.state, teamID: row.teamID, typ: row.typ, urgency: row.urgency}
+	title := ""
+	if req, terr := decodeStoredBody(row.body); terr == nil {
+		title = req.Title
+	}
+	out := &cancelOutcome{requestID: reqID, peer: op.Msg.From, hadRow: true, state: row.state, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title}
 	if row.state != StatePending && row.state != StateDeferred {
 		out.result = "refused"
 		if row.state == StateCancelled {
@@ -327,6 +332,9 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 	}
 	if out.result == "refused" || out.result == "duplicate" {
 		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
+	}
+	if out.result == "cancelled" && s.Notify != nil {
+		s.Notify(ctx, EventCancelled, NotifyInfo{Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title})
 	}
 	if s.Audit == nil {
 		return

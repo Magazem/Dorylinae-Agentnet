@@ -65,7 +65,7 @@ func TestUnverifiedPeerReadsTrustInTx(t *testing.T) {
 	}
 	check := func(nonLoopback bool, peer string, want bool) {
 		t.Helper()
-		rs := newRequestStore(db, "self", nil, nil, nil, nonLoopback)
+		rs := newRequestStore(db, "self", nil, nil, nil, nonLoopback, nil, nil)
 		// Inside a transaction that holds the pool's only connection, as apply does.
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
@@ -84,7 +84,7 @@ func TestUnverifiedPeerReadsTrustInTx(t *testing.T) {
 	check(false, "relaypeer", false)
 
 	// A read error is returned, never treated as "not relay".
-	rs := newRequestStore(db, "self", nil, nil, nil, true)
+	rs := newRequestStore(db, "self", nil, nil, nil, true, nil, nil)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +134,7 @@ func TestRequestSubmitRefusesRelayTrust(t *testing.T) {
 			t.Fatal(err)
 		}
 		srv := ipc.NewServer()
-		registerRequest(srv, presence.NewStore(db), newRequestStore(db, "self", nil, nil, ts, nonLoopback), ps, ts, nil, nonLoopback)
+		registerRequest(srv, presence.NewStore(db), newRequestStore(db, "self", nil, nil, ts, nonLoopback, nil, ps), ps, ts, nil, nonLoopback)
 		sctx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
 		go func() { done <- srv.Serve(sctx, ln) }()

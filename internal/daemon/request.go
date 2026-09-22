@@ -18,6 +18,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
@@ -98,9 +99,9 @@ type RequestSubmitResult struct {
 // newRequestStore builds the Store that owns both sides of the requests
 // table: the receiving path (Kind, wired into the mail receiver's Kinds) and
 // the sending path (Submit, called by request_submit below).
-func newRequestStore(db *sql.DB, self string, ob *mail.Outbox, log *audit.Log, ts *team.Store, nonLoopbackRelay bool) *request.Store {
+func newRequestStore(db *sql.DB, self string, ob *mail.Outbox, log *audit.Log, ts *team.Store, nonLoopbackRelay bool, trigger *notify.Trigger, ps *peers.Store) *request.Store {
 	return &request.Store{
-		DB: db, Self: self, Outbox: ob, Audit: log,
+		DB: db, Self: self, Outbox: ob, Audit: log, Notify: notifyAdapter(trigger, ps),
 		TeamActive: func(ctx context.Context, tx *sql.Tx, teamID string) (bool, error) {
 			t, err := ts.GetTx(ctx, tx, teamID)
 			if err != nil {

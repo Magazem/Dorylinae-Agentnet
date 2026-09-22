@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
@@ -267,8 +268,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	presenceReceiver.OnResync = presenceSender.MaybeResync
 
+	notifySettings := notify.NewSettings(st.DB())
+	notifyTrigger := &notify.Trigger{Settings: notifySettings, Audit: log, Log: opts.Logger}
+
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
-	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay)
+	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore)
 	if err != nil {
 		_ = ln.Close()
@@ -308,6 +312,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	registerLifecycle(srv, reqStore, peerStore, teamStore)
+	registerNotify(srv, notifySettings, notify.Desktop{})
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

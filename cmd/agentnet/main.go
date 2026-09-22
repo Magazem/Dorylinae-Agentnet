@@ -73,6 +73,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDefer(args[1:], stdout, stderr)
 	case "complete":
 		return runComplete(args[1:], stdout, stderr)
+	case "notify":
+		return runNotify(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -110,6 +112,7 @@ Commands:
   decline   Decline a request from your inbox
   defer     Defer a request from your inbox
   complete  Mark an accepted request complete, optionally with a result
+  notify    Configure desktop notifications
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

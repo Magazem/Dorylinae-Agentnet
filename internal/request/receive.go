@@ -40,6 +40,9 @@ type Store struct {
 	Self   string // own identity key, wire form
 	Outbox SubmitTx
 	Audit  AuditSink // request.in, request.auto_decline; may be nil
+	// Notify, when set, is called after commit for each lifecycle event of
+	// Docs/protocol/notify.md §Triggers.
+	Notify NotifyFunc
 
 	// TeamActive reports whether teamID is a local team in state "active". It
 	// is read through tx (not the connection pool): apply runs inside the mail
@@ -90,6 +93,7 @@ type applyOutcome struct {
 	urgency         string
 	urgencyDeclared string // set only when downgradedBy is set
 	downgradedBy    string // "", "sender" or "receiver"
+	title           string
 }
 
 var pendingApply sync.Map // map[*mail.Opened]*applyOutcome
@@ -158,7 +162,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 		return badBody("request is older than 30 days and unknown here")
 	}
 
-	out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency}
+	out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency, title: req.Title}
 
 	// Policy auto-decline (Docs/protocol/request.md §Receiving step 3).
 	code, err := s.declineCode(ctx, tx, req)
@@ -359,6 +363,9 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 	}
 	if !out.newRow && !out.conflict {
 		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
+	}
+	if out.newRow && !out.cancelled && !out.autoDecline && s.Notify != nil {
+		s.Notify(ctx, EventReceived, NotifyInfo{Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title})
 	}
 	if s.Audit == nil {
 		return

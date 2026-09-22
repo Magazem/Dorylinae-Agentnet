@@ -29,15 +29,30 @@ type mirrorOutcome struct {
 	teamID        string
 	typ           string
 	urgency       string
+	title         string
 	state         string
 	seq           int
 	resultBytes   int
 	outputBytes   int
 	artifacts     int
 	hasResult     bool
+	resultStatus  string
+	until         time.Time
 }
 
 var pendingMirror sync.Map // map[*mail.Opened]*mirrorOutcome
+
+// mirrorEvent maps a lifecycle mail kind to its notification event
+// (Docs/protocol/notify.md §Triggers). KindCancelled is deliberately absent:
+// this mirror confirms the recipient's cancel acknowledgement at the
+// sender, not the request.cancelled trigger, which fires at the recipient
+// (see afterCancel in cancel.go).
+var mirrorEvent = map[string]string{
+	KindAccept:   EventAccepted,
+	KindDecline:  EventDeclined,
+	KindDefer:    EventDeferred,
+	KindComplete: EventCompleted,
+}
 
 // AcceptKind is the receiver Kind for request.accept, one of the five
 // lifecycle kinds sent recipient -> sender (Docs/protocol/request.md
@@ -75,7 +90,7 @@ func (s *Store) applyAccept(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if err != nil {
 		return err
 	}
-	return s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil)
+	return s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil, time.Time{})
 }
 
 func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -115,7 +130,7 @@ func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) e
 		reasonArg = reason
 	}
 	return s.applyMirror(ctx, tx, op, KindDecline, reqID, StateDeclined, seq, at,
-		`decline_code = ?, reason = ?`, []any{code, reasonArg}, nil)
+		`decline_code = ?, reason = ?`, []any{code, reasonArg}, nil, time.Time{})
 }
 
 func (s *Store) applyDefer(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -138,7 +153,7 @@ func (s *Store) applyDefer(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return badBody("until must be at most 90 days after at")
 	}
 	return s.applyMirror(ctx, tx, op, KindDefer, reqID, StateDeferred, seq, at,
-		`deferred_until = ?`, []any{wireTime(until)}, nil)
+		`deferred_until = ?`, []any{wireTime(until)}, nil, until)
 }
 
 func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -192,8 +207,11 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 		artifacts = len(result.Artifacts)
 	}
 	ra := &resultAudit{hasResult: hasResult, resultBytes: resultBytes, outputBytes: outputBytes, artifacts: artifacts}
+	if result != nil {
+		ra.status = result.Status
+	}
 	return s.applyMirror(ctx, tx, op, KindComplete, reqID, StateCompleted, seq, at,
-		`note = ?, result = ?`, []any{noteArg, resultArg}, ra)
+		`note = ?, result = ?`, []any{noteArg, resultArg}, ra, time.Time{})
 }
 
 func (s *Store) applyCancelled(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -205,17 +223,19 @@ func (s *Store) applyCancelled(ctx context.Context, tx *sql.Tx, op *mail.Opened)
 	if err != nil {
 		return err
 	}
-	return s.applyMirror(ctx, tx, op, KindCancelled, reqID, StateCancelled, seq, at, "", nil, nil)
+	return s.applyMirror(ctx, tx, op, KindCancelled, reqID, StateCancelled, seq, at, "", nil, nil, time.Time{})
 }
 
 type resultAudit struct {
 	hasResult                           bool
 	resultBytes, outputBytes, artifacts int
+	status                              string
 }
 
 // applyMirror is Docs/protocol/request.md §Sender mirror steps 2-5, shared by
-// the five lifecycle kinds.
-func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, kind, reqID, newState string, seq int, at time.Time, extraSet string, extraArgs []any, ra *resultAudit) error {
+// the five lifecycle kinds. until is the new deferred_until for KindDefer,
+// zero otherwise (Docs/protocol/notify.md §Text and sanitising).
+func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, kind, reqID, newState string, seq int, at time.Time, extraSet string, extraArgs []any, ra *resultAudit, until time.Time) error {
 	row, err := getRow(ctx, tx, "out", op.Msg.From, reqID)
 	if errors.Is(err, ErrUnknownRequest) {
 		pendingMirror.Store(op, &mirrorOutcome{orphan: true, kind: kind, requestID: reqID, peer: op.Msg.From})
@@ -225,7 +245,11 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 		return fmt.Errorf("request: read out row: %w", err)
 	}
 
-	out := &mirrorOutcome{kind: kind, requestID: reqID, peer: row.peer, teamID: row.teamID, typ: row.typ, urgency: row.urgency}
+	title := ""
+	if req, terr := decodeStoredBody(row.body); terr == nil {
+		title = req.Title
+	}
+	out := &mirrorOutcome{kind: kind, requestID: reqID, peer: row.peer, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title, until: until}
 	finalState := row.state
 	if seq > row.stateSeq {
 		setSQL := `state = ?, state_seq = ?, state_at = ?`
@@ -244,6 +268,7 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 		finalState = newState
 		if ra != nil {
 			out.hasResult, out.resultBytes, out.outputBytes, out.artifacts = ra.hasResult, ra.resultBytes, ra.outputBytes, ra.artifacts
+			out.resultStatus = ra.status
 		}
 	}
 
@@ -270,6 +295,14 @@ func (s *Store) afterMirror(ctx context.Context, op *mail.Opened) {
 	out := v.(*mirrorOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
+	}
+	if out.applied && s.Notify != nil {
+		if event, ok := mirrorEvent[out.kind]; ok {
+			s.Notify(ctx, event, NotifyInfo{
+				Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title,
+				Until: out.until, ResultStatus: out.resultStatus, HasResult: out.hasResult,
+			})
+		}
 	}
 	if s.Audit == nil {
 		return
