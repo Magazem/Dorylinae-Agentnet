@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -41,7 +42,7 @@ type Kind struct {
 	Inbox bool
 	// Apply writes the kind-specific rows. It runs inside the dedupe
 	// transaction, so it must only use tx. An error rolls everything back and
-	// nothing is acked.
+	// nothing is acked, except an error wrapping ErrBadBody (see there).
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error
 	// After runs once after the commit of a mail that was not a duplicate. It
 	// must not block for long; it may be nil.
@@ -84,6 +85,20 @@ type Receiver struct {
 // ErrNoKindHandler is returned for mail of kind keys when no handler is
 // registered: it is neither stored nor acked, so the sender keeps resending.
 var ErrNoKindHandler = errors.New("mail: no handler for kind keys")
+
+// ErrBadBody is wrapped by an Apply error when the verified body is invalid for
+// its kind. The receiver rolls back, records only the mail_seen row (marked, so
+// a resend is not re-evaluated), audits mail.reject bad_body without any body
+// content, and acks the id as unsupported. Docs/protocol/request.md §Invalid bodies.
+var ErrBadBody = errors.New("mail: bad body")
+
+// ReasonBadBody is the audit reason for ErrBadBody.
+const ReasonBadBody = "bad_body"
+
+// badBodyMark is appended to mail_seen.received_at of a bad-body row, so a
+// resend is re-acked as unsupported without calling Apply and without a
+// migration. Prune's string comparison still orders such rows by time.
+const badBodyMark = "!bad_body"
 
 func (r *Receiver) now() time.Time {
 	if r.Now != nil {
@@ -133,10 +148,18 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		return reject(11, ReasonStale, nil)
 	}
 
-	dup, err := r.store(ctx, op, k, known)
+	res, err := r.store(ctx, op, k, known)
 	if err != nil {
 		return err
 	}
+	if res == seenBad || res == seenDupBad {
+		if res == seenBad && r.Opener.Audit != nil {
+			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonBadBody)
+		}
+		r.ack(ctx, op.Msg.From, op.Msg.ID, true)
+		return reject(11, ReasonBadBody, nil)
+	}
+	dup := res == seenDup
 	if !dup && kind != "keys" && r.Audit != nil {
 		detail := map[string]string{"peer": op.Msg.From, "id": op.Msg.ID, "kind": kind}
 		if aerr := r.Audit.Append(ctx, actorDaemon, ActionIn, detail); aerr != nil {
@@ -151,33 +174,53 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	return nil
 }
 
-// store runs the single dedupe transaction. dup reports a repeat of (from, id).
-func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (dup bool, err error) {
+type seenResult int
+
+const (
+	seenNew    seenResult = iota // stored
+	seenDup                      // repeat of an accepted (from, id)
+	seenBad                      // Apply returned ErrBadBody; only mail_seen recorded
+	seenDupBad                   // repeat of a bad-body (from, id)
+)
+
+// store runs the single dedupe transaction.
+func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (seenResult, error) {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return false, fmt.Errorf("mail: begin: %w", err)
+		return seenNew, fmt.Errorf("mail: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after a successful commit
 	at := r.now().UTC().Format(StoreTimeFmt)
 	res, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`, op.Msg.From, op.Msg.ID, at)
 	if err != nil {
-		return false, fmt.Errorf("mail: record seen: %w", err)
+		return seenNew, fmt.Errorf("mail: record seen: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return true, nil // rolled back by the deferred Rollback
+		var got string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT received_at FROM mail_seen WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&got); err != nil {
+			return seenNew, fmt.Errorf("mail: read seen: %w", err)
+		}
+		if strings.HasSuffix(got, badBodyMark) {
+			return seenDupBad, nil
+		}
+		return seenDup, nil // rolled back by the deferred Rollback
 	}
 	if known {
 		if k.Apply != nil {
 			if err := k.Apply(ctx, tx, op); err != nil {
-				return false, fmt.Errorf("mail: apply %s: %w", op.Msg.Kind, err)
+				if errors.Is(err, ErrBadBody) {
+					return r.storeBad(ctx, tx, op, at)
+				}
+				return seenNew, fmt.Errorf("mail: apply %s: %w", op.Msg.Kind, err)
 			}
 		}
 		if k.Inbox {
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
 				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at, string(op.Signed)); err != nil {
-				return false, fmt.Errorf("mail: store inbox: %w", err)
+				return seenNew, fmt.Errorf("mail: store inbox: %w", err)
 			}
 		}
 	}
@@ -186,9 +229,33 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (d
 		commit = (*sql.Tx).Commit
 	}
 	if err := commit(tx); err != nil {
-		return false, fmt.Errorf("mail: commit: %w", err)
+		return seenNew, fmt.Errorf("mail: commit: %w", err)
 	}
-	return false, nil
+	return seenNew, nil
+}
+
+// storeBad discards the Apply transaction and records only the marked
+// mail_seen row in a new one.
+func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at string) (seenResult, error) {
+	_ = tx.Rollback()
+	tx2, err := r.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return seenNew, fmt.Errorf("mail: begin: %w", err)
+	}
+	defer func() { _ = tx2.Rollback() }()
+	if _, err := tx2.ExecContext(ctx,
+		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`,
+		op.Msg.From, op.Msg.ID, at+badBodyMark); err != nil {
+		return seenNew, fmt.Errorf("mail: record bad body: %w", err)
+	}
+	commit := r.commit
+	if commit == nil {
+		commit = (*sql.Tx).Commit
+	}
+	if err := commit(tx2); err != nil {
+		return seenNew, fmt.Errorf("mail: commit: %w", err)
+	}
+	return seenBad, nil
 }
 
 // ack seals and sends one ack directly (not outboxed). Failures are logged:
