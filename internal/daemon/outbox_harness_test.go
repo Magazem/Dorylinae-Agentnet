@@ -139,6 +139,13 @@ type harnessNode struct {
 	logs   *syncBuf
 	cancel context.CancelFunc
 	done   chan error
+
+	// PresenceInterval and AgentWindow are test overrides of
+	// Docs/protocol/presence.md, set before start() (daemon.Options
+	// PresenceInterval/AgentWindow). Idle overrides the human-present source.
+	PresenceInterval time.Duration
+	AgentWindow      time.Duration
+	Idle             func(context.Context) (time.Duration, bool)
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -168,11 +175,14 @@ func (n *harnessNode) start() {
 	done := make(chan error, 1)
 	go func() {
 		done <- daemon.RunWithOptions(ctx, n.p, ready, daemon.Options{
-			Keystore:  ks,
-			Identity:  &identity.Options{Name: n.name, Harness: "test-harness"},
-			RelayURL:  n.relay.url(),
-			Logger:    slog.New(slog.NewTextHandler(n.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
-			MailKinds: map[string]mail.Kind{"note": {Inbox: true}},
+			Keystore:         ks,
+			Identity:         &identity.Options{Name: n.name, Harness: "test-harness"},
+			RelayURL:         n.relay.url(),
+			Logger:           slog.New(slog.NewTextHandler(n.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+			MailKinds:        map[string]mail.Kind{"note": {Inbox: true}},
+			PresenceInterval: n.PresenceInterval,
+			AgentWindow:      n.AgentWindow,
+			Idle:             n.Idle,
 		})
 	}()
 	select {
@@ -278,6 +288,38 @@ func harnessPair(t *testing.T, a, b *harnessNode) {
 		a.call("pair_status", daemon.PairStatusParams{PairingID: issued.ID}, &issued)
 		return red.State == "complete" && issued.State == "complete"
 	})
+}
+
+// harnessSeedTeam gives every node in members (already paired with each
+// other) an identical active team row of teamID owned by owner, so the
+// presence sender's visible set (Docs/protocol/presence.md §Sending) includes
+// them without needing the team_invite/team_join IPC methods (ticket 1.1d,
+// not yet wired into this worktree). It writes directly to each node's store,
+// so nodes must be stopped when this runs.
+func harnessSeedTeam(t *testing.T, teamID string, owner *harnessNode, members ...*harnessNode) {
+	t.Helper()
+	now := time.Now().UTC()
+	ts := now.Format("2006-01-02T15:04:05.000Z")
+	wire := now.Format("2006-01-02T15:04:05Z")
+	all := append([]*harnessNode{owner}, members...)
+	for _, n := range all {
+		st, err := store.Open(context.Background(), n.p.DB)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.DB().Exec(`INSERT INTO teams (id, name, owner, epoch, state, created, updated) VALUES (?, 'seeded', ?, 1, 'active', ?, ?)`,
+			teamID, owner.key, ts, ts); err != nil {
+			_ = st.Close()
+			t.Fatal(err)
+		}
+		for _, m := range all {
+			if _, err := st.DB().Exec(`INSERT INTO team_members (team_id, key, added) VALUES (?, ?, ?)`, teamID, m.key, wire); err != nil {
+				_ = st.Close()
+				t.Fatal(err)
+			}
+		}
+		_ = st.Close()
+	}
 }
 
 func (n *harnessNode) submit(to, kind, text string) daemon.MailSubmitResult {

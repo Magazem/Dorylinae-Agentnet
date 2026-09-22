@@ -59,6 +59,11 @@ type HandlerFunc func(ctx context.Context, params json.RawMessage) (any, error)
 type Server struct {
 	mu       sync.RWMutex
 	handlers map[string]HandlerFunc
+	// Activity, if set, is called once for every dispatched request (any
+	// known method, including status), before its handler runs. The presence
+	// sender (1.2c) uses it to detect the agent-active edge
+	// (Docs/protocol/presence.md §Levels, ipc.md §Phase 1 methods).
+	Activity func()
 }
 
 // NewServer returns a Server with no handlers.
@@ -150,6 +155,9 @@ func (s *Server) dispatch(ctx context.Context, line []byte) Response {
 	s.mu.RUnlock()
 	if !ok {
 		return Response{ID: req.ID, Error: &Error{Code: CodeUnknownMethod, Message: fmt.Sprintf("unknown method %q", req.Method)}}
+	}
+	if s.Activity != nil {
+		s.Activity()
 	}
 	res, err := h(ctx, req.Params)
 	if err != nil {

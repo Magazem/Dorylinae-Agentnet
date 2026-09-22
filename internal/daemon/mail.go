@@ -184,16 +184,23 @@ func newOutbox(db *sql.DB, log *audit.Log, ks *keystore.Store, lg *slog.Logger) 
 		Peers: dir,
 		Audit: log,
 		Log:   lg,
-		Priv: func() (ed25519.PrivateKey, error) {
-			seed, _, err := ks.Load()
-			if err != nil {
-				return nil, err
-			}
-			defer clear(seed)
-			if len(seed) != ed25519.SeedSize {
-				return nil, errors.New("stored identity key has the wrong length")
-			}
-			return ed25519.NewKeyFromSeed(seed), nil
-		},
+		Priv:  identityPriv(ks),
+	}
+}
+
+// identityPriv returns a function that loads the daemon's identity private
+// key from ks, for callers (the outbox, the mail receiver, the presence
+// sender) that each need their own copy to clear after use.
+func identityPriv(ks *keystore.Store) func() (ed25519.PrivateKey, error) {
+	return func() (ed25519.PrivateKey, error) {
+		seed, _, err := ks.Load()
+		if err != nil {
+			return nil, err
+		}
+		defer clear(seed)
+		if len(seed) != ed25519.SeedSize {
+			return nil, errors.New("stored identity key has the wrong length")
+		}
+		return ed25519.NewKeyFromSeed(seed), nil
 	}
 }

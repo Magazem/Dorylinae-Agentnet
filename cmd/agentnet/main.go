@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
@@ -109,14 +110,16 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet status", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
+	teamRef := fs.String("team", "", "also list this team's members with their presence")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stdout, `Show whether agentnetd is running, with its PID, uptime and outbox.
 
 Usage:
-  agentnet status [--json]
+  agentnet status [--team TEAM] [--json]
 
 Flags:
-  --json    print machine-readable JSON on stdout
+  --team TEAM   also list the members of TEAM (id or unique name) with their presence
+  --json        print machine-readable JSON on stdout
 
 Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 `)
@@ -138,11 +141,19 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 	ctx, cancel := context.WithTimeout(context.Background(), statusTimeout)
 	defer cancel()
 
+	var params any
+	if *teamRef != "" {
+		params = daemon.StatusParams{Team: *teamRef}
+	}
 	var res daemon.StatusResult
-	if err := ipc.Call(ctx, p.Endpoint, "status", nil, &res); err != nil {
+	if err := ipc.Call(ctx, p.Endpoint, "status", params, &res); err != nil {
 		if errors.Is(err, ipc.ErrNotRunning) {
 			return failJSON(*asJSON, stdout, stderr, exitDaemonNotFound, "daemon_not_running",
 				fmt.Sprintf("agentnetd is not running (endpoint: %s)", p.Endpoint))
+		}
+		var ie *ipc.Error
+		if errors.As(err, &ie) {
+			return failJSON(*asJSON, stdout, stderr, exitError, ie.Code, ie.Message)
 		}
 		return failJSON(*asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
 	}
@@ -154,7 +165,59 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 	up := time.Duration(res.UptimeSeconds * float64(time.Second)).Round(time.Second)
 	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n  outbox:  %d queued, %d relayed, %d expired\n",
 		res.PID, up, res.Version, res.Outbox.Queued, res.Outbox.Relayed, res.Outbox.Expired)
+	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, res.Presence.Relay)
+	if res.Team != nil {
+		printStatusTeam(stdout, res.Team)
+	}
 	return exitOK
+}
+
+// printStatusTeam prints the human `--team` table of Docs/cli/status.md.
+func printStatusTeam(w io.Writer, t *daemon.StatusTeamResult) {
+	owner := t.Owner
+	for _, m := range t.Members {
+		if m.PublicKey == t.Owner && m.Name != "" {
+			owner = m.Name
+			break
+		}
+	}
+	_, _ = fmt.Fprintf(w, "team %s (%s), owner %s\n", t.Name, shortTeamID(t.ID), owner)
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "NAME\tDAEMON\tAGENT\tHUMAN\tLAST SEEN")
+	for _, m := range t.Members {
+		name := m.Name
+		if name == "" {
+			name = m.PublicKey
+		}
+		daemonCol, agentCol, humanCol := "offline", "-", "-"
+		if m.DaemonOnline {
+			daemonCol = "online"
+			agentCol = "idle"
+			if m.AgentActive {
+				agentCol = "active"
+			}
+			humanCol = "unknown"
+			if m.HumanPresent != nil {
+				humanCol = "away"
+				if *m.HumanPresent {
+					humanCol = "present"
+				}
+			}
+		}
+		lastSeen := "never"
+		if m.LastSeen != nil {
+			lastSeen = *m.LastSeen
+		}
+		if m.Self {
+			lastSeen = "now"
+		}
+		suffix := ""
+		if m.Self {
+			suffix = "\t(you)"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s%s\n", name, daemonCol, agentCol, humanCol, lastSeen, suffix)
+	}
+	_ = tw.Flush()
 }
 
 // failJSON reports an error: JSON on stdout under --json, plain text on stderr otherwise.

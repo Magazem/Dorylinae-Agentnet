@@ -74,6 +74,11 @@ type Store struct {
 	Outbox Outbox
 	Now    func() time.Time
 	Log    *slog.Logger
+	// OnMembersChanged, if set, is called after any operation that may change
+	// which peers share an active team with self (add, remove, leave, delete,
+	// and the roster/join/leave mail kinds). The presence sender (1.2c) uses
+	// it to resend the visible set and goodbye peers that left it.
+	OnMembersChanged func()
 }
 
 // NewStore returns a Store over a migrated database.
@@ -98,6 +103,13 @@ func (s *Store) audited(ctx context.Context, actor, action string, detail any) {
 		return
 	}
 	_ = s.audit.Append(ctx, actor, action, detail)
+}
+
+// changed notifies OnMembersChanged, if set.
+func (s *Store) changed() {
+	if s.OnMembersChanged != nil {
+		s.OnMembersChanged()
+	}
 }
 
 // Get returns the team by id.
@@ -248,6 +260,7 @@ func (s *Store) AddMember(ctx context.Context, teamID, key string, now time.Time
 		return Team{}, fmt.Errorf("team: add member: %w", err)
 	}
 	s.audited(ctx, ActorDaemon, ActionMemberAdd, map[string]any{"team": teamID, "peer": key, "epoch": t.Epoch})
+	s.changed()
 	return t, nil
 }
 
@@ -299,6 +312,7 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, key string, now time.T
 	if err := tx.Commit(); err != nil {
 		return Team{}, fmt.Errorf("team: remove member: %w", err)
 	}
+	s.changed()
 	return t, nil
 }
 
@@ -380,6 +394,7 @@ func (s *Store) Delete(ctx context.Context, teamID string, now time.Time) (Team,
 		return Team{}, fmt.Errorf("team: delete: %w", err)
 	}
 	s.audited(ctx, ActorCLI, ActionDelete, map[string]any{"team": teamID, "epoch": t.Epoch})
+	s.changed()
 	return t, nil
 }
 
@@ -415,6 +430,7 @@ func (s *Store) Leave(ctx context.Context, teamID string, now time.Time) (Team, 
 	}
 	s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": teamID})
 	s.auditRemoved(ctx, removed)
+	s.changed()
 	return t, removed, nil
 }
 
@@ -473,6 +489,9 @@ func (s *Store) OwnerRemoved(ctx context.Context, ownerKey string, now time.Time
 		s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": id, "reason": "owner_removed"})
 	}
 	s.auditRemoved(ctx, removed)
+	if len(ids) > 0 {
+		s.changed()
+	}
 	return ids, removed, nil
 }
 
@@ -692,4 +711,30 @@ func (s *Store) prunePendingJoins(ctx context.Context, now time.Time) error {
 		return fmt.Errorf("team: prune pending joins: %w", err)
 	}
 	return nil
+}
+
+// ResyncMember resends the roster of teamID to a single peer: the full
+// roster if it is a current member, otherwise the owner-only roster
+// (Docs/protocol/presence.md §Receiving step 7). It is the presence sender's
+// roster resync, one recipient at a time rather than Broadcast's fan-out.
+func (s *Store) ResyncMember(ctx context.Context, teamID, peer string) error {
+	if s.Outbox == nil {
+		return nil
+	}
+	full, ownerOnly, recipients, err := s.rosterSnapshot(ctx, teamID, true)
+	if err != nil {
+		return err
+	}
+	body := ownerOnly
+	for _, r := range recipients {
+		if r == peer {
+			body = full
+			break
+		}
+	}
+	if body == nil {
+		return nil
+	}
+	_, err = s.Outbox.Submit(ctx, peer, "team.roster", body)
+	return err
 }

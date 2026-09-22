@@ -241,6 +241,7 @@ func (s *Store) afterRoster(ctx context.Context, op *mail.Opened) {
 		"team": o.teamID, "epoch": o.epoch, "added": o.added, "removed": o.removed, "state": o.state,
 	})
 	s.auditRemoved(ctx, o.gc)
+	s.changed()
 	if s.Outbox == nil || s.Announcement == nil {
 		return
 	}
@@ -511,6 +512,7 @@ func (s *Store) afterJoin(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	s.audited(ctx, ActorDaemon, ActionMemberAdd, map[string]any{"team": o.teamID, "peer": o.peer, "epoch": o.epoch})
+	s.changed()
 	if err := s.Broadcast(ctx, o.teamID, nil); err != nil {
 		s.log().Warn("team: roster broadcast failed", "event", "team_error", "error", err)
 	}
@@ -574,6 +576,7 @@ func (s *Store) afterLeave(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	s.audited(ctx, ActorDaemon, ActionMemberLeave, map[string]any{"team": o.teamID, "peer": o.peer, "epoch": o.epoch})
+	s.changed()
 	if err := s.Broadcast(ctx, o.teamID, nil); err != nil {
 		s.log().Warn("team: roster broadcast failed", "event", "team_error", "error", err)
 	}

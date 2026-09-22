@@ -97,6 +97,62 @@ ON CONFLICT (key) DO UPDATE SET
 	return true, edge, nil
 }
 
+// PeerView is one peer's effective presence at a point in time
+// (Docs/protocol/presence.md §Receiving, "Effective state of a peer"), used by
+// status --team.
+type PeerView struct {
+	// Known is false when this daemon has never accepted a presence message
+	// from the peer: every other field is then zero.
+	Known            bool
+	DaemonOnline     bool
+	AgentActive      bool
+	HumanPresent     *bool // nil = unknown or daemon offline
+	LastSeen         *time.Time
+	AgentLastActive  *time.Time
+	HumanLastPresent *time.Time
+}
+
+// View returns peer's effective presence at now.
+func (s *Store) View(ctx context.Context, peer string, now time.Time) (PeerView, error) {
+	var state string
+	var interval, agent, human int
+	var lastRxStr string
+	var lastAgent, lastHuman sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT state, agent, human, interval, last_rx, last_agent, last_human FROM presence_peers WHERE key = ?`, peer,
+	).Scan(&state, &agent, &human, &interval, &lastRxStr, &lastAgent, &lastHuman)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PeerView{}, nil
+	}
+	if err != nil {
+		return PeerView{}, fmt.Errorf("presence: view: %w", err)
+	}
+	lastRx, perr := time.Parse(storeTimeFmt, lastRxStr)
+	if perr != nil {
+		return PeerView{}, fmt.Errorf("presence: view last_rx: %w", perr)
+	}
+	v := PeerView{Known: true, LastSeen: &lastRx}
+	v.DaemonOnline = EffectivelyOnline(state, lastRx, interval, now)
+	if v.DaemonOnline {
+		v.AgentActive = agent == 1
+		if human != 2 {
+			b := human == 1
+			v.HumanPresent = &b
+		}
+	}
+	if lastAgent.Valid {
+		if t, perr := time.Parse(storeTimeFmt, lastAgent.String); perr == nil {
+			v.AgentLastActive = &t
+		}
+	}
+	if lastHuman.Valid {
+		if t, perr := time.Parse(storeTimeFmt, lastHuman.String); perr == nil {
+			v.HumanLastPresent = &t
+		}
+	}
+	return v, nil
+}
+
 // EffectivelyOnline is daemon_online of Docs/protocol/presence.md §Receiving:
 // the stored state is online and the last message arrived no more than
 // 2.5 × interval before now (receiver clock).

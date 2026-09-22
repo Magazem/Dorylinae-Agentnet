@@ -21,6 +21,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/session"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
@@ -36,6 +37,62 @@ type StatusResult struct {
 	Version       string  `json:"version"`
 	// Outbox counts the sender outbox rows by state (Docs/protocol/mail.md §Outbox).
 	Outbox mail.OutboxCounts `json:"outbox"`
+	// Presence is this daemon's own presence, Docs/protocol/ipc.md §status (1.2c).
+	Presence PresenceStatus `json:"presence"`
+	// Team is the requested team's members and their presence, present only
+	// when the "team" param was given (Docs/protocol/ipc.md §status, 1.2c).
+	Team *StatusTeamResult `json:"team,omitempty"`
+}
+
+// PresenceStatus is the "presence" object of "status", own values only.
+type PresenceStatus struct {
+	// Mode is the visibility mode (Docs/protocol/presence.md §Visibility);
+	// 1.2c only ever reports "visible" (1.3 implements the others).
+	Mode string `json:"mode"`
+	// Team names the only_team target, omitted otherwise. Unused in 1.2c.
+	Team *TeamRef `json:"team,omitempty"`
+	// Relay is "connected", "disconnected", "unsupported" (relay has no
+	// ephemeral feature) or "none" (no relay configured).
+	Relay        string `json:"relay"`
+	AgentActive  bool   `json:"agent_active"`
+	HumanPresent *bool  `json:"human_present"`
+}
+
+// TeamRef names a team without its full summary.
+type TeamRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// StatusParams are the params of "status" (1.2c adds "team").
+type StatusParams struct {
+	Team string `json:"team,omitempty"`
+}
+
+// StatusTeamMember is one member of StatusTeamResult, Docs/protocol/ipc.md §status.
+type StatusTeamMember struct {
+	Name             string  `json:"name"`
+	PublicKey        string  `json:"public_key"`
+	Fingerprint      string  `json:"fingerprint"`
+	Self             bool    `json:"self"`
+	Owner            bool    `json:"owner"`
+	Trust            *string `json:"trust"`
+	DaemonOnline     bool    `json:"daemon_online"`
+	AgentActive      bool    `json:"agent_active"`
+	HumanPresent     *bool   `json:"human_present"`
+	LastSeen         *string `json:"last_seen"`
+	AgentLastActive  *string `json:"agent_last_active"`
+	HumanLastPresent *string `json:"human_last_present"`
+}
+
+// StatusTeamResult is the "team" object of "status" with a "team" param.
+type StatusTeamResult struct {
+	ID      string             `json:"id"`
+	Name    string             `json:"name"`
+	Owner   string             `json:"owner"`
+	Epoch   int64              `json:"epoch"`
+	State   string             `json:"state"`
+	Members []StatusTeamMember `json:"members"`
 }
 
 type auditDetail struct {
@@ -71,6 +128,18 @@ type Options struct {
 	MailKinds map[string]mail.Kind
 	// Logger receives relay connection events. Nil discards them.
 	Logger *slog.Logger
+	// PresenceInterval overrides the visible-set heartbeat interval formula
+	// (Docs/protocol/presence.md §Body, a test option); zero uses
+	// max(30, ceil(|visible|/3)) seconds.
+	PresenceInterval time.Duration
+	// AgentWindow overrides how recently an IPC call must have landed to
+	// count as agent-active (Docs/protocol/presence.md §Levels); zero uses
+	// presence.DefaultAgentWindow (5 min).
+	AgentWindow time.Duration
+	// Idle reports OS input idle time for the human-present level
+	// (Docs/protocol/presence.md §Idle detection). Nil always reports it
+	// unknown (human: 2).
+	Idle func(context.Context) (time.Duration, bool)
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -168,7 +237,29 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	teamStore.Announcement = mailboxKeys.Announcement
 	teamStore.OwnCard = func() ([]byte, error) { return cardJSON, nil }
 	teamStore.Log = opts.Logger
-	stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore)
+
+	pdir := peerDirectory{st.DB()}
+	presenceStore := presence.NewStore(st.DB())
+	presenceSender := &presence.Sender{
+		Priv:             identityPriv(ks),
+		Self:             id.Card().Card.PublicKey,
+		Peers:            pdir,
+		Team:             teamStore,
+		Store:            presenceStore,
+		Idle:             opts.Idle,
+		Log:              opts.Logger,
+		PresenceInterval: opts.PresenceInterval,
+		AgentWindow:      opts.AgentWindow,
+	}
+	teamStore.OnMembersChanged = func() { go presenceSender.SyncVisibility(context.Background()) }
+	presenceReceiver := &presence.Receiver{
+		Opener: &mail.Opener{Self: id.Card().Card.PublicKey, Peers: pdir, Keys: opts.MailboxKeys},
+		Store:  presenceStore,
+		Log:    opts.Logger,
+	}
+	presenceReceiver.OnResync = presenceSender.MaybeResync
+
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -178,6 +269,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	obDone := make(chan struct{})
 	go func() { defer close(obDone); outbox.Run(octx) }()
 	defer func() { stopOutbox(); <-obDone }()
+	pctx, stopPresence := context.WithCancel(ctx)
+	pDone := make(chan struct{})
+	go func() { defer close(pDone); presenceSender.Run(pctx) }()
+	defer func() { stopPresence(); <-pDone }()
+	defer func() {
+		gctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+		defer cancel()
+		presenceSender.Goodbye(gctx)
+	}()
 	if opts.RelayURL == "" {
 		// Without a relay nothing can be pushed, but old keys must still be deleted.
 		if rot, ok := opts.MailboxKeys.(ownKeys); ok {
@@ -189,6 +289,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	started := time.Now()
 	srv := ipc.NewServer()
+	srv.Activity = presenceSender.NoteActivity
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
 	registerTrust(srv, peerStore, log, teamStore)
@@ -202,18 +303,33 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		}
 		return IdentityResult{Card: sc.Card, Signature: sc.Signature, KeyBackend: id.KeyBackend(), Fingerprint: fp}, nil
 	})
-	srv.Handle("status", func(ctx context.Context, _ json.RawMessage) (any, error) {
+	srv.Handle("status", func(ctx context.Context, params json.RawMessage) (any, error) {
 		counts, err := outbox.Counts(ctx)
 		if err != nil {
 			return nil, err
 		}
-		return StatusResult{
+		var p StatusParams
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+			}
+		}
+		res := StatusResult{
 			Outbox:        counts,
 			PID:           os.Getpid(),
 			StartedAt:     started.UTC().Format(time.RFC3339),
 			UptimeSeconds: time.Since(started).Seconds(),
 			Version:       version.Version,
-		}, nil
+			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender),
+		}
+		if p.Team != "" {
+			tr, err := statusTeam(ctx, teamStore, peerStore, presenceStore, presenceSender, id.Card().Card.Name, relayClient, opts.RelayURL, p.Team)
+			if err != nil {
+				return nil, err
+			}
+			res.Team = tr
+		}
+		return res, nil
 	})
 
 	if ready != nil {
@@ -248,34 +364,58 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 }
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned
-// function stops the client and waits for it to exit.
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store) (stop func(), err error) {
+// function stops the client and waits for it to exit. The returned *Client is
+// nil when there is no relay (RelayURL empty).
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
-		return func() {}, nil
+		return nil, func() {}, nil
 	}
 	pub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("agent card public key: %w", err)
+		return nil, nil, fmt.Errorf("agent card public key: %w", err)
 	}
-	// handleMail is set before Run starts, so the read loop never races it.
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	// handleMail and client are set before Run starts, so the read loop and
+	// the ready callback never race their assignment.
 	var handleMail func(envelope.Envelope)
-	client, err := relayclient.New(relayclient.Config{
+	client, err = relayclient.New(relayclient.Config{
 		URL:    opts.RelayURL,
 		Signer: relayclient.NewKeystoreSigner(ks, pub),
 		Logger: opts.Logger,
 
 		OnControl: pairs.HandleControl,
 		OnEnvelope: func(e envelope.Envelope) {
-			if e.Type == relayclient.MailType {
+			switch e.Type {
+			case relayclient.MailType:
 				if handleMail != nil {
 					handleMail(e)
 				}
-				return
+			case envelope.TypePresence:
+				accepted, edge, _, herr := precv.Handle(context.Background(), e)
+				if herr != nil {
+					logger.Warn("presence: handle failed", "event", "presence_error", "error", herr)
+					return
+				}
+				if accepted && edge {
+					outbox.OnPeerOnline(e.From)
+				}
+			default:
+				pairs.HandleEnvelope(e) // pair.confirm comes from a peer that is not paired yet
+				sessions.HandleEnvelope(e)
 			}
-			pairs.HandleEnvelope(e) // pair.confirm comes from a peer that is not paired yet
-			sessions.HandleEnvelope(e)
 		},
-		OnReady: func() { outbox.OnReady(context.Background()) },
+		OnReady: func() {
+			outbox.OnReady(context.Background())
+			if client.HasFeature(envelope.FeatureEphemeral) {
+				psender.SetSender(client)
+			} else {
+				psender.SetSender(nil)
+			}
+			go psender.SendNow(context.Background())
+		},
 		OnError: func(ef envelope.ErrorFrame) {
 			outbox.HandleError(ef)
 			pairs.HandleError(ef)
@@ -283,7 +423,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pairs.SetSender(client)
 	sessions.SetSender(client)
@@ -303,7 +443,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 		defer close(done)
 		_ = client.Run(rctx) // returns only when rctx is cancelled
 	}()
-	return func() {
+	return client, func() {
 		cancel()
 		<-done
 		stopMail()

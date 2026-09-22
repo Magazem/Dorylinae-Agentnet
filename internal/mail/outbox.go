@@ -206,8 +206,18 @@ func (o *Outbox) OnReady(ctx context.Context) {
 	o.Wake()
 }
 
-// OnPeerOnline is the presence-online hook of Phase 1.2. Nothing to do until then.
-func (o *Outbox) OnPeerOnline(string) {}
+// OnPeerOnline is the presence-online hook of Phase 1.2: peer was just seen
+// online (Docs/protocol/presence.md §Receiving step 6), so every queued
+// outbox row addressed to it is sent now rather than waiting for its backoff.
+// A row already handed to the relay (state relayed) keeps its own schedule.
+func (o *Outbox) OnPeerOnline(peer string) {
+	if _, err := o.DB.ExecContext(context.Background(),
+		`UPDATE outbox SET next_attempt = ? WHERE state = 'queued' AND to_key = ?`, stamp(o.now()), peer); err != nil {
+		o.log().Warn("mail: outbox peer online", "event", "mail_error", "error", err)
+		return
+	}
+	o.Wake()
+}
 
 // Counts reports the rows in each non-final state and the expired ones.
 func (o *Outbox) Counts(ctx context.Context) (OutboxCounts, error) {

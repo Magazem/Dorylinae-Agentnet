@@ -28,6 +28,10 @@ type Receiver struct {
 	Store  *Store
 	Log    *slog.Logger
 	Now    func() time.Time // defaults to time.Now
+	// OnResync, if set, is called after an accepted message whose body
+	// carries a non-empty epochs member (Docs/protocol/presence.md
+	// §Receiving step 7).
+	OnResync func(peer string, epochs map[string]int64)
 
 	mu        sync.Mutex
 	lastDrop  map[string]time.Time
@@ -87,6 +91,9 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) (accepted,
 	if !ok {
 		r.drop(env.From, ReasonReplay)
 		return false, false, ReasonReplay, nil
+	}
+	if r.OnResync != nil && len(body.Epochs) > 0 {
+		r.OnResync(env.From, body.Epochs)
 	}
 	return true, e, "", nil
 }
