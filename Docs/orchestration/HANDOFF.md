@@ -63,6 +63,7 @@ Next after 1.4c: **1.6a** (lifecycle kinds, state machine incl. request.cancel/c
 9. File bugs, to-dos and decisions on the Sticky Board (`sticky-board` skill). Close
    items when they are fixed.
 10. The user's context resets are expected. Keep this file current.
+12. **Parking (owner rule, 2026-09-22):** when the owner says park, do NOT interrupt workers with STOP. Send a normal message: finish the current step, make sure the tree builds, write WIP notes, report files. Then snapshot-commit their worktree and update section 0.
 11. **Never discard a worktree until its commit is verified.** On 2026-09-21 the 1.0f work was LOST: `git add $(...)` split a path with spaces ("Docs/AgentNet Free Tier Build Plan.md"), the commit failed, and the next `;`-chained `git checkout -- .` plus `git worktree remove --force` destroyed it. Now: stage with `git add -A -- <dirs>` or quoted paths; chain the whole sequence with `&&` (never `;`); confirm `git log -1` shows the new commit and `git status` shows no real changes (`git diff --ignore-cr-at-eol --stat` empty) BEFORE any checkout, reset or worktree removal. Only discard EOL noise after that check.
 
 ## 3. Owner decisions (final)
