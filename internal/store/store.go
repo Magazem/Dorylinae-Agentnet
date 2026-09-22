@@ -121,6 +121,40 @@ INSERT INTO peers_new (public_key, name, harness, skills, card, paired_at, trust
 DROP TABLE peers;
 ALTER TABLE peers_new RENAME TO peers;
 `},
+	{9, "teams", `
+CREATE TABLE teams (
+    id      TEXT PRIMARY KEY,                       -- t-<32 hex>
+    name    TEXT NOT NULL,
+    owner   TEXT NOT NULL,
+    epoch   INTEGER NOT NULL,
+    state   TEXT NOT NULL CHECK (state IN ('active', 'left', 'removed', 'dissolved')),
+    created TEXT NOT NULL,
+    updated TEXT NOT NULL
+);
+CREATE TABLE team_members (
+    team_id TEXT NOT NULL,
+    key     TEXT NOT NULL,
+    added   TEXT NOT NULL,
+    PRIMARY KEY (team_id, key)
+) WITHOUT ROWID;
+CREATE INDEX team_members_key ON team_members (key);
+CREATE TABLE team_invites (                         -- owner side
+    lookup     TEXT PRIMARY KEY,
+    team_id    TEXT NOT NULL,
+    pairing_id TEXT NOT NULL,
+    peer_key   TEXT NOT NULL,                       -- written on pair.complete
+    created    TEXT NOT NULL,
+    expires    TEXT NOT NULL,
+    used       TEXT
+);
+CREATE TABLE team_pending_joins (                   -- joiner side
+    owner_key TEXT NOT NULL,
+    lookup    TEXT NOT NULL,
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    PRIMARY KEY (owner_key, lookup)                 -- two invites from one owner can be pending
+) WITHOUT ROWID;
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

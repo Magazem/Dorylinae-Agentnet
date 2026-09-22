@@ -62,6 +62,10 @@ func TestMigration8PreservesPeers(t *testing.T) {
 			paired_at TEXT NOT NULL, trust TEXT NOT NULL DEFAULT 'relay'
 			CHECK (trust IN ('relay', 'code', 'fingerprint')),
 			mailbox_keys TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(mailbox_keys)))`,
+		`DROP TABLE teams`,
+		`DROP TABLE team_members`,
+		`DROP TABLE team_invites`,
+		`DROP TABLE team_pending_joins`,
 		`DELETE FROM migrations WHERE version > 7`,
 		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
 		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
@@ -133,6 +137,10 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
 			paired_at TEXT NOT NULL)`,
 		`DROP TABLE pair_used_codes`,
+		`DROP TABLE teams`,
+		`DROP TABLE team_members`,
+		`DROP TABLE team_invites`,
+		`DROP TABLE team_pending_joins`,
 		`DELETE FROM migrations WHERE version > 2`,
 		`INSERT INTO peers VALUES ('k1', 'old', 'h', '[]', '{}', '2026-01-02T03:04:05Z')`,
 	} {

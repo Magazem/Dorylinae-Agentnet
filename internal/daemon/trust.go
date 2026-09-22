@@ -5,11 +5,13 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
 
 // CodeBadFingerprint and CodeFingerprintMismatch are the IPC error codes of
@@ -44,7 +46,7 @@ type peerAuditDetail struct {
 	Trust       string `json:"trust,omitempty"`
 }
 
-func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log) {
+func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.Store) {
 	srv.Handle("peers_verify", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p PeerVerifyParams
 		if err := json.Unmarshal(params, &p); err != nil || p.Peer == "" || p.Fingerprint == "" {
@@ -87,6 +89,11 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log) {
 		}
 		if err := ps.Remove(ctx, peer.PublicKey); err != nil {
 			return nil, peerError(err)
+		}
+		if ts != nil {
+			if _, _, terr := ts.OwnerRemoved(ctx, peer.PublicKey, time.Now()); terr != nil {
+				return nil, terr
+			}
 		}
 		d := peerAuditDetail{Peer: peer.PublicKey, Name: peer.Name, Fingerprint: peer.Fingerprint, Trust: peer.Trust}
 		if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerRemove, d); err != nil {

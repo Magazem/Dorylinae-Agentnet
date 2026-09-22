@@ -16,6 +16,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
 
 // mailQueue is how many mail envelopes may wait for the receiver. The relay
@@ -84,7 +85,7 @@ type ownKeys interface {
 // newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
 // the own mailbox private keys (created by pairing and rotation, tickets 0.8c
 // and 1.0b). Both need Sender, which startMail sets.
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger) (*mail.Receiver, *mail.Pusher) {
+func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
 	priv := func() (ed25519.PrivateKey, error) {
@@ -113,6 +114,11 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 			// startMail replaces the nil hook with the outbox re-seal (1.0e).
 			"keys": mail.KeysKind(peers.MergeMailboxKeysTx, nil),
 		},
+	}
+	if ts != nil {
+		rcv.Kinds["team.roster"] = ts.RosterKind()
+		rcv.Kinds["team.join"] = ts.JoinKind()
+		rcv.Kinds["team.leave"] = ts.LeaveKind()
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail

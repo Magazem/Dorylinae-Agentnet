@@ -16,6 +16,13 @@ const maxIDList = 256
 
 var errBadAnnouncement = errors.New("bad mailbox announcement")
 
+// ErrAnnouncementExpired is wrapped by ParseAnnouncement's error when every
+// other check passed and only the validity window (check 5) failed. Callers
+// that must tell a stale-but-otherwise-genuine announcement from a malformed
+// or forged one (Docs/protocol/team.md members[].mailbox) match this with
+// errors.Is; kind keys itself treats it the same as any other bad_body.
+var ErrAnnouncementExpired = errors.New("mail: mailbox announcement validity window is out of range")
+
 // checkIDList validates an optional 1-256 element list of mail ids.
 func checkIDList(name string, v any) error {
 	list, ok := v.([]any)
@@ -126,7 +133,7 @@ func verifyAnnouncement(v any, identity string, now time.Time) error {
 	}
 	if created.After(now.Add(MaxSkew)) || !created.Before(notAfter) ||
 		notAfter.After(created.Add(30*24*time.Hour)) || !notAfter.After(now) {
-		return errors.New("validity window is out of range")
+		return ErrAnnouncementExpired
 	}
 	return nil
 }

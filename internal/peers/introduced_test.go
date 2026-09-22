@@ -156,16 +156,7 @@ func TestGCIntroducedSemantics(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t, time.Millisecond)
 	db := e.db.DB()
-	// The teams tables arrive with migration 9 (1.1b); create them here.
-	for _, q := range []string{
-		`CREATE TABLE teams (id TEXT PRIMARY KEY, name TEXT NOT NULL, owner TEXT NOT NULL, epoch INTEGER NOT NULL,
-			state TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL)`,
-		`CREATE TABLE team_members (team_id TEXT NOT NULL, key TEXT NOT NULL, added TEXT NOT NULL, PRIMARY KEY (team_id, key))`,
-	} {
-		if _, err := db.ExecContext(ctx, q); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// migration 9 (1.1b) already created teams and team_members.
 	mActive, kActive := memberOf(t, "active")
 	mLeft, kLeft := memberOf(t, "left")
 	mNone, kNone := memberOf(t, "none")
@@ -246,7 +237,8 @@ func TestGCIntroducedPartialTeamSchemaFails(t *testing.T) {
 	e := newEnv(t, time.Millisecond)
 	m, key := memberOf(t, "m")
 	introduce(t, e, m, "owner-key")
-	if _, err := e.db.DB().ExecContext(ctx, `CREATE TABLE teams (id TEXT PRIMARY KEY, state TEXT NOT NULL)`); err != nil {
+	// migration 9 created both team tables; drop one to simulate the partial schema.
+	if _, err := e.db.DB().ExecContext(ctx, `DROP TABLE team_members`); err != nil {
 		t.Fatal(err)
 	}
 	tx, err := e.db.DB().BeginTx(ctx, nil)
