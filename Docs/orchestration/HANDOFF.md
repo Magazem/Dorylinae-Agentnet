@@ -120,7 +120,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.4c request kind + submit + CLI~~ | merged (review 19: 2 High + 4 Medium fixed; goodbye now sent before relay close on graceful stop; 9 Lows open) | — | — |
    | ~~1.6a lifecycle + cancel + result~~ | merged `b6fd3a1` + review fixes `ae82f19` (review 20: 4 Medium fixed; 9 Lows open) | — | — |
    | ~~1.6b inbox CLI~~ | merged. Low: accept/decline/defer `--from` passes a raw key (not resolved from a name); priority/due only computed in inbox_list. | — | — |
-   | 1.8a desktop notify (own code) | T-1.8a, building on `p1/t1-6a` (pre-review) | `t1-8a` | **Opus** |
+   | 1.8a desktop notify (own code) | committed on `p1/t1-8a`, rebased on main; in Opus review (R-1.8a → `Docs/review/21-1.8a-review.md`), incl. fixing TestNotifyCancelEarlyDoesNotFire (empty reason now rejected). Linux gdbus GVariant escaping is the main risk. | `t1-8a` | **Opus** |
    | 1.7 urgency guards | T-1.7 | `t1-7` | no |
    | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
