@@ -1,12 +1,12 @@
 # Requests, inbox and urgency
 
-Status: **draft for review**. Covers Phase 1 tickets 1.4 (request object), 1.5 (the brief is
+Status: **implemented**. Covers Phase 1 tickets 1.4 (request object), 1.5 (the brief is
 written by the sender), 1.6 (inbox and lifecycle), 1.7 (urgency guards) and 1.9 (offline
 handling), plus `request.cancel` and the body size limits (owner decision D11), and the
 optional [result payload](#result-payload-d14) on `request.complete` (owner decision D14).
 The ticket split is 1.4a–1.9 in
-[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md). Nothing here is
-implemented yet. Change this document first.
+[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md), in `internal/request`.
+Change this document first for any further change.
 
 A **request** is a unit of work one agent asks another for: a review, a task or a question.
 It travels as sealed mail ([mail.md](mail.md)), kind `request`. The recipient answers with

@@ -1,8 +1,8 @@
 # Teams
 
-Status: **draft for review**, Phase 1 ticket 1.1 (split into 1.1a–1.1d in
-[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)). Nothing here is
-implemented yet. Change this document first.
+Status: **implemented**, Phase 1 ticket 1.1 (split into 1.1a–1.1d in
+[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)), in `internal/team`. Change
+this document first for any further change.
 
 A **team** is a named set of paired peers with one **owner**. Presence
 ([presence.md](presence.md)) and requests ([request.md](request.md)) are scoped to a team.

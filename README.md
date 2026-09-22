@@ -5,11 +5,12 @@ different machines discover each other, exchange work safely, collaborate in
 bounded sessions and produce signed decision records.
 
 The product definition and build plan is `Docs/AgentNet Free Tier Build Plan.md`;
-see `scope.md` for the development rules. This repository is at the end of
-**Phase 0** plus the first part of **Phase 1** (sealed mail, tickets 1.0a–1.0f):
-identity, pairing, a relay with an offline queue, encrypted ping sessions, and
-mail with an outbox, dedupe and acks. There are no application kinds yet
-(requests, results, ...), so nothing yet does useful work on top of mail.
+see `scope.md` for the development rules. This repository has **Phase 0** and
+**Phase 1** (tickets 1.0a–1.9; see
+`Docs/review/11-phase1-tickets.md`): identity, pairing, a relay with an
+offline queue, encrypted ping sessions, mail with an outbox, dedupe and acks,
+teams, presence and visibility, requests with an inbox, urgency guards and
+offline delivery, and desktop/webhook notifications.
 
 ## Layout
 
@@ -21,7 +22,7 @@ mail with an outbox, dedupe and acks. There are no application kinds yet
 | `internal/` | shared packages (identity, pairing, sessions, mail, relay client, service install, ...) |
 | `Docs/protocol/` | protocol and schema docs (written before the code that uses them) |
 | `Docs/cli/` | one page per command: every flag, output and exit code |
-| `tests/` | manual test plan and smoke scripts (`phase0-manual.md`, `phase0-smoke.ps1`) |
+| `tests/` | manual test plan and smoke scripts (`phase0-manual.md`, `phase0-smoke.ps1`, `phase1-manual.md`) |
 
 ## Commands
 
@@ -30,12 +31,17 @@ mail with an outbox, dedupe and acks. There are no application kinds yet
 | `agentnetd [run]` | Run the daemon (`--home`, `--relay`, `--log-file`) | [agentnetd.md](Docs/cli/agentnetd.md) |
 | `agentnetd install` / `uninstall` | Start the daemon at login as a per-user service (`--relay URL` is baked in) | [agentnetd-install.md](Docs/cli/agentnetd-install.md) |
 | `relay` | Relay server with an offline queue | [relay.md](Docs/cli/relay.md) |
-| `agentnet status` | Daemon PID, uptime, version and outbox counts | [status.md](Docs/cli/status.md) |
+| `agentnet status` | Daemon PID, uptime, version, outbox counts and presence | [status.md](Docs/cli/status.md) |
 | `agentnet identity` | Signed Agent Card and fingerprint | [identity.md](Docs/cli/identity.md) |
 | `agentnet pair` | Pair with another machine using a one-time code | [pair.md](Docs/cli/pair.md) |
 | `agentnet peers` | List, verify and remove paired agents | [peers.md](Docs/cli/peers.md) |
 | `agentnet ping` | Encrypted round trip to a paired agent (an offline peer times out) | [ping.md](Docs/cli/ping.md) |
 | `agentnet mail send` | Debug only (`DORYLINAE_DEBUG=1`): queue a mail | [mail.md](Docs/cli/mail.md) |
+| `agentnet team` | Create, invite to, join and manage teams | [team.md](Docs/cli/team.md) |
+| `agentnet presence` | Show and set presence visibility | [presence.md](Docs/cli/presence.md) |
+| `agentnet request` | Submit, show, list, resend and cancel requests | [request.md](Docs/cli/request.md) |
+| `agentnet inbox` | List, accept, decline, defer and complete incoming requests | [inbox.md](Docs/cli/inbox.md) |
+| `agentnet notify` | Configure desktop and webhook notifications | [notify.md](Docs/cli/notify.md) |
 
 > Note: the plan and scope refer to docs/protocol/, but the existing plan lives in Docs/. On case-insensitive filesystems (Windows, macOS) they are the same directory, so the protocol docs sit at Docs/protocol/. Rename Docs/ to docs/ (owner decision) to match the plan on Linux.
 

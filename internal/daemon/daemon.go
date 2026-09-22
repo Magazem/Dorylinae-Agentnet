@@ -143,6 +143,9 @@ type Options struct {
 	// (Docs/protocol/presence.md §Idle detection). Nil always reports it
 	// unknown (human: 2).
 	Idle func(context.Context) (time.Duration, bool)
+	// NotifyShow overrides the desktop notification channel (a test option).
+	// Nil uses notify.Desktop{}.Show.
+	NotifyShow notify.ShowFunc
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -278,7 +281,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		Audit:    log,
 		Log:      opts.Logger,
 	}
-	notifyTrigger := &notify.Trigger{Settings: notifySettings, Webhook: notifyWebhook, Audit: log, Log: opts.Logger}
+	notifyTrigger := &notify.Trigger{Settings: notifySettings, Show: opts.NotifyShow, Webhook: notifyWebhook, Audit: log, Log: opts.Logger}
 	wctx, stopWebhook := context.WithCancel(ctx)
 	whDone := make(chan struct{})
 	go func() { defer close(whDone); notifyWebhook.Run(wctx) }()

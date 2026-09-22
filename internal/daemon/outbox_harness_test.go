@@ -21,6 +21,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
@@ -146,6 +147,9 @@ type harnessNode struct {
 	PresenceInterval time.Duration
 	AgentWindow      time.Duration
 	Idle             func(context.Context) (time.Duration, bool)
+	// NotifyShow substitutes a fake desktop notifier (daemon.Options
+	// NotifyShow), set before start().
+	NotifyShow notify.ShowFunc
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -183,6 +187,7 @@ func (n *harnessNode) start() {
 			PresenceInterval: n.PresenceInterval,
 			AgentWindow:      n.AgentWindow,
 			Idle:             n.Idle,
+			NotifyShow:       n.NotifyShow,
 		})
 	}()
 	select {

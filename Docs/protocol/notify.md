@@ -1,8 +1,8 @@
 # Notifications
 
-Status: **draft for review**, Phase 1 ticket 1.8 (split into 1.8a desktop and 1.8b webhook
-in [../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)). Nothing here is
-implemented yet. Change this document first.
+Status: **implemented**, Phase 1 ticket 1.8 (split into 1.8a desktop and 1.8b webhook
+in [../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)), in `internal/notify`.
+Change this document first for any further change.
 
 The daemon tells the human that something needs attention through two optional channels: a
 **desktop notification** and an outgoing **webhook**. Both are local policy. Nothing about them

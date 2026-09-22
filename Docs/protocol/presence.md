@@ -1,9 +1,9 @@
 # Presence and visibility
 
-Status: **draft for review**, Phase 1 tickets 1.2 (three levels), 1.3 (visibility) and the
+Status: **implemented**, Phase 1 tickets 1.2 (three levels), 1.3 (visibility) and the
 last-seen part of 1.9 (split into 1.2a–1.2d and 1.3 in
-[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)). Nothing here is
-implemented yet. Change this document first.
+[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md)), in `internal/presence`.
+Change this document first for any further change.
 
 ## Levels
 
