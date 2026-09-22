@@ -76,6 +76,7 @@ type applyOutcome struct {
 	newRow      bool
 	autoDecline bool
 	conflict    bool
+	cancelled   bool   // stored cancelled via a tombstone (Docs/protocol/request.md §Cancel (OD-P1-11))
 	code        string // decline_code, when autoDecline
 	requestID   string
 	peer        string
@@ -135,12 +136,22 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("request: read existing row: %w", err)
 	}
-	if s.now().Sub(req.Created) > maxAge {
+
+	now := s.now()
+	tombstoned, err := s.consumeTombstone(ctx, tx, op, req, canon, hash, now)
+	if err != nil {
+		return err
+	}
+	if tombstoned {
+		out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency, newRow: true, cancelled: true}
+		pendingApply.Store(op, out)
+		return nil
+	}
+	if now.Sub(req.Created) > maxAge {
 		return badBody("request is older than 30 days and unknown here")
 	}
 
 	out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency}
-	now := s.now()
 
 	// Policy auto-decline (Docs/protocol/request.md §Receiving step 3).
 	code, err := s.declineCode(ctx, tx, req)
@@ -244,6 +255,49 @@ INSERT INTO requests (
 	return nil
 }
 
+// consumeTombstone stores the `in` row as cancelled and consumes the
+// tombstone, if one exists for (op.Msg.From, req.ID)
+// (Docs/protocol/request.md §Receiving step 2, "with no row, and a cancel
+// tombstone exists").
+func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opened, req *Request, canon []byte, hash string, now time.Time) (bool, error) {
+	var reason sql.NullString
+	var receivedAt string
+	err := tx.QueryRowContext(ctx, `SELECT reason, received_at FROM request_cancels WHERE peer = ? AND id = ?`, op.Msg.From, req.ID).
+		Scan(&reason, &receivedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("request: read tombstone: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM request_cancels WHERE peer = ? AND id = ?`, op.Msg.From, req.ID); err != nil {
+		return false, fmt.Errorf("request: delete tombstone: %w", err)
+	}
+	at := parseStoreTime(receivedAt)
+	replyBody := map[string]any{"at": wireTime(at), "request": req.ID, "seq": 1}
+	lastReply, err := jsonObject(map[string]any{"kind": KindCancelled, "body": replyBody})
+	if err != nil {
+		return false, fmt.Errorf("request: encode last_reply: %w", err)
+	}
+	var reasonArg any
+	if reason.Valid {
+		reasonArg = reason.String
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO requests (
+	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
+	body, body_hash, state, state_seq, state_at, reason, created, received_at, mail_id,
+	last_reply, last_reply_sent, updated
+) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'cancelled', 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		op.Msg.From, req.ID, req.Team, req.Type, req.Urgency, effectiveDeclared(req),
+		string(canon), hash, wireTime(at), reasonArg, wireTime(req.Created), storeTime(now), op.Msg.ID,
+		lastReply, storeTime(at), storeTime(now),
+	); err != nil {
+		return false, fmt.Errorf("request: insert tombstoned row: %w", err)
+	}
+	return true, nil
+}
+
 // after audits the outcome, once, after a successful commit
 // (Docs/protocol/request.md §Receiving, final paragraph).
 func (s *Store) after(ctx context.Context, op *mail.Opened) {
@@ -255,10 +309,18 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
+	if !out.newRow && !out.conflict {
+		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
+	}
 	if s.Audit == nil {
 		return
 	}
 	switch {
+	case out.cancelled:
+		// Stored cancelled via a tombstone: no notification, and no audit
+		// action is listed for this path beyond the cancel's own
+		// request.cancel_in (already audited by the cancel that created the
+		// tombstone).
 	case out.conflict:
 		_ = s.Audit.Append(ctx, "daemon", "request.conflict", map[string]any{"request": out.requestID, "peer": out.peer})
 	case !out.newRow:

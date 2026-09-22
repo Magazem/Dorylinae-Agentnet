@@ -25,9 +25,20 @@ Done when: <how the other side knows it is finished>
 `
 
 func runRequest(args []string, stdout, stderr io.Writer) int {
-	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
-		requestUsage(stdout)
-		return exitOK
+	if len(args) > 0 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			requestUsage(stdout)
+			return exitOK
+		case "show":
+			return runRequestShow(args[1:], stdout, stderr)
+		case "list":
+			return runRequestList(args[1:], stdout, stderr)
+		case "resend":
+			return runRequestResend(args[1:], stdout, stderr)
+		case "cancel":
+			return runRequestCancel(args[1:], stdout, stderr)
+		}
 	}
 	return runRequestSubmit(args, stdout, stderr)
 }

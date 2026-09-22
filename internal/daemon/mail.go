@@ -142,6 +142,12 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 	}
 	if rs != nil {
 		rcv.Kinds["request"] = rs.Kind()
+		rcv.Kinds[request.KindAccept] = rs.AcceptKind()
+		rcv.Kinds[request.KindDecline] = rs.DeclineKind()
+		rcv.Kinds[request.KindDefer] = rs.DeferKind()
+		rcv.Kinds[request.KindComplete] = rs.CompleteKind()
+		rcv.Kinds[request.KindCancelled] = rs.CancelledKind()
+		rcv.Kinds[request.KindCancel] = rs.CancelKind()
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail

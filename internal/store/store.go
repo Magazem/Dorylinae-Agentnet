@@ -222,6 +222,10 @@ CREATE TABLE request_cancels (
 	PRIMARY KEY (peer, id)
 );
 `},
+	{12, "requests_result", `
+ALTER TABLE requests ADD COLUMN result TEXT
+	CHECK (result IS NULL OR json_valid(result));  -- canonical(result); in and out rows
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

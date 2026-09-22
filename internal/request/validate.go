@@ -82,7 +82,7 @@ func Validate(r *Request) error {
 		return fieldErr("artifacts", "must hold 0-%d artifacts", maxArtifacts)
 	}
 	for i, a := range r.Artifacts {
-		if err := validateArtifact(i, a); err != nil {
+		if err := validateArtifact("artifacts", i, a); err != nil {
 			return err
 		}
 	}
@@ -100,10 +100,10 @@ func Validate(r *Request) error {
 	return nil
 }
 
-func validateArtifact(i int, a Artifact) error {
-	prefix := func(member string) string { return artifactField(i, member) }
+func validateArtifact(base string, i int, a Artifact) error {
+	prefix := func(member string) string { return base + "[" + itoa(i) + "]." + member }
 	if a.URL == "" && a.Branch == "" && a.Commit == "" && a.Path == "" {
-		return fieldErr(artifactIndex(i), "must have at least one member")
+		return fieldErr(base+"["+itoa(i)+"]", "must have at least one member")
 	}
 	if a.URL != "" {
 		if err := checkURL(prefix("url"), a.URL); err != nil {
