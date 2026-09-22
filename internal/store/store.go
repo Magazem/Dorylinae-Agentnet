@@ -155,6 +155,26 @@ CREATE TABLE team_pending_joins (                   -- joiner side
     PRIMARY KEY (owner_key, lookup)                 -- two invites from one owner can be pending
 ) WITHOUT ROWID;
 `},
+	{10, "presence", `
+CREATE TABLE presence_peers (
+    key        TEXT PRIMARY KEY,
+    boot       TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
+    created    TEXT NOT NULL,                  -- msg.created of the accepted message
+    state      TEXT NOT NULL CHECK (state IN ('online', 'offline')),
+    agent      INTEGER NOT NULL CHECK (agent IN (0, 1)),
+    human      INTEGER NOT NULL CHECK (human IN (0, 1, 2)),
+    interval   INTEGER NOT NULL,
+    last_rx    TEXT NOT NULL,                  -- receiver clock = last seen
+    last_agent TEXT,
+    last_human TEXT
+) WITHOUT ROWID;
+CREATE TABLE settings (
+    key     TEXT PRIMARY KEY,                  -- 'presence.mode', 'presence.human', 'notify.*'
+    value   TEXT NOT NULL CHECK (json_valid(value)),
+    updated TEXT NOT NULL
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

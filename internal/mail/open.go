@@ -96,12 +96,59 @@ func (o *Opener) Open(env envelope.Envelope) (*Opened, error) {
 	return op, err
 }
 
-func (o *Opener) open(env envelope.Envelope) (*Opened, error) {
-	now := time.Now()
+func (o *Opener) now() time.Time {
 	if o.Now != nil {
-		now = o.Now()
+		return o.Now()
+	}
+	return time.Now()
+}
+
+func (o *Opener) open(env envelope.Envelope) (*Opened, error) {
+	op, err := o.openCore(env, ValidID)
+	if err != nil {
+		return nil, err
+	}
+	msg := op.Msg
+	now := o.now()
+
+	// 11. created window on the receiver clock.
+	if msg.Created.Before(now.Add(-MaxAge)) || msg.Created.After(now.Add(MaxSkew)) {
+		return nil, reject(11, ReasonStale, nil)
 	}
 
+	// 12. Body of kinds ack and keys.
+	switch msg.Kind {
+	case "ack":
+		if err := checkAckBody(msg.Body); err != nil {
+			return nil, reject(12, ReasonMalformed, err)
+		}
+	case "keys":
+		if err := checkKeysBody(msg.Body, msg.From, now); err != nil {
+			reason := ReasonMalformed
+			if errors.Is(err, errBadAnnouncement) {
+				reason = ReasonBadKeys
+			}
+			return nil, reject(12, reason, err)
+		}
+	}
+	return op, nil
+}
+
+// OpenPresence runs mail.md steps 1-10 for a presence envelope: the id format
+// is "p-" + 32 hex (step 9), reusing the mail opener and signature checks
+// (Docs/protocol/presence.md §Envelope). Steps 11 (the created window) and 12
+// (the body) are the caller's (package presence), because presence has its
+// own window and strict body rules. Unlike Open, it never calls o.Audit:
+// presence is too frequent for the audit log, and a hostile relay could flood
+// it (Docs/protocol/presence.md §Receiving step 1).
+func (o *Opener) OpenPresence(env envelope.Envelope) (*Opened, error) {
+	return o.openCore(env, ValidPresenceID)
+}
+
+// openCore runs steps 1-10 of Docs/protocol/mail.md §Receiving: verification
+// order, with the step 9 id format parameterised so it can serve both mail
+// ("m-" ids) and presence ("p-" ids).
+func (o *Opener) openCore(env envelope.Envelope, validID func(string) bool) (*Opened, error) {
 	// 1. Envelope from is a paired peer.
 	if !o.Peers.IsPaired(env.From) {
 		return nil, reject(1, ReasonUnpaired, nil)
@@ -156,7 +203,7 @@ func (o *Opener) open(env envelope.Envelope) (*Opened, error) {
 	}
 
 	// 9. msg.id = envelope id and has the id format.
-	if msg.ID != env.ID || !ValidID(msg.ID) {
+	if msg.ID != env.ID || !validID(msg.ID) {
 		return nil, reject(9, ReasonIDMismatch, nil)
 	}
 
@@ -165,26 +212,6 @@ func (o *Opener) open(env envelope.Envelope) (*Opened, error) {
 		return nil, reject(10, ReasonMalformed, fmt.Errorf("unsupported v %d", msg.V))
 	}
 
-	// 11. created window on the receiver clock.
-	if msg.Created.Before(now.Add(-MaxAge)) || msg.Created.After(now.Add(MaxSkew)) {
-		return nil, reject(11, ReasonStale, nil)
-	}
-
-	// 12. Body of kinds ack and keys.
-	switch msg.Kind {
-	case "ack":
-		if err := checkAckBody(msg.Body); err != nil {
-			return nil, reject(12, ReasonMalformed, err)
-		}
-	case "keys":
-		if err := checkKeysBody(msg.Body, msg.From, now); err != nil {
-			reason := ReasonMalformed
-			if errors.Is(err, errBadAnnouncement) {
-				reason = ReasonBadKeys
-			}
-			return nil, reject(12, reason, err)
-		}
-	}
 	return &Opened{Msg: msg, Signed: plain, KeyID: kid}, nil
 }
 

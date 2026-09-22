@@ -117,6 +117,18 @@ type Sealed struct {
 // Seal signs and seals one mail. HPKE draws a random ephemeral key, so the
 // result is not reproducible.
 func Seal(in SealInput) (Sealed, error) {
+	if in.ID == "" {
+		in.ID = NewID()
+	}
+	if !ValidID(in.ID) {
+		return Sealed{}, errors.New("mail: bad id format")
+	}
+	return sealMsg(in)
+}
+
+// sealMsg is the shared body of Seal and SealPresence: in.ID is already
+// generated and format-checked by the caller.
+func sealMsg(in SealInput) (Sealed, error) {
 	if len(in.Priv) != ed25519.PrivateKeySize {
 		return Sealed{}, errors.New("mail: bad identity private key")
 	}
@@ -125,12 +137,6 @@ func Seal(in SealInput) (Sealed, error) {
 	}
 	if !kindPattern.MatchString(in.Kind) {
 		return Sealed{}, errors.New("mail: kind must be 1-64 characters from [a-z0-9._-]")
-	}
-	if in.ID == "" {
-		in.ID = NewID()
-	}
-	if !ValidID(in.ID) {
-		return Sealed{}, errors.New("mail: bad id format")
 	}
 	if _, err := decodeKey(in.To); err != nil {
 		return Sealed{}, fmt.Errorf("mail: bad recipient key: %w", err)
