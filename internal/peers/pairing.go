@@ -202,6 +202,8 @@ type session struct {
 	// From then on only checkConfirm may end the pairing, so a timer or relay
 	// error cannot report a failure for a pairing whose peer gets stored.
 	completing bool
+	// notified is set once a Completer tag's Completed has run.
+	notified bool
 }
 
 // NewManager returns a Manager. cfg.Store, cfg.Audit and cfg.Card are required.
@@ -945,6 +947,10 @@ func (m *Manager) checkConfirm(s *session, att *attempt, kd *kderiv, tag []byte)
 		return
 	}
 	if issuer {
+		// A tag's side effects (team_invites for team_invite) must be in place
+		// before tag_I lets the redeemer complete and act on the pairing
+		// (submit team.join), so Completed runs before tag_I is sent.
+		m.notify(s, CompletionInfo{PairingID: id, Role: RoleIssuer, Lookup: lookup, State: StateComplete, Peer: copyPeer(peer)})
 		// Store first, then confirm, then cancel (the cancel happens in finish).
 		ctx, cancel := context.WithTimeout(context.Background(), sendBudget)
 		if err := m.sendConfirm(ctx, att.peer, lookup, reply); err != nil {
@@ -997,7 +1003,7 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		close(s.codeReady)
 	}
 	close(s.done)
-	role, lookup, tag := s.st.Role, s.lookup, s.tag
+	role, lookup := s.st.Role, s.lookup
 	cancelEntry := role == RoleIssuer && !s.v1 && lookup != ""
 	m.mu.Unlock()
 
@@ -1006,14 +1012,7 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		_ = m.cfg.Sender.SendControl(ctx, envelope.Control{Op: envelope.OpPairCancel, Lookup: lookup})
 		cancel()
 	}
-	if c, ok := tag.(Completer); ok {
-		var peerCopy *Peer
-		if peer != nil {
-			cp := *peer
-			peerCopy = &cp
-		}
-		c.Completed(CompletionInfo{PairingID: id, Role: role, Lookup: lookup, State: state, Peer: peerCopy})
-	}
+	m.notify(s, CompletionInfo{PairingID: id, Role: role, Lookup: lookup, State: state, Peer: copyPeer(peer)})
 	detail := map[string]string{"id": id, "role": role}
 	if peer != nil {
 		detail["peer"] = peer.PublicKey
@@ -1024,6 +1023,27 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 	detail["code"] = fail.Code
 	detail["reason"] = truncate(fail.Message)
 	m.audit(context.Background(), audit.ActorDaemon, ActionPairFail, detail)
+}
+
+// notify runs the session's Completer tag, if any, at most once.
+func (m *Manager) notify(s *session, info CompletionInfo) {
+	m.mu.Lock()
+	c, ok := s.tag.(Completer)
+	if !ok || s.notified {
+		m.mu.Unlock()
+		return
+	}
+	s.notified = true
+	m.mu.Unlock()
+	c.Completed(info)
+}
+
+func copyPeer(p *Peer) *Peer {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
 }
 
 func (m *Manager) audit(ctx context.Context, actor, action string, detail any) {

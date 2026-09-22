@@ -149,14 +149,16 @@ func confirmPayload(lookup string, tag []byte) []byte {
 
 // Tag is opaque data a caller attaches to a pairing at Start or Redeem time
 // (Docs/review/11-phase1-tickets.md 1.1d: "team_invite = pair_new tagged with
-// the team"). If it implements Completer, its Completed method runs once the
-// tagged session is no longer pending.
+// the team"). If it implements Completer, its Completed method runs once, when
+// the tagged session's outcome is decided.
 type Tag any
 
 // Completer is implemented by a Tag that wants to react when its pairing
 // ends. Completed runs once, synchronously in the goroutine that ended the
 // session (after any peer has been stored), so it must return quickly; slow
-// work should be handed off.
+// work should be handed off. For a v2 issuer that completes, it runs after the
+// redeemer's tag verified and the peer was stored but before tag_I is sent, so
+// the redeemer cannot complete (and act on the pairing) before it returns.
 type Completer interface {
 	Completed(CompletionInfo)
 }

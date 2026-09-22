@@ -520,6 +520,81 @@ func TestPeersRemoveCascadesTeamMembership(t *testing.T) {
 	}
 }
 
+// TestPeersRemoveOnlyCascadesOwnedTeam covers the "own teams only" half of
+// Docs/cli/peers.md §peers remove: when the removed peer is a member of both
+// a team alice owns and a team alice does not own (introduced by some other
+// owner), only the owned team's roster is touched; the other team's local
+// row is left exactly as it was.
+func TestPeersRemoveOnlyCascadesOwnedTeam(t *testing.T) {
+	n := startNode(t, "alice", "")
+	code, out, _ := cli(t, n, "team", "create", "backend", "--json")
+	if code != exitOK {
+		t.Fatalf("create: code %d out %q", code, out)
+	}
+	owned := decodeTeam(t, out).Team.ID
+	bobKey := insertPeerAndMember(t, n, owned, "bob", time.Now())
+
+	// A second team, owned by someone else, that bob also belongs to.
+	otherID := "t-" + strings.Repeat("1", 32)
+	otherOwner := envelope.KeyString(mustKey(t))
+	insertTeam(t, n, otherID, "other", otherOwner, 1, "active")
+	func() {
+		db := teamDB(t, n)
+		defer func() { _ = db.Close() }()
+		added := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+		for _, key := range []string{otherOwner, bobKey} {
+			if _, err := db.Exec(`INSERT INTO team_members (team_id, key, added) VALUES (?, ?, ?)`, otherID, key, added); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}()
+
+	code, out, _ = cli(t, n, "peers", "remove", bobKey, "--json")
+	if code != exitOK {
+		t.Fatalf("peers remove: code %d out %q", code, out)
+	}
+
+	code, out, _ = cli(t, n, "team", "show", "backend", "--json")
+	if code != exitOK {
+		t.Fatalf("show owned team: code %d out %q", code, out)
+	}
+	owned2 := decodeTeamShow(t, out)
+	if len(owned2.Team.Members) != 1 || owned2.Team.Epoch != 2 {
+		t.Fatalf("owned team after peers remove = %+v, want 1 member, epoch 2 (bob dropped)", owned2)
+	}
+
+	code, out, _ = cli(t, n, "team", "show", otherID, "--json")
+	if code != exitOK {
+		t.Fatalf("show other team: code %d out %q", code, out)
+	}
+	other := decodeTeamShow(t, out)
+	if len(other.Team.Members) != 2 || other.Team.Epoch != 1 {
+		t.Fatalf("non-owned team after peers remove = %+v, want unchanged: 2 members, epoch 1", other)
+	}
+	var otherKeys []string
+	for _, m := range other.Team.Members {
+		otherKeys = append(otherKeys, m.PublicKey)
+	}
+	if !contains(otherKeys, bobKey) || !contains(otherKeys, otherOwner) || other.Team.State != "active" {
+		t.Fatalf("non-owned team members = %v state %q, want bob and its owner still listed, active", otherKeys, other.Team.State)
+	}
+
+	acts := teamAuditActions(t, n)
+	if got := countOccurrences(acts, "team.member_remove"); got != 1 {
+		t.Fatalf("team.member_remove audit rows = %d, want exactly 1 (only the owned team)", got)
+	}
+}
+
+func countOccurrences(list []string, want string) int {
+	n := 0
+	for _, s := range list {
+		if s == want {
+			n++
+		}
+	}
+	return n
+}
+
 func mustKey(t *testing.T) ed25519.PublicKey {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)

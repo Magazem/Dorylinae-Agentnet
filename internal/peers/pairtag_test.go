@@ -110,3 +110,47 @@ func TestPairingTagCompletedOnFailureCarriesNoPeer(t *testing.T) {
 		t.Errorf("issuer tag Completed called %d times while still pending, want 0", n)
 	}
 }
+
+// hookTag is a peers.Completer that runs fn when it completes.
+type hookTag func(peers.CompletionInfo)
+
+func (h hookTag) Completed(info peers.CompletionInfo) { h(info) }
+
+// TestPairingTagIssuerCompletedBeforeTagI: the issuer's Completed runs before
+// it sends pair.confirm{tag_I}, so the redeemer cannot complete (and a joiner
+// cannot submit team.join) before the owner's team_invites row exists.
+func TestPairingTagIssuerCompletedBeforeTagI(t *testing.T) {
+	issuer, redeemer := newNode(t, "issuer", nil), newNode(t, "redeemer", nil)
+	b := newBus(t, nil, issuer, redeemer)
+
+	var mu sync.Mutex
+	sentAtCompletion, calls := -1, 0
+	redeemerDone := false
+	redeemerTag := &tagRecorder{}
+	ist, err := issuer.m.StartTagged(context.Background(), hookTag(func(peers.CompletionInfo) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		sentAtCompletion = b.envsFrom(issuer.id.key)
+		redeemerDone = redeemerTag.count() > 0
+	}))
+	if err != nil || ist.Code == "" {
+		t.Fatalf("StartTagged = %+v, %v", ist, err)
+	}
+	rst, err := redeemer.m.RedeemTagged(context.Background(), bareCode(ist.Code), false, redeemerTag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, redeemer, rst.ID, peers.StateComplete)
+	waitState(t, issuer, ist.ID, peers.StateComplete)
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("issuer Completed called %d times, want 1", calls)
+	}
+	if sentAtCompletion != 0 || redeemerDone {
+		t.Fatalf("at issuer Completed: issuer had sent %d envelopes (want 0: tag_I not yet sent), redeemer done = %v",
+			sentAtCompletion, redeemerDone)
+	}
+}
