@@ -128,6 +128,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.9 offline e2e + audit no-content + docs~~ | merged `0e616ae` (no bugs found; README + phase1-manual checklist updated) | — | — |
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | ~~1.H headless harness~~ | merged `fcbf2d8` + `2eb18a1`. All-Claude round 3/3 both roles (root cause of refusals: Windows shell tool is PowerShell, not Bash; connectors leaked; fixed + snippet clarified). **Codex leg pending: account limit until 2026-10-02** — owner decides whether Phase 1 closes with it open. | — | — |
+   | **CI stabilisation (blocks Phase 1 close)** | T-CIStab (Opus). CI RED on main since 217ef54: TestRequestSubmitRefusesRelayTrust fails deterministically on Unix (socket dir missing) + 12 flaky tests. | `ci-stab` | — |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
@@ -156,6 +157,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 - **A worker that stays idle with an empty worktree after its task is assigned is stuck.** Interrupting it once is fine; if it idles again, retire it, delete its task, spawn a fresh worker and create a NEW task for it.
 - **Before retiring a worker, mark all its tasks completed** (`team_task_update`), or it declines shutdown. Workers also report a missing worktree as a blocker after you merge and remove it; that is expected.
 - **Branches built on an unmerged branch:** after the base merges with review fixes, rebase with `git rebase --onto main <old-base-commit> <branch>` so the stale base commit is not replayed.
+- **Watch CI after EVERY push** (`gh run list --branch main --limit 3`). On 2026-09-22 CI stayed red for ~60 pushes unnoticed because local Windows runs passed; Unix-only failures (socket paths) and flaky tests hid there.
 - **Lint before merge.** The installed golangci-lint cannot load the config, but `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` works. Put it in every implementation task's acceptance criteria and run it yourself before merging; gofmt complaints that only exist because of CRLF are noise (check with `tr -d '\r' < f | gofmt -l`). CI failed on lint three times in a row on 2026-09-21 because this was skipped.
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
