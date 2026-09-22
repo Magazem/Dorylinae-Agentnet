@@ -13,6 +13,14 @@ agentnet peers remove <peer> [--json]
 accepted). Trust states and fingerprints are defined in
 [../protocol/pairing.md](../protocol/pairing.md#storage-and-trust-states).
 
+A public key is base64url, so about 1 in 32 keys starts with `-`; the CLI
+still accepts it as a plain argument (it does not need to be quoted or
+escaped) because it recognizes a `-`-prefixed value that decodes as a
+32-byte Ed25519 key as positional rather than an unknown flag. Any argument
+can also be forced positional with a `--` terminator, e.g.
+`agentnet peers remove -- -AbC...`. This applies to every `agentnet`
+subcommand that takes a peer key, peer ref or `--from <peer>` value.
+
 | Flag | Meaning |
 |------|---------|
 | `--json` | Machine-readable output on stdout |

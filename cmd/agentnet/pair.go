@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
@@ -150,19 +151,71 @@ func formatCode(c string) string {
 	return c
 }
 
-// parseInterspersed parses flags that may appear before or after positional arguments.
+// parseInterspersed parses flags that may appear before, after or mixed in
+// with positional arguments, and returns the positional arguments in order.
+//
+// A token is treated as a flag when it names one of fs's defined flags (or
+// -h/-help/--help). A token that starts with '-' but is not a defined flag
+// is still positional if it decodes as a base64url Ed25519 public key: peer
+// public keys are base64url, so about 1 in 32 of them start with '-' and
+// would otherwise be mistaken for a flag (see Docs/cli/peers.md). Any other
+// unrecognized '-'-prefixed token is left for fs.Parse to reject, the same
+// as an actual flag typo. "--" still works too: everything after it is
+// positional, whatever it looks like.
 func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
-	var pos []string
-	for {
-		if err := fs.Parse(args); err != nil {
-			return nil, err
+	names := map[string]bool{"-h": true, "--h": true, "-help": true, "--help": true}
+	boolFlags := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		names["-"+f.Name] = true
+		names["--"+f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags["-"+f.Name] = true
+			boolFlags["--"+f.Name] = true
 		}
-		if fs.NArg() == 0 {
-			return pos, nil
+	})
+
+	var pos, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
 		}
-		pos = append(pos, fs.Arg(0))
-		args = fs.Args()[1:]
+		name, hasValue := a, false
+		if eq := strings.IndexByte(a, '='); eq >= 0 {
+			name, hasValue = a[:eq], true
+		}
+		switch {
+		case a == "-":
+			pos = append(pos, a)
+		case strings.HasPrefix(a, "-") && names[name]:
+			flagArgs = append(flagArgs, a)
+			if !hasValue && !boolFlags[name] && i+1 < len(args) {
+				i++
+				flagArgs = append(flagArgs, args[i])
+			}
+		case strings.HasPrefix(a, "-") && looksLikePeerKey(a):
+			pos = append(pos, a)
+		case strings.HasPrefix(a, "-"):
+			// Not a defined flag and not a key-shaped value: let fs.Parse
+			// reject it, the same as it would reject an actual typo.
+			flagArgs = append(flagArgs, a)
+		default:
+			pos = append(pos, a)
+		}
 	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return nil, err
+	}
+	return pos, nil
+}
+
+// looksLikePeerKey reports whether s decodes as a base64url Ed25519 public
+// key, so a leading '-' that came from key bytes (not a flag) can still be
+// accepted as a positional argument without "--".
+func looksLikePeerKey(s string) bool {
+	_, err := envelope.ParseKey(s)
+	return err == nil
 }
 
 // callDaemon makes one IPC call and reports failures as the command's output.
