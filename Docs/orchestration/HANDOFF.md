@@ -120,7 +120,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.4c request kind + submit + CLI~~ | merged (review 19: 2 High + 4 Medium fixed; goodbye now sent before relay close on graceful stop; 9 Lows open) | — | — |
    | ~~1.6a lifecycle + cancel + result~~ | merged `b6fd3a1` + review fixes `ae82f19` (review 20: 4 Medium fixed; 9 Lows open) | — | — |
    | ~~1.6b inbox CLI~~ | merged. Low: accept/decline/defer `--from` passes a raw key (not resolved from a name); priority/due only computed in inbox_list. | — | — |
-   | 1.8a desktop notify (own code) | committed on `p1/t1-8a`, rebased on main; in Opus review (R-1.8a → `Docs/review/21-1.8a-review.md`), incl. fixing TestNotifyCancelEarlyDoesNotFire (empty reason now rejected). Linux gdbus GVariant escaping is the main risk. | `t1-8a` | **Opus** |
+   | ~~1.8a desktop notify~~ | merged `f96dde1` + review fixes `5b4819f` (review 21: notify-send backslash escaping, bounded notification queue) | — | — |
+   | CLI bug: base64url keys starting with `-` are parsed as flags (flaky TestPeersRemoveCascadesTeamMembership, ~1/32) | fix pending | — | no |
    | 1.8b webhook (migration 13) | T-1.8b, building on `p1/t1-8a` (pre-review) | `t1-8b` | **Opus** |
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | 1.H headless agent harness (Claude Code + Codex) | T-1.H (scripts/docs only; attempts one real run) | `t1-H` | no |
