@@ -123,3 +123,59 @@ func TestPresenceBypassesSeenSetAndIsNotAcked(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// Features negotiation in both directions: a relay that sends no features
+// member (pre-1.2a) leaves the client with none, and unknown ready members and
+// future feature names do not break the handshake.
+func TestReadyFeaturesCompat(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ready string
+		want  []string
+	}{
+		{"old relay", `{"op":"ready","public_key":"k"}`, nil},
+		{"future relay", `{"op":"ready","public_key":"k","features":["ephemeral","future-x"],"extra":{"a":1}}`, []string{"ephemeral", "future-x"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, priv := newKey(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ws, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer func() { _ = ws.CloseNow() }()
+				challenge, _ := json.Marshal(envelope.Control{Op: envelope.OpChallenge, Version: 1, Nonce: envelope.EncodeNonce(make([]byte, envelope.NonceSize))})
+				_ = ws.Write(r.Context(), websocket.MessageText, challenge)
+				if _, _, err := ws.Read(r.Context()); err != nil {
+					return
+				}
+				_ = ws.Write(r.Context(), websocket.MessageText, []byte(tc.ready))
+				_, _, _ = ws.Read(r.Context()) // hold the connection open
+			}))
+			defer srv.Close()
+			ready := make(chan struct{}, 1)
+			c, err := relayclient.New(relayclient.Config{
+				URL:     "ws" + strings.TrimPrefix(srv.URL, "http"),
+				Signer:  relayclient.NewKeySigner(priv),
+				OnReady: func() { ready <- struct{}{} },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { _ = c.Run(ctx) }()
+			select {
+			case <-ready:
+			case <-time.After(10 * time.Second):
+				t.Fatal("never became ready")
+			}
+			if got := c.Features(); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+				t.Fatalf("Features = %v, want %v", got, tc.want)
+			}
+			if c.HasFeature(envelope.FeatureEphemeral) != (tc.want != nil) {
+				t.Fatalf("HasFeature(ephemeral) = %v", tc.want == nil)
+			}
+		})
+	}
+}

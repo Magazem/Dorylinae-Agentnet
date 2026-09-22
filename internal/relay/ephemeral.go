@@ -11,7 +11,6 @@ const (
 	defaultEphemeralPerMinute = 600
 	defaultEphemeralMaxBytes  = 8 << 10
 	ephemeralWindowLen        = time.Minute
-	limiterPruneAbove         = 1024
 )
 
 // ephemeralLimiter is a fixed-window counter per sending key.
@@ -19,8 +18,9 @@ type ephemeralLimiter struct {
 	limit int
 	now   func() time.Time
 
-	mu      sync.Mutex
-	windows map[string]*ephemeralWindow
+	mu        sync.Mutex
+	windows   map[string]*ephemeralWindow
+	lastPrune time.Time
 }
 
 type ephemeralWindow struct {
@@ -29,45 +29,59 @@ type ephemeralWindow struct {
 	dropped int
 }
 
+// limitReport is the number of envelopes one key had dropped in a window that
+// has ended.
+type limitReport struct {
+	key     string
+	dropped int
+}
+
 func newEphemeralLimiter(limit int, now func() time.Time) *ephemeralLimiter {
 	return &ephemeralLimiter{limit: limit, now: now, windows: map[string]*ephemeralWindow{}}
 }
 
 // allow counts one envelope from key. ok is false when key is over its limit.
-// report is the number of envelopes dropped in the window that just ended, set
-// once when a window closes that dropped any, so the caller logs one line a minute.
-func (l *ephemeralLimiter) allow(key string) (ok bool, report int) {
+// reports lists the keys whose ended windows dropped any envelopes, each
+// once, so the caller logs one line per key a minute. Ended windows are
+// removed at most once a window, so the map holds only keys that sent in about
+// the last two minutes, and a key that never sends again is still reported.
+func (l *ephemeralLimiter) allow(key string) (ok bool, reports []limitReport) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if now.Sub(l.lastPrune) >= ephemeralWindowLen {
+		l.lastPrune = now
+		for k, w := range l.windows {
+			if now.Sub(w.start) >= ephemeralWindowLen {
+				if w.dropped > 0 {
+					reports = append(reports, limitReport{k, w.dropped})
+				}
+				delete(l.windows, k)
+			}
+		}
+	}
 	w := l.windows[key]
 	if w == nil || now.Sub(w.start) >= ephemeralWindowLen {
-		if w != nil {
-			report = w.dropped
-		} else if len(l.windows) > limiterPruneAbove {
-			for k, o := range l.windows {
-				if now.Sub(o.start) >= ephemeralWindowLen && o.dropped == 0 {
-					delete(l.windows, k)
-				}
-			}
+		if w != nil && w.dropped > 0 {
+			reports = append(reports, limitReport{key, w.dropped})
 		}
 		w = &ephemeralWindow{start: now}
 		l.windows[key] = w
 	}
 	if w.count >= l.limit {
 		w.dropped++
-		return false, report
+		return false, reports
 	}
 	w.count++
-	return true, report
+	return true, reports
 }
 
 // routeEphemeral forwards an ephemeral envelope to a connected recipient, or
 // drops it silently: no queue, no queued or error frame, no queue accounting.
 func (s *Server) routeEphemeral(sender *conn, h envelope.Header, frame []byte) {
-	ok, report := s.eph.allow(sender.key)
-	if report > 0 {
-		s.log.Info("ephemeral rate limited", "event", "ephemeral_limited", "peer", short(sender.key), "dropped", report)
+	ok, reports := s.eph.allow(sender.key)
+	for _, r := range reports {
+		s.log.Info("ephemeral rate limited", "event", "ephemeral_limited", "peer", short(r.key), "dropped", r.dropped)
 	}
 	if !ok || len(frame) > s.ephMax {
 		return

@@ -24,6 +24,11 @@ type conn struct {
 	draining bool  // queued envelopes may still be waiting to be sent
 	cursor   int64 // highest queue seq already sent on this connection
 	ctx      context.Context
+
+	// ephMu makes the half-full check and the send of an ephemeral frame one
+	// step. Without it, senders racing past the check could fill the buffer
+	// beyond half and push the recipient's mail into the queue path.
+	ephMu sync.Mutex
 }
 
 func newConn(ws *websocket.Conn, key string, queue int) *conn {
@@ -57,6 +62,8 @@ func (c *conn) direct(frame []byte) directResult {
 // backlog, but only while the send buffer is at most half full. The other half
 // stays free for mail and control frames. False means the frame was dropped.
 func (c *conn) directEphemeral(frame []byte) bool {
+	c.ephMu.Lock()
+	defer c.ephMu.Unlock()
 	if len(c.out) > cap(c.out)/2 {
 		return false
 	}
