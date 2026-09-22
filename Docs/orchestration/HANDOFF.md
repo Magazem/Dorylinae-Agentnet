@@ -100,7 +100,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | Spec amendment per D11 (cancel, caps, 1.H, known limitations, audit, 1.7 vector) | P1-SpecAmend (Opus) | `spec-amend` | none (it is the owner-approved change); merge before 1.4a/1.6a start |
    | 1.1a peers trust team (migration 8) | T-1.1a | `t1-1a` | **Opus** |
    | 1.2a relay ephemeral envelopes | T-1.2a | `t1-2a` | **Opus** |
-   | 1.2d internal/idle | T-1.2d | `t1-2d` | no |
+   | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
    | 1.4b mail.ErrBadBody | committed `c56bb72` on `p1/t1-4b`; in Opus review (R-1.4b → `Docs/review/13-1.4b-review.md`); watch the `received_at + "!bad_body"` marker choice | `t1-4b` | **Opus** |
    Next after these: 1.1b (needs 1.1a + 1.4b merged, migration 9); 1.4a may be built once the amendment merges (merge after 1.2b, migration 11). Every implementation task includes the golangci-lint `go run` command in its acceptance.
 4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
