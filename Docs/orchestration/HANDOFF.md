@@ -100,7 +100,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    |---|---|---|---|
    | ~~Spec amendment per D11~~ | merged `e973b45` (cancel + tombstone + `request.cancelled` confirm kind; caps 64 KiB total `request_too_large`; 1.H; known limitations). Owner confirmed (D12): cancel gives **no** urgency-budget refund. | — | — |
    | ~~1.1a peers trust team~~ | merged `eab33c6` + review fix `669dc67` (review 14). Rule for 1.1b: roster apply writes teams/team_members BEFORE GCIntroduced in the same tx. | — | — |
-   | 1.1b team store + kinds (migration 9) | committed `c133835` on `p1/t1-1b`; in Opus review (R-1.1b → `Docs/review/16-1.1b-review.md`). Note for 1.1d: team_invites/team_pending_joins timestamps use the millis bookkeeping format. | `t1-1b` | **Opus** |
+   | ~~1.1b team store + kinds~~ | merged `10dda21` + review fixes `38f847f` (review 16). Spec gap L12 given to 1.1c: owner `peers remove` of an owned-team member = team remove + epoch bump first. Timestamps in team_invites/team_pending_joins use millis bookkeeping format (for 1.1d). | — | — |
    | ~~1.2a relay ephemeral envelopes~~ | merged `3b24ff4` + review fixes `3699c9b` (review 15). Rule for 1.2b: reject an unknown `from` BEFORE HPKE open / signature check (Sybil flood cost). | — | — |
    | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
