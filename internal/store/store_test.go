@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 
@@ -42,6 +43,68 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	_ = s.Close()
 	if _, err := Open(ctx, path); err == nil {
 		t.Fatal("expected error for newer schema")
+	}
+}
+
+// Migration 8 rebuilds peers: every row keeps all columns, at every trust level.
+func TestMigration8PreservesPeers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(testutil.TempDir(t), "m8.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Rewind to schema version 7 with the pre-8 peers table.
+	for _, q := range []string{
+		`DROP TABLE peers`,
+		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
+			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
+			paired_at TEXT NOT NULL, trust TEXT NOT NULL DEFAULT 'relay'
+			CHECK (trust IN ('relay', 'code', 'fingerprint')),
+			mailbox_keys TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(mailbox_keys)))`,
+		`DELETE FROM migrations WHERE version > 7`,
+		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
+		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
+		`INSERT INTO peers VALUES ('k3', 'n3', 'h3', '[]', '{}', '2026-03-02T03:04:05Z', 'fingerprint', '[{"y":1},{"z":2}]')`,
+	} {
+		if _, err := s.DB().ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	_ = s.Close()
+
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	db := s.DB()
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM peers`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("peer rows = %d (%v), want 3", n, err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'peers_new'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("peers_new left behind (%d, %v)", n, err)
+	}
+	var integrity string
+	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+		t.Fatalf("integrity_check = %q (%v)", integrity, err)
+	}
+	var name, harness, skills, card, paired, trust, mbox string
+	var by sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT name, harness, skills, card, paired_at, trust, mailbox_keys, introduced_by
+		FROM peers WHERE public_key = 'k3'`).Scan(&name, &harness, &skills, &card, &paired, &trust, &mbox, &by); err != nil {
+		t.Fatal(err)
+	}
+	if name != "n3" || harness != "h3" || skills != "[]" || card != "{}" || paired != "2026-03-02T03:04:05Z" ||
+		trust != "fingerprint" || mbox != `[{"y":1},{"z":2}]` || by.Valid {
+		t.Fatalf("k3 changed: %q %q %q %q %q %q %q %v", name, harness, skills, card, paired, trust, mbox, by)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE peers SET trust = 'team' WHERE public_key = 'k1'`); err != nil {
+		t.Errorf("trust 'team' rejected: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE peers SET trust = 'bogus'`); err == nil {
+		t.Error("CHECK accepted an unknown trust value")
 	}
 }
 

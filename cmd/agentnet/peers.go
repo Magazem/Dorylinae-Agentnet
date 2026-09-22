@@ -43,9 +43,10 @@ Flags:
   --json    print machine-readable JSON on stdout:
             {"ok":true,"peers":[{"public_key","name","harness",
              "skills":[{"id","name","description"}],"paired_at",
-             "trust":"relay|code|fingerprint","fingerprint":"<20 characters>"}]}
+             "trust":"relay|team|code|fingerprint","fingerprint":"<20 characters>",
+             "introduced_by":"<team owner's public key>"|null}]}
             "peers" is an empty array when nothing is paired; paired_at is
-            RFC 3339 UTC.
+            RFC 3339 UTC. introduced_by is null for a directly paired peer.
 
 Subcommands:
   verify   mark a peer as verified after comparing its fingerprint with the
@@ -80,10 +81,14 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		return exitOK
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tHARNESS\tSKILLS\tPAIRED\tTRUST\tFINGERPRINT\tPUBLIC KEY")
+	_, _ = fmt.Fprintln(tw, "NAME\tHARNESS\tSKILLS\tPAIRED\tTRUST\tFINGERPRINT\tPUBLIC KEY\tINTRODUCED BY")
 	for _, p := range res.Peers {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Harness, skillList(p.Skills), p.PairedAt,
-			p.Trust, envelope.FormatFingerprint(p.Fingerprint), p.PublicKey)
+		by := "-"
+		if p.IntroducedBy != nil {
+			by = *p.IntroducedBy
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Harness, skillList(p.Skills), p.PairedAt,
+			p.Trust, envelope.FormatFingerprint(p.Fingerprint), p.PublicKey, by)
 	}
 	_ = tw.Flush()
 	return exitOK

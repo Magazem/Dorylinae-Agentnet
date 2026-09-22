@@ -100,6 +100,27 @@ CREATE TABLE outbox (
 );
 CREATE INDEX outbox_due ON outbox (state, next_attempt);
 `},
+	// Rebuild: SQLite cannot change a CHECK. Safe inside the migration transaction
+	// because through migration 7 nothing refers to peers; re-check sqlite_master
+	// if a later migration adds such a reference before this one.
+	{8, "peers_trust_team", `
+CREATE TABLE peers_new (
+	public_key    TEXT PRIMARY KEY,
+	name          TEXT NOT NULL,
+	harness       TEXT NOT NULL,
+	skills        TEXT NOT NULL CHECK (json_valid(skills)),
+	card          TEXT NOT NULL CHECK (json_valid(card)),
+	paired_at     TEXT NOT NULL,
+	trust         TEXT NOT NULL DEFAULT 'relay'
+	              CHECK (trust IN ('relay', 'team', 'code', 'fingerprint')),
+	mailbox_keys  TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(mailbox_keys)),
+	introduced_by TEXT
+);
+INSERT INTO peers_new (public_key, name, harness, skills, card, paired_at, trust, mailbox_keys)
+	SELECT public_key, name, harness, skills, card, paired_at, trust, mailbox_keys FROM peers;
+DROP TABLE peers;
+ALTER TABLE peers_new RENAME TO peers;
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

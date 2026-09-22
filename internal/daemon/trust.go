@@ -69,6 +69,7 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log) {
 			return nil, peerError(err)
 		}
 		peer.Trust = peers.TrustFingerprint
+		peer.IntroducedBy = nil
 		d.Trust = peer.Trust
 		if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerVerify, d); err != nil {
 			return nil, err

@@ -19,9 +19,11 @@ import (
 // ActionListSkip is the audit action for a peers row that List skipped.
 const ActionListSkip = "peers.list_skip"
 
-// Trust states, ordered by rank (Docs/protocol/pairing.md).
+// Trust states, ordered by rank: relay < team < code < fingerprint
+// (Docs/protocol/pairing.md, Docs/protocol/team.md).
 const (
 	TrustRelay       = "relay"
+	TrustTeam        = "team"
 	TrustCode        = "code"
 	TrustFingerprint = "fingerprint"
 )
@@ -36,10 +38,13 @@ type Peer struct {
 	Harness   string            `json:"harness"`
 	Skills    []agentcard.Skill `json:"skills"`
 	PairedAt  string            `json:"paired_at"`
-	// Trust is how the key was confirmed: relay, code or fingerprint.
+	// Trust is how the key was confirmed: relay, team, code or fingerprint.
 	Trust string `json:"trust"`
 	// Fingerprint is fp(PublicKey) without spaces.
 	Fingerprint string `json:"fingerprint"`
+	// IntroducedBy is the key of the team owner who introduced the peer; nil
+	// (JSON null) for a directly paired peer.
+	IntroducedBy *string `json:"introduced_by"`
 }
 
 // AuditSink is the part of audit.Log that Store needs.
@@ -70,7 +75,7 @@ func (s *Store) Add(ctx context.Context, sc *agentcard.Signed, raw []byte, at ti
 // verified canonical mailbox announcement; it is merged into mailbox_keys by
 // the rule of Docs/protocol/mail.md §Peer storage. Pairing an already known key
 // refreshes its card details and keeps the original paired_at. AddTrusted never
-// lowers the trust of a known key.
+// lowers the trust of a known key. A direct pairing clears introduced_by.
 func (s *Store) AddTrusted(ctx context.Context, sc *agentcard.Signed, raw []byte, at time.Time, trust string, mbox []byte) (err error) {
 	skills, err := json.Marshal(sc.Card.Skills)
 	if err != nil {
@@ -96,8 +101,9 @@ func (s *Store) AddTrusted(ctx context.Context, sc *agentcard.Signed, raw []byte
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (public_key) DO UPDATE SET name = excluded.name, harness = excluded.harness,
 	skills = excluded.skills, card = excluded.card, mailbox_keys = excluded.mailbox_keys,
-	trust = CASE WHEN (CASE peers.trust WHEN 'fingerprint' THEN 2 WHEN 'code' THEN 1 ELSE 0 END) >=
-	                  (CASE excluded.trust WHEN 'fingerprint' THEN 2 WHEN 'code' THEN 1 ELSE 0 END)
+	introduced_by = NULL,
+	trust = CASE WHEN (CASE peers.trust WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END) >=
+	                  (CASE excluded.trust WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END)
 	            THEN peers.trust ELSE excluded.trust END`,
 		sc.Card.PublicKey, sc.Card.Name, sc.Card.Harness, string(skills), string(raw),
 		at.UTC().Format(time.RFC3339), trust, keys)
@@ -220,7 +226,7 @@ func (s *Store) pruneUsed(ctx context.Context, now time.Time) error {
 // List returns all peers, oldest pairing first. It never returns nil.
 func (s *Store) List(ctx context.Context) ([]Peer, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT public_key, name, harness, skills, paired_at, trust FROM peers ORDER BY paired_at, public_key`)
+		`SELECT public_key, name, harness, skills, paired_at, trust, introduced_by FROM peers ORDER BY paired_at, public_key`)
 	if err != nil {
 		return nil, fmt.Errorf("peers: list: %w", err)
 	}
@@ -231,8 +237,9 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 		var (
 			p      Peer
 			skills string
+			by     sql.NullString
 		)
-		if err := rows.Scan(&p.PublicKey, &p.Name, &p.Harness, &skills, &p.PairedAt, &p.Trust); err != nil {
+		if err := rows.Scan(&p.PublicKey, &p.Name, &p.Harness, &skills, &p.PairedAt, &p.Trust, &by); err != nil {
 			return nil, fmt.Errorf("peers: scan: %w", err)
 		}
 		if err := json.Unmarshal([]byte(skills), &p.Skills); err != nil {
@@ -245,6 +252,9 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 			continue
 		}
 		p.Fingerprint = fp
+		if by.Valid {
+			p.IntroducedBy = &by.String
+		}
 		if p.Skills == nil {
 			p.Skills = []agentcard.Skill{}
 		}
@@ -264,12 +274,14 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 }
 
 // SetTrust raises the trust of the peer with this key to trust. It never
-// lowers it. It returns ErrNoPeer if the key is not paired.
+// lowers it. Raising to code or fingerprint (a direct confirmation) clears
+// introduced_by. It returns ErrNoPeer if the key is not paired.
 func (s *Store) SetTrust(ctx context.Context, key, trust string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE peers SET trust = CASE
-	WHEN (CASE trust WHEN 'fingerprint' THEN 2 WHEN 'code' THEN 1 ELSE 0 END) >=
-	     (CASE ? WHEN 'fingerprint' THEN 2 WHEN 'code' THEN 1 ELSE 0 END) THEN trust ELSE ? END
-WHERE public_key = ?`, trust, trust, key)
+	WHEN (CASE trust WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END) >=
+	     (CASE ? WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END) THEN trust ELSE ? END,
+	introduced_by = CASE WHEN ? IN ('code', 'fingerprint') THEN NULL ELSE introduced_by END
+WHERE public_key = ?`, trust, trust, trust, key)
 	if err != nil {
 		return fmt.Errorf("peers: set trust: %w", err)
 	}
@@ -287,6 +299,17 @@ func (s *Store) Remove(ctx context.Context, key string) error {
 		return fmt.Errorf("peers: remove: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := removeTx(ctx, tx, key); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("peers: remove: %w", err)
+	}
+	return nil
+}
+
+// removeTx deletes the peer and fails its waiting outbox rows inside tx.
+func removeTx(ctx context.Context, tx *sql.Tx, key string) error {
 	res, err := tx.ExecContext(ctx, `DELETE FROM peers WHERE public_key = ?`, key)
 	if err != nil {
 		return fmt.Errorf("peers: remove: %w", err)
@@ -299,8 +322,109 @@ func (s *Store) Remove(ctx context.Context, key string) error {
 next_attempt = NULL, updated = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE to_key = ? AND state IN ('queued','relayed')`, key); err != nil {
 		return fmt.Errorf("peers: fail outbox rows: %w", err)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("peers: remove: %w", err)
+	return nil
+}
+
+// Member is a verified team member as Introduce needs it: the signed card, the
+// card as received, and the canonical mailbox announcement (nil for none).
+type Member struct {
+	Card    *agentcard.Signed
+	Raw     []byte
+	Mailbox []byte
+}
+
+// Introduce upserts member m, introduced by team owner owner, inside tx, by the
+// rules of Docs/protocol/team.md §Introduced peers. A directly paired peer only
+// gets its mailbox merged; its card, name and trust are left alone.
+func (s *Store) Introduce(ctx context.Context, tx *sql.Tx, m Member, owner string, at time.Time) error {
+	skills, err := json.Marshal(m.Card.Card.Skills)
+	if err != nil {
+		return fmt.Errorf("peers: marshal skills: %w", err)
+	}
+	key := m.Card.Card.PublicKey
+	var (
+		old string
+		by  sql.NullString
+	)
+	switch err := tx.QueryRowContext(ctx, `SELECT mailbox_keys, introduced_by FROM peers WHERE public_key = ?`, key).Scan(&old, &by); {
+	case errors.Is(err, sql.ErrNoRows):
+		keys, err := mergeMailboxKeys("[]", m.Mailbox)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, mailbox_keys, introduced_by)
+VALUES (?, ?, ?, ?, ?, ?, 'team', ?, ?)`, key, m.Card.Card.Name, m.Card.Card.Harness, string(skills), string(m.Raw),
+			at.UTC().Format(time.RFC3339), keys, owner); err != nil {
+			return fmt.Errorf("peers: introduce: %w", err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("peers: introduce: %w", err)
+	}
+	keys, err := mergeMailboxKeys(old, m.Mailbox)
+	if err != nil {
+		return err
+	}
+	if !by.Valid {
+		if _, err := tx.ExecContext(ctx, `UPDATE peers SET mailbox_keys = ? WHERE public_key = ?`, keys, key); err != nil {
+			return fmt.Errorf("peers: introduce: %w", err)
+		}
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE peers SET name = ?, harness = ?, skills = ?, card = ?, mailbox_keys = ? WHERE public_key = ?`,
+		m.Card.Card.Name, m.Card.Card.Harness, string(skills), string(m.Raw), keys, key); err != nil {
+		return fmt.Errorf("peers: introduce: %w", err)
 	}
 	return nil
+}
+
+// Removed describes a peer that GCIntroduced deleted, for the caller's audit
+// entry (peer.remove, reason "team").
+type Removed struct {
+	PublicKey   string
+	Name        string
+	Fingerprint string
+}
+
+// GCIntroduced deletes, inside tx, every introduced peer (introduced_by not
+// NULL) that is not a member of any team in state active, failing its waiting
+// outbox rows as Remove does. A directly paired peer is never removed. Before
+// the teams tables exist (migration 9) no team is active. The caller writes the
+// audit entries after commit.
+func (s *Store) GCIntroduced(ctx context.Context, tx *sql.Tx) ([]Removed, error) {
+	var tables int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('teams', 'team_members')`).Scan(&tables); err != nil {
+		return nil, fmt.Errorf("peers: gc introduced: %w", err)
+	}
+	q := `SELECT public_key, name FROM peers WHERE introduced_by IS NOT NULL ORDER BY public_key`
+	if tables == 2 {
+		q = `SELECT public_key, name FROM peers WHERE introduced_by IS NOT NULL AND NOT EXISTS (
+	SELECT 1 FROM team_members m JOIN teams t ON t.id = m.team_id
+	WHERE m.key = peers.public_key AND t.state = 'active') ORDER BY public_key`
+	}
+	rows, err := tx.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("peers: gc introduced: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Removed{}
+	for rows.Next() {
+		var r Removed
+		if err := rows.Scan(&r.PublicKey, &r.Name); err != nil {
+			return nil, fmt.Errorf("peers: gc introduced: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+	for i := range out {
+		// A key that is not canonical cannot have been stored by Introduce; leave the fingerprint empty.
+		out[i].Fingerprint, _ = envelope.KeyFingerprint(out[i].PublicKey)
+		if err := removeTx(ctx, tx, out[i].PublicKey); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
