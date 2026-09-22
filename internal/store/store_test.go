@@ -68,6 +68,8 @@ func TestMigration8PreservesPeers(t *testing.T) {
 		`DROP TABLE team_pending_joins`,
 		`DROP TABLE presence_peers`,
 		`DROP TABLE settings`,
+		`DROP TABLE requests`,
+		`DROP TABLE request_cancels`,
 		`DELETE FROM migrations WHERE version > 7`,
 		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
 		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
