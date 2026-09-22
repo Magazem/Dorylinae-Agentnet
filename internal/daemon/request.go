@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
@@ -126,13 +127,17 @@ func newRequestStore(db *sql.DB, self string, ob *mail.Outbox, log *audit.Log, t
 			}
 			return self && other, nil
 		},
-		UnverifiedPeer: func(tx *sql.Tx, peer string) bool {
-			return nonLoopbackRelay && trustOfTx(tx, peer) == peers.TrustRelay
+		UnverifiedPeer: func(tx *sql.Tx, peer string) (bool, error) {
+			if !nonLoopbackRelay {
+				return false, nil
+			}
+			trust, err := trustOfTx(tx, peer)
+			return trust == peers.TrustRelay, err
 		},
 	}
 }
 
-func registerRequest(srv *ipc.Server, db *sql.DB, rs *request.Store, ps *peers.Store, ts *team.Store, log *audit.Log, nonLoopbackRelay bool) {
+func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store, ps *peers.Store, ts *team.Store, log *audit.Log, nonLoopbackRelay bool) {
 	srv.Handle("request_submit", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p RequestSubmitParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -190,7 +195,7 @@ func registerRequest(srv *ipc.Server, db *sql.DB, rs *request.Store, ps *peers.S
 				return nil, aerr
 			}
 		}
-		online, lastSeen := presenceBrief(db, peer.PublicKey, now)
+		online, lastSeen := presenceBrief(ctx, pstore, peer.PublicKey, time.Now())
 		return RequestSubmitResult{
 			ID: outcome.Request.ID, MailID: outcome.MailID, Status: outcome.Status, Duplicate: outcome.Duplicate,
 			Team: teamRefResult{ID: t.ID, Name: t.Name}, Urgency: outcome.Request.Urgency,
@@ -338,31 +343,30 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams) string {
 }
 
 // trustOfTx reads a peer's trust through tx instead of the connection pool:
-// see mail.TxOutboxPeers for why this matters inside apply's transaction.
-func trustOfTx(tx *sql.Tx, peer string) string {
+// see mail.TxOutboxPeers for why this matters inside apply's transaction. An
+// unknown peer has trust "" (the mail layer only opens mail from paired
+// peers); any other read error is returned so that D5 never fails open.
+func trustOfTx(tx *sql.Tx, peer string) (string, error) {
 	var t string
-	if err := tx.QueryRow(`SELECT trust FROM peers WHERE public_key = ?`, peer).Scan(&t); err != nil {
-		return ""
+	err := tx.QueryRow(`SELECT trust FROM peers WHERE public_key = ?`, peer).Scan(&t)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	return t
+	return t, err
 }
 
 // presenceBrief reads the presence brief of Docs/protocol/ipc.md for peer:
-// daemon_online and last_seen. A peer never heard from gets false and nil.
-func presenceBrief(db *sql.DB, peer string, now time.Time) (online bool, lastSeen *string) {
-	var state, lastRx string
-	var interval int
-	if err := db.QueryRow(`SELECT state, interval, last_rx FROM presence_peers WHERE key = ?`, peer).
-		Scan(&state, &interval, &lastRx); err != nil {
+// daemon_online and last_seen, computed by presence.Store.View
+// (Docs/protocol/presence.md §Receiving). A peer never heard from, or a read
+// error, gives false and nil: the submit has already committed and must
+// still answer queued.
+func presenceBrief(ctx context.Context, ps *presence.Store, peer string, now time.Time) (online bool, lastSeen *string) {
+	v, err := ps.View(ctx, peer, now)
+	if err != nil || !v.Known || v.LastSeen == nil {
 		return false, nil
 	}
-	t, err := time.Parse(mail.StoreTimeFmt, lastRx)
-	if err != nil {
-		return false, nil
-	}
-	online = state == "online" && now.Sub(t) <= time.Duration(interval)*5*time.Second/2
-	s := t.UTC().Format("2006-01-02T15:04:05Z")
-	return online, &s
+	s := v.LastSeen.UTC().Format("2006-01-02T15:04:05Z")
+	return v.DaemonOnline, &s
 }
 
 // relayIsNonLoopback reports whether rawURL's host is not loopback

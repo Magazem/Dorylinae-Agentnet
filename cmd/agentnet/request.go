@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 )
@@ -118,7 +119,7 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 	if *briefFile != "" {
 		text, err := readBriefFile(*briefFile)
 		if err != nil {
-			return failJSON(*asJSON, stdout, stderr, exitError, "usage", err.Error())
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 		}
 		briefText = text
 	}
@@ -169,17 +170,40 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// requestStdin is where --brief-from-file - reads from; tests replace it.
+var requestStdin io.Reader = os.Stdin
+
+// maxBriefFileBytes bounds what --brief-from-file reads: a brief is at most
+// 16384 bytes after CRLF → LF (Docs/protocol/request.md §Size limits), so a
+// valid input is at most twice that. Anything longer is refused without
+// reading it all (a pipe or device may never end).
+const maxBriefFileBytes = 2 * 16384
+
 func readBriefFile(path string) (string, error) {
+	name := path
+	var r io.Reader
 	if path == "-" {
-		b, err := io.ReadAll(os.Stdin)
+		name, r = "stdin", requestStdin
+	} else {
+		f, err := os.Open(path) //nolint:gosec // the path is a user-supplied CLI flag, as intended
 		if err != nil {
-			return "", fmt.Errorf("read stdin: %w", err)
+			return "", fmt.Errorf("read %s: %w", path, err)
 		}
-		return string(b), nil
+		defer func() { _ = f.Close() }()
+		r = f
 	}
-	b, err := os.ReadFile(path) //nolint:gosec // the path is a user-supplied CLI flag, as intended
+	b, err := io.ReadAll(io.LimitReader(r, maxBriefFileBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
+		return "", fmt.Errorf("read %s: %w", name, err)
+	}
+	if len(b) > maxBriefFileBytes {
+		return "", fmt.Errorf("read %s: over %d bytes; the brief is limited to 16384 bytes", name, maxBriefFileBytes)
+	}
+	// Checked here: JSON-encoding the IPC params would silently turn invalid
+	// bytes into U+FFFD, so the daemon's UTF-8 check would never see them
+	// (Docs/protocol/request.md §The brief: "It must be valid UTF-8").
+	if !utf8.Valid(b) {
+		return "", fmt.Errorf("read %s: the brief is not valid UTF-8", name)
 	}
 	return string(b), nil
 }

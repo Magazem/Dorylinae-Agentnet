@@ -306,7 +306,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
 	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
-	registerRequest(srv, st.DB(), reqStore, peerStore, teamStore, log, nonLoopbackRelay)
+	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -449,7 +449,10 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 		}
 		handleMail, stopMail = startMail(ctx, rcv, pusher, client, opts.MailboxKeys, outbox)
 	}
-	rctx, cancel := context.WithCancel(ctx)
+	// The client outlives ctx until stop: on graceful shutdown the deferred
+	// presence goodbye (Docs/protocol/presence.md §Sending) runs after ctx is
+	// cancelled and must still find the relay connected.
+	rctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

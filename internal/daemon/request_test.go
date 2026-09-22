@@ -102,7 +102,9 @@ func extractJSONString(obj, key string) string {
 
 // TestRequestOfflineQueued is the 1.9 acceptance test: with B stopped,
 // agentnet request returns in under 2s with status: queued, daemon_online:
-// false and a last_seen.
+// false and a last_seen. B stops gracefully, so it sends a goodbye and A
+// shows it offline at once (Docs/protocol/presence.md §Levels); without the
+// goodbye A would show it online for up to 2.5 × interval.
 func TestRequestOfflineQueued(t *testing.T) {
 	r := newHarnessRelay(t)
 	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
@@ -111,9 +113,16 @@ func TestRequestOfflineQueued(t *testing.T) {
 	waitRelayConnected(t, r, a.key, b.key)
 	harnessPair(t, a, b)
 	teamID := harnessSharedTeam(t, a, b, "x")
+	harnessWait(t, "A to hear B online", func() bool {
+		return a.count(`SELECT COUNT(*) FROM presence_peers WHERE key = '`+b.key+`' AND state = 'online'`) == 1
+	})
 
 	b.stop()
 	harnessWait(t, "relay to see B leave", func() bool { return !r.rs.Connected(b.key) })
+	// B's goodbye was forwarded before its connection closed; A stores it asynchronously.
+	harnessWait(t, "A to store B's goodbye", func() bool {
+		return a.count(`SELECT COUNT(*) FROM presence_peers WHERE key = '`+b.key+`' AND state = 'offline'`) == 1
+	})
 
 	begin := time.Now()
 	var res daemon.RequestSubmitResult
@@ -128,6 +137,12 @@ func TestRequestOfflineQueued(t *testing.T) {
 	}
 	if res.Peer.DaemonOnline {
 		t.Error("peer.daemon_online = true, want false (B is stopped)")
+	}
+	if res.Peer.LastSeen == nil {
+		t.Error("peer.last_seen = null, want B's goodbye time")
+	}
+	if n := a.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'request' AND state IN ('queued', 'relayed')`); n != 1 {
+		t.Errorf("undelivered request mails = %d, want 1", n)
 	}
 }
 

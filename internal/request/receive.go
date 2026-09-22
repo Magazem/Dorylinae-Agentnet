@@ -15,7 +15,8 @@ import (
 // check, the policy auto-decline (D5, unknown_team, not_team_member; the
 // receiver-side urgency budget of step 4 is ticket 1.7) and storing the `in`
 // row. Kind.Apply runs inside the mail dedupe transaction (Docs/protocol/mail.md);
-// After runs once, after commit, to audit and resubmit an echoed reply.
+// After runs once, after commit, to audit. Re-sending last_reply for a
+// duplicate (step 2) is ticket 1.6a.
 
 const maxAge = 30 * 24 * time.Hour
 
@@ -51,8 +52,8 @@ type Store struct {
 	TeamHasMembers func(ctx context.Context, tx *sql.Tx, teamID, peer string) (bool, error)
 	// UnverifiedPeer reports the D5 refusal for a sender: its trust is
 	// "relay" and the configured relay is not loopback. Read through tx (see
-	// TeamActive).
-	UnverifiedPeer func(tx *sql.Tx, peer string) bool
+	// TeamActive). A read error fails the apply (retryable), never open.
+	UnverifiedPeer func(tx *sql.Tx, peer string) (bool, error)
 
 	Now func() time.Time
 }
@@ -182,8 +183,14 @@ func effectiveDeclared(r *Request) string {
 // declineCode returns the auto-decline code for req, or "" to accept it,
 // checked in the order of Docs/protocol/request.md §Receiving step 3.
 func (s *Store) declineCode(ctx context.Context, tx *sql.Tx, req *Request) (string, error) {
-	if s.UnverifiedPeer != nil && s.UnverifiedPeer(tx, req.From) {
-		return "unverified_peer", nil
+	if s.UnverifiedPeer != nil {
+		unverified, err := s.UnverifiedPeer(tx, req.From)
+		if err != nil {
+			return "", fmt.Errorf("request: peer trust: %w", err)
+		}
+		if unverified {
+			return "unverified_peer", nil
+		}
 	}
 	if s.TeamActive == nil {
 		return "", nil
