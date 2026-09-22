@@ -79,7 +79,8 @@ type Receiver struct {
 	Log   *slog.Logger
 	Now   func() time.Time // defaults to time.Now
 
-	commit func(*sql.Tx) error // test hook; defaults to tx.Commit
+	commit    func(*sql.Tx) error // test hook; defaults to tx.Commit
+	beforeBad func()              // test hook; runs between the two bad-body transactions
 }
 
 // ErrNoKindHandler is returned for mail of kind keys when no handler is
@@ -197,15 +198,7 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		return seenNew, fmt.Errorf("mail: record seen: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		var got string
-		if err := tx.QueryRowContext(ctx,
-			`SELECT received_at FROM mail_seen WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&got); err != nil {
-			return seenNew, fmt.Errorf("mail: read seen: %w", err)
-		}
-		if strings.HasSuffix(got, badBodyMark) {
-			return seenDupBad, nil
-		}
-		return seenDup, nil // rolled back by the deferred Rollback
+		return seenAs(ctx, tx, op) // rolled back by the deferred Rollback
 	}
 	if known {
 		if k.Apply != nil {
@@ -234,19 +227,41 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 	return seenNew, nil
 }
 
+// seenAs classifies an existing mail_seen row as a plain or bad-body duplicate.
+func seenAs(ctx context.Context, tx *sql.Tx, op *Opened) (seenResult, error) {
+	var got string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT received_at FROM mail_seen WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&got); err != nil {
+		return seenNew, fmt.Errorf("mail: read seen: %w", err)
+	}
+	if strings.HasSuffix(got, badBodyMark) {
+		return seenDupBad, nil
+	}
+	return seenDup, nil
+}
+
 // storeBad discards the Apply transaction and records only the marked
-// mail_seen row in a new one.
+// mail_seen row in a new one. If another delivery of the same (from, id)
+// recorded the row in between, that row decides the outcome, so the reject is
+// audited once and the ack matches what was stored.
 func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at string) (seenResult, error) {
 	_ = tx.Rollback()
+	if r.beforeBad != nil {
+		r.beforeBad()
+	}
 	tx2, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return seenNew, fmt.Errorf("mail: begin: %w", err)
 	}
 	defer func() { _ = tx2.Rollback() }()
-	if _, err := tx2.ExecContext(ctx,
+	res, err := tx2.ExecContext(ctx,
 		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`,
-		op.Msg.From, op.Msg.ID, at+badBodyMark); err != nil {
+		op.Msg.From, op.Msg.ID, at+badBodyMark)
+	if err != nil {
 		return seenNew, fmt.Errorf("mail: record bad body: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return seenAs(ctx, tx2, op)
 	}
 	commit := r.commit
 	if commit == nil {
