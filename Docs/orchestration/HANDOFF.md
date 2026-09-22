@@ -106,7 +106,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | 1.1d team invite + join via pairing v2 | T-1.1d | `t1-1d` | **Opus** |
-   | 1.2c presence engine | T-1.2c, building on `p1/t1-2c` = 1.2b branch + main merged in (pre-review) | `t1-2c` | no |
+   | 1.2c presence engine | T-1.2c-b (replacement; first worker stalled idle twice), worktree recreated from main | `t1-2c` | no |
    | ~~1.2b presence seal/open~~ | merged `9bbce13` + review fixes `4111b25` (review 17). Open Low for **1.3**: goodbye is 1 byte longer and seq/epoch digit counts vary, so ~1/256 heartbeats cross a 256-byte boundary; fix by padding to a fixed size (spec intent: size must not reveal flags). | — | — |
    | ~~1.4a internal/request~~ | merged `28852f1` + `de5ee1c` (placeholders dropped; rewind test updated) | — | — |
    Migrations on main: 1–11. Next free: 12 (webhook_queue, 1.8b). Every new migration must also add its tables to the DROP lists in BOTH rewind tests in internal/store/store_test.go.
@@ -128,6 +128,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 
 - **Python via `python` fails** (uv trampoline error). Use the Edit tool or Go.
 - **Paused workers.** On 2026-09-22 all five Phase 1 workers were paused by "could not process queued message after 3 delivery attempts" (runtime restart). Their partial work survived in the worktrees. Recovery: `team_interrupt_agent` each one with "resume task X from the files already in your worktree; do not start over". Never respawn or clear a worktree for this.
+- **A worker that stays idle with an empty worktree after its task is assigned is stuck.** Interrupting it once is fine; if it idles again, retire it, delete its task, spawn a fresh worker and create a NEW task for it.
 - **Before retiring a worker, mark all its tasks completed** (`team_task_update`), or it declines shutdown. Workers also report a missing worktree as a blocker after you merge and remove it; that is expected.
 - **Lint before merge.** The installed golangci-lint cannot load the config, but `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` works. Put it in every implementation task's acceptance criteria and run it yourself before merging; gofmt complaints that only exist because of CRLF are noise (check with `tr -d '\r' < f | gofmt -l`). CI failed on lint three times in a row on 2026-09-21 because this was skipped.
   CRLF artefact, not a real issue.
