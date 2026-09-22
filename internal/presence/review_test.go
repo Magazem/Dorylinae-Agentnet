@@ -65,28 +65,31 @@ func TestReceiverDropLimiterBounded(t *testing.T) {
 }
 
 // TestSealedPaddingAllCombinations measures the real sealed plaintext (not a
-// re-computation): for every state/agent/human combination and 0-32 epochs
-// with values of varying digit count, the signed plaintext is a multiple of
-// 256, the payload length depends only on that plaintext length, and the agent and
-// human flags never change the payload size.
+// re-computation): for every state/agent/human combination, 0-32 epochs with
+// values of varying digit count up to maxIntValue, and seq from 1 to
+// maxIntValue, the signed plaintext is a fixed size, one single constant
+// regardless of flags, goodbye, or the digit count of seq/epoch values
+// (Docs/protocol/presence.md §Body; review 17 L1: before this fix, about 1
+// heartbeat in 256 crossed a padding boundary and a goodbye was 1 byte
+// longer, so size alone could tell them apart).
 func TestSealedPaddingAllCombinations(t *testing.T) {
 	f := newFixture(t)
 	pub := f.recip.mbox.PublicKey().Bytes()
 	values := []int64{0, 9, 12345, 1<<53 - 1}
+	var fixedSize int
+	seen := false
 	for n := 0; n <= maxEpochs; n++ {
 		epochs := map[string]int64{}
 		for i := 0; i < n; i++ {
 			epochs[teamID(i)] = values[i%len(values)]
 		}
-		// Same state and seq: the agent and human flags must not change the size.
-		sizes := map[string]int{}
 		for _, state := range []string{"online", "offline"} {
 			for agent := 0; agent <= 1; agent++ {
 				for human := 0; human <= 2; human++ {
 					if state == "offline" && (agent != 0 || human != 2) {
 						continue // not a valid goodbye
 					}
-					for si, seq := range []int64{1, 1<<53 - 1} {
+					for _, seq := range []int64{1, 1<<53 - 1} {
 						b := Body{State: state, Agent: agent, Human: human, Boot: "0123456789abcdef", Seq: seq, Interval: 300, Epochs: epochs}
 						sl, err := Seal(SealInput{Priv: f.sender.priv, To: f.recip.key, MailboxPub: pub, Created: f.clock, Body: b})
 						if err != nil {
@@ -98,11 +101,12 @@ func TestSealedPaddingAllCombinations(t *testing.T) {
 						if len(sl.Payload) != mail.MinPayload+len(sl.Signed) {
 							t.Fatalf("payload %d for plaintext %d", len(sl.Payload), len(sl.Signed))
 						}
-						k := fmt.Sprintf("%s/%d", state, si)
-						if want, ok := sizes[k]; !ok {
-							sizes[k] = len(sl.Payload)
-						} else if len(sl.Payload) != want {
-							t.Fatalf("n=%d: payload size %d differs from %d for %s/%d/%d", n, len(sl.Payload), sizes[k], state, agent, human)
+						if !seen {
+							fixedSize = len(sl.Payload)
+							seen = true
+						} else if len(sl.Payload) != fixedSize {
+							t.Fatalf("n=%d %s/%d/%d seq=%d: payload size %d, want the fixed size %d (every combination must seal to the same size)",
+								n, state, agent, human, seq, len(sl.Payload), fixedSize)
 						}
 						if op, err := f.rcv.Opener.OpenPresence(f.env(sl)); err != nil {
 							t.Fatalf("open: %v", err)

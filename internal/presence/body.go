@@ -46,8 +46,10 @@ type wireBody struct {
 
 // Build returns the body ready for mail.SealInput.Body: pad is computed so
 // that sealing it as a presence message with these from/to/id/created
-// produces a canonical signed plaintext (Docs/protocol/mail.md §Message) whose
-// length is a multiple of 256 bytes (Docs/protocol/presence.md §Body).
+// produces a canonical signed plaintext (Docs/protocol/mail.md §Message)
+// whose length is always exactly fixedBodyLen(from, to, id, created) bytes,
+// regardless of state, flags, seq or the epochs member (Docs/protocol/
+// presence.md §Body; review 17 L1).
 func Build(b Body, from, to, id string, created time.Time) (any, error) {
 	epochs := b.Epochs
 	if epochs == nil {
@@ -61,10 +63,67 @@ func Build(b Body, from, to, id string, created time.Time) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	padLen := (padBlock - l%padBlock) % padBlock
-	w.Pad = strings.Repeat("0", padLen)
+	fixed, err := fixedBodyLen(from, to, id, created)
+	if err != nil {
+		return nil, err
+	}
+	if l > fixed {
+		return nil, fmt.Errorf("presence: body %d bytes exceeds the fixed padded size %d", l, fixed)
+	}
+	w.Pad = strings.Repeat("0", fixed-l)
 	return w, nil
 }
+
+// fixedBodyLen is the one padded plaintext length every presence body (a
+// heartbeat or a goodbye) seals to for this from/to/id/created: the
+// smallest multiple of padBlock that fits the longest possible body —
+// state "offline" (one byte longer than "online"), interval at its 3-digit
+// maximum, seq and every epoch value at maxIntValue, and the maximum 32
+// epochs. It depends only on the lengths of from/to/id/created, which are
+// fixed by their formats (identity keys, the "p-"+32hex id, RFC 3339 to the
+// second), so it is the same number for every presence message, and a
+// hostile relay learns nothing about the content from the size on the wire
+// (Docs/protocol/presence.md §Body; review 17 L1).
+func fixedBodyLen(from, to, id string, created time.Time) (int, error) {
+	epochs := make(map[string]int64, maxEpochs)
+	for i := 0; i < maxEpochs; i++ {
+		epochs[fmt.Sprintf("t-%032x", i)] = maxIntValue
+	}
+	w := wireBody{
+		Agent: 1, Boot: strings.Repeat("f", 16), Epochs: epochs, Human: 2,
+		Interval: maxInterval, Pad: "", Seq: maxIntValue, State: "offline",
+	}
+	l, err := canonicalLen(from, to, id, created, w)
+	if err != nil {
+		return 0, err
+	}
+	return ((l + padBlock - 1) / padBlock) * padBlock, nil
+}
+
+// maxPad is the largest pad length Parse accepts: the fixed body length
+// minus the shortest possible body (state "online", seq 1, interval at its
+// 1-digit minimum, no epochs). Both terms include the same placeholder
+// from/to/id/created, so their difference does not depend on those lengths
+// (only the body content does), and this bound holds for every real message.
+var maxPad = func() int {
+	from := strings.Repeat("A", 43) // envelope.KeyString: base64 RawURLEncoding of a 32-byte key
+	to := strings.Repeat("A", 43)
+	id := "p-" + strings.Repeat("0", 32)
+	created := time.Unix(0, 0).UTC()
+	fixed, err := fixedBodyLen(from, to, id, created)
+	if err != nil {
+		panic(err)
+	}
+	minimal := wireBody{
+		Agent: 0, Boot: strings.Repeat("0", 16), Epochs: map[string]int64{}, Human: 2,
+		Interval: minInterval, Pad: "", Seq: 1, State: "online",
+	}
+	l, err := canonicalLen(from, to, id, created, minimal)
+	if err != nil {
+		panic(err)
+	}
+	return fixed - l
+}()
 
 // canonicalLen returns the length of the canonical signed plaintext that
 // sealing this body would produce, computed with a placeholder signature: a
@@ -138,8 +197,8 @@ func Parse(body map[string]any) (Body, error) {
 	b.Boot = boot
 
 	seq, err := intField(body, "seq")
-	if err != nil || seq < 1 {
-		return Body{}, fmt.Errorf("%w: seq must be a positive integer", ErrBadBody)
+	if err != nil || seq < 1 || seq > maxIntValue {
+		return Body{}, fmt.Errorf("%w: seq must be 1 to 2^53-1", ErrBadBody)
 	}
 	b.Seq = seq
 
@@ -166,8 +225,8 @@ func Parse(body map[string]any) (Body, error) {
 			return Body{}, fmt.Errorf("%w: epochs value must be an integer", ErrBadBody)
 		}
 		ev, err := n.Int64()
-		if err != nil || ev < 0 {
-			return Body{}, fmt.Errorf("%w: epochs value must be a non-negative integer", ErrBadBody)
+		if err != nil || ev < 0 || ev > maxIntValue {
+			return Body{}, fmt.Errorf("%w: epochs value must be 0 to 2^53-1", ErrBadBody)
 		}
 		epochs[k] = ev
 	}

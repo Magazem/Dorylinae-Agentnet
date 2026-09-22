@@ -91,16 +91,29 @@ therefore safe.
 | `agent` | integer | `1` if agent active (last IPC call < 5 min ago), else `0`. `0` when `state = offline` |
 | `human` | integer | `1` present, `0` idle ≥ 10 min, `2` unknown **or not shared** ([Human sharing](#human-sharing)). `2` when `state = offline` |
 | `boot` | string | 16 lowercase hex, random per daemon start |
-| `seq` | integer | Per recipient, starts at 1 each boot, +1 per message to that recipient |
+| `seq` | integer | Per recipient, starts at 1 each boot, +1 per message to that recipient. 1 to 2^53−1 |
 | `interval` | integer | The sender's heartbeat period in seconds, 1–300. The daemon uses `max(30, ⌈visible / 3⌉)` ([Sending](#sending)); values under 30 occur only with the test option `PresenceInterval` |
-| `epochs` | object | Team id → roster epoch held by the sender, **only** for `active` teams whose owner is the recipient ([team.md §Operations](team.md#operations), resync). 0–32 members; `{}` when none |
-| `pad` | string | Only `0` characters, length 0–1023, chosen so that `len(plaintext)` (the canonical signed object) is a **multiple of 256** |
+| `epochs` | object | Team id → roster epoch held by the sender, **only** for `active` teams whose owner is the recipient ([team.md §Operations](team.md#operations), resync). 0–32 members; each value 0 to 2^53−1; `{}` when none |
+| `pad` | string | Only `0` characters, chosen so that `len(plaintext)` (the canonical signed object) is always the one **fixed size** below |
 
 All members are required, and no others are allowed. Integers and flags use fixed values
-instead of booleans or ages, and `pad` equalises the length, so the ciphertext size shows the
-relay nothing about the flags. The sender computes `pad`: build with `pad = ""`, measure `L`,
-set `pad` to `(256 − L mod 256) mod 256` characters. Adding characters to a string adds
-exactly that many bytes, and the member order is fixed by canonical JSON.
+instead of booleans or ages, `seq` and every `epochs` value are capped at 2^53−1 (the JSON
+safe-integer bound, matching `team.epoch`'s own limit), and `pad` equalises the length to a
+single fixed size — not merely "a multiple of 256" — so the ciphertext size shows the relay
+nothing about the flags, the state, or how many teams the sender holds (review 17 L1: before
+this fix, a goodbye was 1 byte longer than a heartbeat and about 1 message in 256 crossed a
+padding boundary, so size alone could sometimes tell a goodbye apart from a heartbeat).
+
+The fixed size is the smallest multiple of 256 that fits the longest possible body: `state:
+"offline"` (one byte longer than `"online"`), `interval` at its 3-digit maximum (300), `seq`
+and every `epochs` value at 2^53−1, and the maximum 32 `epochs` entries. It depends only on
+the byte length of `from`, `to`, `id` and `created` in the envelope, which are fixed by their
+formats (identity keys, the `p-` + 32 hex id, RFC 3339 to the second), so it is the same
+number of bytes for every presence message a given build sends, whatever its actual content.
+The sender computes it once with `pad = ""` at that worst-case content to get the target
+length, then builds the real body the same way to get its actual length `L`, and sets `pad`
+to `target − L` `0` characters. Adding characters to a string adds exactly that many bytes,
+and the member order is fixed by canonical JSON.
 
 ### Receiving
 

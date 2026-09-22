@@ -57,6 +57,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPeers(args[1:], stdout, stderr)
 	case "team":
 		return runTeam(args[1:], stdout, stderr)
+	case "presence":
+		return runPresence(args[1:], stdout, stderr)
 	case "ping":
 		return runPing(args[1:], stdout, stderr)
 	case "mail":
@@ -89,6 +91,7 @@ Commands:
   peers     List paired agents
   ping      Round-trip an encrypted message to a paired agent
   team      Create and manage teams
+  presence  Show or set who can see this machine's presence
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

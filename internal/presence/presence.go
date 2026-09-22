@@ -27,7 +27,12 @@ const (
 	minInterval = 1
 	maxInterval = 300
 	maxEpochs   = 32
-	maxPad      = 1023
+	// maxIntValue bounds seq and epochs values: 2^53-1, the JSON safe-integer
+	// bound already used for team.Epoch. Parse rejects larger values so the
+	// fixed padded size computed in Build (Docs/protocol/presence.md §Body)
+	// is a true upper bound over every value Parse accepts, not just a
+	// multiple of 256 (review 17 L1).
+	maxIntValue = 1<<53 - 1
 )
 
 // wireTimeFmt is the RFC 3339 UTC, whole-seconds format used for msg.created,

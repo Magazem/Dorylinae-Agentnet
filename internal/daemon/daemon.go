@@ -240,16 +240,23 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	pdir := peerDirectory{st.DB()}
 	presenceStore := presence.NewStore(st.DB())
+	presenceSettings := presence.NewSettings(st.DB())
 	presenceSender := &presence.Sender{
 		Priv:             identityPriv(ks),
 		Self:             id.Card().Card.PublicKey,
 		Peers:            pdir,
 		Team:             teamStore,
 		Store:            presenceStore,
+		Settings:         presenceSettings,
+		Audit:            log,
 		Idle:             opts.Idle,
 		Log:              opts.Logger,
 		PresenceInterval: opts.PresenceInterval,
 		AgentWindow:      opts.AgentWindow,
+	}
+	if err := presenceSender.LoadSettings(ctx); err != nil {
+		_ = ln.Close()
+		return err
 	}
 	teamStore.OnMembersChanged = func() { go presenceSender.SyncVisibility(context.Background()) }
 	presenceReceiver := &presence.Receiver{
@@ -294,6 +301,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerPing(srv, sessions, peerStore)
 	registerTrust(srv, peerStore, log, teamStore)
 	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
+	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
@@ -320,7 +328,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			StartedAt:     started.UTC().Format(time.RFC3339),
 			UptimeSeconds: time.Since(started).Seconds(),
 			Version:       version.Version,
-			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender),
+			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender, teamStore),
 		}
 		if p.Team != "" {
 			tr, err := statusTeam(ctx, teamStore, peerStore, presenceStore, presenceSender, id.Card().Card.Name, relayClient, opts.RelayURL, p.Team)

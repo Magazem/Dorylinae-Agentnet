@@ -27,15 +27,23 @@ func relayState(client *relayclient.Client, relayURL string) string {
 }
 
 // presenceStatus builds the own-values "presence" object of "status"
-// (Docs/protocol/ipc.md §status). 1.2c only ever reports mode "visible":
-// the other modes are 1.3.
-func presenceStatus(ctx context.Context, client *relayclient.Client, relayURL string, sender *presence.Sender) PresenceStatus {
-	return PresenceStatus{
-		Mode:         "visible",
+// (Docs/protocol/ipc.md §status), including the visibility mode (1.3).
+func presenceStatus(ctx context.Context, client *relayclient.Client, relayURL string, sender *presence.Sender, ts *team.Store) PresenceStatus {
+	vm := sender.Mode()
+	res := PresenceStatus{
+		Mode:         vm.Mode,
 		Relay:        relayState(client, relayURL),
 		AgentActive:  sender.AgentActive(),
 		HumanPresent: sender.HumanPresent(ctx),
 	}
+	if vm.Mode == presence.ModeOnlyTeam {
+		if t, err := ts.Get(ctx, vm.Team); err == nil {
+			res.Team = &TeamRef{ID: t.ID, Name: t.Name}
+		} else {
+			res.Team = &TeamRef{ID: vm.Team}
+		}
+	}
+	return res
 }
 
 // statusTeam builds the "team" object of "status --team"

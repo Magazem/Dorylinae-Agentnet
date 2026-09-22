@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
@@ -47,6 +48,14 @@ type Sender struct {
 	Peers MailboxLookup
 	Team  *team.Store
 	Store *Store
+	// Settings persists the visibility mode and human-share flag (1.3),
+	// Docs/protocol/presence.md §Visibility and §Human sharing. Nil skips
+	// persistence (tests): the mode still applies in memory for the process
+	// lifetime.
+	Settings *Settings
+	// Audit records presence.mode and presence.human (1.3),
+	// Docs/protocol/presence.md §Audit. Nil skips auditing.
+	Audit *audit.Log
 	// Idle reports OS input idle time; nil always reports human: 2 (unknown).
 	Idle func(context.Context) (time.Duration, bool)
 	Now  func() time.Time
@@ -64,6 +73,21 @@ type Sender struct {
 	lastActivity time.Time
 	visible      map[string]bool
 	lastResync   map[string]time.Time
+	// mode is the visibility mode ("" behaves like ModeVisible, the 1.2c
+	// default); onlyTeam is the team id for ModeOnlyTeam. Loaded from
+	// Settings by LoadSettings and updated by SetMode.
+	mode       string
+	onlyTeam   string
+	humanSet   bool // true once humanShare has been loaded or set
+	humanShare bool
+	// sendMu serializes every visibleSet-compute-then-send operation
+	// (sendAll, SyncVisibility, Goodbye), so a concurrent tick and a mode
+	// change can never race: whichever acquires the lock second always
+	// computes the visible set under the other's effect. Without this, a
+	// tick already past its visibleSet() call under the old mode could still
+	// reach a peer, with a fresher seq, after that peer's goodbye from a
+	// mode change that logically happened later, undoing it.
+	sendMu sync.Mutex
 	// sender is the relay connection; nil counts as not connected, and a
 	// heartbeat is silently dropped (Docs/protocol/presence.md §Sending). Set
 	// through SetSender, guarded by mu since Run reads it concurrently with
@@ -175,6 +199,9 @@ func (s *Sender) agentFlag(now time.Time) int {
 }
 
 func (s *Sender) humanFlag(ctx context.Context) int {
+	if !s.humanShareEnabled() {
+		return 2
+	}
 	if s.Idle == nil {
 		return 2
 	}
@@ -188,38 +215,196 @@ func (s *Sender) humanFlag(ctx context.Context) int {
 	return 0
 }
 
-// visibleSet is every peer that shares an active team with self and has a
-// mailbox key, Docs/protocol/presence.md §Sending "Recipients" (mode
-// `visible`, the only mode 1.2c implements; `only_team`/`invisible` are 1.3).
-func (s *Sender) visibleSet(ctx context.Context) ([]string, error) {
-	teams, err := s.Team.List(ctx)
-	if err != nil {
-		return nil, err
+// humanShareEnabled reports the presence.human share flag
+// (Docs/protocol/presence.md §Human sharing), default true until
+// LoadSettings or SetHumanShare has run.
+func (s *Sender) humanShareEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.humanSet {
+		return true
 	}
-	set := map[string]bool{}
-	for _, t := range teams {
-		if t.State != team.StateActive {
-			continue
-		}
-		members, err := s.Team.Members(ctx, t.ID)
+	return s.humanShare
+}
+
+// visibleSet is the recipients of the next heartbeat, Docs/protocol/
+// presence.md §Sending "Recipients": every peer sharing an active team with
+// self in mode `visible` (the default), members of the target team in mode
+// `only_team`, or nobody in mode `invisible`. Peers without a mailbox key
+// are skipped.
+func (s *Sender) visibleSet(ctx context.Context) ([]string, error) {
+	s.checkTeamGone(ctx)
+	vm := s.Mode()
+
+	switch vm.Mode {
+	case ModeInvisible:
+		return nil, nil
+	case ModeOnlyTeam:
+		members, err := s.Team.Members(ctx, vm.Team)
 		if err != nil {
 			return nil, err
 		}
+		out := make([]string, 0, len(members))
 		for _, m := range members {
 			if m.Key == s.Self {
 				continue
 			}
-			set[m.Key] = true
+			if _, ok := s.Peers.MailboxPub(m.Key); ok {
+				out = append(out, m.Key)
+			}
+		}
+		sort.Strings(out)
+		return out, nil
+	default: // ModeVisible, and "" (the 1.2c default before LoadSettings runs)
+		teams, err := s.Team.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		set := map[string]bool{}
+		for _, t := range teams {
+			if t.State != team.StateActive {
+				continue
+			}
+			members, err := s.Team.Members(ctx, t.ID)
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range members {
+				if m.Key == s.Self {
+					continue
+				}
+				set[m.Key] = true
+			}
+		}
+		out := make([]string, 0, len(set))
+		for k := range set {
+			if _, ok := s.Peers.MailboxPub(k); ok {
+				out = append(out, k)
+			}
+		}
+		sort.Strings(out)
+		return out, nil
+	}
+}
+
+// checkTeamGone auto-degrades an only_team mode to invisible when the target
+// team is no longer active on this daemon (left, removed or dissolved),
+// Docs/protocol/presence.md §Sending "only_team": persists the change,
+// audits {mode: invisible, reason: team_gone} as actor daemon, and updates
+// the cache so visibleSet sees it immediately. Called before every
+// visible-set computation.
+func (s *Sender) checkTeamGone(ctx context.Context) {
+	mode := s.Mode()
+	if mode.Mode != ModeOnlyTeam {
+		return
+	}
+	gone := true
+	if s.Team != nil {
+		if t, err := s.Team.Get(ctx, mode.Team); err == nil && t.State == team.StateActive {
+			gone = false
 		}
 	}
-	out := make([]string, 0, len(set))
-	for k := range set {
-		if _, ok := s.Peers.MailboxPub(k); ok {
-			out = append(out, k)
+	if !gone {
+		return
+	}
+	now := s.now()
+	if s.Settings != nil {
+		if err := s.Settings.SetMode(ctx, VisibilityMode{Mode: ModeInvisible}, now); err != nil {
+			s.log().Warn("presence: persist auto-invisible", "event", "presence_error", "error", err)
 		}
 	}
-	sort.Strings(out)
-	return out, nil
+	s.mu.Lock()
+	s.mode, s.onlyTeam = ModeInvisible, ""
+	s.mu.Unlock()
+	if s.Audit != nil {
+		if err := s.Audit.Append(ctx, audit.ActorDaemon, ActionMode, map[string]any{"mode": ModeInvisible, "reason": "team_gone"}); err != nil {
+			s.log().Warn("presence: audit auto-invisible", "event", "presence_error", "error", err)
+		}
+	}
+}
+
+// LoadSettings loads the persisted visibility mode and human-share flag into
+// the sender's cache. Call it once before Run, after Settings is set.
+func (s *Sender) LoadSettings(ctx context.Context) error {
+	if s.Settings == nil {
+		return nil
+	}
+	m, err := s.Settings.GetMode(ctx)
+	if err != nil {
+		return err
+	}
+	share, err := s.Settings.GetHumanShare(ctx)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.mode, s.onlyTeam = m.Mode, m.Team
+	s.humanShare, s.humanSet = share, true
+	s.mu.Unlock()
+	return nil
+}
+
+// Mode returns the current visibility mode.
+func (s *Sender) Mode() VisibilityMode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mode := s.mode
+	if mode == "" {
+		mode = ModeVisible
+	}
+	return VisibilityMode{Mode: mode, Team: s.onlyTeam}
+}
+
+// SetMode applies a new visibility mode: persists it, updates the cache,
+// audits presence.mode as actor cli, and sends the goodbye/online diff via
+// SyncVisibility (Docs/protocol/presence.md §Visibility). The caller
+// resolves and validates the team id (ModeOnlyTeam) before calling.
+func (s *Sender) SetMode(ctx context.Context, mode VisibilityMode) error {
+	now := s.now()
+	if s.Settings != nil {
+		if err := s.Settings.SetMode(ctx, mode, now); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.mode, s.onlyTeam = mode.Mode, mode.Team
+	s.mu.Unlock()
+	if s.Audit != nil {
+		detail := map[string]any{"mode": mode.Mode}
+		if mode.Mode == ModeOnlyTeam {
+			detail["team"] = mode.Team
+		}
+		if err := s.Audit.Append(ctx, audit.ActorCLI, ActionMode, detail); err != nil {
+			return err
+		}
+	}
+	s.SyncVisibility(ctx)
+	return nil
+}
+
+// HumanShare reports the current presence.human share flag.
+func (s *Sender) HumanShare() bool { return s.humanShareEnabled() }
+
+// SetHumanShare applies a new presence.human share flag: persists it,
+// updates the cache, and audits presence.human as actor cli
+// (Docs/protocol/presence.md §Human sharing). It does not itself trigger a
+// heartbeat; the change takes effect on the next one.
+func (s *Sender) SetHumanShare(ctx context.Context, share bool) error {
+	now := s.now()
+	if s.Settings != nil {
+		if err := s.Settings.SetHumanShare(ctx, share, now); err != nil {
+			return err
+		}
+	}
+	s.mu.Lock()
+	s.humanShare, s.humanSet = share, true
+	s.mu.Unlock()
+	if s.Audit != nil {
+		if err := s.Audit.Append(ctx, audit.ActorCLI, ActionHuman, map[string]any{"share": share}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // epochsFor is the epochs member of a heartbeat to recipient: this daemon's
@@ -319,6 +504,8 @@ func (s *Sender) currentVisible() map[string]bool {
 
 // sendAll sends state to the whole current visible set.
 func (s *Sender) sendAll(ctx context.Context, state string) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	peers, err := s.visibleSet(ctx)
 	if err != nil {
 		s.log().Warn("presence: visible set", "event", "presence_error", "error", err)
@@ -338,6 +525,8 @@ func (s *Sender) SendNow(ctx context.Context) { s.sendAll(ctx, "online") }
 // (Docs/protocol/presence.md §Sending "Immediately to one peer" and
 // "Goodbye"). Call it after any team membership change.
 func (s *Sender) SyncVisibility(ctx context.Context) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	list, err := s.visibleSet(ctx)
 	if err != nil {
 		s.log().Warn("presence: visible set", "event", "presence_error", "error", err)
@@ -385,6 +574,8 @@ func (s *Sender) Run(ctx context.Context) {
 // effort, bounded to about 1 s in total (Docs/protocol/presence.md §Sending
 // "Goodbye", graceful shutdown).
 func (s *Sender) Goodbye(ctx context.Context) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
 	gctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	s.mu.Lock()
