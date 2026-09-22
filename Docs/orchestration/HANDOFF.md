@@ -128,6 +128,7 @@ Ticket definitions and acceptance tests: `Docs/review/06-pairing-session-options
 
 - **Python via `python` fails** (uv trampoline error). Use the Edit tool or Go.
 - **Paused workers.** On 2026-09-22 all five Phase 1 workers were paused by "could not process queued message after 3 delivery attempts" (runtime restart). Their partial work survived in the worktrees. Recovery: `team_interrupt_agent` each one with "resume task X from the files already in your worktree; do not start over". Never respawn or clear a worktree for this.
+- **Before retiring a worker, mark all its tasks completed** (`team_task_update`), or it declines shutdown. Workers also report a missing worktree as a blocker after you merge and remove it; that is expected.
 - **Lint before merge.** The installed golangci-lint cannot load the config, but `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` works. Put it in every implementation task's acceptance criteria and run it yourself before merging; gofmt complaints that only exist because of CRLF are noise (check with `tr -d '\r' < f | gofmt -l`). CI failed on lint three times in a row on 2026-09-21 because this was skipped.
   CRLF artefact, not a real issue.
 - The `internal/service` test "hang" on the board was not reproducible; it was closed as stale.
