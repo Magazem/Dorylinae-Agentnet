@@ -96,9 +96,9 @@ func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) e
 	default:
 		return badBody("code must be user, not_team_member, unknown_team or unverified_peer")
 	}
-	reason, err := decodeString(body, "reason", true)
+	reason, err := decodeNonEmpty(body, "reason")
 	if err != nil {
-		return badBody("%s", err.Error())
+		return err
 	}
 	if code == "user" {
 		if reason == "" {
@@ -150,9 +150,9 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 	if err != nil {
 		return err
 	}
-	note, err := decodeString(body, "note", true)
+	note, err := decodeNonEmpty(body, "note")
 	if err != nil {
-		return badBody("%s", err.Error())
+		return err
 	}
 	var result *Result
 	if raw, ok := body["result"]; ok {
@@ -304,6 +304,20 @@ func strictMembers(body map[string]any, allowed ...string) error {
 		}
 	}
 	return nil
+}
+
+// decodeNonEmpty decodes an optional string member that, when present, must
+// not be empty (Docs/protocol/request.md: optional members are absent, never
+// empty). A failure is bad_body.
+func decodeNonEmpty(body map[string]any, field string) (string, error) {
+	s, err := decodeString(body, field, true)
+	if err != nil {
+		return "", badBody("%s", err.Error())
+	}
+	if _, ok := body[field]; ok && s == "" {
+		return "", badBody("%s must be absent, not empty", field)
+	}
+	return s, nil
 }
 
 // decodeAtRequestSeq decodes the three members common to every lifecycle

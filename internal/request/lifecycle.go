@@ -172,7 +172,8 @@ func (s *Store) transition(ctx context.Context, id, from string, allowed map[str
 	if _, err := tx.ExecContext(ctx, `UPDATE requests SET `+setSQL+` WHERE direction = 'in' AND peer = ? AND id = ?`, args...); err != nil {
 		return View{}, storedRow{}, 0, fmt.Errorf("request: update in row: %w", err)
 	}
-	if _, err := s.Outbox.SubmitTx(ctx, tx, row.peer, tb.kind, tb.body); err != nil {
+	sub, err := s.Outbox.SubmitTx(ctx, tx, row.peer, tb.kind, tb.body)
+	if err != nil {
 		return View{}, storedRow{}, 0, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -188,6 +189,7 @@ func (s *Store) transition(ctx context.Context, id, from string, allowed map[str
 	if err != nil {
 		return View{}, storedRow{}, 0, err
 	}
+	v.ReplyMailID = sub.ID
 	return v, row, seq, nil
 }
 
@@ -248,22 +250,16 @@ func (s *Store) Defer(ctx context.Context, id, from string, until time.Time) (Vi
 }
 
 // Complete runs request_complete. result, if given, is validated by
-// ValidateComplete and CheckCompleteSize before the transaction
-// (Docs/protocol/request.md §Result payload (D14)).
+// ValidateComplete before the transaction, and the whole body by
+// CheckCompleteSize inside it (Docs/protocol/request.md §Result payload (D14)).
 func (s *Store) Complete(ctx context.Context, id, from, note string, result *Result) (View, error) {
 	if err := ValidateComplete(note, result); err != nil {
-		return View{}, err
-	}
-	canon, err := completeBodyCanonical(id, 1, s.now(), note, result)
-	if err != nil {
-		return View{}, err
-	}
-	if err := CheckCompleteSize(canon); err != nil {
 		return View{}, err
 	}
 	var resultBytes, outputBytes int
 	var resultCanon []byte
 	if result != nil {
+		var err error
 		resultCanon, err = CanonicalResult(result)
 		if err != nil {
 			return View{}, err
@@ -272,6 +268,15 @@ func (s *Store) Complete(ctx context.Context, id, from, note string, result *Res
 		outputBytes = OutputBytes(result.Output)
 	}
 	v, old, seq, err := s.transition(ctx, id, from, allowedComplete, func(_ storedRow, now time.Time, seq int) (transitionBuild, error) {
+		// The total cap is checked on the body actually sent: its seq (which
+		// grows with every defer) and at are only known here.
+		canon, err := completeBodyCanonical(id, seq, now, note, result)
+		if err != nil {
+			return transitionBuild{}, err
+		}
+		if err := CheckCompleteSize(canon); err != nil {
+			return transitionBuild{}, err
+		}
 		body := map[string]any{"at": wireTime(now), "request": id, "seq": seq}
 		if note != "" {
 			body["note"] = note
@@ -307,10 +312,7 @@ func (s *Store) Complete(ctx context.Context, id, from, note string, result *Res
 
 // completeBodyCanonical returns canonical(complete body): the body of
 // request.complete, for the total-size cap (Docs/protocol/request.md
-// §Result payload (D14)). seq is fixed at 1 here: the cap does not depend on
-// seq's digit count in practice (it is bounded well under the width that
-// would matter), and this lets callers check the size before the
-// transaction assigns the real seq.
+// §Result payload (D14)), built with the seq and at that will be sent.
 func completeBodyCanonical(id string, seq int, at time.Time, note string, result *Result) ([]byte, error) {
 	body := map[string]any{"at": wireTime(at), "request": id, "seq": jsonInt(seq)}
 	if note != "" {

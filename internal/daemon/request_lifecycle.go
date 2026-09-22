@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -21,24 +22,28 @@ const (
 	CodeResultTooLarge   = "result_too_large"
 )
 
-// resultParam is request_complete's "result" param.
-type resultParam struct {
-	Status    string          `json:"status"`
-	Summary   string          `json:"summary,omitempty"`
-	ExitCode  *int64          `json:"exit_code,omitempty"`
-	Output    string          `json:"output,omitempty"`
-	Artifacts []ArtifactParam `json:"artifacts,omitempty"`
-}
-
-func (p *resultParam) toResult() *request.Result {
-	if p == nil {
-		return nil
+// decodeResultParam strictly decodes request_complete's "result" param with
+// the same rules as the wire (request.DecodeResult): unknown members, null or
+// empty optional members, a fractional exit_code and an empty artifacts
+// array are rejected rather than silently dropped
+// (Docs/protocol/request.md §Result payload (D14)). raw is nil when absent.
+func decodeResultParam(raw json.RawMessage) (*request.Result, error) {
+	if raw == nil {
+		return nil, nil
 	}
-	r := &request.Result{Status: p.Status, Summary: p.Summary, ExitCode: p.ExitCode, Output: p.Output}
-	for _, a := range p.Artifacts {
-		r.Artifacts = append(r.Artifacts, request.Artifact{URL: a.URL, Branch: a.Branch, Commit: a.Commit, Path: a.Path})
+	v, err := agentcard.ParseStrict(raw)
+	if err != nil {
+		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "result: " + err.Error()}
 	}
-	return r
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "result must be an object"}
+	}
+	r, err := request.DecodeResult(obj)
+	if err != nil {
+		return nil, lifecycleError(err)
+	}
+	return r, nil
 }
 
 // RequestPeerRef is the "peer ref" common object of Docs/protocol/ipc.md
@@ -238,7 +243,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.MailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_decline", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -252,7 +257,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.MailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_defer", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -270,22 +275,26 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.MailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_complete", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p struct {
 			ID, From, Note string
-			Result         *resultParam
+			Result         json.RawMessage
 		}
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		v, err := rs.Complete(ctx, p.ID, p.From, p.Note, p.Result.toResult())
+		result, err := decodeResultParam(p.Result)
+		if err != nil {
+			return nil, err
+		}
+		v, err := rs.Complete(ctx, p.ID, p.From, p.Note, result)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.MailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_cancel", func(ctx context.Context, params json.RawMessage) (any, error) {

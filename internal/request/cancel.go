@@ -226,9 +226,9 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if !ValidID(reqID) {
 		return badBody("request must be a valid request id")
 	}
-	reason, err := decodeString(body, "reason", true)
+	reason, err := decodeNonEmpty(body, "reason")
 	if err != nil {
-		return badBody("%s", err.Error())
+		return err
 	}
 	if reason != "" {
 		if err := checkCodePoints("reason", reason, 1, 500, "\n"); err != nil {

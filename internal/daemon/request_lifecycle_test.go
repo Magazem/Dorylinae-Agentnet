@@ -38,9 +38,35 @@ func TestLifecycleIPCRoundTrip(t *testing.T) {
 		t.Fatalf("request_accept = %+v", acc)
 	}
 
+	// mail_id is the lifecycle mail just sent, not the request's mail.
+	if acc.MailID == "" || b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'request.accept' AND id = '`+acc.MailID+`'`) != 1 {
+		t.Fatalf("request_accept mail_id = %q, want the request.accept mail", acc.MailID)
+	}
+
 	harnessWait(t, "A's mirror to see accepted", func() bool {
 		return a.count(`SELECT COUNT(*) FROM requests WHERE direction = 'out' AND id = '`+sub.ID+`' AND state = 'accepted'`) == 1
 	})
+
+	// A result the wire would reject is bad_request at IPC, not silently
+	// dropped: nothing is sent and the row stays accepted (review 20).
+	for _, bad := range []map[string]any{
+		{"status": "pass", "artifacts": []any{}},
+		{"status": "pass", "summary": ""},
+		{"status": "pass", "output": nil},
+		{"status": "pass", "bogus": "x"},
+		{"status": "pass", "exit_code": 1.5},
+	} {
+		err := ipcCallErr(b, "request_complete", map[string]any{"id": sub.ID, "result": bad}, &daemon.RequestLifecycleResult{})
+		if errCode(err) != "bad_request" {
+			t.Errorf("request_complete result %v: err = %v, want bad_request", bad, err)
+		}
+	}
+	if err := ipcCallErr(b, "request_complete", map[string]any{"id": sub.ID, "result": nil}, &daemon.RequestLifecycleResult{}); errCode(err) != "bad_request" {
+		t.Errorf("request_complete result null: err = %v, want bad_request", err)
+	}
+	if n := b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'request.complete'`); n != 0 {
+		t.Fatalf("request.complete mails after rejected results = %d, want 0", n)
+	}
 
 	exitCode := int64(1)
 	var comp daemon.RequestLifecycleResult
@@ -54,6 +80,9 @@ func TestLifecycleIPCRoundTrip(t *testing.T) {
 	}, &comp)
 	if comp.Request.State != "completed" || comp.Request.Result == nil || comp.Request.Result.Status != "fail" {
 		t.Fatalf("request_complete = %+v", comp)
+	}
+	if b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'request.complete' AND id = '`+comp.MailID+`'`) != 1 {
+		t.Fatalf("request_complete mail_id = %q, want the request.complete mail", comp.MailID)
 	}
 
 	harnessWait(t, "A's mirror to see completed", func() bool {

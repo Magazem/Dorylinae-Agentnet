@@ -126,6 +126,10 @@ type View struct {
 	ResultBytes int
 	OutputBytes int
 
+	// ReplyMailID is set only by accept/decline/defer/complete: the id of
+	// the lifecycle mail just sent (IPC result "mail_id").
+	ReplyMailID string
+
 	MailID   string
 	Delivery string // out only: the outbox state of MailID, or "unknown"
 }

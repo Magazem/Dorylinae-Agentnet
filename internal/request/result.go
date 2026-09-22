@@ -99,7 +99,7 @@ var resultAllowedMembers = map[string]bool{
 
 // DecodeResult strictly decodes a generically parsed result object (as
 // produced by agentcard.ParseStrict) into a Result. It rejects unknown
-// members and members present as null. It does not validate the field
+// members and members present as null or empty. It does not validate the field
 // limits; call ValidateComplete.
 func DecodeResult(body map[string]any) (*Result, error) {
 	for k := range body {
@@ -121,6 +121,9 @@ func DecodeResult(body map[string]any) (*Result, error) {
 		if !ok {
 			return nil, fieldErr("result.summary", "must be a string")
 		}
+		if s == "" {
+			return nil, fieldErr("result.summary", "must be absent, not empty")
+		}
 		r.Summary = s
 	}
 	if raw, ok := body["exit_code"]; ok {
@@ -138,6 +141,9 @@ func DecodeResult(body map[string]any) (*Result, error) {
 		s, ok := raw.(string)
 		if !ok {
 			return nil, fieldErr("result.output", "must be a string")
+		}
+		if s == "" {
+			return nil, fieldErr("result.output", "must be absent, not empty")
 		}
 		r.Output = s
 	}
