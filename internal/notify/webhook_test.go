@@ -317,3 +317,31 @@ func TestQueueBounded(t *testing.T) {
 		t.Fatalf("overflowed row error = %q, want \"overflow\"", overflowErr)
 	}
 }
+
+// TestWebhookNetworkErrorOmitsURL checks that a transport error is stored
+// without the URL, which for Slack and Discord is a bearer secret (review
+// 12, L12), and is retried.
+func TestWebhookNetworkErrorOmitsURL(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL + "/services/SECRETTOKEN"
+	srv.Close() // connection refused from now on
+
+	wh, clock := openWebhook(t)
+	mustSetWebhook(t, wh, url, false)
+	if err := wh.Enqueue(ctx, Event{Kind: EventTest, CreatedAt: clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	wh.tick(ctx)
+
+	var state, errStr string
+	if err := wh.Queue.db.QueryRowContext(ctx, `SELECT state, error FROM webhook_queue`).Scan(&state, &errStr); err != nil {
+		t.Fatal(err)
+	}
+	if state != QueueStatePending {
+		t.Fatalf("state = %q, want pending (network errors retry)", state)
+	}
+	if errStr == "" || strings.Contains(errStr, "SECRETTOKEN") || strings.Contains(errStr, "/services") {
+		t.Fatalf("error = %q, want a non-empty error without the URL", errStr)
+	}
+}

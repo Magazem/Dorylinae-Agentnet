@@ -90,19 +90,22 @@ need no cgo and no new dependency.
   `::1`, not a name that resolves there.
 - **Dial-time address check** (SSRF). Any local process that can reach the IPC socket,
   including an agent steered by a hostile request, can set the URL, so the check is made on
-  the address actually dialled (`net.Dialer.Control`), not on the name: an `https` URL may not
+  the address actually dialled, not on the name (the daemon resolves the name itself, checks
+  each address and connects to exactly the address that passed): an `https` URL may not
   connect to link-local addresses (`169.254.0.0/16`, `fe80::/10`, including cloud metadata
-  at `169.254.169.254`), unspecified addresses, or multicast; an `http` URL may connect only
-  to loopback. A refused dial is a permanent failure (`error = "blocked_address"`). With a
-  proxy from the environment, the check applies to the proxy address, and the proxy is
-  trusted by the user's configuration.
+  at `169.254.169.254`), unspecified addresses, or multicast, nor (hardening) to private
+  ranges (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`); loopback is allowed. An `http` URL
+  may connect only to loopback. A refused dial is a permanent failure
+  (`error = "blocked_address"`). With a proxy from the environment, the check applies to the
+  proxy address with the base list only (a private or loopback proxy is allowed), and the
+  proxy is trusted by the user's configuration.
 - On first set, and on `--rotate-secret`, the daemon generates a 32-byte secret from
   `crypto/rand` and prints it **once** as `whsec_` + base64url (no padding). Only the owner of
   the receiving endpoint needs it.
 - `--format generic|slack|discord` (default `generic`) and `--webhook-title on|off` (default
   **off**, OD-P1-9).
 - `--webhook off` removes the URL and deletes the secret.
-- Audit `notify.config {desktop?, webhook: "set"|"removed"|"rotated"?, format?, title?}`. The URL
+- Audit `notify.config {desktop?, events?, webhook: "set"|"removed"|"rotated"?, format?, title?}`. The URL
   and the secret are never audited.
 
 ### Secret
@@ -151,7 +154,9 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
   link. Slack incoming webhooks read `text` and ignore other members. `discord` format: the
   generic object with `content` = `text` added, plus `"allowed_mentions": {"parse": []}`
   so that `@everyone`, `@here` and role or user mentions in peer text never ping anyone.
-  Discord requires `content`. Signing and headers are identical for all formats.
+  In `content`, each of `` \ * _ ~ ` | > # - [ ] ( ) < @ `` is backslash-escaped, so that
+  a masked link `[click](https://evil)`, a heading or a spoiler in peer text renders as
+  typed. Discord requires `content`. Signing and headers are identical for all formats.
 
 ### Signature
 

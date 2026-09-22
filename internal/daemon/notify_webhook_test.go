@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +13,8 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // TestNotifyWebhookIPC exercises the notify_get/notify_set/notify_test IPC
@@ -23,12 +24,7 @@ import (
 // §Notifications, Docs/cli/notify.md, ticket 1.8b).
 func TestNotifyWebhookIPC(t *testing.T) {
 	t.Setenv(identity.KeystoreEnv, "file")
-	dir, err := os.MkdirTemp("", "dn-notify")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	p, err := paths.In(dir)
+	p, err := paths.In(testutil.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,18 +113,33 @@ func TestNotifyWebhookIPC(t *testing.T) {
 	if set3.Webhook != nil {
 		t.Fatalf("webhook = %+v, want nil after removal", set3.Webhook)
 	}
+
+	// Each change is audited notify.config, never with the URL or the
+	// secret (Docs/protocol/notify.md §Configuration).
+	st, err := store.Open(ctx, p.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	var details string
+	if err := st.DB().QueryRowContext(ctx, `SELECT group_concat(detail, '|') FROM audit_events WHERE action = 'notify.config' AND actor = 'cli'`).Scan(&details); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"webhook":"set"`, `"format":"generic"`, `"webhook":"removed"`} {
+		if !strings.Contains(details, want) {
+			t.Errorf("notify.config audit %s lacks %s", details, want)
+		}
+	}
+	if strings.Contains(details, srv.URL) || strings.Contains(details, "127.0.0.1") || strings.Contains(details, "whsec_") || strings.Contains(details, strings.TrimPrefix(set.Secret, "whsec_")) {
+		t.Errorf("notify.config audit %s holds the URL or the secret", details)
+	}
 }
 
 // TestNotifySetBadWebhookURL checks the URL validation surfaces as
 // "bad_webhook" (Docs/cli/notify.md §Error codes).
 func TestNotifySetBadWebhookURL(t *testing.T) {
 	t.Setenv(identity.KeystoreEnv, "file")
-	dir, err := os.MkdirTemp("", "dn-notify-bad")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	p, err := paths.In(dir)
+	p, err := paths.In(testutil.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

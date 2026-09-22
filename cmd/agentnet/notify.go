@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -159,11 +160,11 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 			p.Desktop = &on
 		}
 		if *webhook != "" {
-			url := *webhook
-			if url == "off" {
-				url = ""
+			hook := *webhook
+			if hook == "off" {
+				hook = ""
 			}
-			p.WebhookURL = &url
+			p.WebhookURL = &hook
 		}
 		if *format != "" {
 			p.Format = format
@@ -202,10 +203,26 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 			title = "on"
 		}
 		_, _ = fmt.Fprintf(stdout, "Webhook:  %s (%s, title %s), %d pending, %d failed in 7 days\n",
-			res.Webhook.URL, res.Webhook.Format, title, res.Webhook.Pending, res.Webhook.Failed7d)
+			elideWebhookURL(res.Webhook.URL), res.Webhook.Format, title, res.Webhook.Pending, res.Webhook.Failed7d)
 	}
 	if res.Secret != "" {
 		_, _ = fmt.Fprintf(stdout, "Secret:   %s\n", res.Secret)
 	}
 	return exitOK
+}
+
+// elideWebhookURL shows only the scheme and host of the webhook URL in the
+// human output, "https://hooks.example.com/…" (Docs/cli/notify.md): the path
+// of a Slack or Discord webhook URL is a bearer secret (review 12, L12).
+// --json still carries the full URL.
+func elideWebhookURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "…"
+	}
+	out := u.Scheme + "://" + u.Host
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		out += "/…"
+	}
+	return out
 }

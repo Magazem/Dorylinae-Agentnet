@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -59,6 +60,12 @@ func TestCheckDialAddressMatrix(t *testing.T) {
 		{"https private blocked", "https", "10.1.2.3", true},
 		{"https private 172 blocked", "https", "172.16.0.5", true},
 		{"https private 192 blocked", "https", "192.168.1.1", true},
+		{"https unspecified v6 blocked", "https", "::", true},
+		{"https v4-mapped loopback ok", "https", "::ffff:127.0.0.1", false},
+		{"http v4-mapped loopback ok", "http", "::ffff:127.0.0.1", false},
+		{"https v4-mapped metadata blocked", "https", "::ffff:169.254.169.254", true},
+		{"https v4-mapped private blocked", "https", "::ffff:10.0.0.1", true},
+		{"https unique-local v6 blocked", "https", "fd00::1", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -130,5 +137,64 @@ func TestNoRedirectsFollowed(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("status = %d, want 302 (not followed)", resp.StatusCode)
+	}
+}
+
+// errFakeDial stands in for a real connection attempt in the proxy tests.
+var errFakeDial = errors.New("fake dial")
+
+// proxyTestClient builds a guarded client whose environment proxy is
+// proxyURL (empty: none), whose resolver maps every name to ip, and whose
+// dials are recorded instead of made.
+func proxyTestClient(t *testing.T, proxyURL, ip string, dialed *[]string) *http.Client {
+	t.Helper()
+	proxyFrom := func(*http.Request) (*url.URL, error) {
+		if proxyURL == "" {
+			return nil, nil
+		}
+		return url.Parse(proxyURL)
+	}
+	resolve := func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP(ip)}}, nil
+	}
+	dial := func(_ context.Context, _, addr string) (net.Conn, error) {
+		*dialed = append(*dialed, addr)
+		return nil, errFakeDial
+	}
+	return newHTTPClient("https", resolve, proxyFrom, dial)
+}
+
+// TestDialProxyPolicy checks that a proxy from the environment is held to
+// the base list only (a private proxy is allowed, it is trusted by the
+// user's configuration), while a direct dial keeps the private-range
+// hardening and a link-local proxy is still refused
+// (Docs/protocol/notify.md §Configuration).
+func TestDialProxyPolicy(t *testing.T) {
+	cases := []struct {
+		name, proxy, ip string
+		wantDial        string // "" means blocked before dialling
+	}{
+		{"private proxy allowed", "http://Proxy.Corp.test:3128", "10.0.0.8", "10.0.0.8:3128"},
+		{"private proxy default port", "http://proxy.corp.test", "10.0.0.8", "10.0.0.8:80"},
+		{"link-local proxy blocked", "http://proxy.corp.test:3128", "169.254.169.254", ""},
+		{"private target without proxy blocked", "", "10.0.0.8", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var dialed []string
+			resp, err := proxyTestClient(t, c.proxy, c.ip, &dialed).Get("https://hooks.example.test/x")
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if c.wantDial == "" {
+				if !errors.Is(err, ErrBlockedAddress) || len(dialed) != 0 {
+					t.Fatalf("err = %v, dialed %v; want blocked_address and no dial", err, dialed)
+				}
+				return
+			}
+			if !errors.Is(err, errFakeDial) || len(dialed) != 1 || dialed[0] != c.wantDial {
+				t.Fatalf("err = %v, dialed %v; want one dial to %s", err, dialed, c.wantDial)
+			}
+		})
 	}
 }

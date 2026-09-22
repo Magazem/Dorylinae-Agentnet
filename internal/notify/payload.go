@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -115,7 +116,7 @@ func applyFormat(format string, body []byte, text string) ([]byte, error) {
 		return addFields(body, map[string]any{"text": slackEscape(text)})
 	case FormatDiscord:
 		return addFields(body, map[string]any{
-			"content":          text,
+			"content":          discordEscape(text),
 			"allowed_mentions": map[string]any{"parse": []string{}},
 		})
 	default:
@@ -153,6 +154,27 @@ func slackEscape(s string) string {
 		default:
 			out = append(out, s[i])
 		}
+	}
+	return string(out)
+}
+
+// discordEscapeChars are the characters Discord markdown gives a meaning:
+// emphasis, code, spoilers, quotes, headings, lists, masked links
+// "[label](url)" and "<...>" mentions, channels and timestamps.
+const discordEscapeChars = "\\*_~`|>#-[]()<@"
+
+// discordEscape backslash-escapes Discord markdown in s, so that a
+// peer-supplied "[click](https://evil)" renders as inert text instead of a
+// disguised link, and "# big" or "||spoiler||" as typed. Mentions are
+// already inert through allowed_mentions (Docs/protocol/notify.md §Payload,
+// review 12).
+func discordEscape(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(discordEscapeChars, s[i]) >= 0 {
+			out = append(out, '\\')
+		}
+		out = append(out, s[i])
 	}
 	return string(out)
 }

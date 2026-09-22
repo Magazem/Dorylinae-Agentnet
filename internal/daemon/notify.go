@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -100,7 +101,7 @@ func notifyAdapter(t *notify.Trigger, ps *peers.Store, ts teamNamer) request.Not
 
 // registerNotify wires "notify_get", "notify_set" and "notify_test"
 // (Docs/protocol/ipc.md §Notifications, Docs/cli/notify.md).
-func registerNotify(srv *ipc.Server, settings *notify.Settings, desktop notify.Desktop, wh *notify.Webhook) {
+func registerNotify(srv *ipc.Server, settings *notify.Settings, desktop notify.Desktop, wh *notify.Webhook, log notify.AuditSink) {
 	srv.Handle("notify_get", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		return notifyGetResult(ctx, settings, wh)
 	})
@@ -129,6 +130,9 @@ func registerNotify(srv *ipc.Server, settings *notify.Settings, desktop notify.D
 		secret, err := applyWebhookSet(ctx, settings, wh, p, now)
 		if err != nil {
 			return nil, err
+		}
+		if detail := notifyConfigDetail(p); detail != nil && log != nil {
+			_ = log.Append(ctx, audit.ActorCLI, "notify.config", detail)
 		}
 		res, err := notifyGetResult(ctx, settings, wh)
 		if err != nil {
@@ -226,6 +230,40 @@ func applyWebhookSet(ctx context.Context, settings *notify.Settings, wh *notify.
 		return "", err
 	}
 	return secret, nil
+}
+
+// notifyConfigDetail is the notify.config audit detail for a successful
+// notify_set, or nil when it changed nothing: {desktop?, events?, webhook:
+// "set"|"removed"|"rotated"?, format?, title?}. The URL and the secret are
+// never in it (Docs/protocol/notify.md §Configuration, §Audit).
+func notifyConfigDetail(p NotifySetParams) map[string]any {
+	d := map[string]any{}
+	if p.Desktop != nil {
+		d["desktop"] = *p.Desktop
+	}
+	if len(p.Events) > 0 {
+		d["events"] = p.Events
+	}
+	switch {
+	case p.WebhookURL != nil && *p.WebhookURL == "":
+		d["webhook"] = "removed"
+	case p.WebhookURL != nil:
+		d["webhook"] = "set"
+	case p.RotateSecret:
+		d["webhook"] = "rotated"
+	}
+	if d["webhook"] != "removed" {
+		if p.Format != nil {
+			d["format"] = *p.Format
+		}
+		if p.Title != nil {
+			d["title"] = *p.Title
+		}
+	}
+	if len(d) == 0 {
+		return nil
+	}
+	return d
 }
 
 func notifyGetResult(ctx context.Context, settings *notify.Settings, wh *notify.Webhook) (NotifyGetResult, error) {

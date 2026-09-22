@@ -270,7 +270,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	presenceReceiver.OnResync = presenceSender.MaybeResync
 
 	notifySettings := notify.NewSettings(st.DB())
-	webhookKS := webhookKeystore(p.Dir)
+	webhookKS := webhookKeystore(p.Dir, mailboxMode)
 	notifyWebhook := &notify.Webhook{
 		Settings: notifySettings,
 		Queue:    notify.NewQueue(st.DB()),
@@ -325,7 +325,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	registerLifecycle(srv, reqStore, peerStore, teamStore)
-	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook)
+	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -397,11 +397,12 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 // webhookKeystore builds the key storage for the webhook secret
 // (Docs/protocol/notify.md §Secret): keychain service "dorylinae", account
 // "webhook" (one webhook per daemon, unlike the per-config-dir identity
-// account), or file "webhook.key" in the config dir, owner-only. Honours
-// $DORYLINAE_KEYSTORE like the identity key does.
-func webhookKeystore(dir string) *keystore.Store {
+// account), or file "webhook.key" in the config dir, owner-only. mode is the
+// mailbox key's: $DORYLINAE_KEYSTORE, or "file" when an injected identity
+// keystore means tests, which must not touch the real keychain.
+func webhookKeystore(dir, mode string) *keystore.Store {
 	file := keystore.NewFile(filepath.Join(dir, "webhook.key"))
-	if os.Getenv(identity.KeystoreEnv) == "file" {
+	if mode == "file" {
 		return keystore.New(file)
 	}
 	return keystore.New(keystore.NewKeychain("webhook"), file)

@@ -207,7 +207,7 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 			w.finish(ctx, row, 0, ErrBlockedAddress.Error(), now, false)
 			return
 		}
-		w.finish(ctx, row, 0, err.Error(), now, true)
+		w.finish(ctx, row, 0, transportError(err), now, true)
 		return
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
@@ -267,6 +267,17 @@ func (w *Webhook) reportFail(ctx context.Context, event, id string, status int) 
 		detail["status"] = status
 	}
 	_ = w.Audit.Append(ctx, "daemon", "notify.fail", detail)
+}
+
+// transportError renders a client.Do error for the queue's error column
+// without the URL: *url.Error quotes the full URL, and a Slack or Discord
+// webhook URL is a bearer secret (review 12, L12).
+func transportError(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return err.Error()
 }
 
 func retryAfter(resp *http.Response) []time.Duration {

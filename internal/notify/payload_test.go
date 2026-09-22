@@ -116,7 +116,7 @@ func TestApplyFormatDiscordAllowedMentions(t *testing.T) {
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["content"] != "High review request from @everyone" {
+	if m["content"] != `High review request from \@everyone` {
 		t.Errorf("content = %v", m["content"])
 	}
 	am, ok := m["allowed_mentions"].(map[string]any)
@@ -126,5 +126,27 @@ func TestApplyFormatDiscordAllowedMentions(t *testing.T) {
 	parse, ok := am["parse"].([]any)
 	if !ok || len(parse) != 0 {
 		t.Errorf("allowed_mentions.parse = %v, want an empty list", am["parse"])
+	}
+}
+
+// TestApplyFormatDiscordEscapesMarkdown checks that a peer-supplied masked
+// link, heading or spoiler in the Discord content renders as inert text
+// (Docs/protocol/notify.md §Payload).
+func TestApplyFormatDiscordEscapesMarkdown(t *testing.T) {
+	text := "# bob [click](https://evil.test) ||x|| <@123> *b*"
+	out, err := applyFormat(FormatDiscord, []byte(`{"v":1}`), text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	want := `\# bob \[click\]\(https://evil.test\) \|\|x\|\| \<\@123\> \*b\*`
+	if m["content"] != want {
+		t.Errorf("content = %v, want %v", m["content"], want)
+	}
+	if got := discordEscape(`a\b`); got != `a\\b` {
+		t.Errorf("discordEscape(backslash) = %q", got)
 	}
 }
