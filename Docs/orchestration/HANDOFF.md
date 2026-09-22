@@ -116,7 +116,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
    | ~~1.4c request kind + submit + CLI~~ | merged (review 19: 2 High + 4 Medium fixed; goodbye now sent before relay close on graceful stop; 9 Lows open) | — | — |
-   | 1.6a lifecycle kinds + state machine + cancel (D11/D12) + result payload (D14, migration 12) + sender mirror + request show/list/resend | T-1.6a | `t1-6a` | **Opus** |
+   | 1.6a lifecycle kinds + state machine + cancel (D11/D12) + result payload (D14, migration 12) + sender mirror + request show/list/resend | committed `0cc090c` on `p1/t1-6a`; in Opus review (R-1.6a → `Docs/review/20-1.6a-review.md`). Notes: notify hooks deferred to 1.8a; request_list/show carry no presence. | `t1-6a` | **Opus** |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
