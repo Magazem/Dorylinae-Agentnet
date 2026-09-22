@@ -107,7 +107,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.2d internal/idle~~ | merged `4324c4b` | — | — |
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
-   | 1.1d team invite + join via pairing v2 | committed `797a4e9` on `p1/t1-1d` (rebased on main); in Opus review (R-1.1d → `Docs/review/18-1.1d-review.md`), which also adds the non-owned-team `peers remove` test | `t1-1d` | **Opus** |
+   | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
+   | 1.4c request kind + request_submit + CLI `agentnet request` | T-1.4c | `t1-4c` | **Opus** |
    | 1.2c presence engine | T-1.2c-b, continuing the first worker's partial files (state.go, sender.go, hooks in team/mail/ipc/presence; daemon.go partial, did not compile at handover) | `t1-2c` | no |
    | ~~1.2b presence seal/open~~ | merged `9bbce13` + review fixes `4111b25` (review 17). Open Low for **1.3**: goodbye is 1 byte longer and seq/epoch digit counts vary, so ~1/256 heartbeats cross a 256-byte boundary; fix by padding to a fixed size (spec intent: size must not reveal flags). | — | — |
    | ~~1.4a internal/request~~ | merged `28852f1` + `de5ee1c` (placeholders dropped; rewind test updated) | — | — |
