@@ -14,7 +14,7 @@ State at park:
 - WIP review (reviewer parked cleanly): 2 High, 2 Medium, 1 Low fixed so far; 5 Low open; details in `Docs/review/19-1.4c-review.md` on the branch. `TestRequestOfflineQueued` root cause was 1.2c wiring (relay link closed before goodbye on graceful stop); fixed in daemon.go. The tree was NOT rebuilt/re-run after the last edit: first step on resume is build + test x2 + lint. Branch `p1/t1-4c` is also pushed to origin (WIP commits; squash or keep, never merge WIP without the review finishing).
 - No other workers and no other worktrees. `git worktree list` should show only main and t1-4c.
 
-Next after 1.4c: **1.6a** (lifecycle kinds, state machine incl. request.cancel/cancelled per D11/D12, sender mirror, request show/list/resend; Opus review) → 1.6b inbox → 1.7 urgency (derive vector from formula) → 1.8a desktop notify (own code, no beeep) → 1.8b webhook (migration 12) → 1.9 → 1.H headless harness → 1.P push (tag only with owner OK).
+Next after 1.4c: **1.6a** (lifecycle kinds, state machine incl. request.cancel/cancelled per D11/D12, sender mirror, request show/list/resend; Opus review) → 1.6b inbox → 1.7 urgency (derive vector from formula) → 1.8a desktop notify (own code, no beeep) → 1.8b webhook (migration 13) → 1.9 → 1.H headless harness → 1.P push (tag only with owner OK).
 
 **Waiting on the owner (ask first thing on resume):**
 1. D13 and D14 approved 2026-09-22. Before dispatching 1.6a: have an Opus worker add the D14 result payload to request.md (size cap, fields, audit without content) and the 1.6a ticket.
@@ -126,12 +126,12 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
    | 1.4c request kind + request_submit + CLI | WIP branch `p1/t1-4c` (9d9259f) verified to build + pass tests on resume; review being finished by R-1.4c-2 (Opus). | `t1-4c` | **Opus** |
-   | D14 spec: result payload on request.complete | P1-SpecD14 (Opus), docs only; may renumber webhook_queue to 13 if a migration is needed | `spec-d14` | — |
+   | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
    | ~~1.2b presence seal/open~~ | merged `9bbce13` + review fixes `4111b25` (review 17). Open Low for **1.3**: goodbye is 1 byte longer and seq/epoch digit counts vary, so ~1/256 heartbeats cross a 256-byte boundary; fix by padding to a fixed size (spec intent: size must not reveal flags). | — | — |
    | ~~1.4a internal/request~~ | merged `28852f1` + `de5ee1c` (placeholders dropped; rewind test updated) | — | — |
-   Migrations on main: 1–11. Next free: 12 (webhook_queue, 1.8b). Every new migration must also add its tables to the DROP lists in BOTH rewind tests in internal/store/store_test.go.
+   Migrations on main: 1–11. Next: 12 = requests_result (1.6a, D14), 13 = webhook_queue (1.8b). Every new migration must also add its tables to the DROP lists in BOTH rewind tests in internal/store/store_test.go.
 4. Backlog: 05-review M1 (direct path at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b); Lows in reviews 07, 08, 08b, 09, 10; a dedicated `stale` ack status instead of `unsupported` (1.0f compromise); `status` cannot distinguish delivered vs failed counts.
 
 To see live status: `team_members`, `team_task_list`, `git worktree list`.
