@@ -389,7 +389,8 @@ type Removed struct {
 // GCIntroduced deletes, inside tx, every introduced peer (introduced_by not
 // NULL) that is not a member of any team in state active, failing its waiting
 // outbox rows as Remove does. A directly paired peer is never removed. Before
-// the teams tables exist (migration 9) no team is active. The caller writes the
+// the teams tables exist (migration 9) no team is active; if only one of them
+// exists it fails and removes nothing. The caller writes the
 // audit entries after commit.
 func (s *Store) GCIntroduced(ctx context.Context, tx *sql.Tx) ([]Removed, error) {
 	var tables int
@@ -397,10 +398,15 @@ func (s *Store) GCIntroduced(ctx context.Context, tx *sql.Tx) ([]Removed, error)
 		return nil, fmt.Errorf("peers: gc introduced: %w", err)
 	}
 	q := `SELECT public_key, name FROM peers WHERE introduced_by IS NOT NULL ORDER BY public_key`
-	if tables == 2 {
+	switch tables {
+	case 0:
+	case 2:
 		q = `SELECT public_key, name FROM peers WHERE introduced_by IS NOT NULL AND NOT EXISTS (
 	SELECT 1 FROM team_members m JOIN teams t ON t.id = m.team_id
 	WHERE m.key = peers.public_key AND t.state = 'active') ORDER BY public_key`
+	default:
+		// Only one of the two tables: never read that as "no active team" and delete every introduced peer.
+		return nil, errors.New("peers: gc introduced: teams schema incomplete")
 	}
 	rows, err := tx.QueryContext(ctx, q)
 	if err != nil {

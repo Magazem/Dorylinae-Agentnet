@@ -238,3 +238,46 @@ func TestGCIntroducedWithoutTeamTables(t *testing.T) {
 		t.Fatalf("with no team tables an introduced peer must be collected (removed %d)", n)
 	}
 }
+
+// With only one of the two team tables, GC must fail rather than read it as
+// "no active team" and delete every introduced peer.
+func TestGCIntroducedPartialTeamSchemaFails(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, time.Millisecond)
+	m, key := memberOf(t, "m")
+	introduce(t, e, m, "owner-key")
+	if _, err := e.db.DB().ExecContext(ctx, `CREATE TABLE teams (id TEXT PRIMARY KEY, state TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := e.db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if out, err := e.store.GCIntroduced(ctx, tx); err == nil {
+		t.Fatalf("GC with a partial teams schema succeeded, removed %d", len(out))
+	}
+	_ = tx.Rollback()
+	if peerByKey(t, e, key) == nil {
+		t.Fatal("introduced peer removed")
+	}
+}
+
+// A directly paired relay (v1) peer that a roster lists keeps trust relay and
+// its card, and GC never removes it.
+func TestIntroduceKeepsDirectRelayPeer(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t, time.Millisecond)
+	m, key := memberOf(t, "v1")
+	if err := e.store.Add(ctx, m.Card, m.Raw, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m.Card.Card.Name = "roster name"
+	introduce(t, e, m, "owner-key")
+	if p := peerByKey(t, e, key); p.Trust != peers.TrustRelay || p.Name != "v1" || p.IntroducedBy != nil {
+		t.Fatalf("directly paired relay peer changed: %+v", p)
+	}
+	if n := len(gc(t, e)); n != 0 || peerByKey(t, e, key) == nil {
+		t.Fatalf("GC removed a directly paired peer (%d)", n)
+	}
+}

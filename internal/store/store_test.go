@@ -90,15 +90,20 @@ func TestMigration8PreservesPeers(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatalf("integrity_check = %q (%v)", integrity, err)
 	}
-	var name, harness, skills, card, paired, trust, mbox string
-	var by sql.NullString
-	if err := db.QueryRowContext(ctx, `SELECT name, harness, skills, card, paired_at, trust, mailbox_keys, introduced_by
-		FROM peers WHERE public_key = 'k3'`).Scan(&name, &harness, &skills, &card, &paired, &trust, &mbox, &by); err != nil {
-		t.Fatal(err)
-	}
-	if name != "n3" || harness != "h3" || skills != "[]" || card != "{}" || paired != "2026-03-02T03:04:05Z" ||
-		trust != "fingerprint" || mbox != `[{"y":1},{"z":2}]` || by.Valid {
-		t.Fatalf("k3 changed: %q %q %q %q %q %q %q %v", name, harness, skills, card, paired, trust, mbox, by)
+	for key, want := range map[string][7]string{
+		"k1": {"n1", "h1", `[{"id":"s"}]`, `{"a":1}`, "2026-01-02T03:04:05Z", "relay", "[]"},
+		"k2": {"n2", "h2", "[]", `{"b":2}`, "2026-02-02T03:04:05Z", "code", `[{"x":1}]`},
+		"k3": {"n3", "h3", "[]", "{}", "2026-03-02T03:04:05Z", "fingerprint", `[{"y":1},{"z":2}]`},
+	} {
+		var got [7]string
+		var by sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT name, harness, skills, card, paired_at, trust, mailbox_keys, introduced_by
+			FROM peers WHERE public_key = ?`, key).Scan(&got[0], &got[1], &got[2], &got[3], &got[4], &got[5], &got[6], &by); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if got != want || by.Valid {
+			t.Fatalf("%s changed: %q introduced_by=%v, want %q", key, got, by, want)
+		}
 	}
 	if _, err := db.ExecContext(ctx, `UPDATE peers SET trust = 'team' WHERE public_key = 'k1'`); err != nil {
 		t.Errorf("trust 'team' rejected: %v", err)
