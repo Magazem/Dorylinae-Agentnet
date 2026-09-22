@@ -4,9 +4,9 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-22, PARKED (session limit). Read section 0 first.
+Last updated: 2026-09-22, resumed after park.
 
-## 0. RESUME HERE (parked 2026-09-22)
+## 0. RESUME HERE (parked 2026-09-22; RESUMED same day — see §4 for live state)
 
 State at park:
 - **main** is pushed and CI-green up to `bc965e4` plus docs. Phase 1 merged: 1.1a, 1.1b, 1.1c, 1.1d, 1.2a, 1.2b, 1.2c, 1.2d, 1.3, 1.4a, 1.4b, spec amendment (D11/D12). Migrations 1–11 on main.
@@ -125,7 +125,8 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.4b mail.ErrBadBody~~ | merged `704efdb` + review fix `33682ff` (review 13; `!bad_body` suffix confirmed safe). Rule for 1.1b/1.4c: return `ErrBadBody` only for failures a resend cannot fix. | — | — |
    | ~~1.1c team IPC + CLI~~ | merged `eccb725` (incl. L12 cascade: owner peers remove → team remove + broadcast before OwnerRemoved/delete) | — | — |
    | ~~1.1d team invite + join~~ | merged `f8ee5e0` + review fix `527c685` (review 18; issuer completer runs before tag_I). Lows on the board: invite-table prune, failed join only logged, team_delete does not cancel pending invites. | — | — |
-   | 1.4c request kind + request_submit + CLI | committed on `p1/t1-4c`, rebased on main (daemon.go conflict with 1.2c resolved: startRelay takes presence sender/receiver AND reqStore); in Opus review (R-1.4c → `Docs/review/19-1.4c-review.md`), which must also fix TestRequestOfflineQueued (presence now reports a just-stopped peer online). Urgency budget is NOT in 1.4c (1.7). | `t1-4c` | **Opus** |
+   | 1.4c request kind + request_submit + CLI | WIP branch `p1/t1-4c` (9d9259f) verified to build + pass tests on resume; review being finished by R-1.4c-2 (Opus). | `t1-4c` | **Opus** |
+   | D14 spec: result payload on request.complete | P1-SpecD14 (Opus), docs only; may renumber webhook_queue to 13 if a migration is needed | `spec-d14` | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
    | ~~1.2b presence seal/open~~ | merged `9bbce13` + review fixes `4111b25` (review 17). Open Low for **1.3**: goodbye is 1 byte longer and seq/epoch digit counts vary, so ~1/256 heartbeats cross a 256-byte boundary; fix by padding to a fixed size (spec intent: size must not reveal flags). | — | — |
