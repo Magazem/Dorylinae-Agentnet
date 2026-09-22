@@ -8,7 +8,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -21,6 +20,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // testNode is one simulated daemon: its own identity, store, peers and team
@@ -74,11 +74,7 @@ func newTestNode(t *testing.T, name string) *testNode {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir, err := os.MkdirTemp("", "dn-team-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	dir := testutil.TempDir(t)
 	st, err := store.Open(ctx, filepath.Join(dir, "t.db"))
 	if err != nil {
 		t.Fatal(err)

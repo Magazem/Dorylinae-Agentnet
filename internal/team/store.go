@@ -241,10 +241,15 @@ func (s *Store) addMemberOwnedTx(ctx context.Context, tx *sql.Tx, teamID, key st
 	if err := addMemberTx(ctx, tx, teamID, key, now); err != nil {
 		return Team{}, err
 	}
+	return s.bumpEpochTx(ctx, tx, t, now)
+}
+
+// bumpEpochTx increments t's epoch and stamps updated, inside tx.
+func (s *Store) bumpEpochTx(ctx context.Context, tx *sql.Tx, t Team, now time.Time) (Team, error) {
 	t.Epoch++
 	ts := stamp(now)
-	if _, err := tx.ExecContext(ctx, `UPDATE teams SET epoch = ?, updated = ? WHERE id = ?`, t.Epoch, ts, teamID); err != nil {
-		return Team{}, fmt.Errorf("team: add member: %w", err)
+	if _, err := tx.ExecContext(ctx, `UPDATE teams SET epoch = ?, updated = ? WHERE id = ?`, t.Epoch, ts, t.ID); err != nil {
+		return Team{}, fmt.Errorf("team: bump epoch: %w", err)
 	}
 	t.Updated = ts
 	return t, nil
@@ -287,13 +292,7 @@ func (s *Store) removeMemberOwnedTx(ctx context.Context, tx *sql.Tx, teamID, key
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Team{}, ErrNoSuchMember
 	}
-	t.Epoch++
-	ts := stamp(now)
-	if _, err := tx.ExecContext(ctx, `UPDATE teams SET epoch = ?, updated = ? WHERE id = ?`, t.Epoch, ts, teamID); err != nil {
-		return Team{}, fmt.Errorf("team: remove member: %w", err)
-	}
-	t.Updated = ts
-	return t, nil
+	return s.bumpEpochTx(ctx, tx, t, now)
 }
 
 // Rename changes the team's display name and bumps the epoch.
@@ -456,47 +455,88 @@ func (s *Store) Broadcast(ctx context.Context, teamID string, includeRemoved []s
 	if s.Outbox == nil {
 		return nil
 	}
-	t, err := s.Get(ctx, teamID)
+	full, ownerOnly, recipients, err := s.rosterSnapshot(ctx, teamID, len(includeRemoved) > 0)
 	if err != nil {
 		return err
 	}
-	members, err := s.Members(ctx, teamID)
-	if err != nil {
-		return err
-	}
-	for _, m := range members {
-		if m.Key == s.Self {
-			continue
-		}
-		body, err := s.rosterBody(ctx, t, members, true)
-		if err != nil {
-			return err
-		}
-		if _, err := s.Outbox.Submit(ctx, m.Key, "team.roster", body); err != nil {
-			return err
+	var errs []error
+	for _, key := range recipients {
+		if _, err := s.Outbox.Submit(ctx, key, "team.roster", full); err != nil {
+			errs = append(errs, fmt.Errorf("team: roster to %s: %w", key, err))
 		}
 	}
 	for _, key := range includeRemoved {
-		body, err := s.rosterBody(ctx, t, nil, false)
-		if err != nil {
-			return err
-		}
-		if _, err := s.Outbox.Submit(ctx, key, "team.roster", body); err != nil {
-			return err
+		if _, err := s.Outbox.Submit(ctx, key, "team.roster", ownerOnly); err != nil {
+			errs = append(errs, fmt.Errorf("team: roster to %s: %w", key, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// rosterSnapshot reads team teamID in one read transaction and builds its full
+// roster body, the owner-only body (if wantOwnerOnly), and the keys the full
+// roster goes to, so every recipient gets the same epoch and member list. The
+// transaction ends before the caller submits anything (the database has one
+// connection). A member with no peers row (its peer entry was removed on the
+// owner's side) can be neither described (no card) nor reached (no mailbox
+// key); it is left out of the body and the recipients rather than failing the
+// broadcast for every member.
+func (s *Store) rosterSnapshot(ctx context.Context, teamID string, wantOwnerOnly bool) (full, ownerOnly map[string]any, recipients []string, err error) {
+	// Announcement may write the database (key rotation): call it before the
+	// read transaction takes the only connection.
+	var selfMbox []byte
+	if s.Announcement != nil {
+		selfMbox, _ = s.Announcement()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("team: broadcast: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	t, err := getTx(ctx, tx, teamID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	members, err := membersTx(ctx, tx, teamID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	listed := make([]Member, 0, len(members))
+	for _, m := range members {
+		if m.Key != s.Self {
+			var one int
+			err := tx.QueryRowContext(ctx, `SELECT 1 FROM peers WHERE public_key = ?`, m.Key).Scan(&one)
+			if errors.Is(err, sql.ErrNoRows) {
+				s.log().Warn("team: member has no peer entry, left out of the roster", "event", "team_error", "team", teamID, "peer", m.Key)
+				continue
+			}
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("team: broadcast: %w", err)
+			}
+			recipients = append(recipients, m.Key)
+		}
+		listed = append(listed, m)
+	}
+	if full, err = s.rosterBody(ctx, tx, t, listed, true, selfMbox); err != nil {
+		return nil, nil, nil, err
+	}
+	if wantOwnerOnly {
+		if ownerOnly, err = s.rosterBody(ctx, tx, t, nil, false, selfMbox); err != nil {
+			return nil, nil, nil, err
+		}
+	}
+	return full, ownerOnly, recipients, nil
 }
 
 // rosterBody builds the wire body of a team.roster mail. full sends the
 // complete membership (every member's card and mailbox); when full is false
 // the roster carries only the owner (Docs/protocol/team.md: "a roster sent to
 // a key that is not a member lists only the owner").
-func (s *Store) rosterBody(ctx context.Context, t Team, members []Member, full bool) (map[string]any, error) {
+func (s *Store) rosterBody(ctx context.Context, q querier, t Team, members []Member, full bool, selfMbox []byte) (map[string]any, error) {
 	list := members
 	if !full {
 		var added string
-		err := s.db.QueryRowContext(ctx, `SELECT added FROM team_members WHERE team_id = ? AND key = ?`, t.ID, t.Owner).Scan(&added)
+		err := q.QueryRowContext(ctx, `SELECT added FROM team_members WHERE team_id = ? AND key = ?`, t.ID, t.Owner).Scan(&added)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			if ct, perr := time.Parse(storeTimeFmt, t.Created); perr == nil {
@@ -509,7 +549,7 @@ func (s *Store) rosterBody(ctx context.Context, t Team, members []Member, full b
 	}
 	out := make([]any, 0, len(list))
 	for _, m := range list {
-		entry, err := s.memberEntry(ctx, m)
+		entry, err := s.memberEntry(ctx, q, m, selfMbox)
 		if err != nil {
 			return nil, err
 		}
@@ -531,7 +571,7 @@ func (s *Store) rosterBody(ctx context.Context, t Team, members []Member, full b
 	}, nil
 }
 
-func (s *Store) memberEntry(ctx context.Context, m Member) (map[string]any, error) {
+func (s *Store) memberEntry(ctx context.Context, q querier, m Member, selfMbox []byte) (map[string]any, error) {
 	var cardRaw, mboxRaw []byte
 	var err error
 	if m.Key == s.Self {
@@ -541,17 +581,15 @@ func (s *Store) memberEntry(ctx context.Context, m Member) (map[string]any, erro
 		if cardRaw, err = s.OwnCard(); err != nil {
 			return nil, fmt.Errorf("team: own card: %w", err)
 		}
-		if s.Announcement != nil {
-			mboxRaw, _ = s.Announcement()
-		}
+		mboxRaw = selfMbox
 	} else {
 		var cardStr string
-		if err := s.db.QueryRowContext(ctx, `SELECT card FROM peers WHERE public_key = ?`, m.Key).Scan(&cardStr); err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT card FROM peers WHERE public_key = ?`, m.Key).Scan(&cardStr); err != nil {
 			return nil, fmt.Errorf("team: peer card for %s: %w", m.Key, err)
 		}
 		cardRaw = []byte(cardStr)
 		var raw string
-		if err := s.db.QueryRowContext(ctx, `SELECT mailbox_keys FROM peers WHERE public_key = ?`, m.Key).Scan(&raw); err == nil {
+		if err := q.QueryRowContext(ctx, `SELECT mailbox_keys FROM peers WHERE public_key = ?`, m.Key).Scan(&raw); err == nil {
 			var anns []json.RawMessage
 			if json.Unmarshal([]byte(raw), &anns) == nil && len(anns) > 0 {
 				mboxRaw = anns[0]

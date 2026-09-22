@@ -21,6 +21,9 @@ import (
 // is unique to and stable across one Handle call (Apply runs, then After runs
 // on the same pointer), so this needs no message-identity comparison.
 
+// maxEpoch is the exclusive upper bound of team.epoch (2^53).
+const maxEpoch = int64(1) << 53
+
 func badBody(msg string) error { return fmt.Errorf("team: %s: %w", msg, mail.ErrBadBody) }
 
 func (s *Store) log() *slog.Logger {
@@ -78,15 +81,22 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		return nil
 	}
 
+	// A pending join admits only an active roster that lists self; check that
+	// before consuming the row, so a roster the joiner would ignore anyway
+	// does not burn its invite.
+	joinable := selfIn && wireState == StateActive
 	existing, gerr := getTx(ctx, tx, teamID)
 	isNewTeam := errors.Is(gerr, ErrNotFound)
 	switch {
 	case isNewTeam:
-		ok, perr := consumePendingJoin(ctx, tx, ownerKey, now)
-		if perr != nil {
-			return perr
+		ok := false
+		if joinable {
+			var perr error
+			if ok, perr = consumePendingJoin(ctx, tx, ownerKey, now); perr != nil {
+				return perr
+			}
 		}
-		if !ok || !selfIn {
+		if !ok {
 			pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: "not_invited"})
 			return nil
 		}
@@ -98,11 +108,14 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	case epoch <= existing.Epoch:
 		return nil // idempotent resend or reordering: ignored silently, no audit
 	case existing.State != StateActive:
-		ok, perr := consumePendingJoin(ctx, tx, ownerKey, now)
-		if perr != nil {
-			return perr
+		ok := false
+		if joinable {
+			var perr error
+			if ok, perr = consumePendingJoin(ctx, tx, ownerKey, now); perr != nil {
+				return perr
+			}
 		}
-		if !ok || !selfIn {
+		if !ok {
 			pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: existing.State, teamID: existing.ID})
 			return nil
 		}
@@ -184,6 +197,21 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if err != nil {
 		return fmt.Errorf("team: roster: gc: %w", err)
 	}
+	// A peer inserted above and collected again in the same transaction (a
+	// roster that leaves self with no active team) must not get a keys push.
+	if len(gcRemoved) > 0 && len(newPeers) > 0 {
+		gone := make(map[string]bool, len(gcRemoved))
+		for _, r := range gcRemoved {
+			gone[r.PublicKey] = true
+		}
+		kept := newPeers[:0]
+		for _, k := range newPeers {
+			if !gone[k] {
+				kept = append(kept, k)
+			}
+		}
+		newPeers = kept
+	}
 
 	pendingRoster.Store(op, &rosterOutcome{
 		teamID: teamID, epoch: epoch, added: added, removed: removedKeys, state: localState,
@@ -261,7 +289,7 @@ func parseRosterBody(body map[string]any, self string, now time.Time) (teamID, n
 		return "", "", "", 0, "", nil, false, badBody("roster team.epoch")
 	}
 	epoch, everr := n.Int64()
-	if everr != nil || epoch < 1 {
+	if everr != nil || epoch < 1 || epoch >= maxEpoch {
 		return "", "", "", 0, "", nil, false, badBody("roster team.epoch out of range")
 	}
 	state, ok = teamField["state"].(string)
@@ -424,18 +452,23 @@ func (s *Store) applyJoin(ctx context.Context, tx *sql.Tx, op *mail.Opened) erro
 	}
 
 	t, gerr := getTx(ctx, tx, teamID)
+	if gerr != nil && !errors.Is(gerr, ErrNotFound) {
+		return fmt.Errorf("team: join: %w", gerr)
+	}
 	reason := ""
+	already := false
 	switch {
-	case gerr != nil:
-		reason = "inactive"
-	case t.State != StateActive:
+	case gerr != nil, t.State != StateActive, t.Owner != s.Self:
 		reason = "inactive"
 	default:
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM team_members WHERE team_id = ?`, teamID).Scan(&n); err != nil {
+		var n, mine int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(key = ?), 0) FROM team_members WHERE team_id = ?`, peer, teamID).Scan(&n, &mine); err != nil {
 			return fmt.Errorf("team: join: %w", err)
 		}
-		if n >= MaxMembers {
+		switch {
+		case mine > 0:
+			already = true
+		case n >= MaxMembers:
 			reason = "team_full"
 		}
 	}
@@ -446,7 +479,16 @@ func (s *Store) applyJoin(ctx context.Context, tx *sql.Tx, op *mail.Opened) erro
 		pendingJoin.Store(op, &joinOutcome{reason: reason, peer: peer, teamID: teamID})
 		return nil
 	}
-	nt, err := s.addMemberOwnedTx(ctx, tx, teamID, peer, now)
+	var nt Team
+	if already {
+		// Re-invited while still on the owner's roster (e.g. its team.leave has
+		// not arrived): a plain INSERT would fail the primary key on every
+		// resend. Bump the epoch instead, so the roster that follows is newer
+		// than the joiner's copy and its pending join admits it.
+		nt, err = s.bumpEpochTx(ctx, tx, t, now)
+	} else {
+		nt, err = s.addMemberOwnedTx(ctx, tx, teamID, peer, now)
+	}
 	if err != nil {
 		return fmt.Errorf("team: join: add member: %w", err)
 	}

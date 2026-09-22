@@ -87,13 +87,22 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 		if err != nil {
 			return nil, err
 		}
-		if err := ps.Remove(ctx, peer.PublicKey); err != nil {
-			return nil, peerError(err)
-		}
+		// Teams first: if this fails, the peer is still there and the user can
+		// retry. The other order could leave the owner's teams active, and its
+		// introductions trusted, with no peer row left to retry the remove on.
+		gcSelf := false
 		if ts != nil {
-			if _, _, terr := ts.OwnerRemoved(ctx, peer.PublicKey, time.Now()); terr != nil {
+			_, removed, terr := ts.OwnerRemoved(ctx, peer.PublicKey, time.Now())
+			if terr != nil {
 				return nil, terr
 			}
+			for _, r := range removed {
+				gcSelf = gcSelf || r.PublicKey == peer.PublicKey
+			}
+		}
+		// GC may already have deleted the row (a stale introduced peer).
+		if err := ps.Remove(ctx, peer.PublicKey); err != nil && (!gcSelf || !errors.Is(err, peers.ErrNoPeer)) {
+			return nil, peerError(err)
 		}
 		d := peerAuditDetail{Peer: peer.PublicKey, Name: peer.Name, Fingerprint: peer.Fingerprint, Trust: peer.Trust}
 		if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerRemove, d); err != nil {
