@@ -4,7 +4,22 @@ Read this first if you are a fresh Orchestrator instance taking over this projec
 It is the single source of truth for *where we are*. Update it after every merge,
 every owner decision, and before you expect a context reset.
 
-Last updated: 2026-09-21, Phase 1 wave A in flight.
+Last updated: 2026-09-22, PARKED (session limit). Read section 0 first.
+
+## 0. RESUME HERE (parked 2026-09-22)
+
+State at park:
+- **main** is pushed and CI-green up to `bc965e4` plus docs. Phase 1 merged: 1.1a, 1.1b, 1.1c, 1.1d, 1.2a, 1.2b, 1.2c, 1.2d, 1.3, 1.4a, 1.4b, spec amendment (D11/D12). Migrations 1–11 on main.
+- **Only open branch: `p1/t1-4c`** (worktree `AgentNet-wt/t1-4c`): 1.4c committed and rebased on main *before* 1.3 merged, plus the reviewer's uncommitted WIP (`Docs/review/19-1.4c-review.md` marked WIP, and any edits it listed). Resume: spawn a fresh Opus reviewer on that worktree with the original 1.4c review brief (see `team_task_list`, task "Review 1.4c") plus "continue from the WIP review file". Then commit, rebase onto main (expect conflicts in internal/daemon/daemon.go and status.go with 1.3: keep both sides), test x2, lint, merge, push.
+- Known failing test on that branch: `TestRequestOfflineQueued` (presence reports a just-stopped peer online). The reviewer must decide the behaviour from request.md §offline and presence.md.
+- No other workers and no other worktrees. `git worktree list` should show only main and t1-4c.
+
+Next after 1.4c: **1.6a** (lifecycle kinds, state machine incl. request.cancel/cancelled per D11/D12, sender mirror, request show/list/resend; Opus review) → 1.6b inbox → 1.7 urgency (derive vector from formula) → 1.8a desktop notify (own code, no beeep) → 1.8b webhook (migration 12) → 1.9 → 1.H headless harness → 1.P push (tag only with owner OK).
+
+**Waiting on the owner (ask first thing on resume):**
+1. Confirm the own-device helper safety rules (§3 "Owner idea") as **D13**.
+2. Results payload on `request.complete`: add it to **1.6a now**, or wait for Phase 2? Must be answered before dispatching 1.6a.
+3. Still pending from Phase 0: the owner's two-machine run of `tests/phase0-manual.md`.
 
 ## 1. How this team runs
 
