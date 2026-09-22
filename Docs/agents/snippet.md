@@ -8,6 +8,11 @@ real agents with **only** this block, so change it here when 1.H shows it is not
 ````markdown
 ## AgentNet (teammates' agents)
 
+AgentNet is used through a command-line program named `agentnet` that is installed on this
+machine. Run it with your shell/Bash tool (for example `agentnet inbox --json`). There is no
+separate "AgentNet" tool, app or connector — it is always this CLI. Start with
+`agentnet --help` if you are unsure of a command.
+
 The `agentnet` CLI lets you ask a teammate's agent for a review, a task or a question, and
 answer requests sent to you. Always pass `--json` and read the result from stdout.
 

@@ -12,6 +12,12 @@
 #
 # Usage: tests/harness/phase1-agents.sh [--repo-root DIR] [--branch NAME]
 #                                        [--skip-build] [--only-round 1|2]
+#                                        [--sender-harness claude|codex]
+#                                        [--recipient-harness claude|codex]
+#
+# --sender-harness and --recipient-harness must be given together; they
+# replace the default two swapped Claude/Codex rounds with a single round
+# using the given harness for each role (e.g. an all-Claude smoke test).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,6 +27,8 @@ ONLY_ROUND=0
 AGENT_TIMEOUT_SECONDS=180
 TOTAL_TIMEOUT_SECONDS=600
 RELAY_PORT_BASE=18787
+SENDER_HARNESS=""
+RECIPIENT_HARNESS=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -28,9 +36,18 @@ while [ $# -gt 0 ]; do
     --branch) BRANCH="$2"; shift 2 ;;
     --skip-build) SKIP_BUILD=1; shift ;;
     --only-round) ONLY_ROUND="$2"; shift 2 ;;
+    --sender-harness) SENDER_HARNESS="$2"; shift 2 ;;
+    --recipient-harness) RECIPIENT_HARNESS="$2"; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ -n "$SENDER_HARNESS" ] || [ -n "$RECIPIENT_HARNESS" ]; then
+  if [ -z "$SENDER_HARNESS" ] || [ -z "$RECIPIENT_HARNESS" ]; then
+    echo "[1.H] FAIL: --sender-harness and --recipient-harness must be given together" >&2
+    exit 2
+  fi
+fi
 
 SCRIPT_START=$(date +%s)
 step() { echo "[1.H] $*"; }
@@ -121,9 +138,16 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
   case "$tool" in
     claude)
       command -v claude >/dev/null 2>&1 || { echo "claude executable not found"; return 1; }
+      # --setting-sources project (drops user-level settings, where account
+      # connectors like Google Drive/Picsart/Claude Docs are enabled) and
+      # --strict-mcp-config with an empty config (drops every MCP server)
+      # keep those out of the tool list, which otherwise makes the model
+      # think it needs a dedicated "AgentNet" tool instead of running the
+      # agentnet CLI via Bash.
       ( cd "$workdir" && DORYLINAE_HOME="$home" PATH="$bindir:$PATH" \
         timeout "${timeout}s" claude "$prompt" -p --restricted --tools Bash \
           --allowedTools "Bash(agentnet *)" --permission-prompts none --output-format json \
+          --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources project \
           >"$out" 2>"$err" )
       rc=$?
       ;;
@@ -212,8 +236,15 @@ run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port
   rm -f "$snippet"
 
   local idem_key="t1h-r$round-$(date +%s)-$$"
-  local sender_prompt="You are working with a teammate whose AgentNet peer name is agent-b, on the shared team t1h. Ask agent-b's agent, over AgentNet, for a code review of the branch $BRANCH. Use exactly this idempotency key so a retry never sends the request twice: $idem_key Send the request and then stop. Do not do anything else, and do not wait for the answer."
-  local recipient_prompt="Check your AgentNet inbox for anything waiting for you. Accept whatever is there. Do not do the review, and do not do anything else with it. Then mark it complete with the short note \"Acknowledged, no work performed\" and a result with status n/a and the one-line summary \"Acknowledged, no work performed.\" Then stop."
+  # The "Run agentnet --help directly..." sentence is harness-only guidance (not
+  # part of the product snippet, which stays short and general per the ticket): it
+  # heads off the model probing for the CLI with which/command -v/type, chained
+  # into one command with `;`/`&&` -- a chained command is denied whole by
+  # --allowedTools's prefix match (Claude Code will not auto-approve a
+  # multi-statement command off a prefix match), so the agent would see one
+  # denial and give up instead of trying a plain `agentnet --help`.
+  local sender_prompt="You are working with a teammate whose AgentNet peer name is agent-b, on the shared team t1h. Ask agent-b's agent, over AgentNet, for a code review of the branch $BRANCH. Use exactly this idempotency key so a retry never sends the request twice: $idem_key Send the request and then stop. Do not do anything else, and do not wait for the answer. Run agentnet --help directly as your first command; do not check whether it exists first (for example with which, command -v or type), and do not chain it with any other command."
+  local recipient_prompt="Check your AgentNet inbox for anything waiting for you. Accept whatever is there. Do not do the review, and do not do anything else with it. Then mark it complete with the short note \"Acknowledged, no work performed\" and a result with status n/a and the one-line summary \"Acknowledged, no work performed.\" Then stop. Run agentnet --help directly as your first command; do not check whether it exists first (for example with which, command -v or type), and do not chain it with any other command."
 
   local bin_dir="$REPO_ROOT/bin"
   step "invoking sender agent ($sender) in $a_work"
@@ -280,9 +311,13 @@ assert r.get('summary'), 'no result summary'
   return 0
 }
 
-ROUNDS=("1 claude codex" "2 codex claude")
-if [ "$ONLY_ROUND" != "0" ]; then
-  ROUNDS=("${ROUNDS[$((ONLY_ROUND-1))]}")
+if [ -n "$SENDER_HARNESS" ]; then
+  ROUNDS=("1 $SENDER_HARNESS $RECIPIENT_HARNESS")
+else
+  ROUNDS=("1 claude codex" "2 codex claude")
+  if [ "$ONLY_ROUND" != "0" ]; then
+    ROUNDS=("${ROUNDS[$((ONLY_ROUND-1))]}")
+  fi
 fi
 
 OVERALL=0

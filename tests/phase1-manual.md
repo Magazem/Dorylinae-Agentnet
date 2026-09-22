@@ -217,3 +217,157 @@ see [harness/README.md](harness/README.md)).
 **Next step for the owner:** re-run `tests/harness/phase1-agents.ps1` (or the
 `.sh` port) once Codex CLI's usage limit resets (2026-10-02) or with a second
 account/harness substituted, to get a real PASS on both rounds before 1.P.
+
+## Follow-up: Claude-only round, both roles (interim evidence, not a substitute)
+
+Added `-SenderHarness`/`-RecipientHarness` (`--sender-harness`/
+`--recipient-harness` in the `.sh`) to override the default two swapped
+Claude/Codex rounds with one round using a chosen harness for both roles.
+Defaults are unchanged. Used here as `-SenderHarness claude -RecipientHarness
+claude` to probe the parts of the pipeline Codex's usage limit currently
+blocks (inbox → accept → complete → D14 result → audit), while Codex CLI
+remains unavailable until 2026-10-02.
+
+**Date:** 2026-09-22 (same session as above). **Result: no clean pass in 5
+attempts — reported as interim evidence of flakiness, not a PASS.** The
+non-agent infrastructure (build, relay, two daemons with separate `--home`
+dirs, pairing, team creation, and this session's process cleanup fix) was
+100% reliable across all 5 attempts: every attempt reached the "team t1h has
+both members" step in a few seconds with no leaked processes afterward
+(verified with `Get-Process relay,agentnetd` after every attempt). The
+variable part was the real headless `claude -p` agent turn itself:
+
+| Attempt | Sender (agent-a) | Recipient (agent-b) |
+|---|---|---|
+| 1 | FAIL (1 turn, refused) | not reached |
+| 2 | PASS (queued 1 request) | FAIL (1 turn, refused) |
+| 3 | FAIL (1 turn, refused) | not reached |
+| 4 | PASS (queued 1 request) | FAIL (1 turn, refused) |
+| 5 | FAIL (1 turn, refused) | not reached |
+
+Sender: 2/5 passed. Recipient: 0/2 chances passed (both times the sender
+succeeded, the recipient then failed). Every failure was the same one-turn
+refusal pattern, e.g. (recipient, attempt 4): *"I don't have a tool for an
+'AgentNet inbox' in this session — my available tools are Bash, Google
+Drive, Picsart, and Claude Docs, none of which connect to an AgentNet
+service."* The model lists Bash as available (consistent with `--restricted
+--tools Bash --allowedTools "Bash(agentnet *)"`) but never attempts to run
+it — it does not mention checking `CLAUDE.md` or trying `agentnet --help`,
+it just declines in one turn. The successful runs took 4 turns with visible
+thinking before finding and using the CLI correctly. "Claude Docs, Google
+Drive, Picsart" appearing verbatim and repeatedly as the model's own account
+of "available tools", alongside Bash, suggests `--restricted` (which only
+documents removing tools that run commands/code, e.g. Bash/PowerShell/REPL,
+plus WebFetch) does not hide other first-party connector-type tools that may
+be enabled on this account — that clutter may be part of why the model
+sometimes doesn't recognize it should shell out via Bash. This is a
+plausible contributing factor, not a confirmed root cause; flagging for the
+owner rather than acting on it, since diagnosing the exact tool-list
+`claude` sends the model is outside this ticket's scope (scripts and docs
+only, no product/CLI changes).
+
+No snippet change was made: the failures are not about the snippet's
+content (the two passing runs used the identical, unmodified snippet and
+found the right command immediately) but about the agent not attempting a
+tool call at all in the failing turns. Widening the acceptance to "retry the
+agent invocation once if it made zero tool calls" would likely raise the
+pass rate, but that is a script-behavior change beyond what this follow-up
+asked for; flagged here for the owner to decide rather than made
+unilaterally.
+
+## Follow-up 2: root cause found and fixed — Claude↔Claude now passes reliably
+
+**Date:** 2026-09-22 (same session). **Result: PASS, 3/3 attempts, fully
+clean (0 leaked processes).** Diagnosed the flakiness above precisely using
+`claude ... --output-format stream-json --verbose` to read the `system/init`
+event's `tools` array directly, and found **two real, distinct causes**, both
+now fixed without any Go/product change:
+
+1. **On this Windows install, Claude Code's shell-execution tool is named
+   `PowerShell`, not `Bash`.** The `system/init` event's `tools` list with no
+   flags at all includes `PowerShell` (never `Bash` — that name does not
+   exist anywhere in this installation's tool universe). Passing `--tools
+   Bash --allowedTools "Bash(agentnet *)"` (as the original ticket's own
+   phrasing, and Anthropic's own docs, assume) therefore named a
+   nonexistent tool: combined with `--restricted` it silently produced an
+   **empty tool list** (`"tools": []`), which is exactly why every earlier
+   attempt's agent either refused outright in one turn (no tools at all) or
+   got auto-denied on its very first "Bash" call. Fixed in
+   `phase1-agents.ps1` by using `"PowerShell"` /
+   `"PowerShell(agentnet *)"` instead. `phase1-agents.sh` (Linux/macOS) keeps
+   `"Bash"`, which is correct there. **This is the actual explanation for
+   the "I don't have an AgentNet tool" refusals reported in the two prior
+   sections** — not model non-determinism as first guessed, though see (2)
+   below for the remaining source of flakiness once the tool name was fixed.
+2. **The owner's account-level connectors (Claude Docs, Google Drive,
+   Picsart) and this session's own MCP servers were still visible to the
+   model** even under `--restricted`, because `--restricted` only removes
+   tools *documented* as code/command runners — it does not touch MCP-served
+   tools. Fixed by adding `--strict-mcp-config --mcp-config
+   '{"mcpServers":{}}' --setting-sources project` to the `claude`
+   invocation in both scripts (`--setting-sources project` drops the
+   user-level settings where those connectors are enabled; the empty
+   `--mcp-config` with `--strict-mcp-config` drops every MCP server).
+   Verified empirically: with both fixes, `tools` is exactly `["PowerShell"]`
+   — no connectors, no other built-ins.
+3. **A secondary, narrower issue surfaced once (1) and (2) were fixed:** the
+   model's very first move was a reasonable existence probe chained into one
+   command, e.g. `Get-Command agentnet -ErrorAction SilentlyContinue;
+   Get-Command agentnet.exe -ErrorAction SilentlyContinue; where.exe
+   agentnet`. Claude Code will not auto-approve a multi-statement command
+   off a prefix match (by design — otherwise an allowed prefix could smuggle
+   arbitrary extra commands past the allowlist via `;`/`&&`), so this whole
+   probe was denied, and the CLI's own denial message ("do not retry it...
+   anything else that requires approval will be denied the same way for the
+   rest of this session") made the model give up entirely rather than try
+   `agentnet --help` next. Fixed by adding one sentence to the **harness's
+   own generated prompts** (not the product snippet, which stays short and
+   general per this ticket): "Run agentnet --help directly as your first
+   command; do not check whether it exists first ...; and do not chain it
+   with any other command." Confirmed via the same stream-json inspection
+   that with this sentence the model runs `agentnet --help`, then `agentnet
+   request --help`, then the correct `agentnet request agent-b review
+   --title ... --idempotency-key ... --json` — all single, unchained,
+   allowlisted commands.
+
+**Files changed for this fix:** `tests/harness/phase1-agents.ps1` (tool
+name `PowerShell`, MCP/connector isolation flags, anti-probing prompt
+sentence), `tests/harness/phase1-agents.sh` (MCP/connector isolation flags
+and matching prompt sentence; tool name kept as `Bash`, which is correct on
+Linux/macOS), `Docs/agents/snippet.md` (see below), this file.
+
+**Snippet change (recorded per the ticket):** added an unambiguous opening
+to `Docs/agents/snippet.md`'s pasted block: "AgentNet is used through a
+command-line program named `agentnet`... Run it with your shell/Bash tool...
+There is no separate 'AgentNet' tool, app or connector... Start with
+`agentnet --help`..." Why: the original snippet assumed the agent would
+infer it should shell out; when connector tools were visible (see (2)
+above) the model sometimes concluded "AgentNet" must be one of *those*
+instead. The three PASS runs below still needed the harness-level
+anti-probing sentence in addition to this; the snippet change alone did not
+fully eliminate the failure mode while the tool-name and connector-leak bugs
+were still present, so its standalone contribution wasn't isolated —
+recommend keeping it regardless, since it is accurate and harmless.
+
+**Runs (all-Claude round, `-SenderHarness claude -RecipientHarness
+claude`), after all three fixes:**
+
+| Attempt | Sender | Recipient | Elapsed | Processes leaked |
+|---|---|---|---|---|
+| 1 | PASS | PASS | 27.6 s | 0 |
+| 2 | PASS | PASS | 26.0 s | 0 |
+| 3 | PASS | PASS | 25.7 s | 0 |
+
+3/3 (100%) on both roles, all well under the 10-minute budget, all
+assertions from `--json` output confirmed each time (request `show`
+completed with note + result, `inbox --all` completed, exactly one request,
+all five audit actions present on one side or the other).
+
+**Consequence for the required Claude + Codex rounds:** since the Claude leg
+of `claude -p ... --restricted --tools PowerShell/Bash ...` is the same
+invocation regardless of which peer it plays, the default two swapped
+rounds (round 1: claude sends, codex receives; round 2: codex sends, claude
+receives) should now pass their Claude leg too. **Codex CLI itself remains
+blocked** by the account usage limit reported in the first section (resets
+2026-10-02) — that half is unchanged and still needs a real Codex run to
+confirm end to end.

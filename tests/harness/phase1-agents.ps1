@@ -42,7 +42,16 @@ param(
     [int]$OnlyRound = 0,
     [int]$RelayPortBase = 18787,
     [int]$AgentTimeoutSeconds = 180,
-    [int]$TotalTimeoutSeconds = 600
+    [int]$TotalTimeoutSeconds = 600,
+    # Override the default two swapped Claude/Codex rounds with a single round
+    # using the given harness for each role (e.g. -SenderHarness claude
+    # -RecipientHarness claude for an all-Claude smoke test). Leave both unset
+    # to run the required two rounds (round 1: claude -> codex; round 2:
+    # codex -> claude).
+    [ValidateSet("claude", "codex")]
+    [string]$SenderHarness,
+    [ValidateSet("claude", "codex")]
+    [string]$RecipientHarness
 )
 
 $ErrorActionPreference = "Stop"
@@ -287,11 +296,23 @@ function Invoke-Round {
         Set-Content -Path (Join-Path $bWork $bSnippetFile) -Value $snippet -Encoding utf8
 
         $idemKey = "t1h-r$RoundNum-$([guid]::NewGuid().ToString('N').Substring(0,12))"
+        # The trailing line below is harness-only guidance (not part of the product
+        # snippet, which stays short and general per the ticket): it heads off the
+        # model's natural instinct to first probe for the CLI with Get-Command/where/
+        # which/Test-Path, and to chain that probe with `;`/`&&` into one command.
+        # Both defeat the --allowedTools prefix match (a chained command containing
+        # anything other than the allowed prefix is denied whole, by design -- Claude
+        # Code will not auto-approve a multi-statement command off a prefix match, to
+        # stop an allowed prefix being used to smuggle extra commands), so the agent
+        # would see one denial and give up instead of trying a plain `agentnet --help`.
         $senderPrompt = @"
 You are working with a teammate whose AgentNet peer name is agent-b, on the shared team t1h.
 Ask agent-b's agent, over AgentNet, for a code review of the branch $Branch.
 Use exactly this idempotency key so a retry never sends the request twice: $idemKey
 Send the request and then stop. Do not do anything else, and do not wait for the answer.
+Run agentnet --help directly as your first command; do not check whether it exists first
+(for example with Get-Command, where, which or Test-Path), and do not chain it with any
+other command.
 "@
         $recipientPrompt = @"
 Check your AgentNet inbox for anything waiting for you.
@@ -299,6 +320,9 @@ Accept whatever is there. Do not do the review, and do not do anything else with
 Then mark it complete with the short note "Acknowledged, no work performed" and a result
 with status n/a and the one-line summary "Acknowledged, no work performed."
 Then stop.
+Run agentnet --help directly as your first command; do not check whether it exists first
+(for example with Get-Command, where, which or Test-Path), and do not chain it with any
+other command.
 "@
 
         $binDir = Join-Path $RepoRoot "bin"
@@ -399,8 +423,27 @@ function Invoke-Agent {
             $exe = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
             if (-not (Test-Path $exe)) { $cmd = Get-Command claude -ErrorAction SilentlyContinue; if ($cmd) { $exe = $cmd.Source } }
             if (-not (Test-Path $exe)) { return @{ Ran = $false; Reason = "claude executable not found" } }
-            $argList = @($Prompt, "-p", "--restricted", "--tools", "Bash", "--allowedTools", "Bash(agentnet *)",
-                "--permission-prompts", "none", "--output-format", "json")
+            # Claude Code's shell-execution tool is named "PowerShell" here, not "Bash" --
+            # confirmed via `claude ... --output-format stream-json` and reading the
+            # `system/init` event's `tools` array. On this Windows install, passing
+            # `--tools Bash` (as Anthropic's own docs and the ticket assume) matches no
+            # real tool: combined with --restricted it silently produces an EMPTY tool
+            # list, which is why every earlier attempt's agent either refused outright or
+            # got auto-denied on its first (non-existent) "Bash" call. `--tools Bash`
+            # alone (no --restricted) also does not add a shell tool; it just leaves the
+            # account's MCP connector tools (Claude Docs, Google Drive, Picsart, etc.)
+            # untouched, which is the other half of the original confusion. The Linux/
+            # macOS port (phase1-agents.sh) keeps "Bash", which is the correct tool name
+            # there.
+            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell", "--allowedTools", "PowerShell(agentnet *)",
+                "--permission-prompts", "none", "--output-format", "json",
+                # Isolate from the operator's account-level connectors (Google Drive, Picsart,
+                # Claude Docs, etc.) and MCP servers, which otherwise leak into the tool list
+                # and can make the model think it needs a dedicated "AgentNet" tool instead of
+                # running the agentnet CLI via its shell tool. --setting-sources project drops
+                # user-level settings (where connectors are enabled); --strict-mcp-config with
+                # an empty config drops every MCP server.
+                "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "project")
         }
         "codex" {
             $cmd = Get-Command codex -ErrorAction SilentlyContinue
@@ -470,11 +513,19 @@ $rootRun = Join-Path ([IO.Path]::GetTempPath()) "phase1-agents-$([guid]::NewGuid
 New-Item -ItemType Directory -Force -Path $rootRun | Out-Null
 Write-Step "run directory: $rootRun"
 
-$rounds = @(
-    @{ Num = 1; Sender = "claude"; Recipient = "codex" },
-    @{ Num = 2; Sender = "codex"; Recipient = "claude" }
-)
-if ($OnlyRound -ne 0) { $rounds = $rounds | Where-Object { $_.Num -eq $OnlyRound } }
+if ($SenderHarness -or $RecipientHarness) {
+    if (-not ($SenderHarness -and $RecipientHarness)) {
+        Write-Fail "-SenderHarness and -RecipientHarness must be given together"
+        exit 2
+    }
+    $rounds = @(@{ Num = 1; Sender = $SenderHarness; Recipient = $RecipientHarness })
+} else {
+    $rounds = @(
+        @{ Num = 1; Sender = "claude"; Recipient = "codex" },
+        @{ Num = 2; Sender = "codex"; Recipient = "claude" }
+    )
+    if ($OnlyRound -ne 0) { $rounds = $rounds | Where-Object { $_.Num -eq $OnlyRound } }
+}
 
 $results = @()
 foreach ($r in $rounds) {
