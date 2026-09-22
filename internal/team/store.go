@@ -45,7 +45,13 @@ const (
 	ActionJoinIgnored   = "team.join_ignored"
 	ActionLeaveIgnored  = "team.leave_ignored"
 	ActionPeerRemove    = "peer.remove"
+	ActionInvite        = "team.invite"
+	ActionJoinSent      = "team.join"
 )
+
+// inviteTTL is how long a team_invites or team_pending_joins row lives
+// (Docs/protocol/team.md §Operations: Invite, Join).
+const inviteTTL = 24 * time.Hour
 
 // Store owns the teams, team_members, team_invites and team_pending_joins
 // tables (migration 9) and the kind handlers of Docs/protocol/team.md §Kinds.
@@ -634,4 +640,56 @@ func (s *Store) memberEntry(ctx context.Context, q querier, m Member, selfMbox [
 		"key":     m.Key,
 		"mailbox": mbox,
 	}, nil
+}
+
+// RecordInvite writes (or replaces) the team_invites row for lookup (owner
+// side, Docs/protocol/team.md §Operations: Invite): a fresh 24 h TTL,
+// unused. "A lookup is reused by the relay only after its pairing ends; if a
+// new invite completes with a lookup still in team_invites, the old row is
+// replaced" (team.md §Tables).
+func (s *Store) RecordInvite(ctx context.Context, lookup, teamID, pairingID, peerKey string, now time.Time) error {
+	if err := s.pruneInvites(ctx, now); err != nil {
+		return err
+	}
+	created, expires := stamp(now), stamp(now.Add(inviteTTL))
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO team_invites (lookup, team_id, pairing_id, peer_key, created, expires, used)
+VALUES (?, ?, ?, ?, ?, ?, NULL)
+ON CONFLICT (lookup) DO UPDATE SET team_id = excluded.team_id, pairing_id = excluded.pairing_id,
+	peer_key = excluded.peer_key, created = excluded.created, expires = excluded.expires, used = NULL`,
+		lookup, teamID, pairingID, peerKey, created, expires); err != nil {
+		return fmt.Errorf("team: record invite: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) pruneInvites(ctx context.Context, now time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM team_invites WHERE expires < ?`, stamp(now)); err != nil {
+		return fmt.Errorf("team: prune invites: %w", err)
+	}
+	return nil
+}
+
+// RecordPendingJoin writes (or refreshes) the team_pending_joins row for
+// (ownerKey, lookup) (joiner side, Docs/protocol/team.md §Operations: Join):
+// a fresh 24 h TTL. Two invites from one owner can be pending at once (the
+// primary key includes lookup).
+func (s *Store) RecordPendingJoin(ctx context.Context, ownerKey, lookup string, now time.Time) error {
+	if err := s.prunePendingJoins(ctx, now); err != nil {
+		return err
+	}
+	created, expires := stamp(now), stamp(now.Add(inviteTTL))
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO team_pending_joins (owner_key, lookup, created, expires)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (owner_key, lookup) DO UPDATE SET created = excluded.created, expires = excluded.expires`,
+		ownerKey, lookup, created, expires); err != nil {
+		return fmt.Errorf("team: record pending join: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) prunePendingJoins(ctx context.Context, now time.Time) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM team_pending_joins WHERE expires < ?`, stamp(now)); err != nil {
+		return fmt.Errorf("team: prune pending joins: %w", err)
+	}
+	return nil
 }

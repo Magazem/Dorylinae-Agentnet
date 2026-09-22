@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
@@ -353,6 +355,10 @@ func TestTeamUsageErrors(t *testing.T) {
 		{"team", "list", "extra"},
 		{"team", "show"},
 		{"team", "show", "a", "b"},
+		{"team", "invite"},
+		{"team", "invite", "a", "b"},
+		{"team", "join"},
+		{"team", "join", "a", "b"},
 		{"team", "remove"},
 		{"team", "remove", "a"},
 		{"team", "rename"},
@@ -365,7 +371,7 @@ func TestTeamUsageErrors(t *testing.T) {
 			t.Errorf("%v: code %d, want usage", args, code)
 		}
 	}
-	for _, sub := range []string{"create", "list", "show", "remove", "rename", "leave", "delete"} {
+	for _, sub := range []string{"create", "list", "show", "invite", "join", "remove", "rename", "leave", "delete"} {
 		var o, eb strings.Builder
 		if c := run([]string{"team", sub, "--help"}, &o, &eb); c != exitOK || !strings.Contains(o.String(), "Exit codes") {
 			t.Errorf("team %s --help: code %d out %q", sub, c, o.String())
@@ -530,4 +536,108 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// teamInviteOut is `team invite --json`'s shape (Docs/cli/team.md §`--json` output).
+type teamInviteOut struct {
+	pairOut
+	Team struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"team"`
+}
+
+func decodeTeamInvite(t *testing.T, stdout string) teamInviteOut {
+	t.Helper()
+	var o teamInviteOut
+	if err := json.Unmarshal([]byte(stdout), &o); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	return o
+}
+
+// TestTeamInviteJoinCLI is the 1.1d CLI-level acceptance test: `team invite`
+// and `team join` end to end through a real relay, matching
+// Docs/cli/team.md §Invite and join.
+func TestTeamInviteJoinCLI(t *testing.T) {
+	srv := relay.New(relay.Options{})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	url := "ws" + strings.TrimPrefix(ts.URL, "http")
+	a := startNode(t, "alice", url)
+	b := startNode(t, "bob", url)
+	a.waitRelay(t)
+	b.waitRelay(t)
+
+	code, out, errs := cli(t, a, "team", "create", "backend", "--json")
+	if code != exitOK {
+		t.Fatalf("team create: code %d: %s %s", code, out, errs)
+	}
+	var created teamOut
+	if err := json.Unmarshal([]byte(out), &created); err != nil || !created.OK {
+		t.Fatalf("team create --json: %q: %v", out, err)
+	}
+
+	code, out, errs = cli(t, a, "team", "invite", created.Team.ID, "--json")
+	if code != exitOK {
+		t.Fatalf("team invite: code %d: %s %s", code, out, errs)
+	}
+	inv := decodeTeamInvite(t, out)
+	if !inv.OK || inv.Role != "issuer" || inv.Team.ID != created.Team.ID || inv.Team.Name != "backend" {
+		t.Fatalf("team invite --json = %+v", inv)
+	}
+	norm, ok := envelope.NormalizePairCodeV2(inv.Code)
+	if !ok || len(inv.Code) != 17 {
+		t.Fatalf("no v2 code in %+v", inv)
+	}
+
+	code, out, errs = cli(t, b, "team", "join", norm, "--json")
+	if code != exitOK {
+		t.Fatalf("team join: code %d: %s %s", code, out, errs)
+	}
+	var joined pairOut
+	if err := json.Unmarshal([]byte(out), &joined); err != nil {
+		t.Fatalf("team join --json: %q: %v", out, err)
+	}
+	if joined.State == "pending" {
+		deadline := time.Now().Add(10 * time.Second)
+		for joined.State == "pending" {
+			if time.Now().After(deadline) {
+				t.Fatalf("join never finished: %+v", joined)
+			}
+			time.Sleep(20 * time.Millisecond)
+			_, out, _ = cli(t, b, "pair", "--status", joined.PairingID, "--json")
+			_ = json.Unmarshal([]byte(out), &joined)
+		}
+	}
+	if !joined.OK || joined.State != "complete" || joined.Peer == nil || joined.Peer.PublicKey != a.key {
+		t.Fatalf("team join result = %+v", joined)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var show teamShowOut
+	for {
+		_, out, _ = cli(t, b, "team", "show", created.Team.ID, "--json")
+		if err := json.Unmarshal([]byte(out), &show); err == nil && show.OK && len(show.Team.Members) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("B never saw the roster: %q", out)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	names := map[string]bool{}
+	for _, m := range show.Team.Members {
+		names[m.PublicKey] = true
+	}
+	if !names[a.key] || !names[b.key] {
+		t.Fatalf("team show on B = %+v, want alice and bob", show)
+	}
+
+	// Plain `pair <code>` on the same invite code (once redeemed by team join,
+	// the code is single-use, so this must fail rather than silently join).
+	code, _, _ = cli(t, b, "pair", norm, "--json")
+	if code != exitError {
+		t.Errorf("re-redeeming the invite code as a plain pair: exit %d, want error (single use)", code)
+	}
 }

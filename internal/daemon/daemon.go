@@ -192,7 +192,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
 	registerTrust(srv, peerStore, log, teamStore)
-	registerTeam(srv, teamStore, peerStore, log, id.Card().Card.Name)
+	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
 	registerMail(srv, outbox, peerStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()

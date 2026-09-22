@@ -106,7 +106,70 @@ type TeamRenameParams struct {
 	Name string `json:"name"`
 }
 
-func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, log *audit.Log, selfName string) {
+// teamRef is the "team": {"id","name"} member of the "team_invite" result.
+type teamRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// TeamInviteParams are the params of "team_invite".
+type TeamInviteParams struct {
+	Team string `json:"team"`
+}
+
+// TeamInviteResult is the result of "team_invite": a pairing status
+// (PairStatus, embedded so its fields sit at the top level) plus the invited team.
+type TeamInviteResult struct {
+	PairStatus
+	Team teamRef `json:"team"`
+}
+
+// TeamJoinParams are the params of "team_join".
+type TeamJoinParams struct {
+	Code string `json:"code"`
+}
+
+func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers.Manager, log *audit.Log, selfName string) {
+	srv.Handle("team_invite", func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p TeamInviteParams
+		if err := json.Unmarshal(params, &p); err != nil || p.Team == "" {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "team is required"}
+		}
+		t, err := resolveTeam(ctx, ts, p.Team)
+		if err != nil {
+			return nil, err
+		}
+		if t.Owner != ts.Self {
+			return nil, &ipc.Error{Code: CodeNotOwner, Message: "only the team owner can do this"}
+		}
+		if err := requireActive(t); err != nil {
+			return nil, err
+		}
+		members, err := ts.Members(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(members) >= team.MaxMembers {
+			return nil, &ipc.Error{Code: CodeTeamFull, Message: "the team already has 32 members"}
+		}
+		st, err := pairs.StartTagged(ctx, team.InviteTag{Store: ts, TeamID: t.ID})
+		if err != nil {
+			return nil, pairError(err)
+		}
+		return TeamInviteResult{PairStatus: st, Team: teamRef{ID: t.ID, Name: t.Name}}, nil
+	})
+
+	srv.Handle("team_join", func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p TeamJoinParams
+		if err := json.Unmarshal(params, &p); err != nil || p.Code == "" {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "code is required"}
+		}
+		st, err := pairs.RedeemTagged(ctx, p.Code, false, team.JoinTag{Store: ts})
+		if err != nil {
+			return nil, pairError(err)
+		}
+		return st, nil
+	})
 	srv.Handle("team_create", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p TeamCreateParams
 		if err := json.Unmarshal(params, &p); err != nil || p.Name == "" {

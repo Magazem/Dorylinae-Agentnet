@@ -147,6 +147,30 @@ func confirmPayload(lookup string, tag []byte) []byte {
 	return b
 }
 
+// Tag is opaque data a caller attaches to a pairing at Start or Redeem time
+// (Docs/review/11-phase1-tickets.md 1.1d: "team_invite = pair_new tagged with
+// the team"). If it implements Completer, its Completed method runs once the
+// tagged session is no longer pending.
+type Tag any
+
+// Completer is implemented by a Tag that wants to react when its pairing
+// ends. Completed runs once, synchronously in the goroutine that ended the
+// session (after any peer has been stored), so it must return quickly; slow
+// work should be handed off.
+type Completer interface {
+	Completed(CompletionInfo)
+}
+
+// CompletionInfo describes a finished pairing session, passed to a Tag's
+// Completed method.
+type CompletionInfo struct {
+	PairingID string
+	Role      string // RoleIssuer or RoleRedeemer
+	Lookup    string // the pairing's lookup (v2 only; empty for a v1 pairing)
+	State     string // StateComplete or StateFailed
+	Peer      *Peer  // set only when State is StateComplete
+}
+
 // parseConfirm strictly parses a pair.confirm payload and returns its lookup and tag.
 func parseConfirm(payload []byte) (lookup string, tag []byte, err error) {
 	v, err := agentcard.ParseStrict(payload)

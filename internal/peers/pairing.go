@@ -181,6 +181,7 @@ type attempt struct {
 type session struct {
 	st        Status
 	v1        bool
+	tag       Tag           // caller-supplied, delivered to a Completer once the session ends
 	codeReady chan struct{} // closed once the issuer has its code, or the pairing ended
 	done      chan struct{} // closed when the pairing ends
 	timer     *time.Timer
@@ -265,11 +266,16 @@ func (m *Manager) Get(id string) (Status, bool) {
 // Start issues a v2 pairing code. It returns within the configured wait: with
 // the code if the relay accepted it, otherwise with a pending status without a
 // code that Get will fill in.
-func (m *Manager) Start(ctx context.Context) (Status, error) {
+func (m *Manager) Start(ctx context.Context) (Status, error) { return m.StartTagged(ctx, nil) }
+
+// StartTagged is Start with a Tag attached to the session (see Tag and
+// Completer): a Completer tag's Completed method runs once, when the pairing
+// ends, complete or failed.
+func (m *Manager) StartTagged(ctx context.Context, tag Tag) (Status, error) {
 	// One deadline covers both the send and the wait, so callers return within Wait.
 	wctx, cancel := context.WithTimeout(ctx, m.cfg.Wait)
 	defer cancel()
-	s, err := m.beginIssuer(wctx)
+	s, err := m.beginIssuer(wctx, tag)
 	if err != nil {
 		return Status{}, err
 	}
@@ -285,6 +291,12 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 // within the configured wait: with the final status if the exchange finished,
 // otherwise pending.
 func (m *Manager) Redeem(ctx context.Context, rawCode string, allowV1 bool) (Status, error) {
+	return m.RedeemTagged(ctx, rawCode, allowV1, nil)
+}
+
+// RedeemTagged is Redeem with a Tag attached to the session (see Tag and
+// Completer).
+func (m *Manager) RedeemTagged(ctx context.Context, rawCode string, allowV1 bool, tag Tag) (Status, error) {
 	code, v2, ok := NormalizeCode(rawCode)
 	if !ok {
 		return Status{}, ErrBadCode
@@ -297,9 +309,9 @@ func (m *Manager) Redeem(ctx context.Context, rawCode string, allowV1 bool) (Sta
 	var s *session
 	var err error
 	if v2 {
-		s, err = m.beginRedeemer(wctx, code)
+		s, err = m.beginRedeemer(wctx, code, tag)
 	} else {
-		s, err = m.beginRedeemerV1(wctx, code)
+		s, err = m.beginRedeemerV1(wctx, code, tag)
 	}
 	if err != nil {
 		return Status{}, err
@@ -365,13 +377,14 @@ func (m *Manager) startKDFLocked(s *session) *kderiv {
 }
 
 // newSession registers a pending session. Caller holds no lock.
-func (m *Manager) newSession(role string, mutate func(*session)) (*session, error) {
+func (m *Manager) newSession(role string, tag Tag, mutate func(*session)) (*session, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
 	}
 	s := &session{
 		st:        Status{ID: id, Role: role, State: StatePending},
+		tag:       tag,
 		codeReady: make(chan struct{}),
 		done:      make(chan struct{}),
 	}
@@ -398,7 +411,7 @@ func (m *Manager) newSession(role string, mutate func(*session)) (*session, erro
 	return s, nil
 }
 
-func (m *Manager) beginIssuer(ctx context.Context) (*session, error) {
+func (m *Manager) beginIssuer(ctx context.Context, tag Tag) (*session, error) {
 	if err := m.precheck(); err != nil {
 		return nil, err
 	}
@@ -410,7 +423,7 @@ func (m *Manager) beginIssuer(ctx context.Context) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := m.newSession(RoleIssuer, func(s *session) {
+	s, err := m.newSession(RoleIssuer, tag, func(s *session) {
 		s.lookup, s.secret = code[:lookupLen], []byte(code[lookupLen:])
 		s.ownMbox = mbox
 		s.issuedAt = m.cfg.Now()
@@ -431,7 +444,7 @@ func (m *Manager) beginIssuer(ctx context.Context) (*session, error) {
 	return s, nil
 }
 
-func (m *Manager) beginRedeemer(ctx context.Context, code string) (*session, error) {
+func (m *Manager) beginRedeemer(ctx context.Context, code string, tag Tag) (*session, error) {
 	if err := m.precheck(); err != nil {
 		return nil, err
 	}
@@ -443,7 +456,7 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string) (*session, err
 	if err != nil {
 		return nil, err
 	}
-	s, err := m.newSession(RoleRedeemer, func(s *session) {
+	s, err := m.newSession(RoleRedeemer, tag, func(s *session) {
 		s.lookup, s.secret = code[:lookupLen], []byte(code[lookupLen:])
 		s.usedHash = usedCodeHash(code)
 		s.ownMbox = mbox
@@ -467,11 +480,11 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string) (*session, err
 	return s, nil
 }
 
-func (m *Manager) beginRedeemerV1(ctx context.Context, code string) (*session, error) {
+func (m *Manager) beginRedeemerV1(ctx context.Context, code string, tag Tag) (*session, error) {
 	if err := m.precheck(); err != nil {
 		return nil, err
 	}
-	s, err := m.newSession(RoleRedeemer, func(s *session) { s.v1 = true })
+	s, err := m.newSession(RoleRedeemer, tag, func(s *session) { s.v1 = true })
 	if err != nil {
 		return nil, err
 	}
@@ -984,7 +997,7 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		close(s.codeReady)
 	}
 	close(s.done)
-	role, lookup := s.st.Role, s.lookup
+	role, lookup, tag := s.st.Role, s.lookup, s.tag
 	cancelEntry := role == RoleIssuer && !s.v1 && lookup != ""
 	m.mu.Unlock()
 
@@ -992,6 +1005,14 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		ctx, cancel := context.WithTimeout(context.Background(), sendBudget)
 		_ = m.cfg.Sender.SendControl(ctx, envelope.Control{Op: envelope.OpPairCancel, Lookup: lookup})
 		cancel()
+	}
+	if c, ok := tag.(Completer); ok {
+		var peerCopy *Peer
+		if peer != nil {
+			cp := *peer
+			peerCopy = &cp
+		}
+		c.Completed(CompletionInfo{PairingID: id, Role: role, Lookup: lookup, State: state, Peer: peerCopy})
 	}
 	detail := map[string]string{"id": id, "role": role}
 	if peer != nil {
