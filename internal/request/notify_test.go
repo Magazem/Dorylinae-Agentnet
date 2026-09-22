@@ -269,7 +269,7 @@ func TestNotifyCancelEarlyDoesNotFire(t *testing.T) {
 	c := &capturedNotify{}
 	s.Notify = c.fn()
 	now := time.Now()
-	body := map[string]any{"at": wireTime(now), "reason": "", "request": NewID()}
+	body := map[string]any{"at": wireTime(now), "request": NewID()}
 	if err := deliverMirror(t, s, KindCancel, testFrom, now, body); err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -179,4 +180,47 @@ type auditFunc func(ctx context.Context, actor, action string, detail any) error
 
 func (f auditFunc) Append(ctx context.Context, actor, action string, detail any) error {
 	return f(ctx, actor, action, detail)
+}
+
+// TestTriggerFireBoundsFlood: a peer flooding requests must not start one
+// notifier process per request. Shows run one at a time and at most
+// maxQueued events are held; the rest are dropped.
+func TestTriggerFireBoundsFlood(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	var mu sync.Mutex
+	running, maxRunning, calls := 0, 0, 0
+	tr := &Trigger{Show: func(context.Context, string, string) error {
+		mu.Lock()
+		running++
+		calls++
+		if running > maxRunning {
+			maxRunning = running
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		running--
+		mu.Unlock()
+		return nil
+	}}
+	for range 1000 {
+		tr.Fire(ctx, Event{Kind: EventReceived, PeerName: "bob", Type: "task", Title: "T"})
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for tr.queued.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("queue did not drain")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if maxRunning != 1 {
+		t.Errorf("max concurrent Show = %d, want 1", maxRunning)
+	}
+	if calls > maxQueued || calls == 0 {
+		t.Errorf("Show called %d times, want 1..%d", calls, maxQueued)
+	}
 }

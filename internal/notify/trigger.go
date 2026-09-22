@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -51,7 +52,20 @@ type Trigger struct {
 
 	mu       sync.Mutex
 	lastFail time.Time
+	lastDrop time.Time
+
+	// queued counts events accepted by Fire and not yet finished; showMu
+	// makes those events show one at a time, so a peer flooding requests
+	// runs at most one notifier process and holds at most maxQueued
+	// goroutines.
+	queued atomic.Int32
+	showMu sync.Mutex
 }
+
+// maxQueued bounds the events waiting for or running Show. Beyond it, Fire
+// drops the event: at a 3 s timeout per call, a longer queue could not be
+// shown within the 5 s latency anyway.
+const maxQueued = 16
 
 func (t *Trigger) now() time.Time {
 	if t.Now != nil {
@@ -77,9 +91,34 @@ func (t *Trigger) show() ShowFunc {
 // Fire checks the event and desktop settings and, if both are on, shows the
 // notification on a new goroutine. It never blocks the caller. ctx is the
 // mail receiver's long-lived context (Docs/protocol/mail.md): it outlives
-// the single envelope, so the goroutine may keep using it.
+// the single envelope, so the goroutine may keep using it. Events are shown
+// one at a time; when maxQueued are already pending, the event is dropped
+// and a warning is logged at most once a minute.
 func (t *Trigger) Fire(ctx context.Context, ev Event) {
-	go t.fire(ctx, ev)
+	if t.queued.Add(1) > maxQueued {
+		t.queued.Add(-1)
+		t.reportDrop(ev.Kind)
+		return
+	}
+	go func() {
+		defer t.queued.Add(-1)
+		t.showMu.Lock()
+		defer t.showMu.Unlock()
+		t.fire(ctx, ev)
+	}()
+}
+
+func (t *Trigger) reportDrop(kind string) {
+	t.mu.Lock()
+	now := t.now()
+	throttled := !t.lastDrop.IsZero() && now.Sub(t.lastDrop) < time.Minute
+	if !throttled {
+		t.lastDrop = now
+	}
+	t.mu.Unlock()
+	if !throttled {
+		t.log().Warn("notify: queue full, dropping notification", "event", "notify_desktop_drop", "kind", kind)
+	}
 }
 
 func (t *Trigger) fire(ctx context.Context, ev Event) {

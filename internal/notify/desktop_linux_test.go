@@ -85,6 +85,10 @@ func TestGvariantStringRoundTrip(t *testing.T) {
 		`quo"te`,
 		`@s annotation`,
 		`'@s' \'` + "\n" + `multi`,
+		`@as ['x'] b'bytes' \` + "u0041" + ` \U0001F600 \x41 %s`,
+		`\`,
+		`'`,
+		``,
 	}
 	for _, in := range cases {
 		out := gvariantString(in)
@@ -123,5 +127,44 @@ func TestEscapeMarkup(t *testing.T) {
 	want := "a &amp; b &lt; c &gt; d"
 	if got != want {
 		t.Errorf("escapeMarkup = %q, want %q", got, want)
+	}
+}
+
+// TestShowDesktopLinuxNotifySendBodySurvivesStrcompress: notify-send runs its
+// body through g_strcompress, so an octal escape such as \074 must not
+// decode to a live '<' after markup escaping.
+func TestShowDesktopLinuxNotifySendBodySurvivesStrcompress(t *testing.T) {
+	orig := run
+	defer func() { run = orig }()
+	var body string
+	run = func(_ context.Context, name string, args []string, _ []string) error {
+		if name == "gdbus" {
+			return errors.New("no session bus")
+		}
+		body = args[len(args)-1]
+		return nil
+	}
+	in := `\074a href='x'\076click\074/a\076 & <b> \`
+	if err := showDesktop(context.Background(), "t", in); err != nil {
+		t.Fatal(err)
+	}
+	// g_strcompress: "\\" -> "\", "\NNN" -> octal byte, "\n" etc.
+	var b strings.Builder
+	for i := 0; i < len(body); i++ {
+		if body[i] != '\\' {
+			b.WriteByte(body[i])
+			continue
+		}
+		i++
+		if i == len(body) {
+			t.Fatalf("body %q ends in a lone backslash", body)
+		}
+		if body[i] >= '0' && body[i] <= '7' {
+			t.Fatalf("body %q has an octal escape g_strcompress would decode", body)
+		}
+		b.WriteByte(body[i])
+	}
+	if got, want := b.String(), escapeMarkup(in); got != want {
+		t.Errorf("compressed body = %q, want %q", got, want)
 	}
 }

@@ -28,7 +28,16 @@ func showDesktop(ctx context.Context, title, body string) error {
 	if err := run(ctx, "gdbus", args, nil); err == nil {
 		return nil
 	}
-	return run(ctx, "notify-send", []string{"-a", "agentnet", "--", title, escBody}, nil)
+	return run(ctx, "notify-send", []string{"-a", "agentnet", "--", title, notifySendBody(escBody)}, nil)
+}
+
+// notifySendBody doubles every backslash in the already markup-escaped body.
+// notify-send passes its body argument through g_strcompress, which turns
+// C escapes such as \074 into '<' after escapeMarkup ran; a body of
+// `\074a href=...\076` would otherwise become live markup. Doubled, each
+// backslash compresses back to one literal backslash.
+func notifySendBody(escBody string) string {
+	return strings.ReplaceAll(escBody, `\`, `\\`)
 }
 
 // gvariantString encodes s as a single-quoted GVariant text-format string
