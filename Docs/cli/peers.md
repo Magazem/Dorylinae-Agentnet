@@ -98,8 +98,11 @@ is paired again. Prints `Removed <name> (<fingerprint>)`; with `--json`,
 
 Phase 1: removing a peer that **owns** teams you are in also leaves those teams locally, and
 removes the peers it introduced unless they share another active team with you
-([../protocol/team.md](../protocol/team.md#operations)). Removing an introduced peer that is
-still in one of your teams is undone by the owner's next roster. Leave the team instead.
+([../protocol/team.md](../protocol/team.md#operations)). Removing a peer that is a **member**
+of a team you own removes it from that team first, the same as `team remove`: the epoch is
+bumped and the new roster is broadcast, before the peer itself is deleted. Removing an
+introduced peer that is still in one of your teams (and not a member you own it through) is
+undone by the owner's next roster. Leave the team instead.
 
 Both subcommands are recorded in the audit log as `peer.verify`,
 `peer.verify_fail` and `peer.remove` (see

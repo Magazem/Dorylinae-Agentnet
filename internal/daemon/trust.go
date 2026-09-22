@@ -92,6 +92,14 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 		// introductions trusted, with no peer row left to retry the remove on.
 		gcSelf := false
 		if ts != nil {
+			// Owned-team membership first (review 16 L12): broadcasting the
+			// updated roster needs the peer's mailbox key, so this runs
+			// before OwnerRemoved and before the peer row is deleted.
+			if err := cascadeTeamRemoval(ctx, ts, log, peer.PublicKey, time.Now()); err != nil {
+				return nil, err
+			}
+		}
+		if ts != nil {
 			_, removed, terr := ts.OwnerRemoved(ctx, peer.PublicKey, time.Now())
 			if terr != nil {
 				return nil, terr

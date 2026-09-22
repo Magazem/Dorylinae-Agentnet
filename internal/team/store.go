@@ -141,6 +141,28 @@ func membersTx(ctx context.Context, q querier, id string) ([]Member, error) {
 	return out, rows.Err()
 }
 
+// OwnedTeamsWithMember returns the active teams owned by self that key
+// currently belongs to (used by the daemon to cascade a `peers remove` of a
+// team member into that team's roster, Docs/cli/peers.md §peers remove).
+func (s *Store) OwnedTeamsWithMember(ctx context.Context, key string) ([]Team, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id, t.name, t.owner, t.epoch, t.state, t.created, t.updated
+		FROM teams t JOIN team_members tm ON tm.team_id = t.id
+		WHERE tm.key = ? AND t.owner = ? AND t.state = 'active'`, key, s.Self)
+	if err != nil {
+		return nil, fmt.Errorf("team: owned teams with member: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := []Team{}
+	for rows.Next() {
+		var t Team
+		if err := rows.Scan(&t.ID, &t.Name, &t.Owner, &t.Epoch, &t.State, &t.Created, &t.Updated); err != nil {
+			return nil, fmt.Errorf("team: owned teams with member: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // List returns every local team, oldest created first.
 func (s *Store) List(ctx context.Context) ([]Team, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, owner, epoch, state, created, updated FROM teams ORDER BY created, id`)
