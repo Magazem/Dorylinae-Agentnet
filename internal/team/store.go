@@ -117,6 +117,13 @@ func (s *Store) Get(ctx context.Context, id string) (Team, error) {
 	return getTx(ctx, s.db, id)
 }
 
+// GetTx is Get read through tx instead of the connection pool: for a caller
+// (1.4c) that already holds tx open and would otherwise deadlock the single-
+// connection pool by asking Get for a second connection.
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, id string) (Team, error) {
+	return getTx(ctx, tx, id)
+}
+
 func getTx(ctx context.Context, q querier, id string) (Team, error) {
 	var t Team
 	err := q.QueryRowContext(ctx, `SELECT id, name, owner, epoch, state, created, updated FROM teams WHERE id = ?`, id).
@@ -140,6 +147,11 @@ type querier interface {
 // Members returns the members of team id, oldest added first.
 func (s *Store) Members(ctx context.Context, id string) ([]Member, error) {
 	return membersTx(ctx, s.db, id)
+}
+
+// MembersTx is Members read through tx instead of the connection pool (see GetTx).
+func (s *Store) MembersTx(ctx context.Context, tx *sql.Tx, id string) ([]Member, error) {
+	return membersTx(ctx, tx, id)
 }
 
 func membersTx(ctx context.Context, q querier, id string) ([]Member, error) {

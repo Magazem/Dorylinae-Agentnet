@@ -23,6 +23,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/session"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
@@ -266,7 +267,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	presenceReceiver.OnResync = presenceSender.MaybeResync
 
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver)
+	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
+	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay)
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -303,6 +306,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
 	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
+	registerRequest(srv, st.DB(), reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -374,7 +378,7 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -437,7 +441,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	sessions.SetSender(client)
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
-		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts)
+		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs)
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

@@ -16,6 +16,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
 
@@ -27,15 +28,34 @@ const mailQueue = 256
 // the peers table.
 type peerDirectory struct{ db *sql.DB }
 
-func (d peerDirectory) IsPaired(key string) bool {
+// rowQuerier is satisfied by both *sql.DB and *sql.Tx.
+type rowQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func (d peerDirectory) IsPaired(key string) bool { return isPairedQ(d.db, key) }
+
+// IsPairedTx is mail.TxOutboxPeers, read through the caller's transaction
+// instead of the connection pool (see mail.TxOutboxPeers).
+func (d peerDirectory) IsPairedTx(tx *sql.Tx, key string) bool { return isPairedQ(tx, key) }
+
+func isPairedQ(q rowQuerier, key string) bool {
 	var one int
-	return d.db.QueryRow(`SELECT 1 FROM peers WHERE public_key = ?`, key).Scan(&one) == nil
+	return q.QueryRow(`SELECT 1 FROM peers WHERE public_key = ?`, key).Scan(&one) == nil
 }
 
 // MailboxPub returns the pub of the newest stored announcement of a peer.
-func (d peerDirectory) MailboxPub(peer string) ([]byte, bool) {
+func (d peerDirectory) MailboxPub(peer string) ([]byte, bool) { return mailboxPubQ(d.db, peer) }
+
+// MailboxPubTx is mail.TxOutboxPeers, read through the caller's transaction
+// instead of the connection pool (see mail.TxOutboxPeers).
+func (d peerDirectory) MailboxPubTx(tx *sql.Tx, peer string) ([]byte, bool) {
+	return mailboxPubQ(tx, peer)
+}
+
+func mailboxPubQ(q rowQuerier, peer string) ([]byte, bool) {
 	var raw string
-	if err := d.db.QueryRow(`SELECT mailbox_keys FROM peers WHERE public_key = ?`, peer).Scan(&raw); err != nil {
+	if err := q.QueryRow(`SELECT mailbox_keys FROM peers WHERE public_key = ?`, peer).Scan(&raw); err != nil {
 		return nil, false
 	}
 	var anns []struct {
@@ -85,7 +105,7 @@ type ownKeys interface {
 // newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
 // the own mailbox private keys (created by pairing and rotation, tickets 0.8c
 // and 1.0b). Both need Sender, which startMail sets.
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store) (*mail.Receiver, *mail.Pusher) {
+func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
 	priv := func() (ed25519.PrivateKey, error) {
@@ -119,6 +139,9 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		rcv.Kinds["team.roster"] = ts.RosterKind()
 		rcv.Kinds["team.join"] = ts.JoinKind()
 		rcv.Kinds["team.leave"] = ts.LeaveKind()
+	}
+	if rs != nil {
+		rcv.Kinds["request"] = rs.Kind()
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail

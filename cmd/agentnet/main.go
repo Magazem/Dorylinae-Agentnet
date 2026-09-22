@@ -61,6 +61,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPresence(args[1:], stdout, stderr)
 	case "ping":
 		return runPing(args[1:], stdout, stderr)
+	case "request":
+		return runRequest(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -92,6 +94,7 @@ Commands:
   ping      Round-trip an encrypted message to a paired agent
   team      Create and manage teams
   presence  Show or set who can see this machine's presence
+  request   Send a teammate's agent a request
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

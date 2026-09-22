@@ -53,6 +53,16 @@ type OutboxPeers interface {
 	PeerKeys
 }
 
+// TxOutboxPeers is the transactional form of OutboxPeers, read through a
+// caller-owned transaction: SubmitTx (1.4c) needs it because the daemon's
+// SQLite connection pool holds a single connection (Docs/protocol/ipc.md
+// §Endpoint), so looking a peer up through the pool while the caller's own
+// transaction already holds that connection would deadlock.
+type TxOutboxPeers interface {
+	IsPairedTx(tx *sql.Tx, key string) bool
+	MailboxPubTx(tx *sql.Tx, peer string) (pub []byte, ok bool)
+}
+
 // Outbox stores submitted mail and resends it until it is acked.
 type Outbox struct {
 	DB *sql.DB
@@ -118,42 +128,109 @@ func (o *Outbox) Wake() {
 
 func stamp(t time.Time) string { return t.UTC().Format(StoreTimeFmt) }
 
+// execer is satisfied by both *sql.DB and *sql.Tx.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // Submit signs and seals a mail to a paired peer and stores it as queued. It
 // does not touch the relay, so it returns at once; the worker sends it.
 func (o *Outbox) Submit(ctx context.Context, to, kind string, body any) (Submitted, error) {
+	sl, frame, now, err := o.seal(to, kind, body)
+	if err != nil {
+		return Submitted{}, err
+	}
+	if err := o.insert(ctx, o.DB, to, kind, sl, frame, now); err != nil {
+		return Submitted{}, err
+	}
+	o.Wake()
+	return Submitted{ID: sl.ID, State: StateQueued}, nil
+}
+
+// SubmitTx is Submit run inside a caller-owned transaction, for callers
+// (1.4c) that must store the outbox row atomically with their own rows (for
+// example a stored request and its auto-decline reply, Docs/protocol/request.md
+// §Receiving step 3). It looks the peer up through tx (TxOutboxPeers), not
+// through the connection pool: see TxOutboxPeers. The caller must call Wake
+// after a successful commit: the worker must not be woken for a row that a
+// rollback then removes.
+func (o *Outbox) SubmitTx(ctx context.Context, tx *sql.Tx, to, kind string, body any) (Submitted, error) {
+	sl, frame, now, err := o.sealTx(tx, to, kind, body)
+	if err != nil {
+		return Submitted{}, err
+	}
+	if err := o.insert(ctx, tx, to, kind, sl, frame, now); err != nil {
+		return Submitted{}, err
+	}
+	return Submitted{ID: sl.ID, State: StateQueued}, nil
+}
+
+// seal is Submit's preparation: sign and seal the mail and build its wire
+// frame, looking the peer up through the connection pool. It touches neither
+// the database (beyond that lookup) nor the relay.
+func (o *Outbox) seal(to, kind string, body any) (sl Sealed, frame string, now time.Time, err error) {
 	if kind == "ack" {
-		return Submitted{}, ErrKindNotSent
+		return Sealed{}, "", time.Time{}, ErrKindNotSent
 	}
 	if !o.Peers.IsPaired(to) {
-		return Submitted{}, ErrUnpaired
+		return Sealed{}, "", time.Time{}, ErrUnpaired
 	}
 	pub, ok := o.Peers.MailboxPub(to)
 	if !ok {
-		return Submitted{}, ErrNoMailboxKey
+		return Sealed{}, "", time.Time{}, ErrNoMailboxKey
 	}
+	return o.sealWithPub(to, kind, body, pub)
+}
+
+// sealTx is SubmitTx's preparation: the same as seal, but looks the peer up
+// through tx (see TxOutboxPeers).
+func (o *Outbox) sealTx(tx *sql.Tx, to, kind string, body any) (sl Sealed, frame string, now time.Time, err error) {
+	if kind == "ack" {
+		return Sealed{}, "", time.Time{}, ErrKindNotSent
+	}
+	txPeers, ok := o.Peers.(TxOutboxPeers)
+	if !ok {
+		return Sealed{}, "", time.Time{}, errors.New("mail: outbox's Peers does not implement TxOutboxPeers, needed by SubmitTx")
+	}
+	if !txPeers.IsPairedTx(tx, to) {
+		return Sealed{}, "", time.Time{}, ErrUnpaired
+	}
+	pub, ok := txPeers.MailboxPubTx(tx, to)
+	if !ok {
+		return Sealed{}, "", time.Time{}, ErrNoMailboxKey
+	}
+	return o.sealWithPub(to, kind, body, pub)
+}
+
+// sealWithPub signs and seals the mail to the recipient's mailbox key pub and
+// builds its wire frame.
+func (o *Outbox) sealWithPub(to, kind string, body any, pub []byte) (sl Sealed, frame string, now time.Time, err error) {
 	priv, err := o.Priv()
 	if err != nil {
-		return Submitted{}, fmt.Errorf("mail: load identity key: %w", err)
+		return Sealed{}, "", time.Time{}, fmt.Errorf("mail: load identity key: %w", err)
 	}
 	defer clear(priv)
-	now := o.now()
-	sl, err := Seal(SealInput{Priv: priv, To: to, MailboxPub: pub, Kind: kind, Body: body, Created: now})
+	now = o.now()
+	sl, err = Seal(SealInput{Priv: priv, To: to, MailboxPub: pub, Kind: kind, Body: body, Created: now})
 	if err != nil {
-		return Submitted{}, err
+		return Sealed{}, "", time.Time{}, err
 	}
-	frame, err := buildFrame(priv, to, sl, now)
+	frame, err = buildFrame(priv, to, sl, now)
 	if err != nil {
-		return Submitted{}, err
+		return Sealed{}, "", time.Time{}, err
 	}
-	if _, err := o.DB.ExecContext(ctx,
+	return sl, frame, now, nil
+}
+
+func (o *Outbox) insert(ctx context.Context, ex execer, to, kind string, sl Sealed, frame string, now time.Time) error {
+	if _, err := ex.ExecContext(ctx,
 		`INSERT INTO outbox (id, to_key, kind, created, key_id, signed, frame, state, attempts, next_attempt, updated)
 VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?)`,
 		sl.ID, to, kind, now.UTC().Truncate(time.Second).Format(timeFmt), sl.KeyID.String(),
 		string(sl.Signed), frame, stamp(now), stamp(now)); err != nil {
-		return Submitted{}, fmt.Errorf("mail: store outbox row: %w", err)
+		return fmt.Errorf("mail: store outbox row: %w", err)
 	}
-	o.Wake()
-	return Submitted{ID: sl.ID, State: StateQueued}, nil
+	return nil
 }
 
 func buildFrame(priv ed25519.PrivateKey, to string, sl Sealed, now time.Time) (string, error) {
