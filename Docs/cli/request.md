@@ -138,7 +138,13 @@ When downgraded, the output adds a line with `urgency_note`.
 Human output of `cancel`: `Cancel sent for r-… to bob (waiting for bob's daemon to
 confirm)`, or `r-… is already cancelled`, or `Cancel already sent for r-…`.
 
-The request view is defined in [../protocol/ipc.md](../protocol/ipc.md#requests).
+The request view is defined in [../protocol/ipc.md](../protocol/ipc.md#requests). Once
+an accepted request has a work session, the view gains a `session` member (`{"id",
+"state", "round"}`, [work-session.md](../protocol/work-session.md#ipc)); see
+[session.md](session.md) for `agentnet sessions`/`session`/`result`/`wait`/
+`accept-result`. On an open session, `agentnet complete <id>` is a shorthand for
+`agentnet result <id>` (ticket 2.1b): the request itself stays `accepted` until the
+session closes.
 
 Error codes: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer` (the peer
 was paired with v1 on a hosted relay: re-pair or run `peers verify`), `unknown_team`,

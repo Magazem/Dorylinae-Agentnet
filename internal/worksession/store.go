@@ -212,3 +212,91 @@ func (s *Store) Get(ctx context.Context, id string) (View, error) {
 	}
 	return toView(r)
 }
+
+// GetByRequestID resolves ws_show's r-<id> shorthand
+// (Docs/protocol/work-session.md §IPC, "ws_show ... an r- id resolved
+// through its session"): the session belonging to a request id. A daemon
+// only ever holds one role for a given session, so request_id alone (not
+// narrowed by role) is enough in practice.
+func (s *Store) GetByRequestID(ctx context.Context, requestID string) (View, error) {
+	row := s.DB.QueryRowContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE request_id = ? LIMIT 1`, requestID)
+	r, err := scanRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return View{}, ErrUnknownSession
+	}
+	if err != nil {
+		return View{}, fmt.Errorf("worksession: read row: %w", err)
+	}
+	return toView(r)
+}
+
+// RefFor resolves the session id/state/round for a request, for the request
+// view's "session" member (Docs/protocol/work-session.md §IPC). ok is false
+// when no session exists yet.
+func (s *Store) RefFor(ctx context.Context, role, peer, requestID string) (id, state string, round int, ok bool) {
+	row := s.DB.QueryRowContext(ctx, `SELECT id, state, round FROM work_sessions WHERE role = ? AND peer = ? AND request_id = ?`, role, peer, requestID)
+	var i, st string
+	var r int
+	if err := row.Scan(&i, &st, &r); err != nil {
+		return "", "", 0, false
+	}
+	return i, st, r, true
+}
+
+// ListFilter narrows ws_list (Docs/protocol/work-session.md §IPC).
+type ListFilter struct {
+	State, Role, Peer, TeamID string
+}
+
+// List runs ws_list: every session matching the filter, newest state_at
+// first.
+func (s *Store) List(ctx context.Context, f ListFilter) ([]View, error) {
+	q := `SELECT ` + workSessionColumns + ` FROM work_sessions WHERE 1=1`
+	var args []any
+	if f.State != "" {
+		q += ` AND state = ?`
+		args = append(args, f.State)
+	}
+	if f.Role != "" {
+		q += ` AND role = ?`
+		args = append(args, f.Role)
+	}
+	if f.Peer != "" {
+		q += ` AND peer = ?`
+		args = append(args, f.Peer)
+	}
+	if f.TeamID != "" {
+		q += ` AND team_id = ?`
+		args = append(args, f.TeamID)
+	}
+	q += ` ORDER BY state_at DESC, id ASC`
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("worksession: list: %w", err)
+	}
+	var scanned []storedRow
+	for rows.Next() {
+		r, err := scanRow(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("worksession: scan: %w", err)
+		}
+		scanned = append(scanned, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	out := make([]View, 0, len(scanned))
+	for _, r := range scanned {
+		v, err := toView(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, nil
+}

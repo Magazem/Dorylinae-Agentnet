@@ -227,6 +227,24 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 	return seenNew, nil
 }
 
+// StoreInboxTx stores a mail_inbox row for op inside tx, exactly as the
+// generic path above does for a Kind with Inbox: true. It is for a kind whose
+// Apply decides at receive time whether to keep the plaintext (Inbox: false
+// at registration, so the generic path above does not also store it): pass
+// signed as op.Signed to keep it, or nil to store the row without content
+// (Docs/protocol/work-session.md §Early complete and Phase 1 workers, review
+// 27 H1 option (a)). The row's presence (from_key, id, kind, created,
+// received_at) is unaffected either way: dedupe is mail_seen, not this table,
+// so omitting the plaintext here never causes a resend or a re-apply.
+func StoreInboxTx(ctx context.Context, tx *sql.Tx, op *Opened, signed []byte, now time.Time) error {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
+		op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), now.UTC().Format(StoreTimeFmt), string(signed)); err != nil {
+		return fmt.Errorf("mail: store inbox: %w", err)
+	}
+	return nil
+}
+
 // seenAs classifies an existing mail_seen row as a plain or bad-body duplicate.
 func seenAs(ctx context.Context, tx *sql.Tx, op *Opened) (seenResult, error) {
 	var got string

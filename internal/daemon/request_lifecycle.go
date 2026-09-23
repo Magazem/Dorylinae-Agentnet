@@ -12,6 +12,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // IPC error codes for the request lifecycle (Docs/protocol/ipc.md §Requests).
@@ -104,6 +105,17 @@ type RequestView struct {
 	UrgencyNote     string            `json:"urgency_note,omitempty"`
 	Delivery        string            `json:"delivery,omitempty"`
 	MailID          string            `json:"mail_id"`
+	// Session is present once a work session exists for the request
+	// (Docs/protocol/work-session.md §IPC, "the request view gains
+	// session? {id, state, round}").
+	Session *SessionRef `json:"session,omitempty"`
+}
+
+// SessionRef is the request view's "session" member.
+type SessionRef struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Round int    `json:"round"`
 }
 
 const wireTimeFmt = "2006-01-02T15:04:05Z"
@@ -132,8 +144,10 @@ func requestArtifacts(a []request.Artifact) []RequestArtifact {
 }
 
 // ViewResult builds the request view for id v, with includeOutput controlling
-// whether result.output is included (Docs/protocol/ipc.md §Requests).
-func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, v request.View, includeOutput bool) RequestView {
+// whether result.output is included (Docs/protocol/ipc.md §Requests). ws, if
+// non-nil, is consulted for the "session" member (Docs/protocol/work-session.md
+// §IPC).
+func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, ws *worksession.Store, v request.View, includeOutput bool) RequestView {
 	fp, _ := envelope.KeyFingerprint(v.Peer)
 	name := v.Peer
 	if p, err := resolvePeer(ctx, ps, v.Peer); err == nil {
@@ -179,6 +193,15 @@ func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, v request.
 		r.Due = &due
 	}
 	r.UrgencyNote = v.UrgencyNote
+	if ws != nil {
+		role := worksession.RoleWorker
+		if v.Direction == "out" {
+			role = worksession.RoleRequester
+		}
+		if sid, state, round, ok := ws.RefFor(ctx, role, v.Peer, v.ID); ok {
+			r.Session = &SessionRef{ID: sid, State: state, Round: round}
+		}
+	}
 	return r
 }
 
@@ -245,7 +268,7 @@ type RequestCancelResult struct {
 // request_resend, request_show, request_list and inbox_list
 // (Docs/protocol/ipc.md §Requests). The CLI for
 // inbox/accept/decline/defer/complete is 1.6b.
-func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *team.Store) {
+func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *team.Store, ws *worksession.Store) {
 	srv.Handle("request_accept", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p idFromParams
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
@@ -255,7 +278,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, ws, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_decline", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -269,7 +292,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, ws, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_defer", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -287,7 +310,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, ws, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_complete", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -306,7 +329,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, v, true), MailID: v.ReplyMailID}, nil
+		return RequestLifecycleResult{Request: ViewResult(ctx, ps, ts, ws, v, true), MailID: v.ReplyMailID}, nil
 	})
 
 	srv.Handle("request_cancel", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -324,7 +347,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if out.MailID != "" {
 			mailID = &out.MailID
 		}
-		return RequestCancelResult{Request: ViewResult(ctx, ps, ts, out.View, true), MailID: mailID, Duplicate: out.Duplicate}, nil
+		return RequestCancelResult{Request: ViewResult(ctx, ps, ts, ws, out.View, true), MailID: mailID, Duplicate: out.Duplicate}, nil
 	})
 
 	srv.Handle("request_resend", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -348,7 +371,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestShowResult{Request: ViewResult(ctx, ps, ts, v, true)}, nil
+		return RequestShowResult{Request: ViewResult(ctx, ps, ts, ws, v, true)}, nil
 	})
 
 	srv.Handle("request_list", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -379,7 +402,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		}
 		results := make([]RequestView, len(views))
 		for i, v := range views {
-			results[i] = ViewResult(ctx, ps, ts, v, false)
+			results[i] = ViewResult(ctx, ps, ts, ws, v, false)
 		}
 		return RequestListResult{Requests: results}, nil
 	})
@@ -406,7 +429,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		}
 		results := make([]RequestView, len(views))
 		for i, v := range views {
-			results[i] = ViewResult(ctx, ps, ts, v, false)
+			results[i] = ViewResult(ctx, ps, ts, ws, v, false)
 		}
 		return RequestListResult{Requests: results}, nil
 	})

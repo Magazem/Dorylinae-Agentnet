@@ -102,13 +102,13 @@ func TestResult_Caps(t *testing.T) {
 		a, b, reqID, _ := setupAcceptedSession(t)
 		r := validResult()
 		r.Summary = strings.Repeat("a", 280)
-		if ok, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); !ok || err != nil {
+		if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); !ok || err != nil {
 			t.Fatalf("at limit: ok=%v err=%v", ok, err)
 		}
 		r2 := validResult()
 		r2.Summary = strings.Repeat("a", 281)
 		var fe *FieldError
-		if _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r2); err == nil || !asFieldErr(err, &fe) {
+		if _, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r2); err == nil || !asFieldErr(err, &fe) {
 			t.Fatalf("over limit: err = %v, want FieldError", err)
 		}
 		_ = a
@@ -119,7 +119,7 @@ func TestResult_Caps(t *testing.T) {
 		r := validResult()
 		r.Verification = VerificationHumanAccepted
 		var fe *FieldError
-		if _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); err == nil || !asFieldErr(err, &fe) {
+		if _, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); err == nil || !asFieldErr(err, &fe) {
 			t.Fatalf("human_accepted from B: err = %v, want FieldError", err)
 		}
 	})
@@ -139,12 +139,12 @@ func TestResult_Caps(t *testing.T) {
 		_, b, reqID, _ := setupAcceptedSession(t)
 		r := validResult()
 		r.Output = strings.Repeat("a", 32768)
-		if ok, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); !ok || err != nil {
+		if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); !ok || err != nil {
 			t.Fatalf("at limit: ok=%v err=%v", ok, err)
 		}
 		r2 := validResult()
 		r2.Output = strings.Repeat("a", 32769)
-		if _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r2); err == nil {
+		if _, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r2); err == nil {
 			t.Fatal("over limit: want an error")
 		}
 	})
@@ -161,7 +161,7 @@ func TestResult_Caps(t *testing.T) {
 		if err := ValidateResult(r); err != nil {
 			t.Fatalf("fields individually valid but ValidateResult failed: %v", err)
 		}
-		_, err := b.ws.SubmitResult(context.Background(), testA, reqID, r)
+		_, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r)
 		var tl *TooLargeResultError
 		if err == nil || !asTooLargeErr(err, &tl) {
 			t.Fatalf("oversized total body: err = %v, want TooLargeResultError", err)
@@ -172,7 +172,7 @@ func TestResult_Caps(t *testing.T) {
 		_, b, reqID, _ := setupAcceptedSession(t)
 		r := validResult()
 		r.Notes = strings.Repeat("a", 2001)
-		if _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); err == nil {
+		if _, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); err == nil {
 			t.Fatal("over the note limit: want an error")
 		}
 	})

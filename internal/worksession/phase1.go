@@ -97,6 +97,35 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 	return nil
 }
 
+// CheckPhase1FallbackForPeer runs CheckPhase1Fallback for every not-yet-closed
+// worker-role session with peer. There is no per-mail linkage from an outbox
+// row back to its session (see CheckPhase1Fallback), so the daemon's trigger
+// (an outbox row to peer, kind ws.result/ws.cancel, ending
+// failed/unsupported_kind) is scoped to the peer, not one session; this
+// checks each of that peer's open sessions in turn. Errors are logged by the
+// caller's context cancellation only: this is a best-effort background sweep.
+func (s *Store) CheckPhase1FallbackForPeer(ctx context.Context, peer string) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM work_sessions WHERE role = ? AND peer = ? AND state != ?`,
+		RoleWorker, peer, StateClosed)
+	if err != nil {
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	_ = rows.Close()
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		_ = s.CheckPhase1Fallback(ctx, peer, id)
+	}
+}
+
 // findRow resolves the worker-role row for (peer, requestID) through the
 // connection pool, for use outside a mail-apply transaction.
 func findRow(ctx context.Context, db *sql.DB, peer, requestID string) (storedRow, error) {

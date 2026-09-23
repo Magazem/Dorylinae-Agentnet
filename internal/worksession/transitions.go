@@ -145,6 +145,14 @@ func (s *Store) RequestChanges(ctx context.Context, id, changes string) (View, e
 	now := s.now()
 	newRound := r.round + 1
 	seq := r.seq + 1
+	if fromQuarantine && r.result.Valid && r.result.String != "" {
+		// OD-P2-6 (c), review 27 H1, D18: the quarantined result is deleted
+		// unseen below; also blank the mail_inbox row it was decoded from, in
+		// the same transaction.
+		if err := blankResultMailTx(ctx, tx, r.peer, id, r.round); err != nil {
+			return View{}, err
+		}
+	}
 	sendRow := r
 	sendRow.round = newRound
 	if _, err := s.sendState(ctx, tx, sendRow, seq, StateOpen, "", "", changes, now); err != nil {
@@ -198,6 +206,14 @@ func (s *Store) Discard(ctx context.Context, id string) (View, error) {
 	}
 	now := s.now()
 	seq := r.seq + 1
+	if r.result.Valid && r.result.String != "" {
+		// OD-P2-6 (c), review 27 H1, D18: the quarantined result is deleted
+		// unseen below; also blank the mail_inbox row it was decoded from, in
+		// the same transaction.
+		if err := blankResultMailTx(ctx, tx, r.peer, id, r.round); err != nil {
+			return View{}, err
+		}
+	}
 	if _, err := s.sendState(ctx, tx, r, seq, StateClosed, OutcomeCancelled, "", "", now); err != nil {
 		return View{}, err
 	}
@@ -267,14 +283,38 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	return toView(newRow)
 }
 
-// ReleaseApproved runs the DB transition of ws_release once its approval is
-// confirmed (Docs/protocol/work-session.md §Quarantine): quarantined ->
-// awaiting_result, released = 1. The quarantine rule is not re-evaluated
-// after a release for this round. The approval gate itself (kind "release")
-// is added by 2.2a/2.4; this method performs only the state change, and
-// must be called only by the approval-confirm path with the id of the
-// confirmed approval, never straight from IPC or mail. An empty approvalID
-// is refused.
+// ReleaseInTx performs the quarantined -> awaiting_result transition
+// (Docs/protocol/work-session.md §Quarantine) inside tx, for use as an
+// approval.Action's Perform (kind "release", 2.1b): Confirm runs Precondition
+// and Perform in the same transaction as the approval's own state change. It
+// writes no audit and does not call s.DB: the caller commits tx itself and
+// must audit ws.release (and Outbox.Wake) after commit.
+func (s *Store) ReleaseInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (peer string, round int, err error) {
+	r, err := scanByID(ctx, tx, id)
+	if err != nil {
+		return "", 0, err
+	}
+	if r.role != RoleRequester {
+		return "", 0, ErrNotRequester
+	}
+	if r.state != StateQuarantined {
+		return "", 0, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
+	}
+	seq := r.seq + 1
+	if _, err := s.sendState(ctx, tx, r, seq, StateAwaitingResult, "", "", "", now); err != nil {
+		return "", 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET state = ?, seq = ?, released = 1, state_at = ?, updated = ? WHERE id = ?`,
+		StateAwaitingResult, seq, wireTime(now), storeTime(now), id); err != nil {
+		return "", 0, fmt.Errorf("worksession: release: %w", err)
+	}
+	return r.peer, r.round, nil
+}
+
+// ReleaseApproved runs ReleaseInTx in its own transaction, for direct callers
+// (tests, and any future non-approval-integrated path). An empty approvalID
+// is refused: production callers only reach this once an approval.Action
+// (2.2a) confirmed it.
 func (s *Store) ReleaseApproved(ctx context.Context, id, approvalID string) (View, error) {
 	if approvalID == "" {
 		return View{}, errors.New("worksession: release needs a confirmed approval")
@@ -285,37 +325,81 @@ func (s *Store) ReleaseApproved(ctx context.Context, id, approvalID string) (Vie
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	r, err := scanByID(ctx, tx, id)
+	now := s.now()
+	peer, round, err := s.ReleaseInTx(ctx, tx, id, now)
 	if err != nil {
 		return View{}, err
-	}
-	if r.role != RoleRequester {
-		return View{}, ErrNotRequester
-	}
-	if r.state != StateQuarantined {
-		return View{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
-	}
-	now := s.now()
-	seq := r.seq + 1
-	if _, err := s.sendState(ctx, tx, r, seq, StateAwaitingResult, "", "", "", now); err != nil {
-		return View{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET state = ?, seq = ?, released = 1, state_at = ?, updated = ? WHERE id = ?`,
-		StateAwaitingResult, seq, wireTime(now), storeTime(now), id); err != nil {
-		return View{}, fmt.Errorf("worksession: release: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, fmt.Errorf("worksession: commit: %w", err)
 	}
 	s.Outbox.Wake()
 	if s.Audit != nil {
-		_ = s.Audit.Append(ctx, "cli", "ws.release", map[string]any{"session": id, "peer": r.peer, "round": r.round, "approval": approvalID})
+		_ = s.Audit.Append(ctx, "cli", "ws.release", map[string]any{"session": id, "peer": peer, "round": round, "approval": approvalID})
 	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
 	}
 	return toView(newRow)
+}
+
+// AcceptResultInTx performs the awaiting_result -> closed transition inside
+// tx with verification forced to human_accepted (Docs/protocol/work-session.md
+// §Accept-result, "--human"), for use as an approval.Action's Perform (kind
+// "accept_result", 2.1b). It writes no audit; call AuditAfterHumanAccept with
+// the returned peer/round/opened after the caller's transaction commits.
+func (s *Store) AcceptResultInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (peer string, round int, opened time.Time, err error) {
+	r, err := scanByID(ctx, tx, id)
+	if err != nil {
+		return "", 0, time.Time{}, err
+	}
+	if r.role != RoleRequester {
+		return "", 0, time.Time{}, ErrNotRequester
+	}
+	if r.state != StateAwaitingResult {
+		return "", 0, time.Time{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
+	}
+	if err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, VerificationHumanAccepted, now); err != nil {
+		return "", 0, time.Time{}, err
+	}
+	return r.peer, r.round, parseWireTime(r.opened), nil
+}
+
+// AuditAfterHumanAccept audits ws.accept_result and ws.close for the
+// --human ws_accept_result path (2.1b), and wakes the outbox. Call it once,
+// after the approval's transaction (which ran AcceptResultInTx) has
+// committed: the audit log shares the daemon's single SQLite connection, so
+// this must never run inside a transaction (review 27, C1).
+func (s *Store) AuditAfterHumanAccept(ctx context.Context, id, peer string, round int, opened, now time.Time) {
+	if s.Outbox != nil {
+		s.Outbox.Wake()
+	}
+	if s.Audit == nil {
+		return
+	}
+	_ = s.Audit.Append(ctx, "cli", "ws.accept_result", map[string]any{
+		"session": id, "peer": peer, "round": round, "verification": VerificationHumanAccepted,
+	})
+	age := 0
+	if !opened.IsZero() {
+		age = int(now.Sub(opened) / time.Second)
+	}
+	_ = s.Audit.Append(ctx, "daemon", "ws.close", map[string]any{
+		"session": id, "peer": peer, "outcome": OutcomeAccepted, "rounds": round, "age_s": age,
+	})
+}
+
+// PeekTx reads a session row's role and state inside tx, for an
+// approval.Action's Precondition (Docs/protocol/approval.md §Flow): the
+// waiting action's preconditions are re-checked immediately before Perform,
+// in the same transaction as the approval's own decision.
+func (s *Store) PeekTx(ctx context.Context, tx *sql.Tx, id string) (role, state string, err error) {
+	r, err := scanByID(ctx, tx, id)
+	if err != nil {
+		return "", "", err
+	}
+	return r.role, r.state, nil
 }
 
 func scanByID(ctx context.Context, tx *sql.Tx, id string) (storedRow, error) {

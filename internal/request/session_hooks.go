@@ -28,9 +28,12 @@ type SessionOpener interface {
 // exist for it (Docs/protocol/work-session.md §Early complete and Phase 1
 // workers). keepContent is false only when the quarantine rule holds for the
 // session: then the caller must store no result and no note. If the session
-// is (still) open, the hook closes it (outcome cancelled).
+// is (still) open, the hook closes it (outcome cancelled). The returned
+// after func, if non-nil, is called once by the caller after its transaction
+// commits (it may append audit rows: ws.close for the caused close, and
+// ws.ignored {reason: "early_complete"} when content was dropped).
 type SessionEarlyComplete interface {
-	EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID string, hadResult bool) (keepContent bool, err error)
+	EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID string, hadResult bool) (keepContent bool, after func(context.Context), err error)
 }
 
 // SessionCompleter is request_complete's redirect when a session exists for

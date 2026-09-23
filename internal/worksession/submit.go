@@ -15,38 +15,38 @@ import (
 // §Closing the request). ok reports whether a session exists at all; when
 // !ok the caller (e.g. request_complete's shorthand) should fall back to its
 // own normal path.
-func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result *Result) (ok bool, err error) {
+func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result *Result) (ok bool, mailID string, err error) {
 	if err := ValidateResult(result); err != nil {
-		return true, err
+		return true, "", err
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return true, fmt.Errorf("worksession: begin: %w", err)
+		return true, "", fmt.Errorf("worksession: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
 	row, err := findRowTx(ctx, tx, RoleWorker, peer, requestID)
 	if errors.Is(err, ErrUnknownSession) {
-		return false, nil
+		return false, "", nil
 	}
 	if err != nil {
-		return true, err
+		return true, "", err
 	}
 	if row.state != StateOpen || (row.cancel.Valid && row.cancel.String == "requested") {
-		return true, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
+		return true, "", &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
 	}
 
 	now := s.now()
 	canon, err := resultBodyCanonical(row.id, requestID, row.round, now, result)
 	if err != nil {
-		return true, err
+		return true, "", err
 	}
 	if err := CheckResultSize(canon); err != nil {
-		return true, err
+		return true, "", err
 	}
 	resultCanon, err := CanonicalResult(result)
 	if err != nil {
-		return true, err
+		return true, "", err
 	}
 	body := map[string]any{
 		"at": wireTime(now), "request": requestID, "result": resultWire(result),
@@ -54,13 +54,14 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET result = ?, result_round = ?, updated = ? WHERE id = ?`,
 		string(resultCanon), row.round, storeTime(now), row.id); err != nil {
-		return true, fmt.Errorf("worksession: store result: %w", err)
+		return true, "", fmt.Errorf("worksession: store result: %w", err)
 	}
-	if _, err := s.Outbox.SubmitTx(ctx, tx, peer, KindResult, body); err != nil {
-		return true, err
+	sub, err := s.Outbox.SubmitTx(ctx, tx, peer, KindResult, body)
+	if err != nil {
+		return true, "", err
 	}
 	if err := tx.Commit(); err != nil {
-		return true, fmt.Errorf("worksession: commit: %w", err)
+		return true, "", fmt.Errorf("worksession: commit: %w", err)
 	}
 	s.Outbox.Wake()
 	if s.Audit != nil {
@@ -72,7 +73,7 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 			"artifacts": len(result.Artifacts), "verification": result.Verification,
 		})
 	}
-	return true, nil
+	return true, sub.ID, nil
 }
 
 // CompleteShorthand implements request.SessionCompleter: request_complete on
@@ -95,5 +96,6 @@ func (s *Store) CompleteShorthand(ctx context.Context, peer, requestID, note str
 		Status: status, Summary: summary, ExitCode: exitCode, Output: output, Artifacts: artifacts,
 		Verification: VerificationNone, Notes: note,
 	}
-	return s.SubmitResult(ctx, peer, requestID, ws)
+	ok, _, err = s.SubmitResult(ctx, peer, requestID, ws)
+	return ok, err
 }

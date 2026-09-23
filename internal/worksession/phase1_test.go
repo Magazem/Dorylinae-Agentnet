@@ -16,7 +16,7 @@ func TestPhase1RequesterFallback(t *testing.T) {
 
 	result := validResult()
 	result.Summary = "worked around it"
-	if ok, err := b.ws.SubmitResult(context.Background(), testA, reqID, result); !ok || err != nil {
+	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, result); !ok || err != nil {
 		t.Fatalf("SubmitResult: ok=%v err=%v", ok, err)
 	}
 	_ = b.ob.last(t, KindResult)

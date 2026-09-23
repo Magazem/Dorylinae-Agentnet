@@ -73,6 +73,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDefer(args[1:], stdout, stderr)
 	case "complete":
 		return runComplete(args[1:], stdout, stderr)
+	case "sessions":
+		return runSessions(args[1:], stdout, stderr)
+	case "session":
+		return runSession(args[1:], stdout, stderr)
+	case "result":
+		return runResult(args[1:], stdout, stderr)
+	case "wait":
+		return runWait(args[1:], stdout, stderr)
+	case "accept-result":
+		return runAcceptResult(args[1:], stdout, stderr)
 	case "notify":
 		return runNotify(args[1:], stdout, stderr)
 	case "approve":

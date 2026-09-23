@@ -49,7 +49,7 @@ with `urgency_declared` and a note.
 | `accept` | `pending` or `deferred` | `accepted` |
 | `decline` | `pending` or `deferred` | `declined` (final) |
 | `defer` | `pending` or `deferred` | `deferred` until `T` |
-| `complete` | `accepted` | `completed` (final) |
+| `complete` | `accepted` | `completed` (final), or (ticket 2.1b) stays `accepted` and submits a work session result if the request's session is `open` — see below |
 
 The sender can **cancel** a `pending` or `deferred` request (`agentnet request cancel`,
 [../protocol/request.md](../protocol/request.md#cancel-od-p1-11)). It then becomes `cancelled` (final), leaves `inbox`, shows under
@@ -59,6 +59,16 @@ request you already accepted cannot be cancelled by the sender.
 Anything else fails with `bad_state` and changes nothing (so answering a `cancelled`
 request is `bad_state`). Each answer is queued to the
 requester at once (under 2 s, even if the requester is offline) and logged with a timestamp.
+
+## Work sessions (ticket 2.1b)
+
+Since every `accept` opens a work session (Docs/protocol/work-session.md), `complete` on
+a request whose session is `open` is a **shorthand for `agentnet result`**: the given
+`--note` becomes `--notes`, the D14 result becomes the session result with
+`--verification none`, and the request itself stays `accepted` — it only reaches
+`completed` once the requester runs `agentnet accept-result`. In any other session state
+`complete` is `bad_state`. See [session.md](session.md) for `sessions`, `session`,
+`result`, `wait` and `accept-result`.
 
 ## Result
 

@@ -38,6 +38,9 @@ type mirrorOutcome struct {
 	hasResult     bool
 	resultStatus  string
 	until         time.Time
+	// sessionAfter is EarlyComplete's after-commit callback (audits ws.close /
+	// ws.ignored), run once after this transaction commits.
+	sessionAfter func(context.Context)
 }
 
 var pendingMirror sync.Map // map[*mail.Opened]*mirrorOutcome
@@ -71,9 +74,14 @@ func (s *Store) DeferKind() mail.Kind {
 	return mail.Kind{Inbox: true, Apply: s.applyDefer, After: s.afterMirror}
 }
 
-// CompleteKind is the receiver Kind for request.complete.
+// CompleteKind is the receiver Kind for request.complete. Inbox is false
+// here (unlike the other four lifecycle kinds): applyComplete stores the
+// mail_inbox row itself, because whether to keep the plaintext depends on
+// the early-complete/quarantine decision made inside the same transaction
+// (Docs/protocol/work-session.md §Early complete and Phase 1 workers, review
+// 27 H1 option (a); D18).
 func (s *Store) CompleteKind() mail.Kind {
-	return mail.Kind{Inbox: true, Apply: s.applyComplete, After: s.afterMirror}
+	return mail.Kind{Inbox: false, Apply: s.applyComplete, After: s.afterMirror}
 }
 
 // CancelledKind is the receiver Kind for request.cancelled.
@@ -90,7 +98,7 @@ func (s *Store) applyAccept(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if err != nil {
 		return err
 	}
-	if err := s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil, time.Time{}); err != nil {
+	if err := s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil, time.Time{}, nil); err != nil {
 		return err
 	}
 	if s.Sessions != nil {
@@ -149,7 +157,7 @@ func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) e
 		reasonArg = reason
 	}
 	return s.applyMirror(ctx, tx, op, KindDecline, reqID, StateDeclined, seq, at,
-		`decline_code = ?, reason = ?`, []any{code, reasonArg}, nil, time.Time{})
+		`decline_code = ?, reason = ?`, []any{code, reasonArg}, nil, time.Time{}, nil)
 }
 
 func (s *Store) applyDefer(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -172,7 +180,7 @@ func (s *Store) applyDefer(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return badBody("until must be at most 90 days after at")
 	}
 	return s.applyMirror(ctx, tx, op, KindDefer, reqID, StateDeferred, seq, at,
-		`deferred_until = ?`, []any{wireTime(until)}, nil, until)
+		`deferred_until = ?`, []any{wireTime(until)}, nil, until, nil)
 }
 
 func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -209,19 +217,34 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 	if err := CheckCompleteSize(canon); err != nil {
 		return badBody("%s", err.Error())
 	}
+	var sessionAfter func(context.Context)
+	keep := true
 	if s.Sessions != nil {
 		// Docs/protocol/work-session.md §Early complete and Phase 1 workers:
 		// this request.complete may be arriving while A's session for it is
 		// still open (or, rarely, mid-round). keepContent is false only when
 		// the quarantine rule holds; dropping note/result here (before they
 		// are stored) means they are never stored or visible.
-		keep, err := s.Sessions.EarlyComplete(ctx, tx, op.Msg.From, reqID, result != nil || note != "")
-		if err != nil {
-			return fmt.Errorf("request: early complete: %w", err)
+		var after func(context.Context)
+		var kerr error
+		keep, after, kerr = s.Sessions.EarlyComplete(ctx, tx, op.Msg.From, reqID, result != nil || note != "")
+		if kerr != nil {
+			return fmt.Errorf("request: early complete: %w", kerr)
 		}
 		if !keep {
 			note, result = "", nil
 		}
+		sessionAfter = after
+	}
+	// CompleteKind registers Inbox: false, so this Apply stores mail_inbox
+	// itself: the signed plaintext only when content was kept (review 27 H1,
+	// D18 — a dropped result/note leaves no copy in mail_inbox either).
+	inboxSigned := op.Signed
+	if !keep {
+		inboxSigned = nil
+	}
+	if err := mail.StoreInboxTx(ctx, tx, op, inboxSigned, s.now()); err != nil {
+		return err
 	}
 	var noteArg, resultArg any
 	var resultBytes, outputBytes, artifacts int
@@ -244,7 +267,7 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 		ra.status = result.Status
 	}
 	return s.applyMirror(ctx, tx, op, KindComplete, reqID, StateCompleted, seq, at,
-		`note = ?, result = ?`, []any{noteArg, resultArg}, ra, time.Time{})
+		`note = ?, result = ?`, []any{noteArg, resultArg}, ra, time.Time{}, sessionAfter)
 }
 
 func (s *Store) applyCancelled(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -256,7 +279,7 @@ func (s *Store) applyCancelled(ctx context.Context, tx *sql.Tx, op *mail.Opened)
 	if err != nil {
 		return err
 	}
-	return s.applyMirror(ctx, tx, op, KindCancelled, reqID, StateCancelled, seq, at, "", nil, nil, time.Time{})
+	return s.applyMirror(ctx, tx, op, KindCancelled, reqID, StateCancelled, seq, at, "", nil, nil, time.Time{}, nil)
 }
 
 type resultAudit struct {
@@ -268,10 +291,10 @@ type resultAudit struct {
 // applyMirror is Docs/protocol/request.md §Sender mirror steps 2-5, shared by
 // the five lifecycle kinds. until is the new deferred_until for KindDefer,
 // zero otherwise (Docs/protocol/notify.md §Text and sanitising).
-func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, kind, reqID, newState string, seq int, at time.Time, extraSet string, extraArgs []any, ra *resultAudit, until time.Time) error {
+func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, kind, reqID, newState string, seq int, at time.Time, extraSet string, extraArgs []any, ra *resultAudit, until time.Time, sessionAfter func(context.Context)) error {
 	row, err := getRow(ctx, tx, "out", op.Msg.From, reqID)
 	if errors.Is(err, ErrUnknownRequest) {
-		pendingMirror.Store(op, &mirrorOutcome{orphan: true, kind: kind, requestID: reqID, peer: op.Msg.From})
+		pendingMirror.Store(op, &mirrorOutcome{orphan: true, kind: kind, requestID: reqID, peer: op.Msg.From, sessionAfter: sessionAfter})
 		return nil
 	}
 	if err != nil {
@@ -282,7 +305,7 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 	if req, terr := decodeStoredBody(row.body); terr == nil {
 		title = req.Title
 	}
-	out := &mirrorOutcome{kind: kind, requestID: reqID, peer: row.peer, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title, until: until}
+	out := &mirrorOutcome{kind: kind, requestID: reqID, peer: row.peer, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title, until: until, sessionAfter: sessionAfter}
 	finalState := row.state
 	if seq > row.stateSeq {
 		setSQL := `state = ?, state_seq = ?, state_at = ?`
@@ -328,6 +351,9 @@ func (s *Store) afterMirror(ctx context.Context, op *mail.Opened) {
 	out := v.(*mirrorOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
+	}
+	if out.sessionAfter != nil {
+		out.sessionAfter(ctx)
 	}
 	if out.applied && s.Notify != nil {
 		if event, ok := mirrorEvent[out.kind]; ok {

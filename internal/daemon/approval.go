@@ -149,6 +149,17 @@ func registerApproval(srv *ipc.Server, as *approval.Store) {
 		if err != nil {
 			return nil, approvalError(err)
 		}
+		// Some actions (ws_accept_result --human, ws_release, 2.1b) need to
+		// audit after Confirm's transaction commits, never inside it (review
+		// 27, C1): their Perform wraps its real result in afterCommitResult.
+		// Confirm has already committed by the time it returns, so running the
+		// callback here is safe.
+		if ac, ok := result.(afterCommitResult); ok {
+			if ac.after != nil {
+				ac.after(ctx)
+			}
+			result = ac.value
+		}
 		view, verr := as.Show(ctx, p.ID)
 		if verr != nil {
 			return nil, verr

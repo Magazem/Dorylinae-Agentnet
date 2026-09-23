@@ -4,10 +4,73 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 )
+
+// SubmitCancel runs ws_cancel for B (Docs/protocol/work-session.md §Cancel,
+// "B"): sends ws.cancel to A and marks the row cancel = requested. B's row
+// does not change state until A's ws.state arrives (applyState clears the
+// column on any new state, review 27 L6); this call never changes state
+// itself. duplicate is true, and no new mail is sent, when the row already
+// had cancel = requested.
+func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View, mailID string, duplicate bool, err error) {
+	if reason != "" {
+		if err := checkCodePoints("reason", reason, 1, 500, ""); err != nil {
+			return View{}, "", false, err
+		}
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return View{}, "", false, fmt.Errorf("worksession: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	r, err := scanByID(ctx, tx, id)
+	if err != nil {
+		return View{}, "", false, err
+	}
+	if r.role != RoleWorker {
+		return View{}, "", false, ErrNotWorker
+	}
+	if r.state == StateClosed {
+		return View{}, "", false, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
+	}
+	duplicate = r.cancel.Valid && r.cancel.String == "requested"
+	if !duplicate {
+		now := s.now()
+		body := map[string]any{"at": wireTime(now), "request": r.requestID, "session": id}
+		if reason != "" {
+			body["reason"] = reason
+		}
+		sub, err := s.Outbox.SubmitTx(ctx, tx, r.peer, KindCancel, body)
+		if err != nil {
+			return View{}, "", false, err
+		}
+		mailID = sub.ID
+		if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cancel = 'requested', updated = ? WHERE id = ?`, storeTime(now), id); err != nil {
+			return View{}, "", false, fmt.Errorf("worksession: mark cancel requested: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return View{}, "", false, fmt.Errorf("worksession: commit: %w", err)
+	}
+	s.Outbox.Wake()
+	if s.Audit != nil && !duplicate {
+		_ = s.Audit.Append(ctx, "cli", "ws.cancel", map[string]any{"session": id, "peer": r.peer, "role": RoleWorker})
+	}
+	newRow, err := findByID(ctx, s.DB, id)
+	if err != nil {
+		return View{}, "", false, err
+	}
+	v, err := toView(newRow)
+	if err != nil {
+		return View{}, "", false, err
+	}
+	return v, mailID, duplicate, nil
+}
 
 // ws.cancel: B -> A (Docs/protocol/work-session.md §Cancel, "B"). Applied
 // automatically when the session is open; otherwise refused and A's

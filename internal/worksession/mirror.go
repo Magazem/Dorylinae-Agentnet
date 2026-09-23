@@ -129,7 +129,11 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	}
 
 	now := s.now()
-	set := `state = ?, seq = ?, round = ?, state_at = ?, updated = ?`
+	// Review 27 L6: any new state from A clears B's own cancel = requested
+	// mark, whether A applied the cancel (state becomes closed) or refused it
+	// (state is unchanged but this is still a fresh ws.state, so B's wish is
+	// answered either way).
+	set := `state = ?, seq = ?, round = ?, state_at = ?, updated = ?, cancel = NULL`
 	args := []any{state, seq, round, wireTime(at), storeTime(now)}
 	set += `, outcome = ?`
 	args = append(args, nullIfEmpty(outcome))

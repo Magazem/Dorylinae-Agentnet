@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
@@ -150,6 +151,14 @@ type harnessNode struct {
 	// NotifyShow substitutes a fake desktop notifier (daemon.Options
 	// NotifyShow), set before start().
 	NotifyShow notify.ShowFunc
+	// Quarantine substitutes the work session quarantine rule (daemon.Options
+	// Quarantine), set before start(). 2.4 is not implemented yet, so this is
+	// how a 2.1b test drives a session into quarantined.
+	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
+	// ApprovalNotify substitutes the approval notification channel
+	// (daemon.Options ApprovalNotify), set before start(). Nil uses the
+	// default (which would try the real OS notifier).
+	ApprovalNotify approval.Notifier
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -188,6 +197,8 @@ func (n *harnessNode) start() {
 			AgentWindow:      n.AgentWindow,
 			Idle:             n.Idle,
 			NotifyShow:       n.NotifyShow,
+			Quarantine:       n.Quarantine,
+			ApprovalNotify:   n.ApprovalNotify,
 		})
 	}()
 	select {

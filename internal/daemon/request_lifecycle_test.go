@@ -68,6 +68,10 @@ func TestLifecycleIPCRoundTrip(t *testing.T) {
 		t.Fatalf("request.complete mails after rejected results = %d, want 0", n)
 	}
 
+	// 2.1b: an accept opens a work session, so request_complete on an open
+	// session is a shorthand for ws_result (Docs/protocol/work-session.md,
+	// "request_complete while a session exists"): the request itself stays
+	// accepted, and a ws.result mail is sent instead of request.complete.
 	exitCode := int64(1)
 	var comp daemon.RequestLifecycleResult
 	b.call("request_complete", map[string]any{
@@ -78,15 +82,30 @@ func TestLifecycleIPCRoundTrip(t *testing.T) {
 			"artifacts": []map[string]any{{"branch": "fix/retry", "commit": "1a2b3c4"}},
 		},
 	}, &comp)
-	if comp.Request.State != "completed" || comp.Request.Result == nil || comp.Request.Result.Status != "fail" {
+	// B's own mirror row does not move to awaiting_result until A's ws.state
+	// confirms it (B is a mirror, not authoritative): it can still read "open"
+	// here, right after the local ws.result submission.
+	if comp.Request.State != "accepted" || comp.Request.Session == nil {
 		t.Fatalf("request_complete = %+v", comp)
 	}
-	if b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'request.complete' AND id = '`+comp.MailID+`'`) != 1 {
-		t.Fatalf("request_complete mail_id = %q, want the request.complete mail", comp.MailID)
+	if b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'ws.result'`) != 1 {
+		t.Fatalf("request_complete on an open session should send ws.result, not request.complete")
+	}
+
+	harnessWait(t, "A's session to see the result", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+comp.Request.Session.ID+`' AND state = 'awaiting_result'`) == 1
+	})
+	var acc2 daemon.SessionResult
+	a.call("ws_accept_result", map[string]any{"id": comp.Request.Session.ID}, &acc2)
+	if acc2.Session.State != "closed" || acc2.Session.Outcome != "accepted" {
+		t.Fatalf("ws_accept_result = %+v", acc2)
 	}
 
 	harnessWait(t, "A's mirror to see completed", func() bool {
 		return a.count(`SELECT COUNT(*) FROM requests WHERE direction = 'out' AND id = '`+sub.ID+`' AND state = 'completed'`) == 1
+	})
+	harnessWait(t, "B's request to see completed", func() bool {
+		return b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND id = '`+sub.ID+`' AND state = 'completed'`) == 1
 	})
 
 	var shown daemon.RequestShowResult

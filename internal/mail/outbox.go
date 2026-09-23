@@ -76,6 +76,12 @@ type Outbox struct {
 	Now    func() time.Time // defaults to time.Now
 	// Tick is how often due rows are looked for. Defaults to one second.
 	Tick time.Duration
+	// OnFinal, if set, is called after a row moves to a final state (delivered,
+	// failed or expired), outside any transaction: finish issues a plain
+	// *sql.DB statement, not one running inside a caller's transaction, so a
+	// hook here (worksession.Store.CheckPhase1FallbackForPeer, 2.1b) is safe to
+	// touch the DB or start its own transaction.
+	OnFinal func(id, to, kind, state, errText string)
 
 	once sync.Once
 	wake chan struct{}
@@ -366,6 +372,12 @@ WHERE id = ? AND (? = '' OR to_key = ?) AND state IN ('queued','relayed')`,
 		return false
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 && o.OnFinal != nil {
+		var toKey, kind string
+		if qerr := o.DB.QueryRowContext(ctx, `SELECT to_key, kind FROM outbox WHERE id = ?`, id).Scan(&toKey, &kind); qerr == nil {
+			o.OnFinal(id, toKey, kind, state, errText)
+		}
+	}
 	return n > 0
 }
 

@@ -54,7 +54,7 @@ func TestAcceptOpensSessionIdempotent(t *testing.T) {
 	acceptMail := b.ob.last(t, "request.accept")
 
 	// B submits a result before A ever sees the accept.
-	if ok, err := b.ws.SubmitResult(ctx, testA, reqID, validResult()); !ok || err != nil {
+	if ok, _, err := b.ws.SubmitResult(ctx, testA, reqID, validResult()); !ok || err != nil {
 		t.Fatalf("SubmitResult: ok=%v err=%v", ok, err)
 	}
 	if err := deliver(t, a, testB, b.ob.last(t, KindResult)); err != nil {

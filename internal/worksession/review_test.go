@@ -55,7 +55,7 @@ func TestReview27_Phase1FallbackWithRealAuditDoesNotDeadlock(t *testing.T) {
 	_, b, reqID, _ := setupAcceptedSession(t)
 	b.ws.Audit = audit.New(b.db)
 	b.req.Audit = audit.New(b.db)
-	if ok, err := b.ws.SubmitResult(context.Background(), testA, reqID, validResult()); !ok || err != nil {
+	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, validResult()); !ok || err != nil {
 		t.Fatalf("SubmitResult: %v %v", ok, err)
 	}
 	if _, err := b.db.Exec(`UPDATE outbox SET state = 'failed', error = 'unsupported_kind' WHERE kind = ?`, KindResult); err != nil {
@@ -148,6 +148,11 @@ func TestReview27_EarlyCompleteWithoutSessionHonoursQuarantine(t *testing.T) {
 	for _, q := range []string{
 		`SELECT COUNT(*) FROM requests WHERE COALESCE(note,'') LIKE '%` + marker + `%' OR COALESCE(result,'') LIKE '%` + marker + `%'`,
 		`SELECT COUNT(*) FROM work_sessions WHERE COALESCE(result,'') LIKE '%` + marker + `%'`,
+		// D18 (review 27 H1 option (a)): request.complete now stores its own
+		// mail_inbox row (CompleteKind registers Inbox: false), so it can
+		// leave the plaintext out entirely when the early-complete drop
+		// applies, instead of storing and later blanking it.
+		`SELECT COUNT(*) FROM mail_inbox WHERE signed LIKE '%` + marker + `%'`,
 	} {
 		var n int
 		if err := a.db.QueryRow(q).Scan(&n); err != nil || n != 0 {
@@ -158,6 +163,13 @@ func TestReview27_EarlyCompleteWithoutSessionHonoursQuarantine(t *testing.T) {
 		if strings.Contains(e.detail, marker) {
 			t.Fatalf("marker in audit %s", e.action)
 		}
+	}
+	// The row itself (kind request.complete, proof a mail arrived) is kept,
+	// only its content withheld: mail_inbox is not consulted by dedupe
+	// (mail_seen is), so this never causes a resend or a re-apply.
+	var n int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'request.complete' AND signed = ''`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("blanked request.complete mail_inbox rows = %d, %v; want 1", n, err)
 	}
 }
 

@@ -41,6 +41,22 @@ func (s *Store) deliveryOf(ctx context.Context, mailID string) string {
 	return st
 }
 
+// PeekTypeTitle returns the type and title of direction's row for (peer, id),
+// for a work session view's request reference (Docs/protocol/work-session.md
+// §IPC, session view "request": {"id", "type", "title"}) without building a
+// full View (peer resolution, team, output). direction is "out" for a
+// requester-role session, "in" for a worker-role one.
+func (s *Store) PeekTypeTitle(ctx context.Context, direction, peer, id string) (typ, title string, err error) {
+	row, err := getRow(ctx, s.DB, direction, peer, id)
+	if err != nil {
+		return "", "", err
+	}
+	if req, terr := decodeStoredBody(row.body); terr == nil {
+		title = req.Title
+	}
+	return row.typ, title, nil
+}
+
 // ListFilter narrows request_list (Docs/protocol/ipc.md §Requests).
 type ListFilter struct {
 	State string // "" for any

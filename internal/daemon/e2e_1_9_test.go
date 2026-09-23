@@ -147,14 +147,25 @@ func TestOfflineLifecycleEndToEnd(t *testing.T) {
 		t.Fatal("no notification fired for B's accept")
 	}
 
-	// B completes with a D14 result.
+	// B completes with a D14 result: 2.1b's accept opened a work session, so
+	// this is a shorthand for ws_result (Docs/protocol/work-session.md,
+	// "request_complete while a session exists"); A must accept-result to
+	// actually complete the request.
 	var comp daemon.RequestLifecycleResult
 	b.call("request_complete", map[string]any{
 		"id": sub1.ID, "note": "ran on the harness",
 		"result": map[string]any{"status": "pass", "summary": "all good", "output": "ok\n"},
 	}, &comp)
-	if comp.Request.State != "completed" || comp.Request.Result == nil || comp.Request.Result.Status != "pass" {
+	if comp.Request.State != "accepted" || comp.Request.Session == nil {
 		t.Fatalf("request_complete = %+v", comp)
+	}
+	harnessWait(t, "A's session to see the result", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+comp.Request.Session.ID+`' AND state = 'awaiting_result'`) == 1
+	})
+	var acc2 daemon.SessionResult
+	a.call("ws_accept_result", map[string]any{"id": comp.Request.Session.ID}, &acc2)
+	if acc2.Session.State != "closed" || acc2.Session.Outcome != "accepted" {
+		t.Fatalf("ws_accept_result = %+v", acc2)
 	}
 	harnessWait(t, "A's mirror to see completed", func() bool {
 		return a.count(`SELECT COUNT(*) FROM requests WHERE direction = 'out' AND id = '`+sub1.ID+`' AND state = 'completed'`) == 1
@@ -224,8 +235,16 @@ func TestAuditHasNoContent(t *testing.T) {
 		"id": sub1.ID, "note": mNote,
 		"result": map[string]any{"status": "pass", "summary": mSummary, "output": mOutput + "\n"},
 	}, &comp)
-	if comp.Request.State != "completed" {
+	if comp.Request.State != "accepted" || comp.Request.Session == nil {
 		t.Fatalf("request_complete = %+v", comp)
+	}
+	harnessWait(t, "A's session to see the result", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+comp.Request.Session.ID+`' AND state = 'awaiting_result'`) == 1
+	})
+	var acc2 daemon.SessionResult
+	a.call("ws_accept_result", map[string]any{"id": comp.Request.Session.ID}, &acc2)
+	if acc2.Session.State != "closed" {
+		t.Fatalf("ws_accept_result = %+v", acc2)
 	}
 	harnessWait(t, "A's mirror to see completed", func() bool {
 		return a.count(`SELECT COUNT(*) FROM requests WHERE direction = 'out' AND id = '`+sub1.ID+`' AND state = 'completed'`) == 1

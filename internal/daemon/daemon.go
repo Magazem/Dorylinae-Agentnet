@@ -168,6 +168,13 @@ type Options struct {
 	// right after it is built (a test option: 2.2a has no IPC method yet that
 	// creates an approval, so tests seed one directly through the store).
 	OnApprovalReady func(*approval.Store)
+	// Quarantine overrides the work session store's quarantine rule (a test
+	// option: 2.4 wires the real rule from grants; until then this lets a
+	// test drive a session into quarantined to exercise discard,
+	// request-changes-without-release and the mail_inbox blanking they do,
+	// Docs/protocol/work-session.md §Quarantine (2.4), D18). Nil never
+	// quarantines, the Phase 2.1b default.
+	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -356,15 +363,29 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
-	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore}
-	// reqStore.Sessions is not set yet: wiring it makes every request_complete
-	// on an accepted request redirect into the session shorthand
-	// (Docs/protocol/work-session.md, "request_complete while a session
-	// exists"), which needs 2.1b's ws_accept_result/ws_request_changes IPC to
-	// ever close that session again. 2.1b flips this on once that IPC exists;
-	// until then no session ever opens, Phase 1 request_complete behaviour is
-	// unchanged, and newMailReceiver leaves ws.* unregistered (acked
-	// unsupported) so a peer cannot create session rows here.
+	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore, Quarantine: opts.Quarantine}
+	// Wiring Sessions makes every request_complete on an accepted request
+	// redirect into the session shorthand (Docs/protocol/work-session.md,
+	// "request_complete while a session exists"), and newMailReceiver
+	// registers ws.* (internal/daemon/mail.go). 2.1b's ws_accept_result /
+	// ws_request_changes / ws_discard / ws_cancel IPC (registered below) is
+	// what lets a session opened this way ever close again.
+	reqStore.Sessions = wsStore
+	// Phase 1 fallback trigger (Docs/protocol/work-session.md §Kinds,
+	// "Phase 1 requester"; 2.1a review, "For 2.1b" item 2): once an outbox
+	// row addressed to a session's peer, carrying ws.result or ws.cancel,
+	// ends failed/unsupported_kind, check every open worker-role session with
+	// that peer. finish() (internal/mail/outbox.go) calls this outside any
+	// transaction, off the outbox's own goroutine.
+	outbox.OnFinal = func(_, peer, kind, state, errText string) {
+		if state != mail.StateFailed || errText != "unsupported_kind" {
+			return
+		}
+		if kind != worksession.KindResult && kind != worksession.KindCancel {
+			return
+		}
+		go wsStore.CheckPhase1FallbackForPeer(context.WithoutCancel(ctx), peer)
+	}
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore)
 	if err != nil {
 		_ = ln.Close()
@@ -403,7 +424,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
-	registerLifecycle(srv, reqStore, peerStore, teamStore)
+	registerLifecycle(srv, reqStore, peerStore, teamStore, wsStore)
+	registerSession(srv, wsStore, reqStore, peerStore, teamStore, apprStore, log)
 	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
 	registerApproval(srv, apprStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
