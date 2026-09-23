@@ -32,11 +32,9 @@ free. Phase 2 work is in flight: see the wave table below for workers, worktrees
 commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (4f28a2b);
 specs merged to main. Self-hosted relays: D17.
 
-**Wave P2-1 in progress** (Sonnet workers; each needs an Opus security review before merge):
-| Ticket | Worker slot | Task | Worktree / branch | Migration |
-|---|---|---|---|---|
-| 2.1a work sessions | done (9588987); review: `01a0cd93-9b53…` P2-Review-2.1a, task `01a0cd93-c7d4…` → Docs/review/27 | — | `ws-core` / `p2/ws-core` | 14 |
-| 2.2a approval | done + review 26 fixes (602bd69), **ready to merge after 2.1a** | — | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge) |
+**Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced). No workers running.
+**Owner decisions pending:** (1) review-27 **H1**: signed plaintext of ws.result / early request.complete stays in mail_inbox forever, contradicting "deleted unseen" (recommend (b): blank/delete the inbox row in the same tx) — must be decided before 2.4. (2) Proposed ticket **2.2d**: daemon-owned approval window (code typed there only; CLI code entry removed on desktop machines; terminal mode for headless) — replaces review-26 L7 (argv code); to land before 2.2c merges.
+**2.1b must** (review 27): wire `reqStore.Sessions` (ws.* kinds then register themselves); trigger CheckPhase1Fallback outside any tx; never touch DB/audit inside a tx (return after-commit callbacks); build IPC on View; implement B's ws_cancel + cancel column.
 2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
 2.1a notes for **2.1b**: `reqStore.Sessions` is deliberately NOT wired in the live daemon (it broke Phase 1 e2e tests without closing IPC); 2.1b must wire it together with the ws_* IPC. `CheckPhase1Fallback` exists but isn't hooked to outbox failures yet. `Store.Release` is a raw transition; the approval gate comes in 2.4.
 Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 (the approve CLI puts the code in argv, contradicting approval.md) is waiting for the owner.
