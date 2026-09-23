@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-23, Phase 2 wave P2-1.
+Last updated: 2026-09-23, Phase 2 wave P2-2.
 
 ## 0. Status and next steps
 
@@ -32,17 +32,15 @@ free. Phase 2 work is in flight: see the wave table below for workers, worktrees
 commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (4f28a2b);
 specs merged to main. Self-hosted relays: D17.
 
-**Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced). No workers running.
+**Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced).
 **Wave P2-2 status:**
 - 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
 - 2.2c: code + review 28 fixes on `p2/grants` (b571815, 4b1a293). **Merge only after 2.2d**, rebased after 2.1b (both touch worksession/daemon). Review-28 leftovers: L8 (pending approvals of a closed session are rejected lazily → put in 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
 - 2.2d: spec + adversarial review 29 merged to main (c3cbea4). Spec **approved by the owner** (2026-09-23). Built (2.2d + 2.2d-i: `approval.AfterCommitter` runs a Perform's after-commit hook on window/terminal confirm, needed by 2.1b's ws_accept_result --human / ws_release) on `p2/approval-window`, rebased on main. **Security review R-2.2d:** `01a0ce36-185c…`, task `01a0ce36-4cae…` → Docs/review/30. Then merge 2.2d, rebase and merge 2.2c.
-**2.1b must** (review 27): wire `reqStore.Sessions` (ws.* kinds then register themselves); trigger CheckPhase1Fallback outside any tx; never touch DB/audit inside a tx (return after-commit callbacks); build IPC on View; implement B's ws_cancel + cancel column.
-2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
-2.1a notes for **2.1b**: `reqStore.Sessions` is deliberately NOT wired in the live daemon (it broke Phase 1 e2e tests without closing IPC); 2.1b must wire it together with the ws_* IPC. `CheckPhase1Fallback` exists but isn't hooked to outbox failures yet. `Store.Release` is a raw transition; the approval gate comes in 2.4.
-Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 (the approve CLI puts the code in argv, contradicting approval.md) is waiting for the owner.
+`tests/phase2-manual.md` exists (created by 2.2d; includes the 2.2a toast-history check).
+Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 is resolved by D19 (2.2d).
 **2.2b merged** (0e1b64a + review 25 fixes 6b94bb1). Notes for **2.2c** (from review 25): store/compare `canonical(token)` never raw bytes; never audit `err.Error()` from capability (use `ReasonOf`); add a helper returning the canonical token; review-25 L9 (grant.md §Paths: CONIN$/CONOUT$, COM/LPT with superscript digits, C1/bidi chars) goes into the 2.3a fs ticket.
-Next after these merge: 2.1b, 2.2c (then 2.D1 after 2.2c).
+Next after 2.2c merges: 2.3a (fetch server + fs), 2.4 (quarantine; also review D18 + review-28 L8), 2.5 (consult), 2.D1 (device link, migration 17).
 
 **Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
 helper (D13). Follow the same flow as Phase 1:
