@@ -109,7 +109,7 @@ request; what the requester can do after accept is cancel the *session* while it
 | `quarantined` | `release` (human-approved, [approval.md](approval.md)) | `awaiting_result` | A's human | The quarantine rule is not re-evaluated after a release for this round |
 | `awaiting_result` | `accept-result` | `closed`, `outcome = accepted` | A | |
 | `awaiting_result` | `request-changes` | `open`, `round += 1` | A | Carries a `changes` text for B |
-| `open` | `cancel` (A), or a valid `ws.cancel` from B | `closed`, `outcome = cancelled` | A or B | B's cancel is applied automatically by A's daemon when the state is `open`; otherwise refused |
+| `open` | `cancel` (A), a valid `ws.cancel` from B, or an [early complete](#early-complete-and-phase-1-workers) from B | `closed`, `outcome = cancelled` | A or B | B's cancel is applied automatically by A's daemon when the state is `open`; otherwise refused |
 
 **Nothing else is reachable.** In particular: no cancel from `awaiting_result` or
 `quarantined` (A either accepts the result or requests changes; see OD-P2-6), no transition
@@ -130,7 +130,8 @@ On `ws.state` from `msg.from` = A:
 2. Find the `work_sessions` row `(sid)` with `role = worker` and `peer = msg.from`. None:
    ack, ignore, audit `ws.orphan {session, peer, kind}`.
 3. `seq ≤ row.seq`: ignore (duplicate or out of order).
-4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `state_at`. B does **not**
+4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `verification` (if
+   present), `state_at`. B does **not**
    check the transition; A is authoritative and the higher `seq` wins.
 5. If the new state is `closed`, B completes its request row ([Closing the
    request](#closing-the-request)).
@@ -153,6 +154,34 @@ with:
 The `request.complete` mail goes to A through the unchanged Phase 1 path, and A's mirror
 applies it by `seq`. So the Phase 1 request record ends `completed` on both sides, and a
 Phase 1 consumer that only reads requests still sees the final result.
+
+### Early complete and Phase 1 workers
+
+A Phase 2 worker sends `request.complete` only after the session is `closed`. A
+`request.complete` from B that A applies while A's session for the request is **not**
+`closed` is an **early complete**: B is a Phase 1 daemon (which knows no sessions), or B is
+trying to deliver content past the quarantine. A's daemon, in the mail transaction:
+
+1. applies it to the request mirror as in Phase 1 (`completed`, by `seq`), **except** that
+   when the [quarantine rule](#quarantine-24) holds, the `result` and `note` are dropped and
+   never stored (audit `ws.ignored {session, peer, kind: "request.complete", reason:
+   "early_complete"}`);
+2. if the session is `open`, closes it, `outcome = cancelled` (the diagram's `Open →
+   Closed: cancel` edge, caused by B), ending its grants as for every close, and sends the
+   `ws.state` as usual (a Phase 1 B acks it `unsupported`). In `awaiting_result` or
+   `quarantined` (only a misbehaving Phase 2 B can cause this) the session is left to A.
+
+So a Phase 1 worker still completes a Phase 2 requester's request (with its result when no
+sensitive grant is involved), a session can never stay `open` with live grants after the
+worker considers the work done, and no transition outside the diagram is added.
+
+**Phase 1 requester.** When a `ws.*` mail from B to A ends `failed` with `unsupported_kind`
+([mail.md](mail.md)), A is a Phase 1 daemon. B's daemon then, in one transaction, closes
+its mirror locally (`outcome = cancelled`, audit `ws.close {…, outcome: "cancelled"}`) and
+completes the request through the Phase 1 path: for a failed `ws.result`, with the D14 part
+of that result and its `notes` as the `note`; for a failed `ws.cancel`, with no result and
+`note = "session cancelled"`. Mixed Phase 1/Phase 2 teams therefore keep the Phase 1
+behaviour, without grants or quarantine (a Phase 1 requester never issues grants).
 
 **`request_complete` while a session exists** (`agentnet complete <id>` from Phase 1, used
 by the snippet and harness): on a request whose session is `open`, it is **a shorthand for
@@ -205,20 +234,36 @@ new round.
 
 ## Quarantine (2.4)
 
-The **quarantine rule** holds for a result when the session has **any grant with
-`sensitive: true` that was ever issued in this session** ([grant.md](grant.md)), whether it
-is still active, expired or revoked. Using "ever issued" rather than "active" means B cannot
-dodge the quarantine by waiting for the grant to expire or asking A to revoke it before
-submitting.
+The **quarantine rule** holds for a result when **either**:
+
+1. the session has **any grant with `sensitive: true` that was ever active in this session**
+   ([grant.md](grant.md)), whether it is still active, expired or revoked (a grant that was
+   never approved gave no access and does not count); or
+2. A issued **any** sensitive grant to the same peer B, in any session, whose `exp` is later
+   than `now − 7 d` (so B cannot read through a grant in session S1 and return the data in
+   a grant-less session S2 or a consult).
+
+Using "ever active" rather than "active" means B cannot dodge the quarantine by waiting for
+the grant to expire or asking A to revoke it before submitting.
 
 Interpretation of the plan: "the session's outgoing artifacts" are what the session sends
 back to the requester's side, that is, B's result. While `quarantined`:
 
 - A's daemon stores the result, but `ws_show`, `ws_list`, `request_show` and `wait` on A
   return **only its sizes** (`result_bytes`, `output_bytes`, `artifacts` count) and
-  `status`, never the summary, output, artifacts or notes. The requester's **agent**
-  therefore cannot consume or forward anything the worker produced from sensitive access
-  until a human looked at the session and released it.
+  `status`, never the summary, output, artifacts or notes. The requester's agent therefore
+  cannot read the **session result** until a human looked at the session and released it.
+- **Side doors in the same request are closed too.** While the quarantine rule holds for the
+  session (from the first sensitive grant until `closed`):
+  - a `request.complete` from B for this request that arrives while A's session is not
+    `closed` is an **early complete** ([Early complete](#early-complete-and-phase-1-workers)):
+    its `result` and `note` are dropped unread, never stored;
+  - the `reason` of a `ws.cancel` from B is not stored or shown on A (the cancel itself is
+    applied as usual).
+- **What it does not cover.** B can still send A **new** mail with content: a new request or
+  consult (brief, title, context), or the notes of B's replies to A's other requests. Those
+  are ordinary untrusted peer text, exactly as in Phase 1, and are not quarantined in Phase 2
+  (OD-P2-15).
 - `agentnet release <session>` requires a [human approval](approval.md) (kind `release`).
   On approval: `quarantined → awaiting_result`, audit `ws.release {session, peer, round,
   approval}`, `ws.state` to B. The result then becomes visible.
@@ -226,9 +271,11 @@ back to the requester's side, that is, B's result. While `quarantined`:
   released, and the audit log records the release.
 
 What the quarantine does **not** do: it cannot stop B's human or agent from copying data
-elsewhere (B had read access; see [grant.md §Threat model](grant.md#threat-model)). It is a
-gate on the requester's side, against a worker (or a prompt-injected worker agent) pushing
-exfiltration instructions, links or poisoned content straight into the requester's agent.
+elsewhere (B had read access; see [grant.md §Threat model](grant.md#threat-model)), and it
+does not hold back B's other mail (above). It is a gate on the requester's side for the
+**result the requester asked for**, which the requester's agent is most inclined to trust
+and act on, against a worker (or a prompt-injected worker agent) pushing exfiltration
+instructions, links or poisoned content into it.
 The release decision in Phase 2 is taken on metadata (sizes and status) plus whatever the
 human learns outside AgentNet; a human-only preview is OD-P2-7.
 
@@ -438,9 +485,11 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 - **Resource use.** One session per request; the request caps already bound how many
   requests arrive. `ws.result` is capped at 64 KiB. `last_state` echoes follow the 10-minute
   rule, so a peer cannot make A send unbounded mail.
-- **Version skew.** A Phase 1 daemon acks `ws.*` as `unsupported`. Phase 2 assumes that a
-  team upgrades together; mixed versions are a documented beta limitation (added to
-  `Docs/beta/known-limitations.md` by 2.1a).
+- **Version skew.** A Phase 1 daemon acks `ws.*` as `unsupported`, and both directions fall
+  back to the Phase 1 request behaviour ([Early complete](#early-complete-and-phase-1-workers)).
+  Grants, quarantine, consult context and helper `run` need both sides on Phase 2 (a Phase 1
+  daemon refuses `context`/`run` requests as `bad_body`); this is a documented beta
+  limitation (added to `Docs/beta/known-limitations.md` by 2.1a).
 
 ## Error codes (summary)
 

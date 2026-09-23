@@ -127,8 +127,10 @@ The grantor's daemon, in order:
 6. Build and sign the token. Store the row as `pending_approval`.
 7. **Approval.** If a [policy](#policies) matches, approve at once (audit `grant.auto
    {grant, policy}`). Otherwise create a [human approval](approval.md) (kind `grant`) and
-   return it. On approval, in one transaction: set the row `active` and
-   `Outbox.SubmitTx` the `grant` mail to the holder.
+   return it. On approval, in one transaction: re-check steps 1–3 against the current state
+   ([approval.md §Flow](approval.md#flow) step 3; a session that left `open` or a removed
+   peer drops the grant), set the row `active` and `Outbox.SubmitTx` the `grant` mail to
+   the holder.
 
 A grant is created by the **requester** of the session only (OD-P2-5). It never widens: there
 is no command that edits a grant; a different scope needs a new grant.
@@ -136,15 +138,17 @@ is no command that edits a grant; a different scope needs a new grant.
 ### Policies
 
 A policy lets grants issue without a prompt. It matches on **all** of: peer key, action,
-resource path (exact resolved path), `--scope` prefix (the grant's scope must be inside the
-policy's), and a maximum expiry. `sensitive` grants may be covered by a policy (the result
-quarantine still applies). Adding a policy needs a human approval (kind `grant_policy`);
-removing one does not.
+resource path (exact resolved path), for `git.read` the exact branch, `--scope` prefix (the
+grant's scope must be inside the policy's, by segments), the grant's `sensitive` value
+(`--public` in the policy covers only `--public` grants), and a maximum expiry.
+`sensitive` grants may be covered by a policy (the result quarantine still applies). Adding
+a policy needs a human approval (kind `grant_policy`); removing one does not.
 
-`agentnet grant policy add @peer --action A --resource PATH [--scope P] --max-expires D`,
-`grant policy list`, `grant policy remove <p-id>`; IPC `grant_policy_add`,
-`grant_policy_list`, `grant_policy_remove`. At most 50 policies. Policies expire with the
-peer (`peers remove` deletes them).
+`agentnet grant policy add @peer --action A --resource PATH[#BRANCH] [--scope P] [--public]
+--max-expires D [--until DURATION]`, `grant policy list`, `grant policy remove <p-id>`; IPC
+`grant_policy_add`, `grant_policy_list`, `grant_policy_remove`. At most 50 policies. Every
+policy has its own end, `until` (default 30 d, at most 90 d); an ended policy matches nothing
+and is pruned. Policies also end with the peer (`peers remove` deletes them).
 
 ### Kinds
 
@@ -160,7 +164,9 @@ mirror state; a session the holder does not know yet is an orphan: acked, ignore
 `grant.orphan`), then insert the holder row. Duplicate `id` with identical token: nothing.
 Different token under a known id: keep the first, audit `grant.conflict`.
 
-Holder apply of `grant.revoke`: mark the row `revoked`. Unknown id: ignore.
+Holder apply of `grant.revoke`: find the `held` row with this id **and `peer = msg.from`**
+and mark it `revoked`. Unknown id, or a row held from another grantor: ignore (so one peer
+cannot revoke grants another peer gave).
 
 ## Enforcement and fetch (2.3)
 
@@ -184,7 +190,14 @@ identity is the `aud` check (step 5). A fetch to an offline grantor fails with `
 |---|---|---|
 | `stat` | `path` | `{"entry": <entry>}` |
 | `list` | `path` (a directory; `""` = the root of the scope), `cursor`? | `{"entries": [<entry>], "cursor"?}`, at most 1000 per response, sorted by name (byte order) |
-| `read` | `path`, `offset` ≥ 0, `length` 1–1048576 | 1–32 fragments with `data`, `frag`, `frags`, `size` (the file size). The client reassembles and retries the whole read if a fragment is missing after 10 s |
+| `read` | `path`, `offset` ≥ 0, `length` 1–262144 | 1–8 fragments with `data`, `frag`, `frags`, `size` (the file size). The client reassembles and retries the whole read if a fragment is missing after 10 s |
+
+A read is at most **256 KiB** (8 fragments) for two reasons: the result travels back over IPC,
+whose lines are limited to 1 MiB ([ipc.md](ipc.md#framing); a 1 MiB read is about 1.4 MiB in
+base64), and a burst of fragments larger than the relay's per-connection buffer (64 frames)
+spills into the recipient's persistent relay queue, where it competes with the holder's
+mail (`queue_full`). With 8 fragments per read and 2 reads in flight per holder
+([Limits](#limits)), at most 16 fragments are in flight towards one holder.
 
 `entry` = `{"name", "type": "file"|"dir"|"symlink"|"other", "size"?}`. `git.read` responses
 carry `commit`: the branch tip the operation was served from (the tip is resolved per call;
@@ -192,8 +205,13 @@ a caller that needs one snapshot compares `commit` across calls).
 
 Each `fetch.req` carries the **full token** and is verified from scratch (steps 1–10); the
 grantor keeps no per-holder cache that could outlive a revocation. `ts` must be within
-`now − 30 s … now + 10 min` and `req` must not have been seen in the last 60 s (a delayed or
-relay-queued fetch is refused: `stale`). Unknown `op` → `malformed`.
+`now − 30 s … now + 10 min` and `req` must not have been seen in the last 11 min (the whole
+`ts` window; a delayed or relay-queued fetch is refused: `stale`). Unknown `op` →
+`malformed`.
+
+The grantor serves fetches on its own bounded worker pool, never on the session manager's
+receive goroutine or under its lock (`internal/session`), so a slow `git` call (up to 10 s)
+cannot stall pings or other peers' sessions.
 
 ### Revocation (< 1 s)
 
@@ -201,7 +219,8 @@ relay-queued fetch is refused: `stale`). Unknown `op` → `malformed`.
 `revoked`, `revoked_at`, and `Outbox.SubmitTx` a `grant.revoke`. Because the grantor is the
 enforcer and checks its own row on every call (step 9), **the next fetch after the commit
 fails with `revoked`**, and so does every later fragment of a read in progress (the server
-checks the row before sending each fragment). The `grant.revoke` mail only informs the holder;
+checks the row before sending each fragment; fragments already handed to the relay before
+the commit, at most 8, still arrive). The `grant.revoke` mail only informs the holder;
 enforcement does not depend on it. The plan's "within one second" is met with no clock or
 network dependency; the acceptance test asserts it with a fake relay delay of 0 and a real
 one.
@@ -209,7 +228,8 @@ one.
 ### Session end
 
 When the work session closes (either outcome), all its grants end in the same transaction
-(`revoked`, `reason = session_closed`). The holder learns this from `ws.state closed` and
+(`revoked`, `reason = session_closed`), including rows still `pending_approval` (their
+approvals are rejected with `reason: "precondition"`). The holder learns this from `ws.state closed` and
 marks its rows ended; a separate `grant.revoke` is not sent. Grants are usable only while the
 session is `open` (step 7): during `awaiting_result` and `quarantined` they fail
 `session_not_open`, and work again if changes are requested and the session re-opens, until
@@ -244,7 +264,13 @@ Invalid → `bad_path`.
 - The grantor opens the resolved directory with **`os.OpenRoot`** (Go ≥ 1.24) and resolves
   every path inside that root, so `..` and symlinks cannot escape it even under a race.
 - Before opening, each path component is checked with `Root.Lstat`: a symlink anywhere in
-  the path → `symlink`; a component named `.git` → `out_of_scope`.
+  the path → `symlink`; an intermediate component that is not a plain directory (any
+  `ModeType` bit other than `ModeDir`, including `ModeIrregular`, which Go ≥ 1.23 reports
+  for Windows junctions and other reparse points) → `symlink`; a component named `.git`
+  compared **case-insensitively** (`.GIT` reaches the same directory on NTFS, APFS and HFS+)
+  → `out_of_scope`. On Windows a segment shaped like an 8.3 short name (`~` followed by a
+  digit, for example `GIT~1`) → `bad_path`, because it can name `.git` or any other entry by
+  its alias. `list` never returns entries named `.git` (any case).
 - A file is opened through the root, then checked with `Stat` on the **open handle**: not a
   regular file → `not_regular`; larger than **8 MiB** → `too_large`.
 - Residual risk, documented in the CLI help: a **hard link** inside the directory to a file
@@ -254,9 +280,14 @@ Invalid → `bad_path`.
 ### Serving `git`
 
 The daemon runs the `git` executable (no Go git library; no cgo) with a fixed argument
-vector, **no shell**, a 10 s timeout, and this environment added to the daemon's:
-`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=<os.DevNull>`, `GIT_TERMINAL_PROMPT=0`,
-`GIT_NO_LAZY_FETCH=1`, `GIT_OPTIONAL_LOCKS=0`. Commands:
+vector, **no shell**, a 10 s timeout, and the daemon's environment with **every `GIT_*`
+variable removed** (an inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTORY`,
+`GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` would redirect the repository
+or inject configuration) and then these added: `GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=<os.DevNull>`, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_LAZY_FETCH=1`,
+`GIT_OPTIONAL_LOCKS=0`, `GIT_LITERAL_PATHSPECS=1` (no `*`, `?`, `[` or `:(magic)` in a
+path), `GIT_NO_REPLACE_OBJECTS=1`, `GIT_ATTR_NOSYSTEM=1`. The `git` executable is resolved
+once at daemon start with `exec.LookPath`. Commands:
 
 ```
 git -C <repo> rev-parse --verify --end-of-options refs/heads/<branch>^{commit}
@@ -271,8 +302,9 @@ commands runs hooks, filters or diff drivers. Blobs larger than 8 MiB → `too_l
 
 ### Limits
 
-Per grant, on the grantor: at most 4 fetch operations in flight, 20 per second, and
-256 MiB served per 24 h (`rate_limited`). Per holder peer: at most 8 in flight across grants.
+Per grant, on the grantor: at most 2 fetch operations in flight, 20 per second, and
+256 MiB served per 24 h (`rate_limited`). Per holder peer: at most 2 in flight across grants
+(so at most 16 fragments travel towards one holder, [Transport](#transport)).
 Per daemon: at most 32 in flight. These keep a holder from turning the grantor into a
 bandwidth or CPU sink.
 
@@ -317,7 +349,7 @@ Pages `Docs/cli/grant.md` and `Docs/cli/fetch.md` are written by tickets 2.2c an
 | `agentnet grants [--session S] [--issued\|--held] [--json]` | |
 | `agentnet revoke <g-id> [--json]` | |
 | `agentnet grant policy add\|list\|remove …` | |
-| `agentnet fetch <g-id> <path> [--out FILE] [--json]` | Reads a file (all of it, in 1 MiB reads). Without `--out`, raw bytes to stdout. `--json`: `{"ok", "path", "size", "commit"?, "data": "<base64>"}` |
+| `agentnet fetch <g-id> <path> [--out FILE] [--json]` | Reads a file (all of it, in 256 KiB reads). Without `--out`, raw bytes to stdout. `--json`: `{"ok", "path", "size", "commit"?, "data": "<base64>"}` |
 | `agentnet fetch <g-id> --list [<dir>] [--json]` / `--stat <path>` | |
 
 `fetch` is a waiting command like `wait`: each IPC call returns within 2 s, and the command
@@ -379,7 +411,10 @@ CREATE TABLE grant_policies (
     path        TEXT NOT NULL,                   -- resolved local path
     branch      TEXT,
     scope       TEXT,
+    public      INTEGER NOT NULL DEFAULT 0,      -- 1: covers only --public git.read grants
     max_expires_s INTEGER NOT NULL,
+    until       TEXT NOT NULL,                   -- the policy's own end (≤ created + 90 d)
+    approval    TEXT NOT NULL,
     created     TEXT NOT NULL
 );
 ```
@@ -400,9 +435,10 @@ requester's agent (against poisoned results).
 | Stolen token (log, clipboard) | Useless without the holder's identity key (step 5) |
 | Revoked or expired grant still used | Checked by the enforcer on every message; no caches |
 | Path traversal, symlink escape, TOCTOU swap | Strict path grammar; `os.Root`; `Lstat` of each component; checks on the open handle |
-| Serving `.git` internals, secrets in the config dir, the home dir or `/` | `.git` excluded; forbidden resources at issuance |
-| Git config/hooks executing code | Only plumbing commands with no hooks; system/global config disabled; no lazy fetch |
-| Resource exhaustion | Per-grant, per-peer and per-daemon limits; 8 MiB files; 1 MiB reads; 1000-entry lists |
+| Serving `.git` internals, secrets in the config dir, the home dir or `/` | `.git` excluded (any case, no 8.3 aliases, no junctions); forbidden resources at issuance |
+| Git config/hooks executing code, or an inherited environment redirecting git | Only plumbing commands with no hooks; system/global config disabled; every inherited `GIT_*` removed; literal pathspecs; no lazy fetch |
+| Fetch traffic crowding out mail at the relay | 256 KiB reads, 2 in flight per holder: at most 16 fragments towards one holder |
+| Resource exhaustion | Per-grant, per-peer and per-daemon limits; 8 MiB files; 256 KiB reads; 1000-entry lists |
 | Prompt-injected grantor agent issues a grant | Human approval with an out-of-band code ([approval.md](approval.md)), or an approved policy |
 | Prompt-injected holder agent exfiltrates data it read | **Not preventable** by AgentNet: the holder had read access. Mitigations: scope and expiry, sensitive-by-default, requester-side quarantine of results, audit on the grantor |
 | Local malware as the grantor's user | Out of scope |

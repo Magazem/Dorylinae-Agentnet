@@ -1,6 +1,6 @@
 # 23: Phase 2 tickets (2.1–2.7 and the own-device helper, D13)
 
-Status: **draft, awaiting the adversarial spec review and then owner approval.** No code
+Status: **draft, reviewed (adversarial spec review: [24-phase2-spec-review.md](24-phase2-spec-review.md), fixes applied), awaiting owner approval.** No code
 starts before approval (HANDOFF rule 3). Specs:
 [work-session.md](../protocol/work-session.md), [approval.md](../protocol/approval.md),
 [grant.md](../protocol/grant.md), [consult.md](../protocol/consult.md),
@@ -21,7 +21,8 @@ Only what the Phase 2 acceptance tests (plan 2.1–2.7) and D13 need. Deferred, 
 reason in the spec: read-only **database** grants (OD-P2-4), holder attenuation and
 Biscuit (OD-P2-1), write grants, a human-only preview of quarantined results (OD-P2-7),
 cancel from `awaiting_result` (OD-P2-6), multi-part consult answers, arguments in helper
-commands, helpers of helpers, git history or bundles, mixed Phase 1/Phase 2 teams, fetch
+commands, helpers of helpers, git history or bundles, mixed Phase 1/Phase 2 teams beyond
+the request-level fallback ([work-session.md](../protocol/work-session.md#early-complete-and-phase-1-workers)), fetch
 resume across restarts, a Phase 2 section in the one-machine smoke script (after 2.P, if the
 owner wants it).
 
@@ -59,10 +60,10 @@ further if it runs over). "∥" lists tickets that can run in parallel once depe
 | 2.2c | Grant issuance: `grants`, `grant_create/list/show/revoke`, policies, kinds `grant`/`grant.revoke`, holder apply, session-end revocation | 2.1a, 2.2a, 2.2b | 16 | M | **yes** | 2.1b, 2.D1 |
 | 2.3a | Fetch server: `fetch.req`/`fetch.resp` on Noise sessions, fragments, token check per message, `fs` serving with `os.Root`, limits, audit rate limit | 2.2c | — | L | **yes** | 2.4, 2.5 |
 | 2.3b | `git` serving (plumbing commands, environment, path grammar) | 2.3a | — | M | **yes** | 2.3c, 2.4 |
-| 2.3c | Fetch client: `fetch_start/status`, CLI `fetch`, `grant`, `grants`, `revoke`; the 2.2/2.3 acceptance e2e | 2.3a | — | M | — | 2.3b, 2.4 |
+| 2.3c | Fetch client: `fetch_start/status`, CLI `fetch`, `grant`, `grants`, `revoke`; the 2.2/2.3 acceptance e2e | 2.3a | — | M | **yes** (with 2.3b) | 2.3b, 2.4 |
 | 2.4 | Sensitive grants: quarantine rule, `release`, views without content | 2.2c, 2.1b | — | S | **yes** | 2.3b, 2.3c, 2.5 |
-| 2.5 | Consult: request `context`, `MaxQuestionBody`, `consult`, `result` on a pending question, submit result `session` | 2.1b | — | M | — | 2.3x, 2.4, 2.D1 |
-| 2.D1 | Device link: `device_links`, flow, fingerprint, offers, unlink, hierarchy | 2.2a | 17 | M | **yes** | 2.2c, 2.3x, 2.5 |
+| 2.5 | Consult: request `context`, `MaxQuestionBody`, `consult`, `result` on a pending question, submit result `session` | 2.1b | — | M | **yes** (light, with 2.4) | 2.3x, 2.4, 2.D1 |
+| 2.D1 | Device link: `device_links`, flow, fingerprint, offers, unlink, hierarchy | 2.2a; **merge** after 2.2c (migration order) | 17 | M | **yes** | 2.2c, 2.3x, 2.5 |
 | 2.D2 | Helper scope and runner: `device scope`, request `run`, in-scope checks, runner (no shell, env, process-tree kill, output sanitiser) | 2.D1, 2.1b | — | L | **yes** | 2.4, 2.5 |
 | 2.9 | End-to-end loop, audit-has-no-content, docs reconciliation | 2.3c, 2.4, 2.5, 2.D2 | — | M | — | 2.H |
 | 2.H | Headless harness run (2.7): Claude Code + agy, both rounds | 2.3c, 2.4, 2.5 | — | M | — | 2.9 |
@@ -70,8 +71,9 @@ further if it runs over). "∥" lists tickets that can run in parallel once depe
 
 Critical path: 2.1a → 2.2c → 2.3a → 2.3c → 2.H/2.9 (with 2.2a and 2.2b beside 2.1a).
 2.1a, 2.2a and 2.2b start at approval; 2.2a merges after 2.1a (migration 15 after 14).
-Nine tickets carry an Opus review; 2.2a and 2.2b are small and can go to one reviewer
-together, and 2.3a + 2.3b to another.
+Eleven tickets carry an Opus review; 2.2a and 2.2b are small and can go to one reviewer
+together, 2.3a + 2.3b + 2.3c to another, and 2.4 + 2.5 to a third (2.5 changes the request
+decode caps and adds an accept-and-submit path; 2.3c parses peer fragments and writes files).
 
 ## Ticket details
 
@@ -99,6 +101,13 @@ together, and 2.3a + 2.3b to another.
     `bad_state`;
   - result caps: every member at its limit and one over, `verification` values
     (`human_accepted` from B → `bad_body`), total 65536 / 65537 → `result_too_large`;
+  - **early complete** (review 24, H3/M6): a `request.complete` applied on A while the
+    session is `open` completes the request and closes the session `cancelled` (grants
+    ended); with the quarantine rule holding, its `result` and `note` are stored nowhere
+    (search every table for a marker); in `awaiting_result` the session is unchanged;
+  - **Phase 1 requester:** a `ws.result` whose outbox row ends `failed`/`unsupported_kind`
+    completes B's request with the D14 part and closes B's mirror (a fake peer that acks
+    `unsupported`);
   - both rewind tests pass with `work_sessions` in their DROP lists.
 
 ### 2.1b Session IPC and CLI
@@ -115,14 +124,27 @@ together, and 2.3a + 2.3b to another.
 ### 2.2a Human approval (review)
 
 - Files: new `internal/approval`, migration 15, `internal/notify` (an approval notification
-  that bypasses the event toggles but never goes to the webhook), `internal/daemon`,
-  `cmd/agentnet/approve.go`, `Docs/cli/approve.md`, and tests.
-- Acceptance: the code-hash vector; a code appears in the fake desktop notifier's call and in
-  **no** IPC result, CLI output, `audit_events` row, daemon log line, webhook queue row or
-  SQLite column (search every table for the code string); 3 wrong codes → `rejected`; expiry
-  after 10 min (fake clock); `approval_limit` at 6 pending and at 21 per hour; notifier
-  disabled → `approval_unavailable`; `DORYLINAE_APPROVAL=terminal` writes the code to the
-  daemon's stderr only and `status` reports it; both rewind tests pass.
+  that bypasses the event toggles but never goes to the webhook; the code never in argv:
+  in-process D-Bus on Linux via `godbus/dbus/v5`, environment on macOS, tagged toast removed
+  from history on Windows, [approval.md §Delivering the code](../protocol/approval.md#delivering-the-code)),
+  `internal/daemon`, `cmd/agentnet/approve.go`, `Docs/cli/approve.md`, the harness
+  confinement note in `Docs/agents/snippet.md` ([approval.md §Threat model](../protocol/approval.md#threat-model)),
+  and tests.
+- Acceptance: the `code_mac` vector; a code appears in the fake desktop notifier's call and
+  in **no** IPC result, CLI output, `audit_events` row, daemon log line, webhook queue row or
+  SQLite column, and **no code material** either (search every table for the code string
+  and for any 64-hex value computable from it; the `approvals` table has no hash column);
+  the code is in **no argv** of any child process the notifier starts (the runner fake
+  records argv and environment; Linux uses the in-process D-Bus call, macOS the
+  environment); a daemon restart turns pending approvals `expired`; 3 wrong codes →
+  `rejected`; the 10th wrong code in 24 h → `approval_locked` for new approvals, surviving a
+  restart; expiry after 10 min (fake clock); `approval_limit` at 6 pending and at 21 per
+  hour; notifier disabled → `approval_unavailable`; a confirmed approval whose precondition
+  no longer holds (session closed meanwhile) performs nothing and returns `bad_state`;
+  `DORYLINAE_APPROVAL=terminal` writes the code to the daemon's stderr only, refuses to start
+  when stderr is not a terminal unless `DORYLINAE_DEBUG=1`, audits `approval.mode`, and
+  `status` reports it; Windows: the approval toast is removed from history on decision
+  (manual check in `tests/phase2-manual.md`); both rewind tests pass.
 
 ### 2.2b Capability tokens (review)
 
@@ -145,9 +167,12 @@ together, and 2.3a + 2.3b to another.
   a non-loopback relay, a relative path, the config dir, the home dir, `/` or a drive root,
   a missing branch, `--expires 8d`; `--public` on `fs.read` still sensitive; approval flow
   (pending until confirmed; rejected → no mail); a matching policy issues at once and a
-  non-matching one does not (scope outside the policy's, longer expiry, other peer); adding a
+  non-matching one does not (scope outside the policy's, longer expiry, other peer, other
+  branch, a sensitive grant under a `--public` policy, a policy past its `until`); adding a
   policy needs an approval; closing the session revokes every grant in the closing
-  transaction; `peers remove` revokes; both rewind tests pass.
+  transaction, including `pending_approval` ones; a grant approved after its session left
+  `open` is dropped and sends no mail; a `grant.revoke` from a peer other than the grantor
+  changes nothing; `peers remove` revokes; both rewind tests pass.
 
 ### 2.3a Fetch server and `fs` (review)
 
@@ -156,12 +181,16 @@ together, and 2.3a + 2.3b to another.
 - Acceptance: every path-grammar rule (a table of accepted and `bad_path` inputs, including
   `..`, `a//b`, `\`, `C:`, `CON.txt`, trailing dot, NUL); **escape attempts fail**: a symlink
   to outside, a symlink to inside, a directory swapped for a symlink between two calls, `.git`
-  reads, a FIFO/device where the OS supports it (`not_regular`), a 8 MiB + 1 file
-  (`too_large`); `scope` checked by segments (`internal/mail` does not match `internal/mailbox`);
-  a fetch whose Noise identity differs from `aud` → `wrong_audience`; `ts` 31 s old → `stale`;
-  a repeated `req` → `stale`; the limits (5th in-flight op, 21st op in a second) →
-  `rate_limited`; a revoke between two fragments stops the read at the next fragment;
-  `grant.fetch` audit rows carry no path and are summarised beyond 60 per minute.
+  reads **in any case** (`.GIT/config`, `.Git/HEAD`), `GIT~1` on Windows (`bad_path`), a
+  Windows junction inside the directory (`symlink`), `list` hiding `.git`, a FIFO/device
+  where the OS supports it (`not_regular`), a 8 MiB + 1 file (`too_large`); `scope` checked
+  by segments (`internal/mail` does not match `internal/mailbox`); a fetch whose Noise
+  identity differs from `aud` → `wrong_audience`; `ts` 31 s old → `stale`; a repeated `req`
+  10 min later → `stale`; `length` 262145 → `malformed`; the limits (3rd in-flight op per
+  grant or per holder, 21st op in a second) → `rate_limited`; a revoke between two fragments
+  stops the read at the next fragment; a 10 s fetch does not delay a concurrent ping (served
+  off the session goroutine); `grant.fetch` audit rows carry no path and are summarised
+  beyond 60 per minute.
 
 ### 2.3b `git` serving (review)
 
@@ -171,15 +200,18 @@ together, and 2.3a + 2.3b to another.
   new commit; other branches and tags unreachable; mode 120000 and 160000 entries typed
   `symlink`/`other` and not served; a path starting with `-` is passed after `--` and treated
   as a path; a repository with a hostile `core.fsmonitor`, `core.hooksPath` and a `diff`
-  driver in `.git/config` runs none of them (marker files never appear); a 10 s timeout with
-  a fake slow `git`; the environment variables are set (asserted through a fake `git` that
-  prints its environment).
+  driver in `.git/config` runs none of them (marker files never appear); a daemon started
+  with `GIT_DIR`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT=1`/`KEY_0`/`VALUE_0` pointing
+  elsewhere still serves the granted repository and none of that configuration applies; a
+  path `*.go` or `:(glob)x` is `bad_path` or matches literally; a 10 s timeout with a fake
+  slow `git`; the environment variables are set and no inherited `GIT_*` survives (asserted
+  through a fake `git` that prints its environment).
 
 ### 2.3c Fetch client and CLI
 
 - Files: `internal/daemon` (`fetch_start/status`), `cmd/agentnet/grant.go`,
   `cmd/agentnet/fetch.go`, `Docs/cli/grant.md`, `Docs/cli/fetch.md`, and tests.
-- Acceptance (e2e): B fetches a file of 3 MiB (fragments, several 1 MiB reads) byte-identical;
+- Acceptance (e2e): B fetches a file of 3 MiB (fragments, several 256 KiB reads) byte-identical;
   **2.3: after `agentnet revoke <grant-id>`, the next fetch fails within one second**
   (`TestRevokeNextFetchFails`, measured from the revoke IPC return to the failing
   `fetch_status`); a fetch with the grantor stopped → `timeout` after `--timeout`; an expired
@@ -194,7 +226,11 @@ together, and 2.3a + 2.3b to another.
   `wait` and `request show` show only sizes and status while quarantined (marker strings in
   B's summary, output, artifacts and notes appear in no A-side IPC result); `release` needs
   an approval; after it the result is visible and `ws.release` is audited; a grant revoked
-  or expired before the result still quarantines it; a `--public` git grant does not; after
+  or expired before the result still quarantines it; a `--public` git grant does not; a
+  sensitive grant that was never approved does not; a result in a **second, grant-less
+  session** with the same peer is quarantined while that peer's sensitive grant from the
+  first session is within 7 d of its `exp`; an early `request.complete` carrying marker
+  strings and a `ws.cancel` reason with a marker leave no marker on A (review 24, H3); after
   `request-changes` the next round is quarantined again.
 
 ### 2.5 Consult
@@ -219,7 +255,11 @@ together, and 2.3a + 2.3b to another.
   no local intent creates nothing; **no team, roster, pairing, `team.join` or `peers verify`
   path creates a `device_links` row** (`TestDeviceTrustOnlyFromLinkFlow`, driving each of
   those flows between two daemons and asserting the table stays empty); reverse link and
-  chains → `device_cycle`; unlink from either side ends it on both; both rewind tests pass.
+  chains → `device_cycle`; unlink from either side ends it on both; **asymmetric activation**
+  (the controller's intent expires before the helper's offer arrives, so only the helper is
+  `active`): `device unlink` on the controller still sends `device.unlink` and ends the
+  helper's link; a `device.unlink` from a third peer naming the link id changes nothing;
+  both rewind tests pass.
 
 ### 2.D2 Helper scope and runner (review)
 
@@ -230,7 +270,8 @@ together, and 2.3a + 2.3b to another.
   to an absolute path at set time); every out-of-scope check sends the request to the normal
   inbox with the right `device.out_of_scope` check, and nothing runs; in scope: auto-accept,
   the command runs in the repo with only the listed environment (a test program prints its
-  environment; a `SECRET_TOKEN` in the daemon's environment does not appear), exit 0 →
+  environment; a `SECRET_TOKEN` in the daemon's environment does not appear; on Windows a
+  `go env GOCACHE` command succeeds with the minimal environment), exit 0 →
   `pass`, exit 3 → `fail` with `exit_code` 3, the output tail is ≤ 32768 bytes with ANSI
   sequences removed; the timeout kills a child-of-child process (process tree); a request
   created before the link was activated does not run; unlink on the helper → the next
@@ -289,17 +330,19 @@ updated.
 ## Owner decisions needed
 
 The specs are written with the recommendation, so approving the specs as they are accepts
-every recommendation below. D1–D15 are not reopened; OD-P2-8 is an interpretation of D13's
+every recommendation below. **Exception:** review 24 changed the recommendation of OD-P2-6 to
+(c); the specs still describe (a) until the owner decides, and 2.1a adds the two edges only
+if (c) is approved. D1–D15 are not reopened; OD-P2-8 is an interpretation of D13's
 wording, not a change of it.
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
 | OD-P2-1 | Capability token format (plan: Biscuit) | (a) in-house Ed25519-signed canonical JSON, versioned; (b) `biscuit-go` v2 | **(a)**. No new dependency (Biscuit adds protobuf and a Datalog evaluator on attacker input), vectors checkable by `verifyvectors`, and the one Biscuit feature we would not have (holder attenuation) is not needed while grants are audience-bound and enforced by the grantor. `v` leaves room to switch later |
-| OD-P2-2 | How the "human approval prompt" is made agent-proof | (a) a 6-digit code shown only in the desktop notification, quoted by `agentnet approve`; (b) a plain `approve` command (any agent can run it); (c) no approval, policies only | **(a)**. It is the only option that stops a prompt-injected agent that runs `agentnet` with the user's rights. It is a gate against confused deputies, not against malware (documented) |
-| OD-P2-3 | Approval on machines without a desktop | (a) `DORYLINAE_APPROVAL=terminal` at daemon start (code on the daemon's stderr); (b) no approvals there (policies set elsewhere cannot exist either, so no grants) | **(a)**, documented as weaker. It is also what the 2.H harness uses |
+| OD-P2-2 | How the "human approval prompt" is made agent-proof (**amended by review 24**) | (a) a 6-digit code shown only in the desktop notification, quoted by `agentnet approve`, with the review-24 hardening (check value only in daemon memory, never in argv, 10 wrong codes per 24 h, precondition re-check); (b) a plain `approve` command (any agent can run it); (c) no approval, policies only; (d) later: an OS user-presence check (Windows Hello `UserConsentVerifier`, macOS LocalAuthentication) on top of (a) | **(a) now, (d) as a Phase 3/4 hardening item.** (a) stops a prompt-injected agent that uses AgentNet's interface. It does **not** stop an agent that runs arbitrary programs as the user and attacks the account (reads the notification history or the database, restarts the daemon): that needs **harness confinement** (no access to the config dir, no control of `agentnetd`, no screenshot/notification-history tools), documented in the snippet. The owner should confirm this boundary is acceptable for the beta |
+| OD-P2-3 | Approval on machines without a desktop | (a) `DORYLINAE_APPROVAL=terminal` at daemon start (code on the daemon's stderr; review 24: stderr must be a terminal unless `DORYLINAE_DEBUG=1`, the start is audited and announced on the desktop if there is one); (b) no approvals there (policies set elsewhere cannot exist either, so no grants) | **(a)**, documented as weaker. It is also what the 2.H harness uses (with `DORYLINAE_DEBUG=1`) |
 | OD-P2-4 | Read-only database URL grants (plan 2.2 example) | (a) defer; (b) sealed hand-over of a URL (not revocable); (c) a query proxy | **(a)**. (b) fails "revocable", (c) is a large new attack surface, and no Phase 2 acceptance test needs a database |
 | OD-P2-5 | Who may grant in a session | (a) the requester only; (b) either party | **(a)**. The plan's wording; one direction keeps quarantine semantics simple |
-| OD-P2-6 | Cancel after a result is submitted | (a) not allowed (the diagram exactly: accept the result or request changes); (b) add `awaiting_result/quarantined → closed` | **(a)**. The acceptance test is "nothing else is reachable". A session left in `awaiting_result` holds no usable grants (grants work only while `open`), so it is harmless |
+| OD-P2-6 | Leaving `awaiting_result` / `quarantined` other than by accept-result or request-changes (**amended by review 24**) | (a) not allowed (the diagram exactly); (b) cancel from `awaiting_result` and `quarantined` (→ `closed`, `cancelled`); (c) from `quarantined` only: **discard** (→ `closed`, `cancelled`) and **request-changes without release** (→ `open`, `round + 1`), both without an approval and with the result deleted unseen | **(c)** (changed from (a)). Under (a) a human who distrusts a quarantined result can only get rid of it by releasing it, which exposes it to the agent the quarantine protects: the one exit adds exposure. Both (c) moves reduce exposure, so they need no approval. It adds two edges to the diagram, so it is the owner's call; if approved, 2.1a adds them to `TestSessionStateMachine` and work-session.md gets them in its transition table |
 | OD-P2-7 | Deciding a quarantine release | (a) on metadata (status, sizes) and out-of-band knowledge; (b) add a human-only preview behind an approval | **(a)** for Phase 2; (b) if beta users ask |
 | OD-P2-8 | Representation of D13's `device` trust | (a) its own table `device_links`, not a `peers.trust` value; (b) add `device` to `peers.trust` (a peers rebuild) | **(a)**. `peers.trust` ranks key authenticity and is written by pairing, teams and `peers verify`; a separate table cannot be raised by any of those paths, which is D13's point. It is still called "device trust" in the docs |
 | OD-P2-9 | Depth of the one-way hierarchy | (a) depth 1: a device is only helper or only controller, no reverse links; (b) allow chains without cycles | **(a)**. Simplest, and nothing in Phase 2 needs chains |
@@ -308,6 +351,7 @@ wording, not a change of it.
 | OD-P2-12 | 2.7 "all harnesses pass in CI weekly" | (a) weekly CI with a scripted stand-in agent (free), real harnesses (Claude Code + agy, Codex optional) manual before releases; (b) put model API keys into CI secrets (paid, per run); (c) no CI job | **(a)**. It keeps the loop tested weekly at no cost; the real-agent run is the release gate |
 | OD-P2-13 | Default sensitivity | `fs.read` always sensitive; `git.read` sensitive unless `--public` | **As specified**. The daemon cannot tell a private repo from a public one |
 | OD-P2-14 | Which git state a grant serves | (a) the branch tip at each call, with `commit` reported; (b) a commit pinned at grant time | **(a)**. A reviewer after "changes requested" sees the new commits without a new grant |
+| OD-P2-15 | Content from a worker **outside** the session result while a sensitive grant is live (**new, review 24**) | (a) not quarantined: B's new requests, consults and reply notes to A are ordinary untrusted peer text, as in Phase 1 (documented); (b) while the [quarantine rule](../protocol/work-session.md#quarantine-24) holds for any session with B, A withholds every content member of B's mail (briefs, titles, context, notes, reasons) from IPC views, showing sizes only, until a human runs `agentnet release --peer B` | **(a) for Phase 2**, with the limit stated in work-session.md (done). Any peer can already send A a brief, so (b) protects only against a worker that first read sensitive data; revisit if beta users rely on quarantine as containment. Review 24 already closed the side doors **inside** the request (early `request.complete`, `ws.cancel` reason) and across sessions with the same peer (7-day rule) |
 
 ## Conflicts and interpretations found while writing
 
@@ -335,3 +379,7 @@ wording, not a change of it.
 10. **Plan 2.7** names Codex and Hermes; the harnesses that run on the owner's machine today
     are Claude Code and agy (1.H), Codex is limited until 2026-10-02, and Hermes is not
     installed.
+11. **Plan 2.2 names a remote resource** (`--resource github.com/org/repo#branch`). Grants
+    serve what the grantor's daemon can read, so the resource is a **local clone path**
+    (`--resource C:\src\repo#branch`); the grantor never fetches from a remote on the
+    holder's behalf.

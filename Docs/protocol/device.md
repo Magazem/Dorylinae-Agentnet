@@ -71,7 +71,9 @@ at most one is kept per peer.
 ## Scope (held by the helper only)
 
 `agentnet device scope @controller …` on the **helper**, IPC `device_scope_set`, needs a
-[human approval](approval.md) (kind `device_scope`). The scope replaces any previous one
+[human approval](approval.md) (kind `device_scope`). The CLI prints, and the approval
+summary states, each command's name, repo path and **resolved** absolute `argv[0]` with its
+full argv, so the human approves exactly what will run. The scope replaces any previous one
 atomically. `agentnet device scope @controller --clear` removes it (no approval needed:
 narrowing is always allowed).
 
@@ -129,8 +131,10 @@ Phase 1, and nothing runs. The reason is recorded in the audit (`device.out_of_s
 - starts `argv` with the stored absolute `argv[0]`, **no shell**, working directory = the
   repo path, stdin = the null device;
 - environment: only `PATH`, `HOME`/`USERPROFILE`, `TMP`/`TEMP`/`TMPDIR`, `LANG`, `LC_ALL`,
-  `SystemRoot`, `ComSpec`, `PATHEXT` (Windows) and the scope's `env` names, taken from the
-  helper daemon's environment; everything else (tokens, `DORYLINAE_*`) is dropped;
+  `SystemRoot`, `SystemDrive`, `windir`, `ComSpec`, `PATHEXT`, `LOCALAPPDATA`, `APPDATA`
+  (Windows; without `LOCALAPPDATA` the example's `go test` fails with "GOCACHE is not
+  defined") and the scope's `env` names, taken from the helper daemon's environment;
+  everything else (tokens, `DORYLINAE_*`) is dropped;
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
 - keeps the **last** 32768 bytes of combined stdout/stderr, turns CRLF into LF, strips ANSI
   CSI sequences and replaces other control characters (except `\n`, `\t`) with U+FFFD, and
@@ -166,12 +170,16 @@ drops queued runs the same way; a run that was executing is reported as `fail` w
 ## Unlink and expiry
 
 - `agentnet device unlink @peer` on **either** device, IPC `device_unlink` (no approval:
-  removing authority is always allowed). In one transaction: set the link `revoked`, delete
-  any scope for it, and `Outbox.SubmitTx` `device.unlink`. The helper stops accepting
-  in-scope requests **immediately** on its own unlink; on a controller-side unlink it stops
-  when the mail arrives.
-- `device.unlink` on arrival: set `revoked`, delete the scope. Idempotent. An unlink for
-  an unknown or already revoked link changes nothing.
+  removing authority is always allowed). In one transaction: set any link, intent or offer
+  with that peer `revoked`/deleted, delete any scope for it, and `Outbox.SubmitTx`
+  `device.unlink`. The mail is sent **even when this device holds no active link** with the
+  peer: activation is independent on each side, so one side can be `active` while the
+  other's intent expired before the peer's offer arrived, and D13 requires that either side
+  can revoke. The helper stops accepting in-scope requests **immediately** on its own
+  unlink; on a controller-side unlink it stops when the mail arrives.
+- `device.unlink` on arrival: revoke every link, intent and offer **with `msg.from`**
+  (the `link` member is informational; a peer can only ever end its own links), delete the
+  scope. Idempotent: nothing to revoke changes nothing.
 - A run already executing when the link is revoked is allowed to finish (killing it could
   leave the repository in a half-written state); queued runs are dropped.
 - `peers remove` of the other device revokes the link locally.
@@ -184,7 +192,7 @@ Sealed mail, outboxed, acked, `Inbox: true`, strict.
 | Kind | Body |
 |---|---|
 | `device.link` | `{"at", "controller": <key>, "helper": <key>, "nonce": "<32 hex>", "role": "controller"\|"helper"}`. `role` names the sender's role; the sender's key must be the one in that role, and the recipient's key the other |
-| `device.unlink` | `{"at", "link": "l-…"}` |
+| `device.unlink` | `{"at", "link"?: "l-…"}` (`link` absent when the sender has no active link) |
 
 Link-id vector (controller = seed `00…1f`, helper = seed `20…3f`,
 `nonce_c = 00112233445566778899aabbccddeeff`, `nonce_h = ffeeddccbbaa99887766554433221100`,
