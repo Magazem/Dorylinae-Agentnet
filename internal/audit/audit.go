@@ -46,6 +46,22 @@ func New(db *sql.DB) *Log { return &Log{db: db} }
 
 // Append records an event. detail is marshalled to JSON; nil becomes {}.
 func (l *Log) Append(ctx context.Context, actor, action string, detail any) error {
+	return appendTo(ctx, l.db, actor, action, detail)
+}
+
+// AppendTx is Append through a caller's transaction, for code that runs
+// inside one and must touch nothing else (for example an approval Action's
+// Perform, Docs/review/27-2.1a-review.md C1). The row commits or rolls back
+// with tx.
+func AppendTx(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error {
+	return appendTo(ctx, tx, actor, action, detail)
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func appendTo(ctx context.Context, db execer, actor, action string, detail any) error {
 	if actor == "" || action == "" {
 		return fmt.Errorf("audit: actor and action are required")
 	}
@@ -56,7 +72,7 @@ func (l *Log) Append(ctx context.Context, actor, action string, detail any) erro
 			return fmt.Errorf("audit: marshal detail: %w", err)
 		}
 	}
-	_, err := l.db.ExecContext(ctx,
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO audit_events (ts, actor, action, detail) VALUES (?, ?, ?, ?)`,
 		time.Now().UTC().Format(time.RFC3339Nano), actor, action, string(raw))
 	if err != nil {

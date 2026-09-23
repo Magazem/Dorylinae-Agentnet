@@ -188,9 +188,17 @@ func TestRevokeForPeer(t *testing.T) {
 	if err := s.InsertPending(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	ids, err := s.RevokeForPeer(ctx, "peer-x", ReasonPeerRemoved, now)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := s.RevokeForPeerTx(ctx, tx, "peer-x", ReasonPeerRemoved, now)
 	if err != nil || len(ids) != 1 || ids[0] != a.ID {
-		t.Fatalf("RevokeForPeer = %v, %v", ids, err)
+		_ = tx.Rollback()
+		t.Fatalf("RevokeForPeerTx = %v, %v", ids, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	got, _ := s.Get(ctx, a.ID)
 	if got.State != StateRevoked || got.Reason != ReasonPeerRemoved {
@@ -271,7 +279,7 @@ func TestPolicyMatchRules(t *testing.T) {
 		}
 		return p != nil
 	}
-	baseParams := MatchParams{Peer: "peer-a", Action: ActionFSRead, Path: "/srv/repo", Scope: "internal/mail/inbox", ExpiresS: 3600, Now: now}
+	baseParams := MatchParams{Peer: "peer-a", Action: ActionFSRead, Path: "/srv/repo", Scope: "internal/mail/inbox", Sensitive: true, ExpiresS: 3600, Now: now}
 	if !match(baseParams) {
 		t.Error("expected the base policy to match a scope inside its own")
 	}
@@ -297,7 +305,7 @@ func TestPolicyMatchRules(t *testing.T) {
 	gitPolicy := testPolicy(NewPolicyID(), "peer-a", ActionGitRead, "/srv/repo", now)
 	gitPolicy.Branch = "main"
 	insertPolicy(t, s, gitPolicy)
-	otherBranch := MatchParams{Peer: "peer-a", Action: ActionGitRead, Path: "/srv/repo", Branch: "feature", ExpiresS: 3600, Now: now}
+	otherBranch := MatchParams{Peer: "peer-a", Action: ActionGitRead, Path: "/srv/repo", Branch: "feature", Sensitive: true, ExpiresS: 3600, Now: now}
 	if match(otherBranch) {
 		t.Error("a different branch should not match")
 	}
@@ -305,6 +313,13 @@ func TestPolicyMatchRules(t *testing.T) {
 	sameBranch.Branch = "main"
 	if !match(sameBranch) {
 		t.Error("the same branch should match")
+	}
+	// Review 28 H1: a policy without --public (sensitive) must not
+	// auto-issue a --public grant, which would escape the result quarantine.
+	publicUnderSensitive := sameBranch
+	publicUnderSensitive.Sensitive = false
+	if match(publicUnderSensitive) {
+		t.Error("a --public grant should not match a policy without --public")
 	}
 
 	publicOnly := testPolicy(NewPolicyID(), "peer-a", ActionGitRead, "/srv/pub", now)
@@ -323,7 +338,7 @@ func TestPolicyMatchRules(t *testing.T) {
 	expired := testPolicy(NewPolicyID(), "peer-a", ActionFSRead, "/srv/old", now)
 	expired.Until = now.Add(-time.Minute)
 	insertPolicy(t, s, expired)
-	pastUntil := MatchParams{Peer: "peer-a", Action: ActionFSRead, Path: "/srv/old", ExpiresS: 3600, Now: now}
+	pastUntil := MatchParams{Peer: "peer-a", Action: ActionFSRead, Path: "/srv/old", Sensitive: true, ExpiresS: 3600, Now: now}
 	if match(pastUntil) {
 		t.Error("a policy past its until should not match, and should be pruned")
 	}

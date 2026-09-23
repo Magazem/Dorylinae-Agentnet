@@ -443,20 +443,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	// peers remove revokes all of that peer's grants and policies
 	// (Docs/protocol/grant.md §Session end, §Policies).
-	peerStore.OnRemoved = func(ctx context.Context, key string) error {
-		if _, err := capStore.RevokeForPeer(ctx, key, capability.ReasonPeerRemoved, time.Now()); err != nil {
-			return err
-		}
-		ptx, err := st.DB().BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if err := capStore.PolicyDeleteForPeerTx(ctx, ptx, key); err != nil {
-			_ = ptx.Rollback()
-			return err
-		}
-		return ptx.Commit()
-	}
+	// It runs inside the transaction that deletes the peer, on every removal
+	// path (peers remove and team GC), review 28 M4.
+	peerStore.OnRemovedTx = revokeForRemovedPeer(capStore)
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}

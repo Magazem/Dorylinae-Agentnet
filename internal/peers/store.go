@@ -57,13 +57,14 @@ type Store struct {
 	db    *sql.DB
 	audit AuditSink
 
-	// OnRemoved, if set, is called after a peer's row (and the cascades
-	// removeTx makes) have committed, so a caller can end everything that
-	// depended on this peer beyond what this package knows about (for
-	// example grants, Docs/protocol/grant.md: "peers remove of the holder
-	// revokes all its grants"). It runs after Remove's own commit, not
-	// inside its transaction: an error here does not undo the removal.
-	OnRemoved func(ctx context.Context, key string) error
+	// OnRemovedTx, if set, is called inside the transaction that deletes a
+	// peer row, on every removal path (Remove and GCIntroduced), so a caller
+	// can end everything that depended on this peer beyond what this package
+	// knows about (for example grants and grant policies,
+	// Docs/protocol/grant.md: "peers remove of the holder revokes all its
+	// grants"). An error rolls the removal back. It must touch only tx
+	// (Docs/review/27-2.1a-review.md C1; Docs/review/28-2.2c-review.md M4).
+	OnRemovedTx func(ctx context.Context, tx *sql.Tx, key string) error
 }
 
 // NewStore returns a Store over a migrated database.
@@ -307,22 +308,18 @@ func (s *Store) Remove(ctx context.Context, key string) error {
 		return fmt.Errorf("peers: remove: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := removeTx(ctx, tx, key); err != nil {
+	if err := s.removeTx(ctx, tx, key); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("peers: remove: %w", err)
 	}
-	if s.OnRemoved != nil {
-		if err := s.OnRemoved(ctx, key); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-// removeTx deletes the peer and fails its waiting outbox rows inside tx.
-func removeTx(ctx context.Context, tx *sql.Tx, key string) error {
+// removeTx deletes the peer, fails its waiting outbox rows and runs
+// OnRemovedTx, all inside tx.
+func (s *Store) removeTx(ctx context.Context, tx *sql.Tx, key string) error {
 	res, err := tx.ExecContext(ctx, `DELETE FROM peers WHERE public_key = ?`, key)
 	if err != nil {
 		return fmt.Errorf("peers: remove: %w", err)
@@ -338,6 +335,11 @@ next_attempt = NULL, updated = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE to_key
 	// Presence state is deleted with the peer (presence.md §Tables).
 	if _, err := tx.ExecContext(ctx, `DELETE FROM presence_peers WHERE key = ?`, key); err != nil {
 		return fmt.Errorf("peers: delete presence: %w", err)
+	}
+	if s.OnRemovedTx != nil {
+		if err := s.OnRemovedTx(ctx, tx, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -445,7 +447,7 @@ func (s *Store) GCIntroduced(ctx context.Context, tx *sql.Tx) ([]Removed, error)
 	for i := range out {
 		// A key that is not canonical cannot have been stored by Introduce; leave the fingerprint empty.
 		out[i].Fingerprint, _ = envelope.KeyFingerprint(out[i].PublicKey)
-		if err := removeTx(ctx, tx, out[i].PublicKey); err != nil {
+		if err := s.removeTx(ctx, tx, out[i].PublicKey); err != nil {
 			return nil, err
 		}
 	}

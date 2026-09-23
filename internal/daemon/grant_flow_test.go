@@ -146,10 +146,7 @@ VALUES (?, 'peerb', 'h', '[]', '{}', ?, ?, ?)`, peerKey, time.Now().UTC().Format
 		_, err := caps.RevokeForSessionTx(ctx, tx, sid, capability.ReasonSessionClosed, now)
 		return err
 	}
-	ps.OnRemoved = func(ctx context.Context, key string) error {
-		_, err := caps.RevokeForPeer(ctx, key, capability.ReasonPeerRemoved, time.Now())
-		return err
-	}
+	ps.OnRemovedTx = revokeForRemovedPeer(caps)
 	ob := &mail.Outbox{
 		DB:    db,
 		Priv:  func() (ed25519.PrivateKey, error) { return append(ed25519.PrivateKey(nil), priv...), nil },

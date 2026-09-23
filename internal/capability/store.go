@@ -326,17 +326,11 @@ func (s *Store) RevokeForSessionTx(ctx context.Context, tx *sql.Tx, sid, reason 
 	return ids, nil
 }
 
-// RevokeForPeer revokes every non-revoked grant with this peer, in its own
-// transaction (Docs/protocol/grant.md, "peers remove of the holder revokes
-// all its grants"). Not nested in another transaction: called from the
-// peers.Store.OnRemoved hook, itself run after the peer row's own
-// transaction has committed.
-func (s *Store) RevokeForPeer(ctx context.Context, peer, reason string, now time.Time) ([]string, error) {
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("capability: begin revoke for peer: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+// RevokeForPeerTx revokes every non-revoked grant with this peer inside tx
+// (Docs/protocol/grant.md, "peers remove of the holder revokes all its
+// grants"). Called from the peers.Store.OnRemovedTx hook, inside the
+// transaction that deletes the peer row.
+func (s *Store) RevokeForPeerTx(ctx context.Context, tx *sql.Tx, peer, reason string, now time.Time) ([]string, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM grants WHERE peer = ? AND state <> ?`, peer, StateRevoked)
 	if err != nil {
 		return nil, fmt.Errorf("capability: list peer grants: %w", err)
@@ -358,9 +352,6 @@ func (s *Store) RevokeForPeer(ctx context.Context, peer, reason string, now time
 		if _, err := s.RevokeTx(ctx, tx, id, reason, now); err != nil {
 			return nil, err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("capability: commit revoke for peer: %w", err)
 	}
 	return ids, nil
 }
@@ -408,6 +399,17 @@ const MaxPolicies = 50
 func (s *Store) PolicyCount(ctx context.Context) (int, error) {
 	var n int
 	err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM grant_policies`).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("capability: count policies: %w", err)
+	}
+	return n, nil
+}
+
+// PolicyCountTx is PolicyCount read through tx (for the grant_policy_add
+// approval Precondition, Docs/review/28-2.2c-review.md M3).
+func (s *Store) PolicyCountTx(ctx context.Context, tx *sql.Tx) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grant_policies WHERE until >= ?`, fmtTime(s.now())).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("capability: count policies: %w", err)
 	}
@@ -565,11 +567,13 @@ func policyCovers(p Policy, mp MatchParams) bool {
 	if !scopeWithin(mp.Scope, p.Scope) {
 		return false
 	}
-	// "--public in the policy covers only --public grants": a public policy
-	// matches only a non-sensitive grant; a policy without --public covers
-	// any sensitivity (grant.md: "sensitive grants may be covered by a
-	// policy").
-	if p.Public && mp.Sensitive {
+	// The policy matches on the grant's sensitive value
+	// (Docs/protocol/grant.md §Policies): a --public policy covers only
+	// --public (non-sensitive) grants, and a policy without --public covers
+	// only sensitive ones. A sensitive policy must never auto-issue a
+	// --public grant: that would drop the result quarantine the human
+	// approved (Docs/review/28-2.2c-review.md H1).
+	if p.Public != !mp.Sensitive {
 		return false
 	}
 	if mp.ExpiresS > p.MaxExpiresS {
