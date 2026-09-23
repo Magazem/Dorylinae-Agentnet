@@ -72,6 +72,7 @@ func TestRequestCompleteShorthand(t *testing.T) {
 		// as before 2.1a.
 		b := newNode(t, testB)
 		a := newNode(t, testA)
+		b.clock = a.clock // one clock: the nodes were created on either side of a second boundary
 		outcome, err := a.req.Submit(context.Background(), request.SubmitParams{
 			From: testA, To: testB, Team: testTeam, Type: request.TypeTask, Title: "t", Brief: "What: x", Urgency: request.UrgencyNormal,
 		})
