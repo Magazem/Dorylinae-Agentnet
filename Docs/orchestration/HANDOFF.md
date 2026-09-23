@@ -90,7 +90,11 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
    `go test ./... -count=1` **×2**, `go run ./tools/verifyvectors`, and
    `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...` (only
    CRLF gofmt noise allowed). Cross-vet for Unix when touching OS-specific code:
-   `GOOS=linux GOARCH=amd64 go vet ./...`, `GOOS=darwin GOARCH=arm64 go vet ./...`. **Also lint per OS** (`GOOS=linux` and `GOOS=darwin` before the golangci-lint command): Windows lint skips `_linux.go`/`_darwin.go` files, and CI lint runs on Linux.
+   `GOOS=linux GOARCH=amd64 go vet ./...`, `GOOS=darwin GOARCH=arm64 go vet ./...`. **Also lint per OS:** install the linter once
+   (`GOBIN="$TEMP/gl" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2`), then run
+   `GOOS=linux "$TEMP/gl/golangci-lint.exe" run ./...` and the same with `GOOS=darwin`. Windows lint
+   skips `_linux.go`/`_darwin.go`, and CI lints on Linux. `GOOS=linux go run …golangci-lint…` does
+   NOT work: it builds a Linux binary that can't run here, and the error is easy to miss.
 6. **Safe commit sequence** (1.0f work was once lost): stage null-safely
    (`git diff --ignore-cr-at-eol --name-only -z | xargs -0 -r git add --` plus untracked via
    `git ls-files --others --exclude-standard -z | xargs -0 -r git add --`), commit, verify
