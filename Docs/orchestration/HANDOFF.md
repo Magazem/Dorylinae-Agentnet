@@ -36,7 +36,8 @@ specs merged to main. Self-hosted relays: D17.
 | Ticket | Worker slot | Task | Worktree / branch | Migration |
 |---|---|---|---|---|
 | 2.1a work sessions | `01a0cd5e-eafe…` P2-WSCore | `01a0cd5f-0c95…` | `ws-core` / `p2/ws-core` | 14 |
-| 2.2a approval | `01a0cd5e-ec75…` P2-Approval | `01a0cd5f-2990…` | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge; merge after 2.1a) |
+| 2.2a approval | done (9fb681a); review: `01a0cd8e-1c26…` P2-Review-2.2a, task `01a0cd8e-4a17…` → Docs/review/26 | — | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge; merge after 2.1a) |
+2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
 **2.2b merged** (0e1b64a + review 25 fixes 6b94bb1). Notes for **2.2c** (from review 25): store/compare `canonical(token)` never raw bytes; never audit `err.Error()` from capability (use `ReasonOf`); add a helper returning the canonical token; review-25 L9 (grant.md §Paths: CONIN$/CONOUT$, COM/LPT with superscript digits, C1/bidi chars) goes into the 2.3a fs ticket.
 Next after these merge: 2.1b, 2.2c (then 2.D1 after 2.2c).
 
