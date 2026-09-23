@@ -178,7 +178,8 @@ before 2.2c**, so that 2.2c, 2.4 and 2.D1 build on the window and never on
   `Store.mu`, `via` in the audit), `internal/daemon` (`approval_confirm` removed,
   `approval_open` added, the terminal-mode stdin reader and its TTY check, `status`
   `approval_window`), `cmd/agentnet/approve.go` (`--list`, `--open`, `--reject` only; the old
-  `<a-id> <code>` form is a usage error that points to the window), `Docs/cli/approve.md`,
+  `<a-id> <code>` form is a usage error that points to the window), `Docs/cli/approve.md` (with the
+  OQ-2.2d-1 note: on Linux the summary is visible in `/proc`, `hidepid=2` hides it),
   `Docs/agents/snippet.md` ("approvals are done by the human in the AgentNet window; never
   ask the user for a code"), `tests/phase2-manual.md` (a manual window check on each OS), and
   tests.
@@ -198,7 +199,13 @@ before 2.2c**, so that 2.2c, 2.4 and 2.D1 build on the window and never on
   `approval_open` returns `bad_request`. The 2.2a and review-26 tests are kept (vector,
   limits, lockout, no code material anywhere), with `approval_confirm` calls rewritten to the
   fake window or stdin. The 2.H driver pattern (a pipe to stderr and stdin under
-  `DORYLINAE_DEBUG=1`) is demonstrated by an e2e test. Manual: the window appears and works
+  `DORYLINAE_DEBUG=1`) is demonstrated by an e2e test. Review 29: a notifier failure after
+  the window is ready kills the window and stores nothing; a desktop-mode daemon with
+  `DORYLINAE_DEBUG=1` and data on stdin still accepts no code; the Linux argv uses only
+  `--opt=value` and a summary starting with `--` stays text; the Linux exit-status mapping
+  (0, extra button, 1, 5) is table-tested; the program paths are absolute (PowerShell from
+  `GetSystemDirectory`, the toast too) and the Linux candidates are ownership-checked; the
+  Windows window is `missing` in session 0. Manual: the window appears and works
   on Windows 11 (PowerShell 5.1, no admin); macOS and Linux (zenity) are recorded in
   `tests/phase2-manual.md` when a machine is available.
 
@@ -393,7 +400,7 @@ not reopened; OD-P2-8 is an interpretation of D13's wording, not a change of it.
 | OD-P2-9 | Depth of the one-way hierarchy | (a) depth 1: a device is only helper or only controller, no reverse links; (b) allow chains without cycles | **(a)**. Simplest, and nothing in Phase 2 needs chains |
 | OD-P2-10 | What an own-device helper does with in-scope requests | (a) the helper **daemon** runs an allowlisted command (argv fixed on the helper) and returns exit code + output (the D14 result); (b) auto-accept only, and a local agent on the helper does the work | **(a)**. It needs no agent on the helper and uses D14 as designed; the request carries only a command **name** |
 | OD-P2-11 | Does every accept open a session | (a) yes (plan: "created on accept"), `complete` becomes a result shorthand; (b) opt-in sessions | **(a)**. One path; Phase 1 commands keep working through the shorthand |
-| OQ-2.2d-1 | (**open**, 2.2d) Linux dialog text in argv: zenity and kdialog take the title and summary only as arguments, so on a Linux machine shared with other OS users they can read *what* is being approved (never the code) through `/proc` | (a) accept it and document it (`hidepid=2` removes it); (b) put only the short tag and the kind in argv, with the full summary only in the notification | **(a)**. The summary is local metadata (peer name, resource path, expiry), not a secret, beta users are single-user desktops, and (b) makes the human rely on a toast that vanishes |
+| OQ-2.2d-1 | (**decided (a) by the owner, 2026-09-23**, 2.2d) Linux dialog text in argv: zenity and kdialog take the title and summary only as arguments, so on a Linux machine shared with other OS users they can read *what* is being approved (never the code) through `/proc` | (a) accept it and document it (`hidepid=2` removes it); (b) put only the short tag and the kind in argv, with the full summary only in the notification | **(a)**. The summary is local metadata (peer name, resource path, expiry), not a secret, beta users are single-user desktops, and (b) makes the human rely on a toast that vanishes |
 | OD-P2-12 | 2.7 "all harnesses pass in CI weekly" | (a) weekly CI with a scripted stand-in agent (free), real harnesses (Claude Code + agy, Codex optional) manual before releases; (b) put model API keys into CI secrets (paid, per run); (c) no CI job | **(a)**. It keeps the loop tested weekly at no cost; the real-agent run is the release gate |
 | OD-P2-13 | Default sensitivity | `fs.read` always sensitive; `git.read` sensitive unless `--public` | **As specified**. The daemon cannot tell a private repo from a public one |
 | OD-P2-14 | Which git state a grant serves | (a) the branch tip at each call, with `commit` reported; (b) a commit pinned at grant time | **(a)**. A reviewer after "changes requested" sees the new commits without a new grant |

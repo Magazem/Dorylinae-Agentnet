@@ -28,7 +28,7 @@ On a headless machine the daemon's own terminal takes the place of the window
 |---|---|---|
 | A prompt-injected local agent that uses AgentNet's interface (IPC, CLI) | Issue a grant, release a quarantine, link a device or widen a helper scope without the human | It cannot submit a code: no IPC method or CLI command takes one. Codes are read only from the daemon's own approval window (desktop) or the daemon's own stdin (terminal mode). It cannot see the code either: the code is never in an IPC result, a CLI output, the audit log, the daemon log, a webhook, SQLite (not even a hash: the check value lives only in the daemon's memory), any process's argument list or a file. Rate limits and the daily wrong-code cap still apply ([Object](#object)) |
 | The same agent showing a **fake** approval window or chat prompt | Phish the code from the human | A captured code is useless: the agent has nowhere to submit it. The notification tells the human to type the code only into the AgentNet window with the matching id ([Spoofing](#spoofing-and-stray-input)) |
-| Another local OS user | Read the code as it passes to the notifier | The code never appears in a process's argument list (world-readable through `/proc` and `ps`); it reaches the notifier in-process (Linux) or through the environment (macOS, Windows), which only the same user can read ([Delivering the code](#delivering-the-code)) |
+| Another local OS user | Read the code as it passes to the notifier | The code never appears in a process's argument list (world-readable through `/proc` and `ps`); it reaches the notifier in-process (Linux) or through the environment (macOS, Windows), which only the same user can read ([Delivering the code](#delivering-the-code)). On Linux the approval window's title and summary (never the code) are in the dialog's argv; this is accepted (OQ-2.2d-1, [The approval window](#the-approval-window)) |
 | A remote peer | Trigger approvals to annoy or to phish the human | Only local IPC callers create approvals; a peer's mail never does. The notification names the **local** action and the **peer's name and fingerprint** |
 | Malware running as the user | Anything | **Out of scope.** It can read the screen, the keystore file fallback and the database. The approval is a gate against confused-deputy agents, not a sandbox |
 | A human approving without reading | A too-broad grant | The notification and the approval window state action, resource, peer and expiry in plain words |
@@ -123,23 +123,36 @@ Common rules, all platforms:
   never from `PATH`. The script (where there is one) is constant text in the binary. Summary,
   title and tag reach it through the **environment** (the same user can read it; other users
   cannot), never interpolated into the script. The code is **never** sent to the dialog.
-  It exists only in the notification.
+  It exists only in the notification. No environment variable, flag, config key or
+  `DORYLINAE_DEBUG` selects a different program, script or answer source: tests swap the
+  runner only inside Go test code. A desktop-mode daemon **never reads its stdin**
+  (review 29, M6).
 - **Answer format.** The dialog writes one line to stdout and exits: `approve <digits>`,
   `reject` or `dismiss`. The daemon reads at most 256 bytes. Anything else counts as
   `dismiss`. An `approve` whose value is not exactly 6 ASCII digits is **not** counted as a
   wrong code: the daemon reopens the window once with "Enter the 6-digit code from the
   notification". A 6-digit value is checked like any code (3 per approval, 10 per 24 h,
-  unchanged).
+  unchanged). An answer that arrives before the notification has been shown counts as
+  `dismiss`. zenity and kdialog cannot print this line themselves, so on Linux the daemon
+  builds it from the exit status: 0 with text → `approve <text>`; zenity's extra button
+  (stdout `Reject`, exit 1) → `reject`; any other exit, including zenity's timeout (5) →
+  `dismiss`. A typed text `Reject` + OK is therefore an `approve` with a malformed value
+  (review 29, L6).
 - **Ready check.** Creating an approval opens the window **before** the code is generated or
   the notification is shown. If the window does not become ready (below), nothing is stored,
   nothing is audited, and the method fails with `approval_unavailable`, as a failed notifier
-  does today. The waiting row is dropped (review 26, N5).
+  does today. The waiting row is dropped (review 26, N5). The same applies if the window is
+  ready but **showing the notification then fails**: the daemon kills the window first, so
+  there is never a window without a code or a code without a window (review 29, M4).
 - **Lifetime.** The dialog carries its own timeout equal to `expires`. The daemon also kills
   it when the approval is decided, expires (a per-approval timer, not only the lazy sweep),
   hits the lockout, or when the daemon stops. At most one window per approval exists at a time,
   so there are at most 5 windows (the pending limit). Windows: the dialog runs in a Job
   object with `KILL_ON_JOB_CLOSE` (`golang.org/x/sys/windows`, no cgo), so it dies with the
-  daemon. Linux: `Pdeathsig = SIGKILL`. macOS: an orphan closes itself at `expires`. An
+  daemon. The process is assigned right after `Start`, and a failed assignment kills it and
+  counts as not ready. It is started with `CREATE_NO_WINDOW`, so no console flashes up. Linux: `Pdeathsig = SIGKILL`. It fires
+  when the starting OS **thread** exits, so the window is never started from a goroutine
+  that calls `runtime.LockOSThread`. macOS: an orphan closes itself at `expires`. An
   orphan's answer goes nowhere, and after a restart every pending approval is `expired` anyway.
 - **Locking.** The ready wait can take seconds, so it must not run while `Store.mu` is held
   (review 26, L1). Reserve the pending slot under the lock, open the window outside it, then
@@ -156,9 +169,9 @@ Per platform (no cgo, no admin):
 
 | OS | Dialog | Ready when | Notes |
 |---|---|---|---|
-| Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -STA -WindowStyle Hidden -Command <fixed script>`. PowerShell 5.1 with WinForms: a `Form` (`TopMost`, fixed size, no minimise), `Label`s whose `.Text` is set from the environment (base64 UTF-16, like the toast), a `TextBox` limited to 6 digits, **Approve** (enabled only with 6 digits) and **Reject**. No `AcceptButton`/`CancelButton`, so Enter and Esc do not click them. The input box ignores keystrokes for the **first 1 s** after the form is shown. | The form's `Shown` event writes `ready` to stdout. Wait at most 10 s | Under Constrained Language Mode (AppLocker/WDAC) WinForms is blocked: the result is `approval_unavailable`. The toast has the same limit |
-| macOS | `/usr/bin/osascript` with a fixed script: `display dialog (system attribute "AGENTNET_A_BODY") with title (system attribute "AGENTNET_A_TITLE") default answer "" buttons {"Reject", "Approve"} giving up after <from env>`. The script turns the record into the one-line answer (`gave up` → `dismiss`) | Still running after 1.5 s, or already exited with a valid answer. An early non-zero exit is failure | `display dialog` inside osascript needs no Automation (TCC) permission. It cannot delay input. Only a daemon running in the user's GUI session (a LaunchAgent) can show it |
-| Linux | `zenity --entry --no-markup --title … --text … --extra-button Reject --timeout <s>` if `/usr/bin/zenity` exists, else `kdialog --title … --inputbox …` from `/usr/bin/kdialog` with the text markup-escaped (`& < >`). Needs `DISPLAY` or `WAYLAND_DISPLAY` in the daemon's environment | As macOS | **Title and summary are in argv** (neither tool reads its text from stdin or the environment), so another local user can read them through `/proc/<pid>/cmdline` unless `/proc` is mounted `hidepid=2`. The code is never in them. See open question OQ-2.2d-1 in the 2.2d ticket. kdialog has no Reject button: reject with `agentnet approve --reject` |
+| Windows | `<system dir>\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -STA -WindowStyle Hidden -Command <fixed script>`, where `<system dir>` comes from `GetSystemDirectory` (`x/sys/windows`), not from `%SystemRoot%` or `PATH`. The approval toast and its history removal switch to the same absolute path (today `powershell.exe` is found through `PATH`). PowerShell 5.1 with WinForms: a `Form` (`TopMost`, fixed size, no minimise, cascaded so that several windows do not stack exactly), `Label`s whose `.Text` is set from the environment (base64 UTF-16, like the toast), a `TextBox` limited to 6 digits and focused first, **Approve** (enabled only with 6 digits) and **Reject**. No `AcceptButton`/`CancelButton`, so Enter and Esc do not click them. The input box ignores keystrokes for **1 s** after each `Activated` event, not only after `Shown`: a background process usually cannot take the focus, so the window mostly gets it later from a click | The form's `Shown` event writes `ready` to stdout. Wait at most 10 s | Under Constrained Language Mode (AppLocker/WDAC) WinForms is blocked: the result is `approval_unavailable`. The toast has the same limit. A daemon outside an interactive session (session 0, an SSH logon) would fire `Shown` on a desktop nobody sees, so the check first requires `ProcessIdToSessionId` ≠ 0 and the process's window station to be `WinSta0`; otherwise the window is `missing` |
+| macOS | `/usr/bin/osascript` with a fixed script: `activate` (osascript itself, no TCC permission; it brings the dialog to the front), then `display dialog (system attribute "AGENTNET_A_BODY") with title (system attribute "AGENTNET_A_TITLE") default answer "" buttons {"Reject", "Approve"} giving up after <from env>`, with no `default button` and no `cancel button`, so Return and Esc click nothing. The script turns the record into the one-line answer (`gave up` → `dismiss`) | Still running after 1.5 s, or already exited with a valid answer. An early non-zero exit is failure | `display dialog` inside osascript needs no Automation (TCC) permission. It cannot delay input. Only a daemon running in the user's GUI session (a LaunchAgent) can show it. The manual check includes a non-ASCII peer name (`system attribute` decoding) |
+| Linux | `zenity --entry --title=… --text=… --extra-button=Reject --timeout=<s>`, else `kdialog --title=… --inputbox=…`. Every value is one `--opt=value` argument, and peer text is never a positional argument, so a summary starting with `-` cannot become an option. Text is markup-escaped (`& < >`) for both tools; zenity's `--no-markup` is used instead only if the manual check shows that it is accepted with `--entry` on the zenity versions of Ubuntu 22.04 and 24.04. The program is the first of `/usr/bin/<tool>`, `/bin/<tool>`, `/run/current-system/sw/bin/<tool>` (NixOS) that exists, is owned by root and is not group- or world-writable; never `PATH` (a Flatpak-only install is not found). `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `XDG_RUNTIME_DIR` are taken from the daemon's environment or, if missing, from the systemd user manager's environment, read in-process at each opening (property `Environment` of `org.freedesktop.systemd1.Manager` over godbus): a user unit started at `default.target` often starts before the desktop exports them | As macOS | **Title and summary are in argv** (neither tool reads its text from stdin or the environment), so another local user can read them through `/proc/<pid>/cmdline` unless `/proc` is mounted `hidepid=2`. The code is never in them. This is **accepted and documented** (owner, OQ-2.2d-1 = (a)): the summary is local metadata, not a secret. `Docs/cli/approve.md` and the Linux install notes say so and name `hidepid=2` as the fix on shared machines. kdialog has no Reject button: reject with `agentnet approve --reject` |
 
 **No window helper on Linux** (neither zenity nor kdialog, or no display): approvals are
 `approval_unavailable`, exactly as when the notifier fails. There is **no automatic
@@ -166,7 +179,12 @@ fallback**. The alternative is the install-time terminal mode ([Headless
 machines](#headless-machines)), with its documented weaker security. In desktop mode `status`
 also reports `approval_window: "ok" | "missing"`, a check that the helper program exists and
 a display is set, without opening a window. That way the user learns about it before the
-first grant.
+first grant. The `approval_unavailable` message and `status` name the fix in plain words:
+"install zenity (or kdialog)", "no desktop session", or "PowerShell/WinForms blocked by policy".
+
+The window also says where the code is: "The code is in the AgentNet notification for
+a-012345. If notifications are silenced (Do Not Disturb, Focus Assist), open the
+notification centre." (review 29, L5)
 
 ### Spoofing and stray input
 

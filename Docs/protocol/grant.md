@@ -348,7 +348,7 @@ Pages `Docs/cli/grant.md` and `Docs/cli/fetch.md` are written by tickets 2.2c an
 
 | Command | Notes |
 |---|---|
-| `agentnet grant @peer --session S --action A --resource PATH[#BRANCH] [--scope P] [--expires D] [--public] [--json]` | Prompts for the approval code on a terminal; otherwise prints the approval id |
+| `agentnet grant @peer --session S --action A --resource PATH[#BRANCH] [--scope P] [--expires D] [--public] [--json]` | Prints the approval id and exits 0 with `state: pending`. It never prompts for a code: the human types it into the approval window ([approval.md](approval.md#flow), 2.2d) |
 | `agentnet grants [--session S] [--issued\|--held] [--json]` | |
 | `agentnet revoke <g-id> [--json]` | |
 | `agentnet grant policy add\|list\|remove …` | |
