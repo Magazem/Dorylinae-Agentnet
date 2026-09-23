@@ -34,7 +34,7 @@ specs merged to main. Self-hosted relays: D17.
 
 **Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced). No workers running.
 **Wave P2-2 status:**
-- 2.1b: committed on `p2/ws-ipc` (rebased on main). Follow-up **2.1b-f** by the same worker (slot `01a0cda5-0c84…`, task `01a0cdfc-769c…`) aligns D18 with the review-29 H1 rule (withheld at receipt). Then gate, **an Opus security review of 2.1b is NOT required by 23**, so merge.
+- 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
 - 2.2c: code + review 28 fixes on `p2/grants` (b571815, 4b1a293). **Merge only after 2.2d**, rebased after 2.1b (both touch worksession/daemon). Review-28 leftovers: L8 (pending approvals of a closed session are rejected lazily → put in 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
 - 2.2d: spec + adversarial review 29 merged to main (c3cbea4). Spec **approved by the owner** (2026-09-23). Build: P2-ApprovalWindow slot `01a0cdfd-0af4…`, task `01a0cdfd-3117…`, worktree `approval-window` / `p2/approval-window`; then an Opus security review.
 **2.1b must** (review 27): wire `reqStore.Sessions` (ws.* kinds then register themselves); trigger CheckPhase1Fallback outside any tx; never touch DB/audit inside a tx (return after-commit callbacks); build IPC on View; implement B's ws_cancel + cancel column.
