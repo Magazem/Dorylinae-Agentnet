@@ -129,7 +129,7 @@ Still **open** (not urgent): relay hosting (Fly.io vs Hetzner) and account bindi
    | ~~1.7 urgency guards~~ | merged `130047e` | — | — |
    | ~~1.H headless harness~~ | merged `fcbf2d8` + `2eb18a1`. All-Claude round 3/3 both roles (root cause of refusals: Windows shell tool is PowerShell, not Bash; connectors leaked; fixed + snippet clarified). **Codex leg pending: account limit until 2026-10-02** — owner decides whether Phase 1 closes with it open. | — | — |
    | CI stabilisation | merged `b83900f` (Unix socket dir, pairing settled-audit race, polling tests). NOT yet verified by CI: GitHub Actions jobs did not start — **account spending limit hit ($18 used)**. | — | — |
-   | Pre-public secret/personal-data scan of full history | T-SecretScan (owner will make repo public after; public repos get free Actions) | read-only | — |
+   | ~~Pre-public scan~~ | SAFE TO PUBLISH (154 commits): only test-fixture keys; public author email magazem@gmail.com; username "ysuliman" in 2 doc paths (cosmetic). Owner to make repo public. | — | — |
    | ~~D14 spec~~ | merged: result {status, summary, exit_code, output ≤32 KiB, artifacts}; new IPC code result_too_large; **migration 12 = requests_result, webhook_queue = 13** | — | — |
    | ~~1.2c presence engine~~ | merged (heartbeats, agent edge, offline 75 s, OnPeerOnline flush, roster resync, `status --team`). e2e seeds teams directly (harnessSeedTeam) — could now use 1.1d IPC. | — | — |
    | ~~1.3 visibility + fixed-size padding~~ | merged `bc965e4` (modes, presence_get/set, auto-invisible when team gone, goodbye serialised with ticks, one fixed padded size, seq/epoch ≤ 2^53-1) | — | — |
