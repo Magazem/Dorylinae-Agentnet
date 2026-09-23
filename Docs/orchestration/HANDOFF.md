@@ -25,7 +25,18 @@ free. No workers, no worktrees, no open branches: `git worktree list` shows only
    in both swapped rounds. Codex was blocked by the owner's account usage limit until
    2026-10-02; rerunning it then is optional.
 
-**Next: Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
+**Phase 2 started 2026-09-23.** Step 1 done: specs committed on branch `p2/specs` (worktree
+`AgentNet-wt/p2-specs`, commit d06c6d7): `Docs/protocol/{work-session,approval,grant,consult,device}.md`
++ `Docs/review/23-phase2-tickets.md` (15 tickets, migrations 14–17, OD-P2-1..15). Step 2 done:
+`Docs/review/24-phase2-spec-review.md` (0 C, 3 H fixed, 11 M (10 fixed, M10 → OD-P2-6), 17 L),
+commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (4f28a2b);
+specs merged to main. **Pending owner answer (self-hosted relays in beta):** (1) move review-05
+M2 (relay TLS + abuse limits) into Phase 2 as a ticket, or keep it as a gate before the beta?
+(2)+(3) proposed docs-only clarifications: fetch limits must be daemon-side caps, not relay
+config; "non-loopback" in D5 explicitly includes self-hosted relays. **Next:** dispatch tickets
+per `Docs/review/23-phase2-tickets.md` in dependency order.
+
+**Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
 helper (D13). Follow the same flow as Phase 1:
 1. An Opus worker writes the Phase 2 specs **first** (docs only): grants/capabilities (plan says
    Biscuit), consult, sessions, D13 device link + helper scope, and a ticket plan like
@@ -112,6 +123,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D12 | Cancel gives **no** urgency-budget refund. |
 | D13 | **Own-device helper (Phase 2):** separate `device` trust never created by team/roster/pairing; dedicated link flow confirmed on BOTH devices; only the obeying device can make itself a helper and holds the scope locally (request types, repos/paths, commands, expiry); off by default, audited, revocable from either side; out-of-scope requests go to the normal inbox; one-way hierarchy. |
 | D14 | Optional size-capped **result payload on `request.complete`** (status, summary, exit_code, output ≤32 KiB, artifacts). Implemented in 1.6a. |
+| D16 | **Phase 2 specs approved (2026-09-23)**, OD-P2-1..15 as recommended in `Docs/review/23-phase2-tickets.md`: in-house signed token (not Biscuit); desktop approval code with the stated boundary (agents with a raw shell need harness confinement; OS user-presence = Phase 3/4 hardening); DB grants deferred; requester-only grants; **OD-P2-6 = (c)** (from `quarantined`: discard, or request changes without release, result deleted unseen); every accept opens a work session; weekly CI with a scripted stand-in agent, real agents manual before releases. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
@@ -163,6 +175,10 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
     a NEW worktree (the board is visible to all workers; a "stopped" worker once picked up
     its successor's task).
   - Mark a worker's tasks completed before retiring it, or it declines shutdown.
+  - Spec/docs workers read for a long time and write files late. `idle` notifications
+    while the task is `in_progress` are not proof of being stuck: the P2 spec writer was
+    retired as "stuck" yet delivered everything. Wait for its report (or a long silence)
+    before retiring it.
   - Workers report a vanished worktree after you merge: expected.
   - Worker summaries are leads, not truth: verify key claims before telling the owner.
 - **Branch on an unmerged branch:** after the base merges with review fixes, rebase with
