@@ -692,6 +692,21 @@ func capability(c *checker, v *vectors) {
 		ed25519.Verify(issPub, append([]byte("dorylinae-grant-v1\n"), canon...), sig),
 		"Ed25519 verification failed")
 
+	// grant.md: keys as in pairing.md (grantor seed 00..1f, holder 20..3f),
+	// and the signature recomputed, not only verified (Ed25519 is
+	// deterministic).
+	c.eqs("capability iss = pairing key_I", cp.Iss, v.Pairing.KeyI)
+	c.eqs("capability aud = pairing key_R", cp.Aud, v.Pairing.KeyR)
+	grantorSeed := make([]byte, ed25519.SeedSize)
+	for i := range grantorSeed {
+		grantorSeed[i] = byte(i)
+	}
+	grantorPriv := ed25519.NewKeyFromSeed(grantorSeed)
+	c.eqs("capability iss from seed 00..1f",
+		base64.RawURLEncoding.EncodeToString(grantorPriv.Public().(ed25519.PublicKey)), cp.Iss)
+	c.eqs("capability sig recomputed",
+		base64.RawURLEncoding.EncodeToString(ed25519.Sign(grantorPriv, append([]byte("dorylinae-grant-v1\n"), canon...))), cp.Sig)
+
 	tokenCanon, err := canonicalOf(c, "capability token", struct {
 		Grant json.RawMessage `json:"grant"`
 		Sig   string          `json:"sig"`

@@ -72,8 +72,9 @@ const (
 // SessionOpen reports whether id is a known work session between requester
 // and worker (identity keys in wire form) and, if so, whether it is open.
 // Verify does not depend on internal/worksession: the caller (the holder's
-// mirror lookup, or the grantor's own store) supplies this. A nil SessionOpen
-// skips step 7 entirely.
+// mirror lookup, or the grantor's own store) supplies this. It is required:
+// a nil SessionOpen fails step 7 (unknown_session), so a caller that forgets
+// to wire it fails closed.
 type SessionOpen func(id, requester, worker string) (known, open bool)
 
 // VerifyParams parameterises Verify (Docs/protocol/grant.md §Verification).
@@ -108,9 +109,14 @@ func Verify(raw []byte, p VerifyParams) (*Grant, error) {
 	}
 
 	// Step 3: iss is the expected grantor.
-	expectedIss := p.Counterparty
-	if p.Role == RoleGrantor {
+	var expectedIss string
+	switch p.Role {
+	case RoleHolder:
+		expectedIss = p.Counterparty
+	case RoleGrantor:
 		expectedIss = p.Self
+	default:
+		return nil, reject(3, ReasonWrongIssuer, errors.New("unknown role"))
 	}
 	if g.Iss != expectedIss {
 		return nil, reject(3, ReasonWrongIssuer, nil)
@@ -121,6 +127,9 @@ func Verify(raw []byte, p VerifyParams) (*Grant, error) {
 	issKey, err := b64u.DecodeString(g.Iss)
 	if err != nil || len(issKey) != ed25519.PublicKeySize {
 		return nil, reject(4, ReasonBadSignature, errors.New("bad issuer key"))
+	}
+	if !sigPattern.MatchString(tok.Sig) {
+		return nil, reject(4, ReasonBadSignature, errors.New("bad signature encoding"))
 	}
 	sig, err := b64u.DecodeString(tok.Sig)
 	if err != nil || len(sig) != ed25519.SignatureSize {
@@ -153,23 +162,20 @@ func Verify(raw []byte, p VerifyParams) (*Grant, error) {
 
 	// Step 7: session names a known work session between iss (requester)
 	// and aud (worker), in state open.
-	if p.SessionOpen != nil {
-		known, open := p.SessionOpen(g.Session, g.Iss, g.Aud)
-		if !known {
-			return nil, reject(7, ReasonUnknownSession, nil)
-		}
-		if !open {
-			return nil, reject(7, ReasonSessionNotOpen, nil)
-		}
+	if p.SessionOpen == nil {
+		return nil, reject(7, ReasonUnknownSession, errors.New("no session lookup configured"))
+	}
+	known, open := p.SessionOpen(g.Session, g.Iss, g.Aud)
+	if !known {
+		return nil, reject(7, ReasonUnknownSession, nil)
+	}
+	if !open {
+		return nil, reject(7, ReasonSessionNotOpen, nil)
 	}
 
 	// Step 8: action matches resource.kind.
-	wantKind := KindFS
-	if g.Action == ActionGitRead {
-		wantKind = KindGit
-	}
-	if g.Resource.Kind != wantKind {
-		return nil, reject(8, ReasonMalformed, errors.New("action does not match resource.kind"))
+	if err := checkActionKind(g); err != nil {
+		return nil, reject(8, ReasonMalformed, err)
 	}
 
 	verified := g
@@ -225,7 +231,7 @@ func decodeGrant(gen map[string]any) (Grant, error) {
 		return Grant{}, errors.New("v must be an integer")
 	}
 	vi, err := vNum.Int64()
-	if err != nil {
+	if err != nil || int64(int(vi)) != vi { // no wrap-around to 1 on a 32-bit int
 		return Grant{}, errors.New("v must be an integer")
 	}
 	g.V = int(vi)

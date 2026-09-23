@@ -137,14 +137,15 @@ func TestNegativeActionResourceMismatch(t *testing.T) {
 	// signature still verifies and only step 8 catches it.
 	g := vecGrant()
 	g.Action = ActionFSRead // resource.kind stays "git"
-	// checkFormats would also reject this (git kind requires a branch,
-	// which is fine here; kind/action mismatch is not itself a §Grant
-	// object format rule), so Sign succeeds and Verify must catch it at 8.
-	tok, err := Sign(seed(0x00), g)
+	// Sign refuses this grant, so sign it by hand; checkFormats accepts it
+	// (kind/action mismatch is not a §Grant object format rule), so only
+	// step 8 catches it.
+	canon, err := agentcard.CanonicalValue(grantMap(g))
 	if err != nil {
-		t.Fatalf("Sign: %v", err)
+		t.Fatal(err)
 	}
-	wire, err := Canonical(tok)
+	sig := ed25519.Sign(seed(0x00), append([]byte(domain), canon...))
+	wire, err := Canonical(Token{Grant: g, Sig: b64u.EncodeToString(sig)})
 	if err != nil {
 		t.Fatal(err)
 	}

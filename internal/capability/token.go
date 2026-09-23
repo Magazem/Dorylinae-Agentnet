@@ -49,6 +49,11 @@ var (
 	keyPattern     = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	sessionPattern = regexp.MustCompile(`^s-[0-9a-f]{32}$`)
 	labelPattern   = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
+	// sigPattern is the only accepted spelling of a 64-byte signature:
+	// encoding/base64 silently skips '\r' and '\n', so without it a sig with
+	// embedded newlines decodes to the same bytes (a second, non-canonical
+	// wire form of a valid token).
+	sigPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{86}$`)
 
 	// branchBad holds the characters Docs/protocol/request.md §Artifacts
 	// disallows in a branch name, beyond control characters and spaces.
@@ -132,7 +137,20 @@ func Sign(priv ed25519.PrivateKey, g Grant) (Token, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return Token{}, errors.New("capability: bad private key length")
 	}
+	// Sign exactly what goes on the wire (whole seconds, UTC, a year the time
+	// format round-trips), so the returned Token.Grant equals what Verify
+	// returns for it.
+	g.Nbf = g.Nbf.UTC().Truncate(time.Second)
+	g.Exp = g.Exp.UTC().Truncate(time.Second)
+	for _, t := range []time.Time{g.Nbf, g.Exp} {
+		if _, err := parseTime(t.Format(timeFmt)); err != nil {
+			return Token{}, fmt.Errorf("capability: nbf/exp: %w", err)
+		}
+	}
 	if err := checkFormats(g); err != nil {
+		return Token{}, fmt.Errorf("capability: %w", err)
+	}
+	if err := checkActionKind(g); err != nil { // Verify step 8
 		return Token{}, fmt.Errorf("capability: %w", err)
 	}
 	if b64u.EncodeToString(priv.Public().(ed25519.PublicKey)) != g.Iss {
@@ -209,6 +227,18 @@ func checkFormats(g Grant) error {
 	return nil
 }
 
+// checkActionKind is Verify step 8: action's prefix names resource.kind.
+func checkActionKind(g Grant) error {
+	wantKind := KindFS
+	if g.Action == ActionGitRead {
+		wantKind = KindGit
+	}
+	if g.Resource.Kind != wantKind {
+		return errors.New("action does not match resource.kind")
+	}
+	return nil
+}
+
 func validKey(s string) bool {
 	if !keyPattern.MatchString(s) {
 		return false
@@ -229,6 +259,18 @@ func checkBranch(s string) error {
 	}
 	if strings.Contains(s, "..") {
 		return errors.New(`resource.branch must not contain ".."`)
+	}
+	// grant.md: the branch "must be a valid refs/heads/<branch> name", so
+	// also the git check-ref-format rules the artifact rules do not cover.
+	if s == "@" || strings.Contains(s, "@{") || strings.HasPrefix(s, "-") ||
+		strings.HasSuffix(s, ".") || strings.HasPrefix(s, "/") || strings.HasSuffix(s, "/") ||
+		strings.Contains(s, "//") {
+		return errors.New("resource.branch is not a valid refs/heads/ name")
+	}
+	for _, comp := range strings.Split(s, "/") {
+		if strings.HasPrefix(comp, ".") || strings.HasSuffix(comp, ".lock") {
+			return errors.New("resource.branch is not a valid refs/heads/ name")
+		}
 	}
 	return nil
 }
@@ -286,7 +328,8 @@ func isWindowsReserved(seg string) bool {
 	if i := strings.IndexByte(seg, '.'); i >= 0 {
 		name = seg[:i]
 	}
-	name = strings.ToUpper(name)
+	// Windows ignores trailing spaces in a device name: "CON .txt" is CON.
+	name = strings.ToUpper(strings.TrimRight(name, " "))
 	switch name {
 	case "CON", "PRN", "AUX", "NUL":
 		return true
