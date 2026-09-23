@@ -145,15 +145,7 @@ try {
     $up = Wait-Until { (Test-Path (Join-Path $work 'relay.out.log')) -and ((Get-Content (Join-Path $work 'relay.out.log') -Raw) -match 'listening') } 10
     Step 'relay starts and listens' $up
 
-    # DORYLINAE_KEYSTORE=file: the webhook secret's OS-keychain account is the literal
-    # string "webhook" (internal/daemon/daemon.go webhookKeystore), not scoped per config
-    # dir like the identity key's account is. With several daemons on one machine, they
-    # collide in Windows Credential Manager: whichever daemon sets/rotates its webhook last
-    # silently overwrites every other daemon's stored secret, and the ones it printed
-    # earlier stop matching what actually signs deliveries. This looks like a real product
-    # bug (see the run report); the file backend sidesteps it here since it IS scoped per
-    # config dir.
-    $envCommon = @{ DORYLINAE_RELAY_URL = $relayUrl; DORYLINAE_KEYSTORE = 'file' }
+    $envCommon = @{ DORYLINAE_RELAY_URL = $relayUrl }
     foreach ($who in @('A', 'B', 'C', 'D')) {
         Start-Bg $who $agentnetd @('run') (@{ DORYLINAE_HOME = $homes[$who] } + $envCommon)
     }
@@ -342,7 +334,7 @@ try {
     Step 'cancel after accept: B accepts request 2 while A is offline' ($acc2.Code -eq 0) $acc2.Out
     # A with no relay URL at all: it cannot possibly receive B's queued "accepted" mail, so
     # its own mirror is guaranteed to still read "pending" when we cancel below.
-    Start-Bg 'A' $agentnetd @('run') @{ DORYLINAE_HOME = $homeA; DORYLINAE_KEYSTORE = 'file' }
+    Start-Bg 'A' $agentnetd @('run') @{ DORYLINAE_HOME = $homeA }
     Step 'status: A running again, deliberately relay-less' (Wait-Status 'A')
     $can2 = AgJson 'A' @('request', 'cancel', $rc2.Json.id)
     Step 'cancel after accept: cancel accepted locally while A''s mirror still reads pending' `

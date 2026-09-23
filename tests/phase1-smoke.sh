@@ -82,13 +82,7 @@ start_relay() { "$bin/relay$exe" --listen "127.0.0.1:$port" --queue-db "$queue" 
 start_d() { # start_d A|B|C|D [extra env "K=V" ...]
   local who="$1"; shift
   local h; h="$(homedir "$who")"
-  # DORYLINAE_KEYSTORE=file: the webhook secret's OS-keychain account is a fixed literal
-  # ("webhook"), not scoped per config dir like the identity key's account is. With several
-  # daemons on one machine that collides in the OS keychain -- whichever daemon sets or
-  # rotates its webhook last silently overwrites every other daemon's stored secret. This
-  # looks like a real product bug (see the run report); the file backend sidesteps it here
-  # since it IS scoped per config dir.
-  env DORYLINAE_HOME="$h" DORYLINAE_KEYSTORE=file "$@" "$bin/agentnetd$exe" run >>"$work/$who.log" 2>&1 &
+  env DORYLINAE_HOME="$h" "$@" "$bin/agentnetd$exe" run >>"$work/$who.log" 2>&1 &
   eval "pid_$who=$!"
 }
 stop_d() { # stop_d A|B|C|D

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -399,16 +400,18 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 
 // webhookKeystore builds the key storage for the webhook secret
 // (Docs/protocol/notify.md §Secret): keychain service "dorylinae", account
-// "webhook" (one webhook per daemon, unlike the per-config-dir identity
-// account), or file "webhook.key" in the config dir, owner-only. mode is the
-// mailbox key's: $DORYLINAE_KEYSTORE, or "file" when an injected identity
-// keystore means tests, which must not touch the real keychain.
+// scoped per config dir like the identity key (so two daemon homes on one
+// machine don't overwrite each other's secret), or file "webhook.key" in the
+// config dir, owner-only. mode is the mailbox key's: $DORYLINAE_KEYSTORE, or
+// "file" when an injected identity keystore means tests, which must not touch
+// the real keychain.
 func webhookKeystore(dir, mode string) *keystore.Store {
 	file := keystore.NewFile(filepath.Join(dir, "webhook.key"))
 	if mode == "file" {
 		return keystore.New(file)
 	}
-	return keystore.New(keystore.NewKeychain("webhook"), file)
+	account := "webhook-" + strings.TrimPrefix(keystore.AccountFor(dir), "identity-")
+	return keystore.New(keystore.NewKeychain(account), file)
 }
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned
