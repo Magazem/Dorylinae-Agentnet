@@ -28,6 +28,10 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	if locked {
 		return View{}, ErrLocked
 	}
+	if err := s.sweepExpiredLocked(ctx, now); err != nil {
+		return View{}, err
+	}
+	s.pruneDecided(ctx, now)
 	if len(s.pending) >= MaxPending {
 		s.auditLimit(ctx, "pending")
 		return View{}, ErrLimit
@@ -111,6 +115,9 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 	if expired {
 		delete(s.pending, id)
 		s.mu.Unlock()
+		if s.notifier != nil {
+			s.notifier.Remove(ctx, id)
+		}
 		return nil, ErrExpired
 	}
 	_ = expires
@@ -126,12 +133,19 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 			delete(s.pending, id)
 		}
 		locked, lerr := s.settings.recordWrongCode(ctx, now)
+		var lockedIDs []string
+		if lerr == nil && locked {
+			// Drop every pending entry before releasing s.mu, so no other
+			// Confirm can test a code between the 10th wrong code and the
+			// lock (review 26, M-2).
+			lockedIDs = s.dropAllLocked()
+		}
 		s.mu.Unlock()
 		if lerr != nil {
 			return nil, lerr
 		}
 		if locked {
-			s.lockAll(ctx)
+			s.lockAll(ctx, lockedIDs)
 		}
 		return nil, &BadCodeError{AttemptsLeft: attemptsLeft}
 	}
@@ -241,10 +255,9 @@ func (s *Store) recordBadCode(ctx context.Context, id string) (attemptsLeft int,
 	return attemptsLeft, rejected, nil
 }
 
-// lockAll rejects every currently pending approval and shows a desktop
-// warning (Docs/protocol/approval.md §Object, the 10th wrong code in 24 h).
-func (s *Store) lockAll(ctx context.Context) {
-	s.mu.Lock()
+// dropAllLocked removes every in-memory pending entry and returns their ids.
+// Caller holds s.mu.
+func (s *Store) dropAllLocked() []string {
 	ids := make([]string, 0, len(s.pending))
 	for id := range s.pending {
 		ids = append(ids, id)
@@ -252,7 +265,43 @@ func (s *Store) lockAll(ctx context.Context) {
 	for _, id := range ids {
 		delete(s.pending, id)
 	}
-	s.mu.Unlock()
+	return ids
+}
+
+// sweepExpiredLocked marks every in-memory pending approval whose expiry has
+// passed as expired (audited, notification withdrawn) and forgets it, so
+// expired approvals neither count toward MaxPending nor show in List
+// (review 26, M-1). Caller holds s.mu.
+func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) error {
+	for id := range s.pending {
+		expired, _, err := s.checkExpiry(ctx, id, now)
+		if err != nil {
+			return err
+		}
+		if expired {
+			delete(s.pending, id)
+			if s.notifier != nil {
+				s.notifier.Remove(ctx, id)
+			}
+		}
+	}
+	return nil
+}
+
+// decidedRetention is how long decided rows are kept (Docs/protocol/approval.md
+// §Tables, "Decided rows are pruned after 30 days").
+const decidedRetention = 30 * 24 * time.Hour
+
+// pruneDecided best-effort deletes decided rows older than decidedRetention.
+func (s *Store) pruneDecided(ctx context.Context, now time.Time) {
+	cutoff := now.Add(-decidedRetention).UTC().Format(storeTimeFmt)
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM approvals WHERE state <> 'pending' AND decided IS NOT NULL AND decided < ?`, cutoff)
+}
+
+// lockAll rejects the approvals ids (already dropped from memory under s.mu)
+// and shows a desktop warning (Docs/protocol/approval.md §Object, the 10th
+// wrong code in 24 h).
+func (s *Store) lockAll(ctx context.Context, ids []string) {
 	for _, id := range ids {
 		s.rejectRow(ctx, id, "locked")
 	}
@@ -338,6 +387,12 @@ func (s *Store) Show(ctx context.Context, id string) (View, error) {
 // List returns every pending approval, oldest first, never a code
 // (Docs/protocol/approval.md §IPC and CLI).
 func (s *Store) List(ctx context.Context) ([]View, error) {
+	s.mu.Lock()
+	err := s.sweepExpiredLocked(ctx, s.now())
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, summary, created, expires, state, attempts FROM approvals WHERE state = 'pending' ORDER BY created`)
 	if err != nil {
 		return nil, fmt.Errorf("approval: list: %w", err)

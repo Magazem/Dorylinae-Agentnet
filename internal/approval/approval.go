@@ -198,6 +198,7 @@ func (s *Store) ExpireStale(ctx context.Context) error {
 			})
 		}
 	}
+	s.pruneDecided(ctx, s.now())
 	return nil
 }
 

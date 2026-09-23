@@ -44,6 +44,12 @@ func TestShowApprovalInProcessNoSubprocess(t *testing.T) {
 	defer func() { notifyIface = orig }()
 	fake := &fakeDBusNotifier{}
 	notifyIface = fake
+	origRun := run
+	defer func() { run = origRun }()
+	run = func(_ context.Context, name string, _ []string, _ []string) error {
+		t.Fatalf("approval path spawned %s", name)
+		return nil
+	}
 
 	expires := time.Now().Add(10 * time.Minute)
 	if err := showApproval(context.Background(), "a-1", expires, "AgentNet approval", "summary Code 482913"); err != nil {
@@ -67,5 +73,23 @@ func TestShowApprovalFailurePropagates(t *testing.T) {
 	notifyIface = &fakeDBusNotifier{failNext: true}
 	if err := showApproval(context.Background(), "a-2", time.Now().Add(time.Minute), "t", "b"); err == nil {
 		t.Fatal("expected an error, no fallback for approvals")
+	}
+}
+
+// TestShowApprovalEscapesMarkup: peer-supplied text in the body cannot use
+// notification markup to hide the real code or show a fake one (review 26,
+// M-3).
+func TestShowApprovalEscapesMarkup(t *testing.T) {
+	orig := notifyIface
+	defer func() { notifyIface = orig }()
+	fake := &fakeDBusNotifier{}
+	notifyIface = fake
+	body := `grant to <span size="1">bob</span> & co? Code 482913`
+	if err := showApproval(context.Background(), "a-3", time.Now().Add(time.Minute), "AgentNet approval", body); err != nil {
+		t.Fatal(err)
+	}
+	want := `grant to &lt;span size="1"&gt;bob&lt;/span&gt; &amp; co? Code 482913`
+	if fake.body != want {
+		t.Fatalf("body = %q, want %q", fake.body, want)
 	}
 }

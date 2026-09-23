@@ -24,8 +24,30 @@ type dbusNotifier interface {
 
 type liveNotifyIface struct{}
 
+// connectSessionBus connects to an existing session bus only. It never
+// autolaunches one: godbus's ConnectSessionBus runs `dbus-launch` (found on
+// PATH) when no bus address is known, which on a headless machine would start
+// and leak a bus daemon per approval that no notification server listens on
+// (review 26, L-3). No bus means approval_unavailable
+// (Docs/protocol/approval.md §Headless machines).
+func connectSessionBus(ctx context.Context) (*dbus.Conn, error) {
+	conn, err := dbus.SessionBusPrivateNoAutoStartup(dbus.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.Auth(nil); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := conn.Hello(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 func (liveNotifyIface) Notify(ctx context.Context, appName string, replacesID uint32, icon, summary, body string, actions []string, hints map[string]dbus.Variant, expireMS int32) (uint32, error) {
-	conn, err := dbus.ConnectSessionBus(dbus.WithContext(ctx))
+	conn, err := connectSessionBus(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -44,7 +66,7 @@ func (liveNotifyIface) Notify(ctx context.Context, appName string, replacesID ui
 }
 
 func (liveNotifyIface) CloseNotification(ctx context.Context, id uint32) error {
-	conn, err := dbus.ConnectSessionBus(dbus.WithContext(ctx))
+	conn, err := connectSessionBus(ctx)
 	if err != nil {
 		return err
 	}
@@ -66,13 +88,17 @@ var (
 // itself, passed as Go function arguments over an existing D-Bus connection,
 // never through a shell or another process's command line
 // (Docs/protocol/approval.md §Delivering the code). No fallback: a failure
-// here is reported to the caller as approval_unavailable.
+// here is reported to the caller as approval_unavailable. The body may be
+// interpreted as markup and carries peer-supplied text (a peer's name), so
+// &, < and > are escaped as for desktop events: otherwise markup could hide
+// the real code or show a fake one, making the human type wrong codes and
+// burn the daily wrong-code budget (review 26, M-3).
 func showApproval(ctx context.Context, id string, expires time.Time, title, body string) error {
 	expireMS := int32(time.Until(expires) / time.Millisecond)
 	if expireMS < 0 {
 		expireMS = 0
 	}
-	dbusID, err := notifyIface.Notify(ctx, "agentnet", 0, "", title, body, []string{}, map[string]dbus.Variant{}, expireMS)
+	dbusID, err := notifyIface.Notify(ctx, "agentnet", 0, "", title, escapeMarkup(body), []string{}, map[string]dbus.Variant{}, expireMS)
 	if err != nil {
 		return err
 	}
