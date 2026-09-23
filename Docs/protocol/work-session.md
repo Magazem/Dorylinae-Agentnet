@@ -172,7 +172,8 @@ trying to deliver content past the quarantine. A's daemon, in the mail transacti
 1. applies it to the request mirror as in Phase 1 (`completed`, by `seq`), **except** that
    when the [quarantine rule](#quarantine-24) holds, the `result` and `note` are dropped and
    never stored (audit `ws.ignored {session, peer, kind: "request.complete", reason:
-   "early_complete"}`);
+   "early_complete"}`), and the message's signed plaintext in `mail_inbox` is blanked in the
+   same transaction ([D18](#inbox-copy-d18));
 2. if the session is `open`, closes it, `outcome = cancelled` (the diagram's `Open →
    Closed: cancel` edge, caused by B), ending its grants as for every close, and sends the
    `ws.state` as usual (a Phase 1 B acks it `unsupported`). In `awaiting_result` or
@@ -290,7 +291,17 @@ back to the requester's side, that is, B's result. While `quarantined`:
   need no approval, because both **reduce** exposure — neither shows the quarantined result
   to A's IPC or agent. In the same transaction as the state change, the stored `result` (and
   `result_round`) are deleted and never re-derivable; nothing computed from the content
-  survives the transaction. B is told only the new `ws.state` (`closed`/`cancelled`, or `open`
+  survives the transaction.
+  <a id="inbox-copy-d18"></a>**The inbox copy too (D18).** The receiver also keeps each
+  message's signed plaintext in `mail_inbox.signed`. In the same transaction, that column
+  is set to `''` for the `ws.result` message(s) of the quarantined round. The row itself
+  stays, so `(from_key, id)` still deduplicates a redelivery (which is acked and not applied
+  again), and the `kind`, `created` and `received_at` metadata stays too. The same blanking
+  applies to a `request.complete` whose content is dropped as an [early
+  complete](#early-complete-and-phase-1-workers) under the quarantine rule. Nothing reads
+  `mail_inbox.signed` back after the message is applied. A test searches every table for
+  the quarantined result's bytes after discard, after request-changes without release, and
+  after a dropped early complete. B is told only the new `ws.state` (`closed`/`cancelled`, or `open`
   with the new `round` and `changes`) — the same shape B would see from an ordinary
   request-changes or cancel, so B learns nothing about whether A's human ever saw the
   content. Audited as `ws.discard {session, peer, round}` or `ws.request_changes {session,

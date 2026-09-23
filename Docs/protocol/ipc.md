@@ -340,7 +340,7 @@ waits at most 1 s like `ping`):
 - work sessions `ws_list`, `ws_show`, `ws_result`, `ws_accept_result`, `ws_request_changes`,
   `ws_cancel`, `ws_release` ([work-session.md](work-session.md#ipc)); the request view gains
   `session`, and the submit result gains `session` ([consult.md](consult.md#agentnet-consult));
-- `approval_list`, `approval_confirm`, `approval_reject` ([approval.md](approval.md#ipc-and-cli));
+- `approval_list`, `approval_open`, `approval_reject` ([approval.md](approval.md#ipc-and-cli); `approval_confirm` removed in 2.2d);
 - `grant_create`, `grant_list`, `grant_show`, `grant_revoke`, `grant_policy_add`,
   `grant_policy_list`, `grant_policy_remove`, `fetch_start`, `fetch_status`
   ([grant.md](grant.md#ipc));

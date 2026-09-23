@@ -57,7 +57,8 @@ further if it runs over). "∥" lists tickets that can run in parallel once depe
 | 2.1b | Session IPC + CLI: `sessions`, `session`, `result`, `wait`, `accept-result`, request changes, cancel; `complete` shorthand; request view `session` | 2.1a | — | M | — | 2.2a, 2.2b, 2.D1 |
 | 2.2a | Human approval: `approvals`, notifier code, `approve`, `DORYLINAE_APPROVAL=terminal`, `grant_policies` table | specs approved; **merge** after 2.1a (migration order) | 15 | M | **yes** | 2.1a, 2.1b, 2.2b |
 | 2.2b | `internal/capability`: token, canonical, sign, `Verify` steps 1–8, vectors in `tools/specvectors` and `tools/verifyvectors` | specs approved | — | S | **yes** | 2.1a, 2.2a |
-| 2.2c | Grant issuance: `grants`, `grant_create/list/show/revoke`, policies, kinds `grant`/`grant.revoke`, holder apply, session-end revocation | 2.1a, 2.2a, 2.2b | 16 | M | **yes** | 2.1b, 2.D1 |
+| 2.2d | Daemon-owned approval window (D19): a window per OS, code entry only in the window or on the daemon's stdin (terminal mode), `approval_confirm` removed, `approval_open`, `approve --open` | 2.2a; spec 2.2d-S | — | M | **yes** | 2.1b, 2.2c (build) |
+| 2.2c | Grant issuance: `grants`, `grant_create/list/show/revoke`, policies, kinds `grant`/`grant.revoke`, holder apply, session-end revocation | 2.1a, 2.2a, 2.2b; **merge** after 2.2d | 16 | M | **yes** | 2.1b, 2.D1 |
 | 2.3a | Fetch server: `fetch.req`/`fetch.resp` on Noise sessions, fragments, token check per message, `fs` serving with `os.Root`, limits, audit rate limit | 2.2c | — | L | **yes** | 2.4, 2.5 |
 | 2.3b | `git` serving (plumbing commands, environment, path grammar) | 2.3a | — | M | **yes** | 2.3c, 2.4 |
 | 2.3c | Fetch client: `fetch_start/status`, CLI `fetch`, `grant`, `grants`, `revoke`; the 2.2/2.3 acceptance e2e | 2.3a | — | M | **yes** (with 2.3b) | 2.3b, 2.4 |
@@ -69,9 +70,9 @@ further if it runs over). "∥" lists tickets that can run in parallel once depe
 | 2.H | Headless harness run (2.7): Claude Code + agy, both rounds | 2.3c, 2.4, 2.5 | — | M | — | 2.9 |
 | 2.P | Phase 2 push (`main`; a `phase-2` tag **only with the owner's OK**) | all above | — | — | — | — |
 
-Critical path: 2.1a → 2.2c → 2.3a → 2.3c → 2.H/2.9 (with 2.2a and 2.2b beside 2.1a).
+Critical path: 2.1a → 2.2d → 2.2c → 2.3a → 2.3c → 2.H/2.9 (with 2.2a and 2.2b beside 2.1a).
 2.1a, 2.2a and 2.2b start at approval; 2.2a merges after 2.1a (migration 15 after 14).
-Eleven tickets carry an Opus review; 2.2a and 2.2b are small and can go to one reviewer
+Twelve tickets carry an Opus review (2.2d added by D19); 2.2a and 2.2b are small and can go to one reviewer
 together, 2.3a + 2.3b + 2.3c to another, and 2.4 + 2.5 to a third (2.5 changes the request
 decode caps and adds an accept-and-submit path; 2.3c parses peer fragments and writes files).
 
@@ -160,6 +161,46 @@ decode caps and adds an accept-and-submit path; 2.3c parses peer fragments and w
   [grant.md §Test vectors](../protocol/grant.md#test-vectors) fails at the stated step,
   including the **widened caveat** (plan 2.2); a fuzz test: `Verify` never accepts a
   mutation of a valid token.
+
+### 2.2d Approval window (review)
+
+Owner decision D19. It replaces review 26 L7 (the code in the `approve` argv) and **merges
+before 2.2c**, so that 2.2c, 2.4 and 2.D1 build on the window and never on
+`approval_confirm`. Spec: [approval.md §The approval window](../protocol/approval.md#the-approval-window),
+§Headless machines, §IPC and CLI. No migration.
+
+- Files: `internal/notify` (new `approval_window*.go` per OS: a fixed script or fixed argv, text
+  through the environment, the answer on stdout, the ready check, a Job object on Windows,
+  `Pdeathsig` on Linux; the notification title with the code and short tag),
+  `internal/approval` (the window lifecycle per approval: open before the code, reopen on a
+  wrong or malformed answer and on a `Perform` error, a kill timer at `expires`, kill on
+  decide, lockout and stop, the pending slot reserved and the window opened outside
+  `Store.mu`, `via` in the audit), `internal/daemon` (`approval_confirm` removed,
+  `approval_open` added, the terminal-mode stdin reader and its TTY check, `status`
+  `approval_window`), `cmd/agentnet/approve.go` (`--list`, `--open`, `--reject` only; the old
+  `<a-id> <code>` form is a usage error that points to the window), `Docs/cli/approve.md`,
+  `Docs/agents/snippet.md` ("approvals are done by the human in the AgentNet window; never
+  ask the user for a code"), `tests/phase2-manual.md` (a manual window check on each OS), and
+  tests.
+- Acceptance: no IPC method and no CLI form accepts a code (a test lists every registered
+  IPC method and every `approve` form). The dialog's argv and script contain no code and, on
+  Windows and macOS, no summary text either (the runner fake records argv, env and stdin).
+  A summary containing `"`, `'`, `` ` ``, `$(…)`, `&`, `<`, a newline and a 6-digit decoy is
+  shown verbatim and runs nothing. The window opens before the notification: a window that
+  never becomes ready gives `approval_unavailable`, stores no row, shows no notification and
+  makes no audit entry. A fake dialog answering `approve <right code>` performs the action;
+  `approve <wrong>` uses one attempt and reopens the window; `approve 12ab` and `dismiss` use
+  none; `reject` rejects. The window process is killed on decide, expiry (fake clock),
+  lockout and daemon stop. At most one window per approval. `approval_open` on an open
+  window is a no-op and is audited. Terminal mode: the code is written to stderr and
+  accepted only from the daemon's stdin (`<tag> <code>`, `reject <tag>`, ambiguous prefix
+  refused); the daemon refuses to start with a non-TTY stdin unless `DORYLINAE_DEBUG=1`;
+  `approval_open` returns `bad_request`. The 2.2a and review-26 tests are kept (vector,
+  limits, lockout, no code material anywhere), with `approval_confirm` calls rewritten to the
+  fake window or stdin. The 2.H driver pattern (a pipe to stderr and stdin under
+  `DORYLINAE_DEBUG=1`) is demonstrated by an e2e test. Manual: the window appears and works
+  on Windows 11 (PowerShell 5.1, no admin); macOS and Linux (zenity) are recorded in
+  `tests/phase2-manual.md` when a machine is available.
 
 ### 2.2c Grant issuance (review)
 
@@ -300,9 +341,9 @@ decode caps and adds an accept-and-submit path; 2.3c parses peer fragments and w
 
 - Files: `tests/harness/phase2-agents.ps1` and `.sh`, `tests/harness/README.md`,
   `Docs/agents/snippet.md` (Phase 2 commands), the record in `tests/phase2-manual.md`.
-- The script starts a loopback relay and two daemons with `DORYLINAE_APPROVAL=terminal`, so
-  the **script** (never the agent) reads the approval codes from the daemons' stderr and
-  confirms them. It drives real agents headless through **request → accept → grant → fetch
+- The script starts a loopback relay and two daemons with `DORYLINAE_APPROVAL=terminal` (and
+  `DORYLINAE_DEBUG=1`), so the **script** (never the agent) reads the approval codes from the
+  daemons' stderr and confirms them by writing `<id> <code>` to the daemons' stdin (2.2d). It drives real agents headless through **request → accept → grant → fetch
   → consult → result → accept-result**:
   - agent A is told in plain words to ask B to review a directory of a small fixture repo
     and to give B read access to it, then to wait for the result and accept it; separately to
@@ -352,6 +393,7 @@ not reopened; OD-P2-8 is an interpretation of D13's wording, not a change of it.
 | OD-P2-9 | Depth of the one-way hierarchy | (a) depth 1: a device is only helper or only controller, no reverse links; (b) allow chains without cycles | **(a)**. Simplest, and nothing in Phase 2 needs chains |
 | OD-P2-10 | What an own-device helper does with in-scope requests | (a) the helper **daemon** runs an allowlisted command (argv fixed on the helper) and returns exit code + output (the D14 result); (b) auto-accept only, and a local agent on the helper does the work | **(a)**. It needs no agent on the helper and uses D14 as designed; the request carries only a command **name** |
 | OD-P2-11 | Does every accept open a session | (a) yes (plan: "created on accept"), `complete` becomes a result shorthand; (b) opt-in sessions | **(a)**. One path; Phase 1 commands keep working through the shorthand |
+| OQ-2.2d-1 | (**open**, 2.2d) Linux dialog text in argv: zenity and kdialog take the title and summary only as arguments, so on a Linux machine shared with other OS users they can read *what* is being approved (never the code) through `/proc` | (a) accept it and document it (`hidepid=2` removes it); (b) put only the short tag and the kind in argv, with the full summary only in the notification | **(a)**. The summary is local metadata (peer name, resource path, expiry), not a secret, beta users are single-user desktops, and (b) makes the human rely on a toast that vanishes |
 | OD-P2-12 | 2.7 "all harnesses pass in CI weekly" | (a) weekly CI with a scripted stand-in agent (free), real harnesses (Claude Code + agy, Codex optional) manual before releases; (b) put model API keys into CI secrets (paid, per run); (c) no CI job | **(a)**. It keeps the loop tested weekly at no cost; the real-agent run is the release gate |
 | OD-P2-13 | Default sensitivity | `fs.read` always sensitive; `git.read` sensitive unless `--public` | **As specified**. The daemon cannot tell a private repo from a public one |
 | OD-P2-14 | Which git state a grant serves | (a) the branch tip at each call, with `commit` reported; (b) a commit pinned at grant time | **(a)**. A reviewer after "changes requested" sees the new commits without a new grant |

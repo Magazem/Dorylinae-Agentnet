@@ -1,6 +1,8 @@
 # Human approval
 
-Status: **draft** for Phase 2 (ticket 2.2a, [../review/23-phase2-tickets.md](../review/23-phase2-tickets.md)).
+Status: **draft** for Phase 2 (tickets 2.2a and 2.2d, [../review/23-phase2-tickets.md](../review/23-phase2-tickets.md)).
+2.2d (owner decision D19) replaces code entry through the CLI with the daemon-owned
+[approval window](#the-approval-window).
 Used by grants ([grant.md](grant.md)), the sensitive-grant release
 ([work-session.md](work-session.md#quarantine-24)), `accept-result --human`, and the
 own-device link and scope ([device.md](device.md)). Change this document first.
@@ -14,25 +16,31 @@ cannot tell a human from an agent over IPC: the caller is the same OS user eithe
 approval needs a second channel that a harness agent normally does not see.
 
 Phase 2 uses the **desktop notification** as that channel: the daemon shows a one-time code
-only there, and the approving command must quote it.
+only there. The human types the code into the **approval window**, which the daemon itself
+opens and reads. No IPC method and no CLI command accepts a code, so an agent never handles
+one, and a code phished through a fake window is useless ([Spoofing](#spoofing-and-stray-input)).
+On a headless machine the daemon's own terminal takes the place of the window
+([Headless machines](#headless-machines)).
 
 ## Threat model
 
 | Attacker | Goal | Control |
 |---|---|---|
-| A prompt-injected local agent that uses AgentNet's interface (IPC, CLI) | Issue a grant, release a quarantine, link a device or widen a helper scope without the human | It cannot see the code: the code is never in an IPC result, a CLI output, the audit log, the daemon log, a webhook, SQLite (not even a hash: the check value lives only in the daemon's memory), a process argument list or a file. It must guess: 3 attempts per approval, 6 digits → ≤ 3 × 10⁻⁶ per approval; approvals are rate-limited and wrong codes are capped per day ([Object](#object)) |
+| A prompt-injected local agent that uses AgentNet's interface (IPC, CLI) | Issue a grant, release a quarantine, link a device or widen a helper scope without the human | It cannot submit a code: no IPC method or CLI command takes one. Codes are read only from the daemon's own approval window (desktop) or the daemon's own stdin (terminal mode). It cannot see the code either: the code is never in an IPC result, a CLI output, the audit log, the daemon log, a webhook, SQLite (not even a hash: the check value lives only in the daemon's memory), any process's argument list or a file. Rate limits and the daily wrong-code cap still apply ([Object](#object)) |
+| The same agent showing a **fake** approval window or chat prompt | Phish the code from the human | A captured code is useless: the agent has nowhere to submit it. The notification tells the human to type the code only into the AgentNet window with the matching id ([Spoofing](#spoofing-and-stray-input)) |
 | Another local OS user | Read the code as it passes to the notifier | The code never appears in a process's argument list (world-readable through `/proc` and `ps`); it reaches the notifier in-process (Linux) or through the environment (macOS, Windows), which only the same user can read ([Delivering the code](#delivering-the-code)) |
 | A remote peer | Trigger approvals to annoy or to phish the human | Only local IPC callers create approvals; a peer's mail never does. The notification names the **local** action and the **peer's name and fingerprint** |
 | Malware running as the user | Anything | **Out of scope.** It can read the screen, the keystore file fallback and the database. The approval is a gate against confused-deputy agents, not a sandbox |
-| A human approving without reading | A too-broad grant | The notification states action, resource, peer and expiry in plain words; the CLI prints the same before asking |
+| A human approving without reading | A too-broad grant | The notification and the approval window state action, resource, peer and expiry in plain words |
 
 **Boundary, stated plainly.** The approval stops an agent that acts through AgentNet's own
 interface. It does **not** stop an agent that runs arbitrary programs as the user and sets
 out to defeat it: such an agent can read the OS notification history (on Windows through the
 documented toast-history API or `wpndatabase.db`; on macOS and Linux through the
-notification daemon's store), take a screenshot, drive the UI, read or write the daemon's
+notification daemon's store), take a screenshot, drive the UI (send keystrokes or clicks to
+the approval window, or cover it with a window of its own), read or write the daemon's
 SQLite database and the keystore file fallback, or stop the daemon and restart it with
-`DORYLINAE_APPROVAL=terminal` and read the code from its stderr. Each of these is a
+`DORYLINAE_APPROVAL=terminal`, read the code from its stderr and type it on its stdin. Each of these is a
 deliberate attack on the user's account, the same class as malware. The mitigation is
 **harness confinement**, documented in `Docs/agents/snippet.md` and the CLI help: an agent
 that works with AgentNet should have no read or write access to the config dir
@@ -94,28 +102,113 @@ and on macOS `ps` show every process's arguments to every local user):
   (`ToastNotificationHistory.Remove(tag, group, AUMID)`), which shortens, but does not close,
   the window in which a same-user program can read the history.
 
+**Text of the notification (2.2d).** The code goes in the **title**, with the approval's
+short tag (`a-` + the first 6 hex of the id):
+`AgentNet code 482913 for approval a-012345`. The body is the summary followed by the fixed
+sentence `Type this code only into the AgentNet approval window a-012345. AgentNet never asks
+for it in a terminal, a chat or an agent.` Putting the code in the title keeps a decoy code in
+peer text (review 26, N4) away from the place the real one is shown.
+
+## The approval window
+
+(Ticket 2.2d, D19.) For every approval in desktop mode the daemon starts a small dialog
+process of its own on the user's desktop. The dialog shows the short tag, the kind, the
+summary (action, resource, peer name and fingerprint, expiry) and a 6-digit input box, with
+**Approve** and **Reject** buttons. The human's answer comes back to the daemon over the
+dialog's **stdout pipe**, which only the daemon holds. Nothing else can submit a code.
+
+Common rules, all platforms:
+
+- **Fixed program, fixed script.** The dialog program is resolved from a fixed absolute path,
+  never from `PATH`. The script (where there is one) is constant text in the binary. Summary,
+  title and tag reach it through the **environment** (the same user can read it; other users
+  cannot), never interpolated into the script. The code is **never** sent to the dialog.
+  It exists only in the notification.
+- **Answer format.** The dialog writes one line to stdout and exits: `approve <digits>`,
+  `reject` or `dismiss`. The daemon reads at most 256 bytes. Anything else counts as
+  `dismiss`. An `approve` whose value is not exactly 6 ASCII digits is **not** counted as a
+  wrong code: the daemon reopens the window once with "Enter the 6-digit code from the
+  notification". A 6-digit value is checked like any code (3 per approval, 10 per 24 h,
+  unchanged).
+- **Ready check.** Creating an approval opens the window **before** the code is generated or
+  the notification is shown. If the window does not become ready (below), nothing is stored,
+  nothing is audited, and the method fails with `approval_unavailable`, as a failed notifier
+  does today. The waiting row is dropped (review 26, N5).
+- **Lifetime.** The dialog carries its own timeout equal to `expires`. The daemon also kills
+  it when the approval is decided, expires (a per-approval timer, not only the lazy sweep),
+  hits the lockout, or when the daemon stops. At most one window per approval exists at a time,
+  so there are at most 5 windows (the pending limit). Windows: the dialog runs in a Job
+  object with `KILL_ON_JOB_CLOSE` (`golang.org/x/sys/windows`, no cgo), so it dies with the
+  daemon. Linux: `Pdeathsig = SIGKILL`. macOS: an orphan closes itself at `expires`. An
+  orphan's answer goes nowhere, and after a restart every pending approval is `expired` anyway.
+- **Locking.** The ready wait can take seconds, so it must not run while `Store.mu` is held
+  (review 26, L1). Reserve the pending slot under the lock, open the window outside it, then
+  finish or release the slot under the lock.
+- **Outcome.** On `approve` with the right code the daemon confirms exactly as described in
+  [Flow](#flow) step 3. After every answer it shows a short desktop notification without a
+  code: "Approved: …", "Rejected: …", or the waiting action's error (for example "Not
+  approved: the session is no longer open"). A wrong code reopens the window with "Wrong code,
+  N attempts left". A `Perform` error, which leaves the approval pending (review 26, N1),
+  reopens it with "Could not complete, try again or reject". `dismiss` (window closed)
+  leaves the approval pending until it expires. `agentnet approve --open` shows the window again.
+
+Per platform (no cgo, no admin):
+
+| OS | Dialog | Ready when | Notes |
+|---|---|---|---|
+| Windows | `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -STA -WindowStyle Hidden -Command <fixed script>`. PowerShell 5.1 with WinForms: a `Form` (`TopMost`, fixed size, no minimise), `Label`s whose `.Text` is set from the environment (base64 UTF-16, like the toast), a `TextBox` limited to 6 digits, **Approve** (enabled only with 6 digits) and **Reject**. No `AcceptButton`/`CancelButton`, so Enter and Esc do not click them. The input box ignores keystrokes for the **first 1 s** after the form is shown. | The form's `Shown` event writes `ready` to stdout. Wait at most 10 s | Under Constrained Language Mode (AppLocker/WDAC) WinForms is blocked: the result is `approval_unavailable`. The toast has the same limit |
+| macOS | `/usr/bin/osascript` with a fixed script: `display dialog (system attribute "AGENTNET_A_BODY") with title (system attribute "AGENTNET_A_TITLE") default answer "" buttons {"Reject", "Approve"} giving up after <from env>`. The script turns the record into the one-line answer (`gave up` → `dismiss`) | Still running after 1.5 s, or already exited with a valid answer. An early non-zero exit is failure | `display dialog` inside osascript needs no Automation (TCC) permission. It cannot delay input. Only a daemon running in the user's GUI session (a LaunchAgent) can show it |
+| Linux | `zenity --entry --no-markup --title … --text … --extra-button Reject --timeout <s>` if `/usr/bin/zenity` exists, else `kdialog --title … --inputbox …` from `/usr/bin/kdialog` with the text markup-escaped (`& < >`). Needs `DISPLAY` or `WAYLAND_DISPLAY` in the daemon's environment | As macOS | **Title and summary are in argv** (neither tool reads its text from stdin or the environment), so another local user can read them through `/proc/<pid>/cmdline` unless `/proc` is mounted `hidepid=2`. The code is never in them. See open question OQ-2.2d-1 in the 2.2d ticket. kdialog has no Reject button: reject with `agentnet approve --reject` |
+
+**No window helper on Linux** (neither zenity nor kdialog, or no display): approvals are
+`approval_unavailable`, exactly as when the notifier fails. There is **no automatic
+fallback**. The alternative is the install-time terminal mode ([Headless
+machines](#headless-machines)), with its documented weaker security. In desktop mode `status`
+also reports `approval_window: "ok" | "missing"`, a check that the helper program exists and
+a display is set, without opening a window. That way the user learns about it before the
+first grant.
+
+### Spoofing and stray input
+
+- **Spoofing.** An agent can draw a window that looks exactly like this one. That is
+  accepted: a code typed into a fake window cannot be submitted anywhere, and it is bound to
+  its approval id by the MAC. The notification tells the human where the code belongs. An agent
+  that covers the real window or types into it is using the UI directly, which is outside the
+  boundary ([Threat model](#threat-model)).
+- **Several pending approvals.** One window per approval, each titled with its short tag. A code
+  typed into the wrong approval's window is a wrong code for that approval (attempt used),
+  never a confirmation of the other one.
+- **Focus stealing and stray keystrokes.** The window may appear while the human is typing
+  elsewhere. A stray keystroke can at most dismiss the window, click Reject, or submit a wrong
+  6-digit value. It can never approve, because approving needs the code from the notification.
+  Windows also drops input for 1 s and has no default buttons. On macOS and Linux the dialogs
+  cannot do this, and the code is the only guard.
+
 ## Flow
 
 1. An IPC method that needs approval (for example `grant_create`) validates everything
-   first, stores the action as `pending_approval`, creates the approval and shows the
-   desktop notification:
-   `AgentNet: approve grant git.read on agentnet (branch feat-x) to bob (2ED9 TGVE…) for 2h? Code 482913`.
-   Peer-supplied text in it goes through `notify.Clean` ([notify.md](notify.md#text-and-sanitising)).
+   first, stores the action as `pending_approval` and creates the approval. Desktop mode
+   opens the [approval window](#the-approval-window) and then shows the notification with the
+   code. Terminal mode writes both to the daemon's stderr ([Headless machines](#headless-machines)).
+   Peer-supplied text in the summary goes through `notify.Clean`
+   ([notify.md](notify.md#text-and-sanitising)).
 2. The method returns at once: `{"approval": {"id", "kind", "summary", "expires",
-   "state": "pending"}}`. The CLI, when its stdin is a terminal, prints the summary and
-   prompts `Code from the desktop notification:`; otherwise it prints the approval id and
-   exits 0 with `state: pending`.
-3. `agentnet approve <a-id> <code>` (IPC `approval_confirm {id, code}`) checks state,
-   expiry and the code. On success, in one transaction, it sets `approved`, **re-checks every
+   "state": "pending"}}`. The CLI prints `Approval a-012345 pending: approve it in the
+   AgentNet window on your desktop (code in the notification)`, or in terminal mode `… on
+   the daemon's terminal`, and exits 0 with `state: pending`. It never prompts for a code.
+   The outcome shows in the waiting object's own view (for example `agentnet grants`).
+3. The human enters the code in the window, or on the daemon's terminal in terminal mode. The
+   daemon checks state, expiry and the code. On success, in one transaction, it sets `approved`, **re-checks every
    precondition of the waiting action against the current state** (for a grant: the session
    is still `open` and the peer still paired and allowed by D5; for a release: still
    `quarantined` in the same round; for a device link: no conflicting link appeared), and
-   performs the waiting action; the result is the action's result. A precondition that no
-   longer holds sets the waiting object `rejected`/dropped and returns its usual error (for
-   example `bad_state`). A wrong code → `bad_code`
-   (attempts left in the message); expired → `approval_expired`.
-4. `agentnet approve --reject <a-id>` (no code needed) rejects it; the waiting action is
-   dropped.
+   performs the waiting action. A precondition that no longer holds sets the waiting object
+   `rejected`/dropped (reason `precondition`). A wrong code uses one attempt. An expired
+   approval cannot be confirmed. The human learns the outcome from the window or the terminal
+   ([The approval window](#the-approval-window), Outcome).
+4. Reject in the window, `reject <id>` on the daemon's terminal, or `agentnet approve
+   --reject <a-id>` (no code needed) rejects it, and the waiting action is dropped. Any caller
+   may reject: rejecting only removes access.
 
 `approval_list` returns pending approvals (never codes) so a human can see what is waiting.
 
@@ -125,7 +218,8 @@ confirmations of a device link are two local approvals, one on each device
 
 ## Headless machines
 
-If the desktop notifier is disabled or fails (`notify_test` → `failed`), approvals are
+If the desktop notifier is disabled or fails (`notify_test` → `failed`), or the approval
+window cannot be shown, approvals are
 `approval_unavailable`, and the actions that need them fail unless a
 [policy](grant.md#policies) covers them. A policy itself needs an approval, so a headless
 machine needs a different channel. Phase 2 offers exactly one, chosen at install time:
@@ -144,28 +238,56 @@ machine needs a different channel. Phase 2 offers exactly one, chosen at install
   desktop notifier works on the machine, shows "AgentNet daemon started with terminal
   approvals", so a restart into this mode by someone else is noticed. It does not stop an
   agent that can restart the daemon ([Threat model](#threat-model), boundary).
+- **Code entry on the daemon's own stdin (2.2d).** In terminal mode there is no window, and the
+  code is typed back into the **daemon's own stdin**, never into a CLI argument or an IPC
+  call. stdin must be a terminal too, under the same rule and the same `DORYLINAE_DEBUG=1`
+  exception as stderr. For each approval the daemon writes to stderr:
+  `AgentNet approval a-012345: <summary>. Code 482913. Type "a-012345 <code>" to approve or
+  "reject a-012345" to reject.` It reads lines of at most 128 bytes. `<tag> <code>` confirms
+  and `reject <tag>` rejects, where `<tag>` is the full id or a prefix of at least `a-` + 6
+  hex (an ambiguous prefix is refused with a message and uses no attempt). The outcome ("approved", "wrong
+  code, N attempts left", the waiting action's error) goes back on stderr. The code is shown
+  in the same place it is typed, so terminal mode protects only against agents that cannot
+  reach that terminal. That is the documented weaker level (OD-P2-3).
+- **2.H harness.** The headless harness keeps working: it starts the daemons with
+  `DORYLINAE_APPROVAL=terminal` and `DORYLINAE_DEBUG=1`, holds pipes to their stderr and
+  stdin, reads each code from stderr and writes `<id> <code>` to stdin. The agent under test
+  never sees either pipe.
 
 ## IPC and CLI
 
 | Method | Params | Result |
 |---|---|---|
 | `approval_list` | none | `{"approvals": [<approval view>]}` (pending only) |
-| `approval_confirm` | `{"id", "code"}` | The waiting action's result, plus `"approval": <view>` |
+| `approval_open` | `{"id"}` | `{"approval": <view>}`. Desktop mode: opens the window again if none is open for this approval (no-op if one is). Terminal mode: `bad_request` ("answer on the daemon's terminal") |
 | `approval_reject` | `{"id"}` | `{"approval": <view>}` |
 
-Approval view: `{"id", "kind", "summary", "created", "expires", "state", "attempts_left"}`.
+`approval_confirm` (2.2a) is **removed** in 2.2d, together with the `approve <a-id> <code>`
+form, which puts the code in argv (review 26, L7). No IPC method takes a code. The daemon
+keeps no plaintext code, so `approval_open` cannot show the code again. A human who lost the
+notification rejects the approval and starts the action again.
 
-CLI: `agentnet approve [<a-id> <code> | --reject <a-id> | --list] [--json]`.
+Approval view: `{"id", "kind", "summary", "created", "expires", "state", "attempts_left",
+"window"}`. `window` is `open` or `closed` (desktop mode) or `terminal`.
 
-Error codes: `unknown_approval`, `bad_code`, `approval_expired`, `approval_limit`,
-`approval_locked`, `approval_unavailable` (exit 1).
+CLI: `agentnet approve [--list | --open <a-id> | --reject <a-id>] [--json]`. It is the same on
+every machine. An extra positional argument (the old code form) is a usage error (exit 2)
+that says where to type the code. Any caller may run `--open`: it only puts a window in front
+of the human, one per approval at a time.
+
+Error codes: `unknown_approval`, `approval_expired`, `approval_limit`, `approval_locked`,
+`approval_unavailable` (exit 1). `bad_code` is no longer an IPC error. Wrong codes are
+reported in the window or on the terminal.
 
 ## Audit
 
 `approval.create {id, kind, subject}`, `approval.approve {id, kind, subject}`,
 `approval.reject {id, kind, subject, reason: "user"|"attempts"|"expired"|"locked"|"precondition"}`,
-`approval.bad_code {id, attempts_left}`, `approval.locked {wrong_codes}`, `approval.mode
-{mode}`. `subject` is the id of the waiting object (`g-…` grant, `p-…` policy, `s-…`
+`approval.bad_code {id, attempts_left, via: "window"|"terminal"}`, `approval.locked {wrong_codes}`, `approval.mode
+{mode}`, `approval.open {id}` (2.2d: a window reopened through `approval_open`, so repeated
+reopening by an agent is visible). The window's first opening, a dismiss and a malformed
+answer are not audited. `approval.approve` and `approval.reject` record whether the answer
+came from the window, the terminal or IPC (reject only) as `via`. `subject` is the id of the waiting object (`g-…` grant, `p-…` policy, `s-…`
 session, `i-…` device-link intent, `l-…` link for a scope). Never the code or its MAC.
 
 ## Tables
