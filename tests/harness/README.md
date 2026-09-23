@@ -31,8 +31,13 @@ it by hand before 1.P and record the result in
 3. Prints a pass/fail summary and exits non-zero if either round failed or
    the whole run took over 10 minutes.
 
-Round 1: Claude Code sends, Codex CLI receives. Round 2: roles swapped. Each
-harness is sender once and recipient once, per the ticket.
+Round 1: Claude Code sends, the second harness receives. Round 2: roles
+swapped. Each harness is sender once and recipient once, per the ticket.
+Default second harness is **agy** (Antigravity CLI) while Codex CLI's
+account usage limit is in effect (resets 2026-10-02; see
+`tests/phase1-manual.md`); pass `-SenderHarness codex -RecipientHarness
+codex`/`--sender-harness codex --recipient-harness codex` (mixed with
+`claude`) to use Codex instead once it is available again.
 
 ## Prerequisites
 
@@ -40,10 +45,14 @@ harness is sender once and recipient once, per the ticket.
   already in `<repo>/bin`).
 - **Claude Code** (`claude`) logged in and able to call the API
   non-interactively.
+- **agy** (Antigravity CLI, `%LOCALAPPDATA%\agy\bin\agy.exe`) logged in and
+  able to call the API non-interactively (`agy -p "..." --output-format json
+  --print-timeout 60s` should return `"status":"SUCCESS"`). If agy needs an
+  interactive login, run `agy` once interactively yourself first — the
+  harness scripts never attempt to log in.
 - **Codex CLI** (`codex`) logged in and able to call the API
-  non-interactively. If Codex is unavailable, substitute another headless
-  harness (edit the `$rounds` array / `ROUNDS` list at the bottom of the
-  script) and name it in `tests/phase1-manual.md`.
+  non-interactively, if selected in place of agy via `-SenderHarness`/
+  `-RecipientHarness` (`--sender-harness`/`--recipient-harness`) `codex`.
 - **Python 3 with the stdlib `sqlite3` module**, used only to read the
   `audit_events` table from each daemon's `dorylinae.db`. There is no
   `sqlite3` CLI or CGo build in this environment (the daemon uses
@@ -74,7 +83,9 @@ tests/harness/phase1-agents.sh
 ```
 
 Useful flags (both scripts): `--skip-build`/`-SkipBuild`,
-`--only-round 1|2`/`-OnlyRound`, `--branch NAME`/`-Branch`.
+`--only-round 1|2`/`-OnlyRound`, `--branch NAME`/`-Branch`,
+`--max-attempts N`/`-MaxAttempts` (retry a failed round up to N times and
+report a pass rate; default 1, no retry).
 
 Logs for every round (daemon stdout/stderr, agent stdout/stderr, relay log)
 are written under a fresh temp directory printed at the start of the run;
@@ -105,5 +116,24 @@ requires.
   automatically rather than prompting. Codex CLI (as of 0.152.1) has no
   equivalent per-binary command allowlist; the script confines it with
   `--sandbox workspace-write` and a working directory that holds only the
-  snippet, which is weaker than Claude's allowlist. Document any stronger
-  mechanism found later (e.g. an execpolicy `.rules` file) here.
+  snippet, which is weaker than Claude's allowlist. agy (Antigravity CLI
+  v1.2.9) also has no confirmed working per-binary allowlist in headless
+  print mode: it denies any unapproved tool call outright (there is no way to
+  prompt in headless mode), and its own error message points at a
+  `permissions.allow` / `command(<target>)` rule in
+  `~/.gemini/antigravity-cli/settings.json`, but that is the operator's real,
+  shared global config — this session could not confirm a per-run override of
+  that path works (`HOME`/`USERPROFILE` env overrides had no effect; editing
+  the real global file was avoided as out of scope and risky to shared
+  state). The script therefore runs agy with
+  `--dangerously-skip-permissions` (auto-approves *every* tool call, not
+  just `agentnet`), compensated by keeping the agy working directory
+  containing **only** the `AGENTS.md` snippet (no repo source, no other
+  files); this is weaker containment than Claude's allowlist. **`--sandbox`
+  is deliberately not used**: on the Windows machine this ticket was run on
+  (no admin rights), it triggered a Windows UAC elevation prompt that
+  headless/print mode cannot answer — confirmed while running this ticket.
+  Do not add `--sandbox` back without confirming the target machine has
+  admin rights, or that agy's sandbox no longer requires elevation. Document
+  any stronger allowlist mechanism found later (e.g. a working per-project
+  `settings.json` override, or an execpolicy `.rules` file) here.

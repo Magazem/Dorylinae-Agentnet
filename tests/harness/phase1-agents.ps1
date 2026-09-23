@@ -48,10 +48,13 @@ param(
     # -RecipientHarness claude for an all-Claude smoke test). Leave both unset
     # to run the required two rounds (round 1: claude -> codex; round 2:
     # codex -> claude).
-    [ValidateSet("claude", "codex")]
+    [ValidateSet("claude", "codex", "agy")]
     [string]$SenderHarness,
-    [ValidateSet("claude", "codex")]
-    [string]$RecipientHarness
+    [ValidateSet("claude", "codex", "agy")]
+    [string]$RecipientHarness,
+    # Retry a round up to this many times if it fails, to report a pass rate
+    # rather than a single pass/fail (real headless agents can be flaky).
+    [int]$MaxAttempts = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -290,6 +293,8 @@ function Invoke-Round {
 
         # --- agent working directories -------------------------------------
         $snippet = Get-SnippetBody
+        # agy (Antigravity CLI) reads AGENTS.md or GEMINI.md from its workspace,
+        # same as Codex -- AGENTS.md is used for both.
         $aSnippetFile = if ($SenderTool -eq "claude") { "CLAUDE.md" } else { "AGENTS.md" }
         $bSnippetFile = if ($RecipientTool -eq "claude") { "CLAUDE.md" } else { "AGENTS.md" }
         Set-Content -Path (Join-Path $aWork $aSnippetFile) -Value $snippet -Encoding utf8
@@ -451,6 +456,29 @@ function Invoke-Agent {
             $exe = $cmd.Source
             $argList = @("exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", $WorkDir, "--json", $Prompt)
         }
+        "agy" {
+            $exe = Join-Path $env:LOCALAPPDATA "agy\bin\agy.exe"
+            if (-not (Test-Path $exe)) { $cmd = Get-Command agy -ErrorAction SilentlyContinue; if ($cmd) { $exe = $cmd.Source } }
+            if (-not (Test-Path $exe)) { return @{ Ran = $false; Reason = "agy executable not found" } }
+            # agy (Antigravity CLI v1.2.9) has no verified per-binary command allowlist
+            # equivalent to Claude's --allowedTools "PowerShell(agentnet *)": its
+            # settings.json permissions.allow(command(...)) mechanism could not be
+            # confirmed working in this environment without editing the operator's
+            # real global ~/.gemini/antigravity-cli/settings.json (out of scope --
+            # scripts/docs only, and risky to mutate shared state). Per the ticket's
+            # documented fallback, this uses --dangerously-skip-permissions (auto-
+            # approves every tool call, not just agentnet) and compensates by keeping
+            # $WorkDir containing ONLY the AGENTS.md snippet (no repo source, no other
+            # files). --sandbox is NOT used: on this machine (no admin rights) it
+            # triggers a Windows UAC elevation prompt that headless mode cannot answer
+            # -- confirmed while running this ticket; see tests/phase1-manual.md. Do
+            # not add --sandbox back without confirming the target machine has admin
+            # rights or agy's sandbox no longer requires elevation. No MCP servers are
+            # configured on this account (`agy mcp list` -> "No MCP servers
+            # configured."), so there is nothing else to isolate.
+            $argList = @("-p", $Prompt, "--output-format", "json", "--print-timeout", "${TimeoutSeconds}s",
+                "--dangerously-skip-permissions", "--disable-slash-commands", "--add-dir", $WorkDir)
+        }
         default { return @{ Ran = $false; Reason = "unknown harness $Tool" } }
     }
 
@@ -520,23 +548,33 @@ if ($SenderHarness -or $RecipientHarness) {
     }
     $rounds = @(@{ Num = 1; Sender = $SenderHarness; Recipient = $RecipientHarness })
 } else {
+    # agy (Antigravity CLI) is the documented second harness while Codex CLI's
+    # account usage limit is in effect (resets 2026-10-02; see
+    # tests/phase1-manual.md). Codex remains supported via
+    # -SenderHarness/-RecipientHarness codex.
     $rounds = @(
-        @{ Num = 1; Sender = "claude"; Recipient = "codex" },
-        @{ Num = 2; Sender = "codex"; Recipient = "claude" }
+        @{ Num = 1; Sender = "claude"; Recipient = "agy" },
+        @{ Num = 2; Sender = "agy"; Recipient = "claude" }
     )
     if ($OnlyRound -ne 0) { $rounds = $rounds | Where-Object { $_.Num -eq $OnlyRound } }
 }
 
 $results = @()
+$attemptLog = @()
 foreach ($r in $rounds) {
     $port = $RelayPortBase + $r.Num
-    $runDir = Join-Path $rootRun "round$($r.Num)"
-    New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-    $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
-        -AgentnetExe $agentnetExe -RunDir $runDir -RelayPort $port -Python $python
+    $passCount = 0
+    $res = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $runDir = Join-Path $rootRun "round$($r.Num)-attempt$attempt"
+        New-Item -ItemType Directory -Force -Path $runDir | Out-Null
+        $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
+            -AgentnetExe $agentnetExe -RunDir $runDir -RelayPort $port -Python $python
+        $attemptLog += [pscustomobject]@{ Round = $r.Num; Attempt = $attempt; Pass = $res.Pass; Reason = $res.Reason }
+        if ($res.Pass) { $passCount++; Write-Ok "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): PASS ($($res.RequestId))"; break }
+        else { Write-Fail "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): $($res.Reason)" }
+    }
     $results += $res
-    if ($res.Pass) { Write-Ok "round $($r.Num) ($($r.Sender) -> $($r.Recipient)): PASS ($($res.RequestId))" }
-    else { Write-Fail "round $($r.Num) ($($r.Sender) -> $($r.Recipient)): $($res.Reason)" }
 
     if ((Get-Date) - $scriptStart -gt [TimeSpan]::FromSeconds($TotalTimeoutSeconds)) {
         Write-Fail "total run time exceeded $TotalTimeoutSeconds s; stopping"
@@ -548,7 +586,10 @@ Write-Host ""
 Write-Host "=== 1.H summary ===" -ForegroundColor Cyan
 foreach ($res in $results) {
     $status = if ($res.Pass) { "PASS" } else { "FAIL" }
-    Write-Host ("  round {0}: {1} -> {2}: {3} ({4})" -f $res.Round, $res.Sender, $res.Recipient, $status, $res.Reason)
+    $roundAttempts = @($attemptLog | Where-Object { $_.Round -eq $res.Round })
+    $roundPasses = @($roundAttempts | Where-Object { $_.Pass }).Count
+    Write-Host ("  round {0}: {1} -> {2}: {3} ({4}) [{5}/{6} attempts passed]" -f `
+        $res.Round, $res.Sender, $res.Recipient, $status, $res.Reason, $roundPasses, $roundAttempts.Count)
 }
 $elapsed = (Get-Date) - $scriptStart
 Write-Host ("  elapsed: {0:N1}s (limit {1}s)" -f $elapsed.TotalSeconds, $TotalTimeoutSeconds)

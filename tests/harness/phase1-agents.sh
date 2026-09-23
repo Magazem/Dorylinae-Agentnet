@@ -18,6 +18,7 @@
 # --sender-harness and --recipient-harness must be given together; they
 # replace the default two swapped Claude/Codex rounds with a single round
 # using the given harness for each role (e.g. an all-Claude smoke test).
+# Harnesses: claude, codex, agy (Antigravity CLI).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -29,6 +30,7 @@ TOTAL_TIMEOUT_SECONDS=600
 RELAY_PORT_BASE=18787
 SENDER_HARNESS=""
 RECIPIENT_HARNESS=""
+MAX_ATTEMPTS=1
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
     --only-round) ONLY_ROUND="$2"; shift 2 ;;
     --sender-harness) SENDER_HARNESS="$2"; shift 2 ;;
     --recipient-harness) RECIPIENT_HARNESS="$2"; shift 2 ;;
+    --max-attempts) MAX_ATTEMPTS="$2"; shift 2 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
@@ -158,6 +161,25 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
           -C "$workdir" --json "$prompt" >"$out" 2>"$err" )
       rc=$?
       ;;
+    agy)
+      command -v agy >/dev/null 2>&1 || { echo "agy executable not found"; return 1; }
+      # agy (Antigravity CLI) has no verified per-binary command allowlist
+      # equivalent to Claude's --allowedTools "Bash(agentnet *)" (see
+      # phase1-agents.ps1 and tests/phase1-manual.md for the settings.json
+      # permissions.allow(command(...)) investigation). Falls back to
+      # --dangerously-skip-permissions, compensated by $workdir holding only
+      # the AGENTS.md snippet. --sandbox is deliberately NOT used: on the
+      # Windows machine this ticket was run on (no admin rights) it triggered
+      # a UAC elevation prompt that headless mode cannot answer; do not add
+      # it back without confirming the target has admin rights, or that
+      # agy's sandbox no longer needs elevation. No MCP servers are
+      # configured on this account.
+      ( cd "$workdir" && DORYLINAE_HOME="$home" PATH="$bindir:$PATH" \
+        timeout "${timeout}s" agy -p "$prompt" --output-format json --print-timeout "${timeout}s" \
+          --dangerously-skip-permissions --disable-slash-commands --add-dir "$workdir" \
+          >"$out" 2>"$err" )
+      rc=$?
+      ;;
     *) echo "unknown harness $tool"; return 1 ;;
   esac
   if [ "$rc" -eq 124 ]; then echo "$tool timed out after ${timeout}s"; return 1; fi
@@ -169,9 +191,9 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
   return 0
 }
 
-run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port>
-  local round="$1" sender="$2" recipient="$3" port="$4"
-  local run_dir="$ROOT_RUN/round$round"
+run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port> <attempt>
+  local round="$1" sender="$2" recipient="$3" port="$4" attempt="${5:-1}"
+  local run_dir="$ROOT_RUN/round${round}-attempt${attempt}"
   local relay_home="$run_dir/relay" a_home="$run_dir/a-home" b_home="$run_dir/b-home"
   local a_work="$run_dir/a-work" b_work="$run_dir/b-work"
   mkdir -p "$relay_home" "$a_home" "$b_home" "$a_work" "$b_work"
@@ -314,7 +336,11 @@ assert r.get('summary'), 'no result summary'
 if [ -n "$SENDER_HARNESS" ]; then
   ROUNDS=("1 $SENDER_HARNESS $RECIPIENT_HARNESS")
 else
-  ROUNDS=("1 claude codex" "2 codex claude")
+  # agy (Antigravity CLI) is the documented second harness while Codex CLI's
+  # account usage limit is in effect (resets 2026-10-02; see
+  # tests/phase1-manual.md). Codex remains supported via --sender-harness/
+  # --recipient-harness codex.
+  ROUNDS=("1 claude agy" "2 agy claude")
   if [ "$ONLY_ROUND" != "0" ]; then
     ROUNDS=("${ROUNDS[$((ONLY_ROUND-1))]}")
   fi
@@ -324,7 +350,14 @@ OVERALL=0
 for spec in "${ROUNDS[@]}"; do
   read -r num sender recipient <<<"$spec"
   port=$((RELAY_PORT_BASE + num))
-  run_round "$num" "$sender" "$recipient" "$port" || OVERALL=1
+  round_pass=0
+  for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+    if run_round "$num" "$sender" "$recipient" "$port" "$attempt"; then
+      round_pass=1
+      break
+    fi
+  done
+  [ "$round_pass" -eq 1 ] || OVERALL=1
   now=$(date +%s)
   if [ $((now - SCRIPT_START)) -gt "$TOTAL_TIMEOUT_SECONDS" ]; then
     fail "total run time exceeded ${TOTAL_TIMEOUT_SECONDS}s; stopping"

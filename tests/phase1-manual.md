@@ -409,3 +409,113 @@ receives) should now pass their Claude leg too. **Codex CLI itself remains
 blocked** by the account usage limit reported in the first section (resets
 2026-10-02) — that half is unchanged and still needs a real Codex run to
 confirm end to end.
+
+## Follow-up 3: agy (Antigravity CLI) added as substitute second harness
+
+**Date:** 2026-09-23. **agy version:** 1.2.9 (`%LOCALAPPDATA%\agy\bin\agy.exe`).
+**Worktree:** `AgentNet-wt/h-agy` (branch `p1/h-agy`, base `main`). **Result:
+PASS, both required swapped rounds, 1/1 attempts each** (owner approved agy
+as the substitute second harness while Codex CLI's usage limit is in effect;
+see the first section above).
+
+Confirmed logged in and callable headless: `agy -p "reply with exactly OK"
+--output-format json --print-timeout 60s` returned
+`"status":"SUCCESS","response":"OK\n"` on the first try — no interactive
+login was needed (step 2 of the ticket, not applicable here).
+
+**Permission model investigated, no working fine-grained allowlist found:**
+agy denies any tool call headless mode can't prompt for, with the message
+"Add an allow-rule under `permissions.allow` in `settings.json` (e.g.
+`command(<target>)`)". The only settings.json location found (via string
+search of the binary) is the operator's real, shared global
+`~/.gemini/antigravity-cli/settings.json` (project-specific overrides
+apparently exist under `~/.gemini/config/projects/`, tied to agy's own
+`--project` concept, not a plain per-directory file). Overriding `HOME`/
+`USERPROFILE` to point agy at a scratch settings file had no effect (agy
+still read/enforced against the real global config, or ignored the
+override entirely — could not fully determine which without further
+elevated diagnostics). Editing the operator's real global settings.json to
+test the allowlist was avoided as out of scope for this ticket (scripts/docs
+only) and risky to mutate shared state affecting other sessions. **Per the
+ticket's documented fallback**, agy is run with
+`--dangerously-skip-permissions` (auto-approves every tool call, not just
+`agentnet`), and the agy working directory is kept containing **only** the
+`AGENTS.md` snippet (no repo source, no other files) to compensate. No MCP
+servers are configured on this account (`agy mcp list` → "No MCP servers
+configured."), so there was nothing to isolate there.
+
+**`--sandbox` caused a Windows UAC elevation prompt — removed, do not
+re-add on this machine.** This session initially added `--sandbox` (listed
+in `agy --help` as "Run in a sandbox with terminal restrictions enabled") to
+the agy invocation in both harness scripts and ran both required rounds with
+it. The orchestrator reported a UAC (administrator) consent prompt appeared
+on the owner's screen during this session's agy runs; this machine has no
+admin rights, so headless mode can never answer such a prompt. The exact
+triggering command was `agy.exe ... --sandbox ...` as invoked from
+`phase1-agents.ps1`'s `agy` case in `Invoke-Agent` (both the sender and
+recipient legs use the same flag set). **`--sandbox` has been removed from
+both scripts' agy invocations** (`tests/harness/phase1-agents.ps1`,
+`tests/harness/phase1-agents.sh`) and documented as a do-not-use flag on
+this machine in `tests/harness/README.md`. agy **does** run headless
+without it: the login smoke test above and both PASS rounds below used
+`--dangerously-skip-permissions` without `--sandbox` and needed no
+elevation. No admin-requiring command was retried after the report; all of
+this worktree's own relay/agentnetd/agy processes were confirmed not
+running afterward (`Get-Process relay,agentnetd,agy` → none found).
+
+**Runs (required two swapped rounds, `-MaxAttempts 3`):**
+
+| Round | Sender | Recipient | Result | Attempts | Request ID | Elapsed |
+|---|---|---|---|---|---|---|
+| 1 | claude | agy | PASS | 1/1 | `r-1adb5e664ca4a9d8cfaab55711a3a852` | 50.9 s |
+| 2 | agy | claude | PASS | 1/1 | `r-902070232cc10ee5d80a63b8b125b9e6` | 38.9 s |
+
+Both rounds passed on the first attempt (no retries needed). All assertions
+came from `agentnet ... --json` and the audit log, never agent prose:
+request `show` completed with note + D14 result, `inbox --all` completed,
+exactly one request per round, all five audit actions present. Both well
+under the 10-minute budget. No leaked processes after either round. **Note:**
+this run's agy invocation still included `--sandbox`, which is what
+triggered the UAC prompt reported below — see the confirmation rerun
+immediately after.
+
+### Confirmation rerun without `--sandbox`
+
+**Date:** 2026-09-23 (same day, after `--sandbox` was removed from both
+harness scripts). Re-ran both required rounds once each with the current
+scripts (no `-MaxAttempts` override, i.e. 1 attempt) to confirm agy runs
+headless with no admin/UAC prompt now that `--sandbox` is gone.
+
+| Round | Sender | Recipient | Result | Request ID | Elapsed | Prompt seen |
+|---|---|---|---|---|---|---|
+| 1 | claude | agy | PASS | `r-ce801645971f05b08f39b26c4f10ffd3` | 43.9 s | none |
+| 2 | agy | claude | PASS | `r-910ea6f708fae99b4add8f3b5ea66b37` | 34.3 s | none |
+
+No UAC or other admin prompt appeared during either round. Both passed on
+the first attempt, well under the 10-minute budget, all `--json`/audit-log
+assertions confirmed as above. `Get-Process relay,agentnetd,agy` after both
+rounds found nothing running — no leaked processes.
+
+**Script changes:** added `agy` as a valid `-SenderHarness`/
+`-RecipientHarness` (`--sender-harness`/`--recipient-harness`) value in both
+`tests/harness/phase1-agents.ps1` and `tests/harness/phase1-agents.sh`; a
+new `Invoke-Agent`/`invoke_agent` case for `agy`; a `-MaxAttempts`/
+`--max-attempts` flag (default 1) that retries a failed round and reports a
+pass rate, used for these two runs; and the **default two swapped rounds
+now use agy as the second harness** (`claude` ↔ `agy`) instead of `codex`,
+since agy is the documented substitute while Codex remains blocked — Codex
+is still fully supported via `-SenderHarness codex -RecipientHarness codex`
+(or mixed with `claude`). `tests/harness/README.md` updated to match
+(prerequisites, default rounds, `--max-attempts` flag, the `--sandbox`/UAC
+warning, and the permission-model limitation). No Go/product code touched.
+No snippet change: agy read `Docs/agents/snippet.md`'s block from
+`AGENTS.md` and found the right command via the same anti-probing sentence
+already used for Codex, with no observed issues.
+
+**Next step for the owner:** decide whether the settings.json
+`permissions.allow` mechanism is worth pursuing further for a real
+per-binary allowlist (would need testing against the real global config, or
+finding agy's per-project settings path), or whether
+`--dangerously-skip-permissions` + an isolated snippet-only working
+directory is acceptable as the standing containment model for agy in this
+harness.
