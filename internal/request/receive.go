@@ -63,6 +63,12 @@ type Store struct {
 	// (Docs/protocol/request.md §Urgency guards (1.7)).
 	DisableSenderBudget bool
 
+	// Sessions, when set, wires work sessions (2.1a,
+	// Docs/protocol/work-session.md) into the request lifecycle: opening a
+	// session on accept, the early-complete path and the request_complete
+	// shorthand. nil is Phase 1 behaviour unchanged.
+	Sessions SessionHooks
+
 	Now func() time.Time
 }
 

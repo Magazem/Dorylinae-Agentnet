@@ -176,6 +176,11 @@ func (s *Store) transition(ctx context.Context, id, from string, allowed map[str
 	if err != nil {
 		return View{}, storedRow{}, 0, err
 	}
+	if tb.kind == KindAccept && s.Sessions != nil {
+		if err := s.Sessions.OpenSession(ctx, tx, "worker", row.peer, row.id, row.teamID, now); err != nil {
+			return View{}, storedRow{}, 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return View{}, storedRow{}, 0, fmt.Errorf("request: commit: %w", err)
 	}
@@ -255,6 +260,18 @@ func (s *Store) Defer(ctx context.Context, id, from string, until time.Time) (Vi
 func (s *Store) Complete(ctx context.Context, id, from, note string, result *Result) (View, error) {
 	if err := ValidateComplete(note, result); err != nil {
 		return View{}, err
+	}
+	if s.Sessions != nil {
+		row, err := s.findInRow(ctx, s.DB, id, from)
+		if err != nil {
+			return View{}, err
+		}
+		if ok, serr := s.Sessions.CompleteShorthand(ctx, row.peer, row.id, note, result); ok {
+			if serr != nil {
+				return View{}, serr
+			}
+			return toView(row)
+		}
 	}
 	var resultBytes, outputBytes int
 	var resultCanon []byte

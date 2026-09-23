@@ -241,6 +241,34 @@ CREATE TABLE webhook_queue (
 );
 CREATE INDEX webhook_queue_due ON webhook_queue (state, next_attempt);
 `},
+	{14, "work_sessions", `
+CREATE TABLE work_sessions (
+    id            TEXT PRIMARY KEY,                  -- s-<32 hex>, derived
+    role          TEXT NOT NULL CHECK (role IN ('requester', 'worker')),
+    peer          TEXT NOT NULL,                     -- the other party
+    request_id    TEXT NOT NULL,                     -- r-<32 hex>
+    team_id       TEXT NOT NULL,
+    state         TEXT NOT NULL CHECK (state IN ('open', 'awaiting_result', 'quarantined', 'closed')),
+    outcome       TEXT CHECK (outcome IN ('accepted', 'cancelled')),
+    seq           INTEGER NOT NULL DEFAULT 0,        -- A: last ws.state sent; B: last applied
+    round         INTEGER NOT NULL DEFAULT 1,
+    result        TEXT CHECK (result IS NULL OR json_valid(result)),  -- canonical result of the current round
+    result_round  INTEGER,
+    verification  TEXT CHECK (verification IN ('none', 'tests_passed', 'human_accepted')),
+    changes       TEXT,                              -- last request-changes text (content)
+    cancel        TEXT CHECK (cancel IN ('requested', 'refused')),     -- B only
+    released      INTEGER NOT NULL DEFAULT 0,        -- A: 1 once the current round was released
+    last_state    TEXT CHECK (last_state IS NULL OR json_valid(last_state)),  -- A: {"kind","body"}
+    last_state_sent TEXT,
+    opened        TEXT NOT NULL,
+    state_at      TEXT NOT NULL,
+    closed        TEXT,
+    updated       TEXT NOT NULL,
+    CHECK ((state = 'closed') = (outcome IS NOT NULL))
+);
+CREATE INDEX work_sessions_state ON work_sessions (state);
+CREATE UNIQUE INDEX work_sessions_request ON work_sessions (role, peer, request_id);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

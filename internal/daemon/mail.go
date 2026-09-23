@@ -18,6 +18,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // mailQueue is how many mail envelopes may wait for the receiver. The relay
@@ -105,7 +106,7 @@ type ownKeys interface {
 // newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
 // the own mailbox private keys (created by pairing and rotation, tickets 0.8c
 // and 1.0b). Both need Sender, which startMail sets.
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store) (*mail.Receiver, *mail.Pusher) {
+func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store, ws *worksession.Store) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
 	priv := func() (ed25519.PrivateKey, error) {
@@ -148,6 +149,11 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		rcv.Kinds[request.KindComplete] = rs.CompleteKind()
 		rcv.Kinds[request.KindCancelled] = rs.CancelledKind()
 		rcv.Kinds[request.KindCancel] = rs.CancelKind()
+	}
+	if ws != nil {
+		rcv.Kinds[worksession.KindResult] = ws.ResultKind()
+		rcv.Kinds[worksession.KindCancel] = ws.CancelKind()
+		rcv.Kinds[worksession.KindState] = ws.StateKind()
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail

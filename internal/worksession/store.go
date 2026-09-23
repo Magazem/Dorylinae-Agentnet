@@ -1,0 +1,203 @@
+package worksession
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
+)
+
+// SubmitTx is the outbox capability the store needs: sending ws.* mail
+// inside the same transaction as the row it belongs to.
+type SubmitTx interface {
+	SubmitTx(ctx context.Context, tx *sql.Tx, to, kind string, body any) (mail.Submitted, error)
+	Wake()
+}
+
+// AuditSink is the part of audit.Log the Store needs.
+type AuditSink interface {
+	Append(ctx context.Context, actor, action string, detail any) error
+}
+
+// Store owns the work_sessions table (migration 14,
+// Docs/protocol/work-session.md §Persistence).
+type Store struct {
+	DB     *sql.DB
+	Self   string
+	Outbox SubmitTx
+	Audit  AuditSink // may be nil
+
+	// Requests lets a session close complete the worker's own request row in
+	// the same transaction (Docs/protocol/work-session.md §Closing the
+	// request). Required for CompleteShorthand and the mirror's close step.
+	Requests *request.Store
+
+	// Quarantine reports whether the quarantine rule
+	// (Docs/protocol/work-session.md §Quarantine) holds for a result on
+	// session sid from peer at round, evaluated in the same transaction as
+	// the result. nil means never quarantine, correct before grants exist
+	// (2.4 wires the real check).
+	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
+
+	Now func() time.Time
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// workSessionColumns is the column list shared by every SELECT against
+// work_sessions, in scanRow's order.
+const workSessionColumns = `id, role, peer, request_id, team_id, state, outcome, seq, round,
+	result, result_round, verification, changes, cancel, released, last_state, last_state_sent,
+	opened, state_at, closed, updated`
+
+// storedRow is one work_sessions row.
+type storedRow struct {
+	id, role, peer, requestID, teamID string
+	state                             string
+	outcome                           sql.NullString
+	seq, round                        int
+	result                            sql.NullString
+	resultRound                       sql.NullInt64
+	verification                      sql.NullString
+	changes                           sql.NullString
+	cancel                            sql.NullString
+	released                          int
+	lastState                         sql.NullString
+	lastStateSent                     sql.NullString
+	opened                            string
+	stateAt                           string
+	closed                            sql.NullString
+	updated                           string
+}
+
+type scanner interface{ Scan(dest ...any) error }
+
+func scanRow(sc scanner) (storedRow, error) {
+	var r storedRow
+	err := sc.Scan(&r.id, &r.role, &r.peer, &r.requestID, &r.teamID, &r.state, &r.outcome, &r.seq, &r.round,
+		&r.result, &r.resultRound, &r.verification, &r.changes, &r.cancel, &r.released, &r.lastState, &r.lastStateSent,
+		&r.opened, &r.stateAt, &r.closed, &r.updated)
+	return r, err
+}
+
+// findRowTx resolves a row by (role, peer, requestID), the unique index
+// work_sessions_request, read through tx (the mail dedupe transaction already
+// holds the daemon's one SQLite connection: see request.queryer).
+func findRowTx(ctx context.Context, tx *sql.Tx, role, peer, requestID string) (storedRow, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE role = ? AND peer = ? AND request_id = ?`, role, peer, requestID)
+	r, err := scanRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storedRow{}, ErrUnknownSession
+	}
+	if err != nil {
+		return storedRow{}, fmt.Errorf("worksession: read row: %w", err)
+	}
+	return r, nil
+}
+
+// findByID resolves a row by its session id, for A-side CLI-shaped methods
+// (a session's id is unique regardless of role, but a given daemon only
+// ever holds one role for it).
+func findByID(ctx context.Context, q *sql.DB, id string) (storedRow, error) {
+	row := q.QueryRowContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE id = ?`, id)
+	r, err := scanRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storedRow{}, ErrUnknownSession
+	}
+	if err != nil {
+		return storedRow{}, fmt.Errorf("worksession: read row: %w", err)
+	}
+	return r, nil
+}
+
+// View is a fully decoded work_sessions row, for future IPC (2.1b).
+type View struct {
+	ID           string
+	Role         string
+	Peer         string
+	RequestID    string
+	TeamID       string
+	State        string
+	Outcome      string
+	Seq          int
+	Round        int
+	Result       *Result
+	ResultBytes  int
+	OutputBytes  int
+	ResultRound  int
+	Verification string
+	Changes      string
+	Cancel       string
+	Released     bool
+	Opened       time.Time
+	StateAt      time.Time
+	Closed       time.Time
+	Updated      time.Time
+}
+
+func toView(r storedRow) (View, error) {
+	v := View{
+		ID: r.id, Role: r.role, Peer: r.peer, RequestID: r.requestID, TeamID: r.teamID,
+		State: r.state, Seq: r.seq, Round: r.round, Released: r.released != 0,
+		Opened: parseWireTime(r.opened), StateAt: parseWireTime(r.stateAt), Updated: parseStoreTime(r.updated),
+	}
+	if r.outcome.Valid {
+		v.Outcome = r.outcome.String
+	}
+	if r.verification.Valid {
+		v.Verification = r.verification.String
+	}
+	if r.changes.Valid {
+		v.Changes = r.changes.String
+	}
+	if r.cancel.Valid {
+		v.Cancel = r.cancel.String
+	}
+	if r.closed.Valid {
+		v.Closed = parseWireTime(r.closed.String)
+	}
+	if r.resultRound.Valid {
+		v.ResultRound = int(r.resultRound.Int64)
+	}
+	if r.result.Valid && r.result.String != "" {
+		res, err := decodeStoredResult(r.result.String)
+		if err != nil {
+			return View{}, err
+		}
+		v.Result = res
+		v.ResultBytes = len(r.result.String)
+		v.OutputBytes = OutputBytes(res.Output)
+	}
+	return v, nil
+}
+
+func decodeStoredResult(body string) (*Result, error) {
+	v, err := agentcard.ParseStrict([]byte(body))
+	if err != nil {
+		return nil, err
+	}
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return nil, badBody("stored result is not an object")
+	}
+	return DecodeResult(obj)
+}
+
+// Get resolves ws_show-style lookup by session id.
+func (s *Store) Get(ctx context.Context, id string) (View, error) {
+	r, err := findByID(ctx, s.DB, id)
+	if err != nil {
+		return View{}, err
+	}
+	return toView(r)
+}

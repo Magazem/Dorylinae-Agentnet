@@ -90,7 +90,26 @@ func (s *Store) applyAccept(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if err != nil {
 		return err
 	}
-	return s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil, time.Time{})
+	if err := s.applyMirror(ctx, tx, op, KindAccept, reqID, StateAccepted, seq, at, "", nil, nil, time.Time{}); err != nil {
+		return err
+	}
+	if s.Sessions != nil {
+		// A creates its own session row when it applies the accept, or when a
+		// ws.result for this request overtook it (Docs/protocol/work-session.md
+		// §Session id); OpenSession is idempotent either way. teamID comes
+		// from A's own out row; its absence (an orphaned accept) means there
+		// is nothing to open a session for.
+		var teamID string
+		err := tx.QueryRowContext(ctx, `SELECT team_id FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, op.Msg.From, reqID).Scan(&teamID)
+		if err == nil {
+			if err := s.Sessions.OpenSession(ctx, tx, "requester", op.Msg.From, reqID, teamID, s.now()); err != nil {
+				return err
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("request: read out row for session open: %w", err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -189,6 +208,20 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 	}
 	if err := CheckCompleteSize(canon); err != nil {
 		return badBody("%s", err.Error())
+	}
+	if s.Sessions != nil {
+		// Docs/protocol/work-session.md §Early complete and Phase 1 workers:
+		// this request.complete may be arriving while A's session for it is
+		// still open (or, rarely, mid-round). keepContent is false only when
+		// the quarantine rule holds; dropping note/result here (before they
+		// are stored) means they are never stored or visible.
+		keep, err := s.Sessions.EarlyComplete(ctx, tx, op.Msg.From, reqID, result != nil || note != "")
+		if err != nil {
+			return fmt.Errorf("request: early complete: %w", err)
+		}
+		if !keep {
+			note, result = "", nil
+		}
 	}
 	var noteArg, resultArg any
 	var resultBytes, outputBytes, artifacts int

@@ -31,6 +31,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // StatusResult is the result of the "status" IPC method.
@@ -290,7 +291,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore)
+	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore}
+	// reqStore.Sessions is not set yet: wiring it makes every request_complete
+	// on an accepted request redirect into the session shorthand
+	// (Docs/protocol/work-session.md, "request_complete while a session
+	// exists"), which needs 2.1b's ws_accept_result/ws_request_changes IPC to
+	// ever close that session again. 2.1b flips this on once that IPC exists;
+	// until then the mail kinds are registered (ws.* is understood) but no
+	// session ever opens, so Phase 1 request_complete behaviour is unchanged.
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -417,7 +426,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -480,7 +489,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	sessions.SetSender(client)
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
-		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs)
+		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws)
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

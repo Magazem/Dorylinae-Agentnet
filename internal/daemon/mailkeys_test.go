@@ -25,7 +25,7 @@ import (
 
 func TestDebugNoteKindOnlyWithEnv(t *testing.T) {
 	build := func() map[string]mail.Kind {
-		rcv, _ := newMailReceiver(nil, nil, nil, make([]byte, ed25519.PublicKeySize), nil, nil, nil, nil)
+		rcv, _ := newMailReceiver(nil, nil, nil, make([]byte, ed25519.PublicKeySize), nil, nil, nil, nil, nil)
 		return rcv.Kinds
 	}
 	t.Setenv(mail.DebugEnv, "")
@@ -109,7 +109,7 @@ func newMNode(t *testing.T, clk *testClock) *mnode {
 		t.Fatal(err)
 	}
 	n := &mnode{priv: priv, key: envelope.KeyString(pub), db: st.DB(), keys: keys, dir: peerDirectory{st.DB()}}
-	n.rcv, n.pusher = newMailReceiver(st.DB(), alog, ks, pub, keys, nil, nil, nil)
+	n.rcv, n.pusher = newMailReceiver(st.DB(), alog, ks, pub, keys, nil, nil, nil, nil)
 	n.rcv.Sender, n.pusher.Sender = n, n
 	n.rcv.Now, n.rcv.Opener.Now, n.pusher.Now = clk.now, clk.now, clk.now
 	keys.OnRotate(func(a []byte) { n.pusher.PushAll(ctx, a) })

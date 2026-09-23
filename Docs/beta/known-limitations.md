@@ -47,6 +47,13 @@ what to change first. The decisions behind them are in
   but only for 21 days after you first sent it. After that, send a new request.
 - **Very old requests are refused.** A request first sent more than 30 days ago is not
   accepted as new by the recipient.
+- **Mixed Phase 1 / Phase 2 teams fall back to Phase 1 behaviour.** If one side of a pair has
+  not upgraded yet, a Phase 1 daemon acks work-session mail (`ws.*`) as unsupported, and both
+  sides fall back to the plain request lifecycle: the Phase 2 side completes the request
+  through the ordinary `request.complete` path once its session ends, with no grants and no
+  quarantine (a Phase 1 requester never issues grants). A Phase 1 daemon also refuses a
+  Phase 2 request's `context` or `run` members as invalid. Upgrade both sides to get sessions,
+  grants, quarantine and the own-device helper.
 
 ## Presence
 
