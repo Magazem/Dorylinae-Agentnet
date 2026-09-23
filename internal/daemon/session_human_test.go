@@ -3,10 +3,10 @@ package daemon_test
 // Integration coverage for ws_accept_result --human and ws_release, from a
 // confirmed approval through to the real session state transition
 // (Docs/protocol/work-session.md §Accept-result, §Quarantine (2.4);
-// Docs/protocol/approval.md). The approval is confirmed through the
-// approval.Store/IPC directly (approval_confirm with the code captured from
-// a fake notifier), not through the CLI: CLI entry to approve changes in
-// 2.2d, so a CLI-level test would need rewriting there for no reason.
+// Docs/protocol/approval.md). The approval is confirmed through a fake
+// approval window (2.2d: no IPC method or CLI form takes a code any more;
+// the window's answer is the only path in), exactly like the 2.2d tests in
+// approval_test.go.
 
 import (
 	"testing"
@@ -14,27 +14,21 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 )
 
-// approvalCodeFrom extracts the 6-digit code from the fake notifier's last
-// body, exactly as TestApprovalIPCConfirmRunsAction (approval_test.go) does:
-// the code is the last 6 characters of the notification body
-// (Docs/protocol/approval.md §Delivering the code).
-func approvalCodeFrom(body string) string {
-	if len(body) < 6 {
-		return ""
-	}
-	return body[len(body)-6:]
-}
-
 // TestAcceptResultHumanIntegration: ws_accept_result{human:true} creates a
-// pending approval; confirming it (through approval_confirm, with the code
-// read from the notification, as a human would) runs AcceptResultInTx and
-// closes the session on both sides with verification forced to
-// human_accepted (Docs/protocol/work-session.md §Accept-result).
+// pending approval; answering its window "approve <code>" (the code read
+// from the notification, as a human would) runs AcceptResultInTx and closes
+// the session on both sides with verification forced to human_accepted
+// (Docs/protocol/work-session.md §Accept-result). It also checks the
+// after-commit audit (ws.accept_result, ws.close) that 2.1b's
+// afterCommitResult defers until the confirming transaction has committed
+// (review 27, C1).
 func TestAcceptResultHumanIntegration(t *testing.T) {
 	r := newHarnessRelay(t)
 	notifier := &fakeApprovalNotifier{}
+	win := newFakeWindowRunner()
 	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
 	a.ApprovalNotify = notifier
+	a.ApprovalWindow = win
 	a.start()
 	b.start()
 	waitRelayConnected(t, r, a.key, b.key)
@@ -61,13 +55,8 @@ func TestAcceptResultHumanIntegration(t *testing.T) {
 	if apprResp.Approval.ID == "" {
 		t.Fatalf("ws_accept_result --human did not return an approval")
 	}
-	if notifier.lastBody == "" {
-		t.Fatalf("no approval notification was shown")
-	}
-	code := approvalCodeFrom(notifier.lastBody)
-
-	var confirmed map[string]any
-	a.call("approval_confirm", map[string]any{"id": apprResp.Approval.ID, "code": code}, &confirmed)
+	code := notifier.lastCode(t)
+	win.answer(apprResp.Approval.ID, "approve", code)
 
 	harnessWait(t, "A's session to close human_accepted", func() bool {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'closed' AND outcome = 'accepted' AND verification = 'human_accepted'`) == 1
@@ -84,17 +73,19 @@ func TestAcceptResultHumanIntegration(t *testing.T) {
 }
 
 // TestReleaseIntegration: ws_release on a quarantined session creates a
-// pending approval; confirming it runs ReleaseInTx, moving the session back
-// to awaiting_result with the result now visible, and audits ws.release
-// (Docs/protocol/work-session.md §Quarantine (2.4), "a session with a
-// sensitive grant cannot deliver a result until released, and the audit log
-// records the release").
+// pending approval; answering its window "approve <code>" runs
+// ReleaseInTx, moving the session back to awaiting_result with the result
+// now visible, and audits ws.release (Docs/protocol/work-session.md
+// §Quarantine (2.4), "a session with a sensitive grant cannot deliver a
+// result until released, and the audit log records the release").
 func TestReleaseIntegration(t *testing.T) {
 	r := newHarnessRelay(t)
 	notifier := &fakeApprovalNotifier{}
+	win := newFakeWindowRunner()
 	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
 	a.Quarantine = alwaysQuarantineDaemon
 	a.ApprovalNotify = notifier
+	a.ApprovalWindow = win
 	a.start()
 	b.start()
 	waitRelayConnected(t, r, a.key, b.key)
@@ -131,10 +122,8 @@ func TestReleaseIntegration(t *testing.T) {
 	if apprResp.Approval.ID == "" {
 		t.Fatalf("ws_release did not return an approval")
 	}
-	code := approvalCodeFrom(notifier.lastBody)
-
-	var confirmed map[string]any
-	a.call("approval_confirm", map[string]any{"id": apprResp.Approval.ID, "code": code}, &confirmed)
+	code := notifier.lastCode(t)
+	win.answer(apprResp.Approval.ID, "approve", code)
 
 	harnessWait(t, "A's session to leave quarantined", func() bool {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'awaiting_result'`) == 1

@@ -401,6 +401,114 @@ func TestStoreCloseKillsEveryOpenWindow(t *testing.T) {
 	}
 }
 
+// fakeAfterCommit is a Perform result implementing AfterCommitter.
+type fakeAfterCommit struct{ fn func(ctx context.Context) }
+
+func (f fakeAfterCommit) AfterCommit(ctx context.Context) { f.fn(ctx) }
+
+// TestAfterCommitRunsOnceAfterCommitOutsideMu_Window is ticket 2.2d-i: the
+// window path runs a Perform result's AfterCommit hook exactly once, after
+// the confirming transaction has committed, and outside Store.mu (a hook
+// that calls back into the Store, e.g. List, must not deadlock; review 26
+// N3, review 27 C1).
+func TestAfterCommitRunsOnceAfterCommitOutsideMu_Window(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	s, n, _, win := newWindowTestStore(t, clock(&now))
+	var mu sync.Mutex
+	var calls int
+	var stateAtHook string
+	var listErr error
+	var id string
+	action := Action{Perform: func(context.Context, *sql.Tx) (any, error) {
+		return fakeAfterCommit{fn: func(ctx context.Context) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			// Read the row directly: proves the transaction already
+			// committed before this hook runs.
+			_ = s.db.QueryRowContext(ctx, `SELECT state FROM approvals WHERE id = ?`, id).Scan(&stateAtHook)
+			// Call back into the Store: must not deadlock if this runs
+			// outside Store.mu.
+			lctx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			_, listErr = s.List(lctx)
+		}}, nil
+	}}
+	view, err := s.Create(ctx, KindGrant, "g-1", "s", action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = view.ID
+	code := n.lastCode(t)
+	h := win.latest(view.ID)
+	h.answerCh <- fakeWinAnswer{kind: "approve", code: code}
+
+	pollUntilStore(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls > 0
+	})
+	time.Sleep(30 * time.Millisecond) // give a wrongly-duplicated call a chance to land
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("AfterCommit ran %d times, want exactly 1", calls)
+	}
+	if stateAtHook != StateApproved {
+		t.Fatalf("state at hook time = %q, want %q (hook must run after commit)", stateAtHook, StateApproved)
+	}
+	if listErr != nil {
+		t.Fatalf("AfterCommit calling back into the Store failed (held under Store.mu?): %v", listErr)
+	}
+}
+
+// TestAfterCommitRunsOnceAfterCommitOutsideMu_Terminal is the same guarantee
+// on the terminal-stdin path (Store.Confirm called directly, no window).
+func TestAfterCommitRunsOnceAfterCommitOutsideMu_Terminal(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	s, n, _ := newTestStore(t, clock(&now)) // nil window: terminal mode
+	var mu sync.Mutex
+	var calls int
+	var stateAtHook string
+	var listErr error
+	var id string
+	action := Action{Perform: func(context.Context, *sql.Tx) (any, error) {
+		return fakeAfterCommit{fn: func(ctx context.Context) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			_ = s.db.QueryRowContext(ctx, `SELECT state FROM approvals WHERE id = ?`, id).Scan(&stateAtHook)
+			lctx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			_, listErr = s.List(lctx)
+		}}, nil
+	}}
+	view, err := s.Create(ctx, KindGrant, "g-1", "s", action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id = view.ID
+	code := n.lastCode(t)
+
+	if _, err := s.Confirm(ctx, view.ID, code); err != nil {
+		t.Fatalf("Confirm: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("AfterCommit ran %d times, want exactly 1", calls)
+	}
+	if stateAtHook != StateApproved {
+		t.Fatalf("state at hook time = %q, want %q (hook must run after commit)", stateAtHook, StateApproved)
+	}
+	if listErr != nil {
+		t.Fatalf("AfterCommit calling back into the Store failed (held under Store.mu?): %v", listErr)
+	}
+}
+
 func pollUntilStore(t *testing.T, fn func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)

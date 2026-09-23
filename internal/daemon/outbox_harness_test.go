@@ -159,6 +159,12 @@ type harnessNode struct {
 	// (daemon.Options ApprovalNotify), set before start(). Nil uses the
 	// default (which would try the real OS notifier).
 	ApprovalNotify approval.Notifier
+	// ApprovalWindow substitutes the approval window runner (daemon.Options
+	// ApprovalWindow), set before start(). Nil uses the default (which would
+	// try to open a real dialog process); tests that confirm an approval
+	// give a fake WindowRunner here instead (2.2d: no IPC method takes a
+	// code, so approvals are answered through the window).
+	ApprovalWindow approval.WindowRunner
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -199,6 +205,7 @@ func (n *harnessNode) start() {
 			NotifyShow:       n.NotifyShow,
 			Quarantine:       n.Quarantine,
 			ApprovalNotify:   n.ApprovalNotify,
+			ApprovalWindow:   n.ApprovalWindow,
 		})
 	}()
 	select {

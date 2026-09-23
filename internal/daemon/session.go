@@ -215,11 +215,19 @@ func sessionView(ctx context.Context, ps *peers.Store, ts *team.Store, rs *reque
 // callback to run once, after Confirm's transaction has committed: the audit
 // log shares the daemon's single SQLite connection (SetMaxOpenConns(1)), so
 // an Append while a transaction is still open would block forever (review
-// 27, C1). registerSession's approval_confirm caller (registerApproval)
-// unwraps this before merging the approval view into the IPC result.
+// 27, C1). It implements approval.AfterCommitter, so approval.Store.Confirm
+// runs it directly (2.2d: confirmation happens from the window's answer or
+// the terminal's stdin, not from a synchronous IPC caller that could unwrap
+// it itself).
 type afterCommitResult struct {
-	value any
 	after func(context.Context)
+}
+
+// AfterCommit implements approval.AfterCommitter.
+func (r afterCommitResult) AfterCommit(ctx context.Context) {
+	if r.after != nil {
+		r.after(ctx)
+	}
 }
 
 // registerSession wires the work session IPC (Docs/protocol/work-session.md
@@ -488,8 +496,9 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		}
 		summary := fmt.Sprintf("Release the quarantined result of session %s?", sid)
 		// approvalID is set once Create returns below, before Perform can ever
-		// run (Perform only runs later, from a confirming approval_confirm
-		// call): the closure captures the variable, not its zero value.
+		// run (Perform only runs later, once a human confirms through the
+		// approval window or the daemon's terminal stdin, 2.2d): the closure
+		// captures the variable, not its zero value.
 		var approvalID string
 		view, err := as.Create(ctx, "release", sid, summary, approval.Action{
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {

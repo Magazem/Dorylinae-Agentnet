@@ -360,6 +360,9 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
 	}
+	if ac, ok := result.(AfterCommitter); ok {
+		ac.AfterCommit(ctx)
+	}
 	return result, nil
 }
 

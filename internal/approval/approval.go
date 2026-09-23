@@ -100,8 +100,24 @@ type Action struct {
 	// hold, immediately before Perform. Nil skips the check.
 	Precondition func(ctx context.Context, tx *sql.Tx) error
 	// Perform does the waiting action and returns its own result. Nil means
-	// there is nothing to do beyond the approval decision itself.
+	// there is nothing to do beyond the approval decision itself. If the
+	// result implements AfterCommitter, Confirm runs its AfterCommit hook
+	// once the transaction has committed and the confirming call has
+	// returned (2.2d: from the window's answer or the terminal's stdin,
+	// never from a synchronous IPC caller).
 	Perform func(ctx context.Context, tx *sql.Tx) (any, error)
+}
+
+// AfterCommitter is implemented by a Perform result that needs to do
+// something once the confirming transaction has committed, outside
+// Store.mu: the audit log shares the daemon's single SQLite connection
+// (SetMaxOpenConns(1)), so appending to it while a transaction is still open
+// would block forever (review 27, C1), and a hook must never call back into
+// the Store while its mutex is held (review 26, N3). Confirm calls
+// AfterCommit exactly once, after commit, regardless of which path decided
+// the approval (the window's answer or the daemon's terminal stdin).
+type AfterCommitter interface {
+	AfterCommit(ctx context.Context)
 }
 
 // Notifier shows and withdraws the one-time code as a desktop notification

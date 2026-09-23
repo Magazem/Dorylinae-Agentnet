@@ -148,7 +148,7 @@ func mapZenityExit(exitCode int, stdout string) dialogAnswer {
 	}
 }
 
-func startDialog(ctx context.Context, id, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
+func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
 	timeoutSecs := int(time.Until(expires).Seconds())
 	if timeoutSecs < 1 {
 		timeoutSecs = 1

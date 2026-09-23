@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os/exec"
 	"time"
 
@@ -23,9 +24,10 @@ on run
 	set t to system attribute "AGENTNET_W_TAG"
 	set k to system attribute "AGENTNET_W_KIND"
 	set s to system attribute "AGENTNET_W_SUMMARY"
+	set secs to (system attribute "AGENTNET_W_TIMEOUT_S") as integer
 	tell application "System Events" to activate
 	try
-		set r to display dialog (k & ": " & s) with title ("AgentNet approval " & t) default answer "" buttons {"Reject", "Approve"} giving up after 600
+		set r to display dialog (k & ": " & s) with title ("AgentNet approval " & t) default answer "" buttons {"Reject", "Approve"} giving up after secs
 	on error
 		return "dismiss"
 	end try
@@ -43,11 +45,16 @@ end run
 // approval window, macOS row, "Ready when").
 const readyGrace = 1500 * time.Millisecond
 
-func startDialog(ctx context.Context, id, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
+func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
+	secs := int(time.Until(expires).Seconds())
+	if secs < 1 {
+		secs = 1
+	}
 	env := []string{
 		"AGENTNET_W_TAG=" + tag,
 		"AGENTNET_W_KIND=" + kind,
 		"AGENTNET_W_SUMMARY=" + summary,
+		fmt.Sprintf("AGENTNET_W_TIMEOUT_S=%d", secs),
 	}
 	cmd := exec.CommandContext(ctx, "/usr/bin/osascript", "-e", approvalDialogScript) //nolint:gosec // fixed path, fixed script
 	cmd.Env = append(cmd.Environ(), env...)
