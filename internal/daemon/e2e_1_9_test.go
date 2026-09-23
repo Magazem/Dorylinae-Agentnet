@@ -250,6 +250,12 @@ func TestAuditHasNoContent(t *testing.T) {
 		return a.count(`SELECT COUNT(*) FROM requests WHERE direction = 'out' AND id = '`+sub1.ID+`' AND state = 'completed'`) == 1
 	})
 
+	// The last request.state row is written after the mirror's commit: poll
+	// for it rather than reading the audit log once.
+	harnessWait(t, "A's three request.state audit rows", func() bool {
+		return len(auditDetails(t, a, "request.state")) >= 3
+	})
+
 	// No marker string appears in any audit_events row, on either side.
 	for _, n := range []*harnessNode{a, b} {
 		_, details := allAuditRows(t, n)

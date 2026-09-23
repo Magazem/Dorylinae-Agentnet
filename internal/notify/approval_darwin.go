@@ -18,7 +18,7 @@ on run
 end run
 `
 
-func showApproval(ctx context.Context, id string, expires time.Time, title, body string) error {
+func showApproval(ctx context.Context, _ string, _ time.Time, title, body string) error {
 	env := []string{
 		"AGENTNET_A_TITLE=" + title,
 		"AGENTNET_A_BODY=" + body,

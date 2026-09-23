@@ -19,7 +19,7 @@ type fakeDBusNotifier struct {
 	failNext bool
 }
 
-func (f *fakeDBusNotifier) Notify(_ context.Context, _ string, replacesID uint32, icon, summary, body string, actions []string, hints map[string]dbus.Variant, expireMS int32) (uint32, error) {
+func (f *fakeDBusNotifier) Notify(_ context.Context, _ string, _ uint32, _, summary, body string, _ []string, _ map[string]dbus.Variant, _ int32) (uint32, error) {
 	f.calls++
 	f.summary, f.body = summary, body
 	if f.failNext {

@@ -3,6 +3,7 @@
 package notify
 
 import (
+	"math"
 	"context"
 	"sync"
 	"time"
@@ -94,10 +95,9 @@ var (
 // the real code or show a fake one, making the human type wrong codes and
 // burn the daily wrong-code budget (review 26, M-3).
 func showApproval(ctx context.Context, id string, expires time.Time, title, body string) error {
-	expireMS := int32(time.Until(expires) / time.Millisecond)
-	if expireMS < 0 {
-		expireMS = 0
-	}
+	ms := time.Until(expires).Milliseconds()
+	ms = max(0, min(ms, math.MaxInt32))
+	expireMS := int32(ms) // clamped to the int32 range above
 	dbusID, err := notifyIface.Notify(ctx, "agentnet", 0, "", title, escapeMarkup(body), []string{}, map[string]dbus.Variant{}, expireMS)
 	if err != nil {
 		return err
