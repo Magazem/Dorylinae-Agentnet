@@ -159,6 +159,15 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return fmt.Errorf("worksession: apply mirror state: %w", err)
 	}
 
+	// The holder learns of a close from this ws.state and ends its own
+	// (held) grants of this session in the same transaction; no separate
+	// grant.revoke is sent for this (Docs/protocol/grant.md §Session end).
+	if state == StateClosed && row.state != StateClosed && s.RevokeGrants != nil {
+		if err := s.RevokeGrants(ctx, tx, row.id, now); err != nil {
+			return err
+		}
+	}
+
 	// Complete B's request only on the step into closed. A later ws.state
 	// (a higher seq from a misbehaving A, "closed" again or after a reopen)
 	// must not fail the mail transaction: a non-bad-body error is never

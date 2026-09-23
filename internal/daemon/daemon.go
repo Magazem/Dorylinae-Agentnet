@@ -17,6 +17,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -191,6 +192,12 @@ type Options struct {
 	// test option: lets a test enumerate every registered method,
 	// Docs/review/23-phase2-tickets.md 2.2d acceptance).
 	OnServerReady func(*ipc.Server)
+	// OnStoresReady, if set, is called once with the daemon's capability.Store
+	// and worksession.Store right after they are built (a test option: 2.2c
+	// needs a work session already open before it can test grant issuance,
+	// and 2.1b's accept-based session opening is not wired into the live
+	// daemon yet, Docs/review/27-2.1a-review.md design choice (1)).
+	OnStoresReady func(*capability.Store, *worksession.Store)
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -426,7 +433,34 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		}
 		go wsStore.CheckPhase1FallbackForPeer(context.WithoutCancel(ctx), peer)
 	}
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore)
+	capStore := &capability.Store{DB: st.DB()}
+	// Every grant of a session ends in the same transaction as the session's
+	// close (Docs/protocol/grant.md §Session end), on both the grantor (A,
+	// closeSessionTx) and the holder (B, the ws.state closed mirror step).
+	wsStore.RevokeGrants = func(ctx context.Context, tx *sql.Tx, sid string, now time.Time) error {
+		_, err := capStore.RevokeForSessionTx(ctx, tx, sid, capability.ReasonSessionClosed, now)
+		return err
+	}
+	// peers remove revokes all of that peer's grants and policies
+	// (Docs/protocol/grant.md §Session end, §Policies).
+	peerStore.OnRemoved = func(ctx context.Context, key string) error {
+		if _, err := capStore.RevokeForPeer(ctx, key, capability.ReasonPeerRemoved, time.Now()); err != nil {
+			return err
+		}
+		ptx, err := st.DB().BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := capStore.PolicyDeleteForPeerTx(ctx, ptx, key); err != nil {
+			_ = ptx.Rollback()
+			return err
+		}
+		return ptx.Commit()
+	}
+	if opts.OnStoresReady != nil {
+		opts.OnStoresReady(capStore, wsStore)
+	}
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -468,6 +502,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerSession(srv, wsStore, reqStore, peerStore, teamStore, apprStore, log)
 	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
 	registerApproval(srv, apprStore)
+	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
+		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -559,7 +595,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -622,7 +658,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	sessions.SetSender(client)
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
-		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws)
+		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

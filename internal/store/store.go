@@ -294,6 +294,41 @@ CREATE TABLE grant_policies (
 );
 CREATE INDEX grant_policies_peer ON grant_policies (peer, action);
 `},
+	// grant_policies (migration 15, 2.2a) predates the policy matching rules of
+	// grant.md §Policies (2.2c): it has no resolved local path, branch or
+	// approval id, and "until" is nullable. This migration adds them without
+	// touching the applied migration 15. Application code (internal/capability)
+	// always writes a non-NULL path, approval and until from here on; the
+	// DEFAULT only satisfies SQLite's ADD COLUMN NOT NULL requirement for any
+	// pre-existing row (none exist before 2.2c ships).
+	{16, "grants", `
+CREATE TABLE grants (
+    id          TEXT PRIMARY KEY,                -- g-<32 hex>
+    direction   TEXT NOT NULL CHECK (direction IN ('issued', 'held')),
+    peer        TEXT NOT NULL,                   -- holder (issued) / grantor (held)
+    session     TEXT NOT NULL,
+    action      TEXT NOT NULL CHECK (action IN ('fs.read', 'git.read')),
+    label       TEXT NOT NULL,
+    path        TEXT,                            -- issued only: resolved local path
+    branch      TEXT,
+    scope       TEXT,
+    sensitive   INTEGER NOT NULL,
+    nbf         TEXT NOT NULL,
+    exp         TEXT NOT NULL,
+    token       TEXT NOT NULL,                   -- canonical token
+    state       TEXT NOT NULL CHECK (state IN ('pending_approval', 'active', 'revoked')),
+    approval    TEXT,
+    policy      TEXT,
+    revoked_at  TEXT,
+    reason      TEXT CHECK (reason IN ('user', 'session_closed', 'peer_removed')),
+    created     TEXT NOT NULL,
+    updated     TEXT NOT NULL
+);
+CREATE INDEX grants_session ON grants (session);
+ALTER TABLE grant_policies ADD COLUMN path TEXT NOT NULL DEFAULT '';
+ALTER TABLE grant_policies ADD COLUMN branch TEXT;
+ALTER TABLE grant_policies ADD COLUMN approval TEXT NOT NULL DEFAULT '';
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

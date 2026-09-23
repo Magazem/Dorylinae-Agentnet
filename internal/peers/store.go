@@ -56,6 +56,14 @@ type AuditSink interface {
 type Store struct {
 	db    *sql.DB
 	audit AuditSink
+
+	// OnRemoved, if set, is called after a peer's row (and the cascades
+	// removeTx makes) have committed, so a caller can end everything that
+	// depended on this peer beyond what this package knows about (for
+	// example grants, Docs/protocol/grant.md: "peers remove of the holder
+	// revokes all its grants"). It runs after Remove's own commit, not
+	// inside its transaction: an error here does not undo the removal.
+	OnRemoved func(ctx context.Context, key string) error
 }
 
 // NewStore returns a Store over a migrated database.
@@ -304,6 +312,11 @@ func (s *Store) Remove(ctx context.Context, key string) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("peers: remove: %w", err)
+	}
+	if s.OnRemoved != nil {
+		if err := s.OnRemoved(ctx, key); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -46,6 +46,13 @@ type Store struct {
 	// grants exist (2.4 wires the real check).
 	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
 
+	// RevokeGrants, if set, revokes every grant of a session in the same
+	// transaction as the session's close (Docs/protocol/grant.md §Session
+	// end): "all its grants end in the same transaction (revoked, reason =
+	// session_closed), including rows still pending_approval". Called from
+	// closeSessionTx. Must touch only tx (Docs/review/27-2.1a-review.md C1).
+	RevokeGrants func(ctx context.Context, tx *sql.Tx, sid string, now time.Time) error
+
 	Now func() time.Time
 }
 
@@ -230,6 +237,22 @@ func (s *Store) GetByRequestID(ctx context.Context, requestID string) (View, err
 	return toView(r)
 }
 
+// GetTx is Get read through tx, for callers that must check a session's
+// state as part of another transaction (for example a grant issuance's
+// approval Precondition, which must touch only tx,
+// Docs/review/27-2.1a-review.md C1).
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, id string) (View, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE id = ?`, id)
+	r, err := scanRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return View{}, ErrUnknownSession
+	}
+	if err != nil {
+		return View{}, fmt.Errorf("worksession: read row: %w", err)
+	}
+	return toView(r)
+}
+
 // RefFor resolves the session id/state/round for a request, for the request
 // view's "session" member (Docs/protocol/work-session.md §IPC). ok is false
 // when no session exists yet.
@@ -299,4 +322,15 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]View, error) {
 		out = append(out, v)
 	}
 	return out, nil
+}
+
+// SelfOf returns the (requester, worker) identity keys of row's session in
+// wire form, from this daemon's point of view: role tells which one is
+// Store.Self. Used to build the capability.SessionOpen callback without
+// exposing storedRow outside the package.
+func (v View) SelfOf(self string) (requester, worker string) {
+	if v.Role == RoleRequester {
+		return self, v.Peer
+	}
+	return v.Peer, self
 }

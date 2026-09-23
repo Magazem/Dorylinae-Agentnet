@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
@@ -26,6 +27,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // Offline delivery harness: two real daemons and a real relay with a
@@ -165,6 +167,11 @@ type harnessNode struct {
 	// give a fake WindowRunner here instead (2.2d: no IPC method takes a
 	// code, so approvals are answered through the window).
 	ApprovalWindow approval.WindowRunner
+	// ApprovalNow, OnApprovalReady and OnStoresReady mirror the matching
+	// daemon.Options test hooks (2.2c grant tests). Set before start().
+	ApprovalNow     func() time.Time
+	OnApprovalReady func(*approval.Store)
+	OnStoresReady   func(*capability.Store, *worksession.Store)
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -206,6 +213,9 @@ func (n *harnessNode) start() {
 			Quarantine:       n.Quarantine,
 			ApprovalNotify:   n.ApprovalNotify,
 			ApprovalWindow:   n.ApprovalWindow,
+			ApprovalNow:      n.ApprovalNow,
+			OnApprovalReady:  n.OnApprovalReady,
+			OnStoresReady:    n.OnStoresReady,
 		})
 	}()
 	select {

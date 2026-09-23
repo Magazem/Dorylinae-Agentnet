@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -106,7 +107,7 @@ type ownKeys interface {
 // newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
 // the own mailbox private keys (created by pairing and rotation, tickets 0.8c
 // and 1.0b). Both need Sender, which startMail sets.
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store, ws *worksession.Store) (*mail.Receiver, *mail.Pusher) {
+func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store, ws *worksession.Store, caps *capability.Store) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
 	priv := func() (ed25519.PrivateKey, error) {
@@ -159,6 +160,15 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		rcv.Kinds[worksession.KindResult] = ws.ResultKind()
 		rcv.Kinds[worksession.KindCancel] = ws.CancelKind()
 		rcv.Kinds[worksession.KindState] = ws.StateKind()
+	}
+	// grant/grant.revoke are safe to register even before sessions ever open
+	// here (2.1b): a grant mail's step 7 (session known and open) fails
+	// closed for a session this daemon has never seen, so nothing is stored
+	// (Docs/protocol/grant.md §Kinds, "a session the holder does not know yet
+	// is an orphan").
+	if caps != nil && ws != nil {
+		rcv.Kinds["grant"] = grantKind(caps, ws, selfKey, log)
+		rcv.Kinds["grant.revoke"] = grantRevokeKind(caps, log)
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail

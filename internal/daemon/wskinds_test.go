@@ -37,7 +37,7 @@ func TestWSKindsOnlyWithSessions(t *testing.T) {
 		{"sessions off", &request.Store{}, false},
 		{"sessions on", &request.Store{Sessions: noSessions{}}, true},
 	} {
-		rcv, _ := newMailReceiver(nil, nil, nil, make([]byte, ed25519.PublicKeySize), nil, nil, nil, tc.rs, ws)
+		rcv, _ := newMailReceiver(nil, nil, nil, make([]byte, ed25519.PublicKeySize), nil, nil, nil, tc.rs, ws, nil)
 		for _, k := range []string{worksession.KindResult, worksession.KindState, worksession.KindCancel} {
 			if _, ok := rcv.Kinds[k]; ok != tc.want {
 				t.Errorf("%s: %s registered = %v, want %v", tc.name, k, ok, tc.want)

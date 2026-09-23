@@ -65,6 +65,11 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 		StateClosed, OutcomeCancelled, wireTime(now), wireTime(now), storeTime(now), row.id); err != nil {
 		return fmt.Errorf("worksession: close row (phase 1 fallback): %w", err)
 	}
+	if s.RevokeGrants != nil {
+		if err := s.RevokeGrants(ctx, tx, row.id, now); err != nil {
+			return err
+		}
+	}
 
 	note := "session cancelled"
 	var res *request.Result

@@ -49,8 +49,8 @@ func (s *Store) sendState(ctx context.Context, tx *sql.Tx, row storedRow, seq in
 // closeSessionTx closes row (state=closed) inside tx and sends the closing
 // ws.state. It does not touch the result column: callers that must delete a
 // stored result (Discard, RequestChanges from quarantined) do so themselves.
-// Grant revocation on close (Docs/protocol/work-session.md §Persistence) is
-// added by 2.2c; there is nothing to revoke before grants exist.
+// If RevokeGrants is set, every grant of this session ends in the same
+// transaction (Docs/protocol/grant.md §Session end).
 func (s *Store) closeSessionTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome, verification string, now time.Time) error {
 	seq := row.seq + 1
 	if _, err := s.sendState(ctx, tx, row, seq, StateClosed, outcome, verification, "", now); err != nil {
@@ -61,6 +61,11 @@ UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, verification = ?, stat
 WHERE id = ?`,
 		StateClosed, outcome, seq, nullIfEmpty(verification), wireTime(now), wireTime(now), storeTime(now), row.id); err != nil {
 		return fmt.Errorf("worksession: close row: %w", err)
+	}
+	if s.RevokeGrants != nil {
+		if err := s.RevokeGrants(ctx, tx, row.id, now); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -212,6 +217,11 @@ UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, result = NULL, result_
 WHERE id = ?`,
 		StateClosed, OutcomeCancelled, seq, wireTime(now), wireTime(now), storeTime(now), id); err != nil {
 		return View{}, fmt.Errorf("worksession: discard: %w", err)
+	}
+	if s.RevokeGrants != nil {
+		if err := s.RevokeGrants(ctx, tx, id, now); err != nil {
+			return View{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, fmt.Errorf("worksession: commit: %w", err)
