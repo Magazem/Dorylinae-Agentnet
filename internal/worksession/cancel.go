@@ -133,6 +133,19 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
 		return nil
 	}
+	// Docs/protocol/work-session.md §Quarantine (2.4): "the reason of a
+	// ws.cancel from B is not stored or shown on A" while the quarantine
+	// rule holds for the session; #inbox-copy-d18 (4) extends that to the
+	// mail_inbox copy, which otherwise still carries the reason in plaintext.
+	if s.Quarantine != nil {
+		q, qerr := s.Quarantine(ctx, tx, row.id, op.Msg.From, row.round)
+		if qerr != nil {
+			return fmt.Errorf("worksession: quarantine check: %w", qerr)
+		}
+		if q {
+			op.Withhold = true
+		}
+	}
 	if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", s.now()); err != nil {
 		return err
 	}

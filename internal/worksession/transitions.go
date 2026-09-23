@@ -145,14 +145,9 @@ func (s *Store) RequestChanges(ctx context.Context, id, changes string) (View, e
 	now := s.now()
 	newRound := r.round + 1
 	seq := r.seq + 1
-	if fromQuarantine && r.result.Valid && r.result.String != "" {
-		// OD-P2-6 (c), review 27 H1, D18: the quarantined result is deleted
-		// unseen below; also blank the mail_inbox row it was decoded from, in
-		// the same transaction.
-		if err := blankResultMailTx(ctx, tx, r.peer, id, r.round); err != nil {
-			return View{}, err
-		}
-	}
+	// OD-P2-6 (c): the quarantined result is deleted unseen below. Its
+	// mail_inbox copy needed no separate blanking (#inbox-copy-d18 (1)): a
+	// result that entered quarantined was already stored blank at receipt.
 	sendRow := r
 	sendRow.round = newRound
 	if _, err := s.sendState(ctx, tx, sendRow, seq, StateOpen, "", "", changes, now); err != nil {
@@ -206,14 +201,9 @@ func (s *Store) Discard(ctx context.Context, id string) (View, error) {
 	}
 	now := s.now()
 	seq := r.seq + 1
-	if r.result.Valid && r.result.String != "" {
-		// OD-P2-6 (c), review 27 H1, D18: the quarantined result is deleted
-		// unseen below; also blank the mail_inbox row it was decoded from, in
-		// the same transaction.
-		if err := blankResultMailTx(ctx, tx, r.peer, id, r.round); err != nil {
-			return View{}, err
-		}
-	}
+	// OD-P2-6 (c): the quarantined result is deleted unseen below. Its
+	// mail_inbox copy needed no separate blanking (#inbox-copy-d18 (1)): a
+	// result that entered quarantined was already stored blank at receipt.
 	if _, err := s.sendState(ctx, tx, r, seq, StateClosed, OutcomeCancelled, "", "", now); err != nil {
 		return View{}, err
 	}

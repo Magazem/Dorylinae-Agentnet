@@ -1,14 +1,18 @@
 package daemon_test
 
-// D18 (Docs/review/27-2.1a-review.md H1): when a quarantined result is
-// discarded or changes are requested without release, the signed plaintext
-// of the ws.result mail it was decoded from must be blanked in mail_inbox in
-// the same transaction, leaving no copy of the dropped result anywhere in
-// the database. 2.4 (the real quarantine rule from grants) is not
-// implemented yet, so these tests drive a session into quarantined with a
-// stub Quarantine hook (daemon.Options.Quarantine, added for this purpose),
-// which also closes the gap flagged after the first 2.1b report: no e2e
-// coverage of discard through a real two-daemon exchange.
+// D18 (Docs/protocol/work-session.md #inbox-copy-d18, review 27 H1, review 29
+// H1): the receiver stores a message's mail_inbox.signed blank at receipt
+// whenever Apply marks its content withheld or dropped. That covers (1) a
+// ws.result that enters quarantined, (2) a ws.result that is ignored (wrong
+// state or round), (3) a request.complete whose content is dropped as an
+// early complete (covered at the package level, internal/worksession's
+// TestReview27_EarlyCompleteWithoutSessionHonoursQuarantine), and (4) a
+// ws.cancel while the quarantine rule holds (its reason is not stored). 2.4
+// (the real quarantine rule from grants) is not implemented yet, so these
+// tests drive a session into quarantined with a stub Quarantine hook
+// (daemon.Options.Quarantine, added for this purpose), which also closes the
+// gap flagged after the first 2.1b report: no e2e coverage of discard
+// through a real two-daemon exchange.
 
 import (
 	"context"
@@ -39,13 +43,50 @@ func noMarkerAnywhere(t *testing.T, n *harnessNode, marker string) {
 	}
 }
 
-// TestD18_DiscardBlanksMailInbox: B's result reaches A quarantined (stub
-// hook); A discards it. The result content must be gone not just from
-// work_sessions (2.1a already covers that) but from the mail_inbox row the
-// ws.result mail was verified into (D18): mail_inbox keeps its row (from_key,
-// id, kind, created, received_at unchanged, so dedupe is unaffected) but its
-// signed plaintext is blanked in the same transaction as the discard.
-func TestD18_DiscardBlanksMailInbox(t *testing.T) {
+// TestD18_QuarantinedResultBlankedAtReceipt: a ws.result that lands
+// quarantined (stub hook) must be stored blank in mail_inbox immediately at
+// receipt, before any human ever acts on it — not merely blanked later by
+// discard (#inbox-copy-d18 (1)). The content lives in work_sessions.result
+// instead (visible again after release, TestReleaseIntegration).
+func TestD18_QuarantinedResultBlankedAtReceipt(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.Quarantine = alwaysQuarantineDaemon
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	_, sid := openSession(t, a, b, teamID, "quarantine receipt test")
+	const marker = "D18-RECEIPT-MARKER"
+
+	var res daemon.SessionResult
+	b.call("ws_result", map[string]any{
+		"id":     sid,
+		"result": map[string]any{"status": "pass", "summary": marker, "output": marker, "verification": "tests_passed"},
+	}, &res)
+
+	harnessWait(t, "A to see quarantined", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'quarantined'`) == 1
+	})
+	// The content really was received and stored (in work_sessions), so the
+	// mail_inbox absence below proves withholding, not that nothing arrived.
+	if a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND result LIKE '%`+marker+`%'`) != 1 {
+		t.Fatalf("precondition: work_sessions.result does not hold the marker")
+	}
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result'`) != 1 {
+		t.Fatalf("no mail_inbox row for the ws.result mail at all")
+	}
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed = ''`) != 1 {
+		t.Fatalf("mail_inbox row for the quarantined ws.result was not blanked at receipt")
+	}
+}
+
+// TestD18_DiscardLeavesNoMarker: discarding a quarantined session (which was
+// already blanked at receipt, above) leaves the marker nowhere, and closes
+// both sides as cancelled.
+func TestD18_DiscardLeavesNoMarker(t *testing.T) {
 	r := newHarnessRelay(t)
 	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
 	a.Quarantine = alwaysQuarantineDaemon
@@ -61,41 +102,33 @@ func TestD18_DiscardBlanksMailInbox(t *testing.T) {
 	var res daemon.SessionResult
 	b.call("ws_result", map[string]any{
 		"id":     sid,
-		"result": map[string]any{"status": "pass", "summary": marker, "output": marker, "verification": "tests_passed"},
+		"result": map[string]any{"status": "pass", "summary": marker, "verification": "tests_passed"},
 	}, &res)
-
 	harnessWait(t, "A to see quarantined", func() bool {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'quarantined'`) == 1
 	})
-	// Precondition: before discard, the marker really is present (mail_inbox
-	// holds the verified ws.result plaintext), so the assertion below proves
-	// something was actually removed, not that nothing was ever stored.
-	harnessWait(t, "A's mail_inbox to hold the ws.result plaintext", func() bool {
-		return a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed LIKE '%`+marker+`%'`) == 1
-	})
-	if a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND result LIKE '%`+marker+`%'`) != 1 {
-		t.Fatalf("precondition: work_sessions.result does not hold the marker before discard")
-	}
 
 	var discardRes daemon.SessionResult
 	a.call("ws_discard", map[string]any{"id": sid}, &discardRes)
 	if discardRes.Session.State != "closed" || discardRes.Session.Outcome != "cancelled" {
 		t.Fatalf("ws_discard = %+v", discardRes.Session)
 	}
+	harnessWait(t, "B's session to close", func() bool {
+		return b.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'closed' AND outcome = 'cancelled'`) == 1
+	})
 
 	noMarkerAnywhere(t, a, marker)
-	// The row itself (proof of receipt) must survive, only blanked, so
-	// dedupe and any future audit of "a ws.result arrived" still work.
+	// The mail_inbox row (proof of receipt) still exists, blanked.
 	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed = ''`) != 1 {
-		t.Fatalf("mail_inbox row for the ws.result mail was deleted or left non-empty, want one blanked row")
+		t.Fatalf("mail_inbox row for the ws.result mail is missing or non-empty")
 	}
 }
 
-// TestD18_RequestChangesFromQuarantineBlanksMailInbox: the OD-P2-6 (c)
-// request-changes-without-release exit from quarantined must blank the same
-// mail_inbox row as discard (D18); B is sent a new open round and the
-// session accepts a fresh result normally afterwards.
-func TestD18_RequestChangesFromQuarantineBlanksMailInbox(t *testing.T) {
+// TestD18_RequestChangesFromQuarantineLeavesNoMarker: the OD-P2-6 (c)
+// request-changes-without-release exit from quarantined leaves the marker
+// nowhere either; B is sent a new open round and the session accepts a
+// fresh result normally afterwards.
+func TestD18_RequestChangesFromQuarantineLeavesNoMarker(t *testing.T) {
 	r := newHarnessRelay(t)
 	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
 	a.Quarantine = alwaysQuarantineDaemon
@@ -116,9 +149,6 @@ func TestD18_RequestChangesFromQuarantineBlanksMailInbox(t *testing.T) {
 	harnessWait(t, "A to see quarantined", func() bool {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'quarantined'`) == 1
 	})
-	harnessWait(t, "A's mail_inbox to hold the ws.result plaintext", func() bool {
-		return a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed LIKE '%`+marker+`%'`) == 1
-	})
 
 	var rc daemon.SessionResult
 	a.call("ws_request_changes", map[string]any{"id": sid, "changes": "please redo without touching secrets"}, &rc)
@@ -128,7 +158,7 @@ func TestD18_RequestChangesFromQuarantineBlanksMailInbox(t *testing.T) {
 
 	noMarkerAnywhere(t, a, marker)
 	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed = ''`) != 1 {
-		t.Fatalf("mail_inbox row for the ws.result mail was deleted or left non-empty, want one blanked row")
+		t.Fatalf("mail_inbox row for the ws.result mail is missing or non-empty")
 	}
 
 	// The session still works for a new round: B submits again, and this
@@ -141,4 +171,79 @@ func TestD18_RequestChangesFromQuarantineBlanksMailInbox(t *testing.T) {
 	harnessWait(t, "A to see the round-2 result", func() bool {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND round = 2 AND state != 'open'`) == 1
 	})
+}
+
+// TestD18_IgnoredResultWithheld: a ws.result whose round does not match A's
+// row (B still on round 1 while A's row, by whatever race, expects round 2)
+// is ignored on receipt and applied nowhere, so its mail_inbox copy must be
+// withheld too (#inbox-copy-d18 (2)) — not just the ones that do reach a
+// session state. A's row is nudged forward directly (rather than driving a
+// real round-2 exchange first) to isolate the round-mismatch branch: B's own
+// mirror is untouched, so its ws_result IPC call succeeds locally and sends
+// real mail with round 1, exactly as a genuinely racing B would.
+func TestD18_IgnoredResultWithheld(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	_, sid := openSession(t, a, b, teamID, "ignored result test")
+	const marker = "D18-IGNORED-MARKER"
+
+	if err := a.exec(`UPDATE work_sessions SET round = 2 WHERE id = '` + sid + `'`); err != nil {
+		t.Fatalf("nudge A's round forward: %v", err)
+	}
+
+	var res daemon.SessionResult
+	b.call("ws_result", map[string]any{
+		"id":     sid,
+		"result": map[string]any{"status": "pass", "summary": marker, "verification": "tests_passed"},
+	}, &res)
+
+	harnessWait(t, "A's mail_inbox to record the ignored ws.result", func() bool {
+		return a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result'`) == 1
+	})
+	harnessWait(t, "A's ws.ignored audit for the round mismatch", func() bool {
+		return a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'ws.ignored' AND detail LIKE '%"reason":"round"%'`) == 1
+	})
+	if a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND round = 2`) != 1 {
+		t.Fatalf("A's row round changed by the ignored result: still want 2")
+	}
+	noMarkerAnywhere(t, a, marker)
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed = ''`) != 1 {
+		t.Fatalf("mail_inbox row for the ignored ws.result is missing or non-empty")
+	}
+}
+
+// TestD18_QuarantinedCancelReasonWithheld: B's ws.cancel reason is never
+// stored on A even in the ordinary (non-quarantined) path, but while the
+// quarantine rule holds for the session its mail_inbox copy must be
+// withheld too (#inbox-copy-d18 (4)), not just the reason column (which was
+// never written in the first place).
+func TestD18_QuarantinedCancelReasonWithheld(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.Quarantine = alwaysQuarantineDaemon
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	_, sid := openSession(t, a, b, teamID, "cancel reason quarantine test")
+	const marker = "D18-CANCEL-REASON-MARKER"
+
+	var cr daemon.SessionCancelResult
+	b.call("ws_cancel", map[string]any{"id": sid, "reason": marker}, &cr)
+
+	harnessWait(t, "A's session to close from B's cancel", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'closed'`) == 1
+	})
+	noMarkerAnywhere(t, a, marker)
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.cancel' AND signed = ''`) != 1 {
+		t.Fatalf("mail_inbox row for the ws.cancel mail is missing or non-empty")
+	}
 }

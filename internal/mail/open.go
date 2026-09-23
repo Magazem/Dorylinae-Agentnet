@@ -83,6 +83,13 @@ type Opened struct {
 	Msg    Msg
 	Signed []byte // verified canonical plaintext, kept as proof of origin
 	KeyID  KeyID
+	// Withhold, when a Kind's Apply sets it true, means this message's
+	// content must not be kept: the receiver stores its mail_inbox row (if
+	// Inbox is true) with signed = '' instead of the verified plaintext, in
+	// the same transaction as Apply (Docs/protocol/work-session.md
+	// #inbox-copy-d18). The row itself (from_key, id, kind, created,
+	// received_at) is unaffected, so dedupe is unaffected either way.
+	Withhold bool
 }
 
 // Open runs the verification steps of Docs/protocol/mail.md in order. env is

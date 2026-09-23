@@ -95,6 +95,9 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	}
 	switch requestState {
 	case "declined", "cancelled", "completed":
+		// Docs/protocol/work-session.md #inbox-copy-d18 (2): an ignored
+		// ws.result is applied nowhere, so its inbox copy is withheld too.
+		op.Withhold = true
 		pendingResult.Store(op, &resultOutcome{ignored: "state", requestID: reqID, peer: op.Msg.From})
 		return nil
 	}
@@ -119,10 +122,12 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 
 	// Step 4: state must be open and round must equal the row's round.
 	if row.state != StateOpen {
+		op.Withhold = true // #inbox-copy-d18 (2)
 		pendingResult.Store(op, &resultOutcome{ignored: "state", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
 		return nil
 	}
 	if round != row.round {
+		op.Withhold = true // #inbox-copy-d18 (2)
 		pendingResult.Store(op, &resultOutcome{ignored: "round", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
 		return nil
 	}
@@ -139,6 +144,10 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 	newState := StateAwaitingResult
 	if quarantined {
 		newState = StateQuarantined
+		// Docs/protocol/work-session.md #inbox-copy-d18 (1): the result's
+		// content lives in work_sessions.result (visible again after
+		// release); the redundant mail_inbox copy is withheld immediately.
+		op.Withhold = true
 	}
 	now := s.now()
 	seq := row.seq + 1

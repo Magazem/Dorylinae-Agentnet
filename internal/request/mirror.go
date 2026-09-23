@@ -74,14 +74,13 @@ func (s *Store) DeferKind() mail.Kind {
 	return mail.Kind{Inbox: true, Apply: s.applyDefer, After: s.afterMirror}
 }
 
-// CompleteKind is the receiver Kind for request.complete. Inbox is false
-// here (unlike the other four lifecycle kinds): applyComplete stores the
-// mail_inbox row itself, because whether to keep the plaintext depends on
-// the early-complete/quarantine decision made inside the same transaction
-// (Docs/protocol/work-session.md §Early complete and Phase 1 workers, review
-// 27 H1 option (a); D18).
+// CompleteKind is the receiver Kind for request.complete. Whether to keep
+// the plaintext depends on the early-complete/quarantine decision made
+// inside applyComplete; it signals that through op.Withhold, and the
+// receiver's generic Inbox handling stores the row blank when set
+// (Docs/protocol/work-session.md #inbox-copy-d18).
 func (s *Store) CompleteKind() mail.Kind {
-	return mail.Kind{Inbox: false, Apply: s.applyComplete, After: s.afterMirror}
+	return mail.Kind{Inbox: true, Apply: s.applyComplete, After: s.afterMirror}
 }
 
 // CancelledKind is the receiver Kind for request.cancelled.
@@ -236,15 +235,10 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 		}
 		sessionAfter = after
 	}
-	// CompleteKind registers Inbox: false, so this Apply stores mail_inbox
-	// itself: the signed plaintext only when content was kept (review 27 H1,
-	// D18 — a dropped result/note leaves no copy in mail_inbox either).
-	inboxSigned := op.Signed
+	// Docs/protocol/work-session.md #inbox-copy-d18: a dropped result/note
+	// leaves no plaintext copy in mail_inbox either.
 	if !keep {
-		inboxSigned = nil
-	}
-	if err := mail.StoreInboxTx(ctx, tx, op, inboxSigned, s.now()); err != nil {
-		return err
+		op.Withhold = true
 	}
 	var noteArg, resultArg any
 	var resultBytes, outputBytes, artifacts int

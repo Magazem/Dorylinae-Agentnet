@@ -235,7 +235,8 @@ func deliver(t *testing.T, n *node, from string, sm sentMail) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	op := &mail.Opened{Msg: mail.Msg{V: 1, ID: mail.NewID(), From: from, To: n.self, Created: n.clock, Kind: sm.kind, Body: v.(map[string]any)}}
+	signedPlain := []byte(`{"msg":` + string(raw) + `}`) // shape enough for #inbox-copy-d18 tests that decode it back
+	op := &mail.Opened{Msg: mail.Msg{V: 1, ID: mail.NewID(), From: from, To: n.self, Created: n.clock, Kind: sm.kind, Body: v.(map[string]any)}, Signed: signedPlain}
 	tx, err := n.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +244,20 @@ func deliver(t *testing.T, n *node, from string, sm sentMail) error {
 	if err := k.Apply(ctx, tx, op); err != nil {
 		_ = tx.Rollback()
 		return err
+	}
+	// Mirrors internal/mail.Receiver.store's generic Inbox handling
+	// (Docs/protocol/work-session.md #inbox-copy-d18), which this harness
+	// otherwise bypasses by calling Apply directly.
+	if k.Inbox {
+		signed := op.Signed
+		if op.Withhold {
+			signed = nil
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
+			op.Msg.From, op.Msg.ID, op.Msg.Kind, wireTime(op.Msg.Created), storeTime(n.clock), string(signed)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)

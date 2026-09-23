@@ -210,9 +210,17 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 			}
 		}
 		if k.Inbox {
+			// Docs/protocol/work-session.md #inbox-copy-d18: Apply may have set
+			// op.Withhold to mean this content must not be kept; the row
+			// (from_key, id, kind, created, received_at) is still stored, only
+			// blank, so (from_key, id) still deduplicates a redelivery.
+			signed := op.Signed
+			if op.Withhold {
+				signed = nil
+			}
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
-				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at, string(op.Signed)); err != nil {
+				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at, string(signed)); err != nil {
 				return seenNew, fmt.Errorf("mail: store inbox: %w", err)
 			}
 		}
@@ -225,24 +233,6 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		return seenNew, fmt.Errorf("mail: commit: %w", err)
 	}
 	return seenNew, nil
-}
-
-// StoreInboxTx stores a mail_inbox row for op inside tx, exactly as the
-// generic path above does for a Kind with Inbox: true. It is for a kind whose
-// Apply decides at receive time whether to keep the plaintext (Inbox: false
-// at registration, so the generic path above does not also store it): pass
-// signed as op.Signed to keep it, or nil to store the row without content
-// (Docs/protocol/work-session.md §Early complete and Phase 1 workers, review
-// 27 H1 option (a)). The row's presence (from_key, id, kind, created,
-// received_at) is unaffected either way: dedupe is mail_seen, not this table,
-// so omitting the plaintext here never causes a resend or a re-apply.
-func StoreInboxTx(ctx context.Context, tx *sql.Tx, op *Opened, signed []byte, now time.Time) error {
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
-		op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), now.UTC().Format(StoreTimeFmt), string(signed)); err != nil {
-		return fmt.Errorf("mail: store inbox: %w", err)
-	}
-	return nil
 }
 
 // seenAs classifies an existing mail_seen row as a plain or bad-body duplicate.
