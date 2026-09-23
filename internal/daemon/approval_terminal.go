@@ -22,17 +22,34 @@ const terminalLineLimit = 128
 // machines, "Code entry on the daemon's own stdin"). It returns when stdin
 // is closed or ctx is done.
 func runTerminalApprovalReader(ctx context.Context, stdin io.Reader, stderr io.Writer, as *approval.Store) {
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, terminalLineLimit), terminalLineLimit)
-	for sc.Scan() {
+	// Room for the limit plus "\r\n". An over-long line is refused and
+	// skipped up to its newline; it never stops the reader, which would end
+	// code entry for the daemon's lifetime (review 30, M8).
+	r := bufio.NewReaderSize(stdin, terminalLineLimit+2)
+	for {
+		raw, err := r.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = r.ReadSlice('\n')
+			}
+			_, _ = fmt.Fprintf(stderr, "AgentNet: line longer than %d bytes ignored\n", terminalLineLimit)
+			if err != nil {
+				return
+			}
+			continue
+		}
 		if ctx.Err() != nil {
 			return
 		}
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
+		line := strings.TrimSpace(string(raw))
+		if len(line) > terminalLineLimit {
+			_, _ = fmt.Fprintf(stderr, "AgentNet: line longer than %d bytes ignored\n", terminalLineLimit)
+		} else if line != "" {
+			handleTerminalLine(ctx, stderr, as, line)
 		}
-		handleTerminalLine(ctx, stderr, as, line)
+		if err != nil {
+			return // stdin closed (a final unterminated line was handled above)
+		}
 	}
 }
 

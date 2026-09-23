@@ -24,8 +24,8 @@ func (s *Store) ResolveTag(tag string) (id string, err error) {
 	defer s.mu.Unlock()
 	var match string
 	count := 0
-	for pid := range s.pending {
-		if strings.HasPrefix(pid, tag) {
+	for pid, e := range s.pending {
+		if !e.reserved && strings.HasPrefix(pid, tag) {
 			match = pid
 			count++
 		}
@@ -91,7 +91,11 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	// MaxPending even while the window's ready wait (which can take seconds)
 	// runs outside s.mu (Docs/protocol/approval.md §The approval window,
 	// "Locking").
-	s.pending[id] = &live{action: action}
+	if s.closed {
+		s.mu.Unlock()
+		return View{}, ErrUnavailable
+	}
+	s.pending[id] = &live{action: action, reserved: true}
 	s.mu.Unlock()
 
 	expires := now.Add(TTL)
@@ -143,22 +147,38 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 
 	created := now.UTC().Format(storeTimeFmt)
 	expiresStr := expires.UTC().Format(storeTimeFmt)
+	// The row is written and the slot finished under s.mu, and only if the
+	// reservation survived: a lockout (dropAllLocked) or Close during the
+	// ready wait removes it, and then nothing is stored (review 30, H1).
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok || s.closed {
+		delete(s.pending, id)
+		s.mu.Unlock()
+		if handle != nil {
+			handle.Kill()
+		}
+		s.notifier.Remove(ctx, id)
+		if locked, lerr := s.settings.Locked(ctx, s.now()); lerr == nil && locked {
+			return View{}, ErrLocked
+		}
+		return View{}, ErrUnavailable
+	}
 	if _, err := s.db.ExecContext(ctx, `
 INSERT INTO approvals (id, kind, subject, summary, created, expires, attempts, state)
 VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 		id, kind, subject, summary, created, expiresStr); err != nil {
-		s.dropReserved(id)
+		delete(s.pending, id)
+		s.mu.Unlock()
 		if handle != nil {
 			handle.Kill()
 		}
 		s.notifier.Remove(ctx, id)
 		return View{}, fmt.Errorf("approval: insert: %w", err)
 	}
-	s.mu.Lock()
-	if entry, ok := s.pending[id]; ok {
-		entry.mac = mac
-		entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
-	}
+	entry.mac = mac
+	entry.reserved = false
+	entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
 	s.mu.Unlock()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
@@ -226,7 +246,7 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) {
 	s.mu.Lock()
 	entry, ok := s.pending[id]
-	if !ok {
+	if !ok || entry.reserved {
 		s.mu.Unlock()
 		return nil, s.unknownOrExpired(ctx, id)
 	}
@@ -443,6 +463,11 @@ func (s *Store) dropAllLocked() []lockedEntry {
 		if e.watchCancel != nil {
 			e.watchCancel()
 		}
+		if e.reserved {
+			// No row yet: Create sees the slot gone, kills its window and
+			// stores nothing (review 30, H1).
+			continue
+		}
 		out = append(out, lockedEntry{id: id, handle: e.handle})
 	}
 	s.pending = map[string]*live{}
@@ -455,6 +480,9 @@ func (s *Store) dropAllLocked() []lockedEntry {
 // in List (review 26, M-1). Caller holds s.mu.
 func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) error {
 	for id, e := range s.pending {
+		if e.reserved {
+			continue // no row yet (review 30, H1)
+		}
 		expired, _, err := s.checkExpiryLocked(ctx, id, now)
 		if err != nil {
 			return err
@@ -593,7 +621,7 @@ func (s *Store) unknownOrExpired(ctx context.Context, id string) error {
 func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 	s.mu.Lock()
 	entry, ok := s.pending[id]
-	if !ok {
+	if !ok || entry.reserved {
 		s.mu.Unlock()
 		return View{}, s.unknownOrExpired(ctx, id)
 	}
@@ -622,11 +650,11 @@ func (s *Store) OpenWindow(ctx context.Context, id string) (View, error) {
 	}
 	s.mu.Lock()
 	entry, ok := s.pending[id]
-	if !ok {
+	if !ok || entry.reserved {
 		s.mu.Unlock()
 		return View{}, s.unknownOrExpired(ctx, id)
 	}
-	alreadyOpen := entry.handle != nil
+	alreadyOpen := entry.handle != nil || entry.opening
 	s.mu.Unlock()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.open", map[string]string{"id": id})
@@ -642,18 +670,50 @@ func (s *Store) OpenWindow(ctx context.Context, id string) (View, error) {
 // any) in addition to the stored summary (Docs/protocol/approval.md §The
 // approval window, "Outcome": "reopens the window with ..."). Best-effort:
 // a failure here leaves the approval pending with no window, retryable
-// through approval_open.
+// through approval_open. It is a no-op while another window for id is open
+// or being opened: at most one window per approval (review 30, M3).
 func (s *Store) reopen(ctx context.Context, id, message string) {
 	if s.window == nil {
 		return
 	}
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok || entry.reserved || entry.opening || entry.handle != nil || s.closed {
+		s.mu.Unlock()
+		return
+	}
+	entry.opening = true
+	s.mu.Unlock()
+	handle := s.startWindow(ctx, id, message)
+
+	s.mu.Lock()
+	entry, ok = s.pending[id]
+	if ok {
+		entry.opening = false
+	}
+	if handle == nil {
+		s.mu.Unlock()
+		return
+	}
+	if !ok || s.closed {
+		s.mu.Unlock()
+		handle.Kill()
+		return
+	}
+	entry.handle = handle
+	s.mu.Unlock()
+	s.startWatch(id, handle)
+}
+
+// startWindow starts and waits for a window for id, or returns nil.
+func (s *Store) startWindow(ctx context.Context, id, message string) WindowHandle {
 	view, err := s.Show(ctx, id)
 	if err != nil || view.State != StatePending {
-		return
+		return nil
 	}
 	expires, err := time.Parse(storeTimeFmt, view.Expires)
 	if err != nil {
-		return
+		return nil
 	}
 	summary := view.Summary
 	if message != "" {
@@ -664,18 +724,9 @@ func (s *Store) reopen(ctx context.Context, id, message string) {
 		if handle != nil {
 			handle.Kill()
 		}
-		return
+		return nil
 	}
-	s.mu.Lock()
-	entry, ok := s.pending[id]
-	if !ok {
-		s.mu.Unlock()
-		handle.Kill()
-		return
-	}
-	entry.handle = handle
-	s.mu.Unlock()
-	s.startWatch(id, handle)
+	return handle
 }
 
 // startWatch runs a goroutine that waits for handle's answer and acts on it:
@@ -688,7 +739,7 @@ func (s *Store) startWatch(id string, handle WindowHandle) {
 	wctx, cancel := context.WithCancel(context.Background())
 	s.mu.Lock()
 	entry, ok := s.pending[id]
-	if !ok {
+	if !ok || entry.handle != handle {
 		s.mu.Unlock()
 		cancel()
 		return
@@ -700,27 +751,31 @@ func (s *Store) startWatch(id string, handle WindowHandle) {
 		if err != nil {
 			return // killed elsewhere (decide/expiry/lockout/stop)
 		}
-		s.onWindowAnswer(id, kind, code)
+		s.onWindowAnswer(id, handle, kind, code)
 	}()
 }
 
-func (s *Store) onWindowAnswer(id, kind, code string) {
+func (s *Store) onWindowAnswer(id string, handle WindowHandle, kind, code string) {
 	ctx := context.Background()
+	// The dialog has exited after its one answer: forget it first, so the
+	// reopen below (or a later approval_open) may start the next window.
 	s.mu.Lock()
-	if entry, ok := s.pending[id]; ok {
+	if entry, ok := s.pending[id]; ok && entry.handle == handle {
+		entry.handle = nil
 		entry.watchCancel = nil
 	}
 	s.mu.Unlock()
+	if kind != "dismiss" {
+		handle.Kill() // a decision always ends the dialog, even a slow-exiting one
+	}
 
 	switch kind {
 	case "reject":
-		// Reject (like confirm below) captures and kills entry.handle
-		// itself, so it must still see it here.
-		_, _ = s.Reject(ctx, id, "window")
+		if _, err := s.Reject(ctx, id, "window"); err == nil {
+			s.notifyOutcome(ctx, id, "Rejected")
+		}
 	case "approve":
 		if !isSixDigits(code) {
-			// The dialog already exited after this malformed answer; reopen
-			// unconditionally overwrites entry.handle with a fresh one.
 			s.reopen(ctx, id, `Enter the 6-digit code from the notification`)
 			return
 		}
@@ -741,15 +796,7 @@ func (s *Store) onWindowAnswer(id, kind, code string) {
 		default:
 			s.notifyOutcome(ctx, id, fmt.Sprintf("Not approved: %v", err))
 		}
-	default: // dismiss
-		// Leave the approval pending with no window; approval_open reopens
-		// it. The dialog already exited on its own, so this only updates
-		// bookkeeping (View.Window), not a kill.
-		s.mu.Lock()
-		if entry, ok := s.pending[id]; ok {
-			entry.handle = nil
-		}
-		s.mu.Unlock()
+	default: // dismiss: pending with no window until expiry or approval_open
 	}
 }
 

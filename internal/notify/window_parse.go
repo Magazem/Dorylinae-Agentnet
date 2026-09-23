@@ -12,6 +12,8 @@ import "strings"
 func parseAnswerLine(line string) dialogAnswer {
 	line = strings.TrimRight(line, "\r\n")
 	switch {
+	case len(line) > maxAnswerLine:
+		return dialogAnswer{kind: "dismiss"}
 	case line == "reject":
 		return dialogAnswer{kind: "reject"}
 	case strings.HasPrefix(line, "approve "):

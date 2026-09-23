@@ -15,21 +15,25 @@ import (
 
 // approvalDialogScript reads tag/kind/summary from the environment with
 // AppleScript's "system attribute", never argv (Docs/protocol/approval.md
-// §The approval window, macOS row). It writes "ready" as soon as the dialog
-// call is issued (osascript blocks inside display dialog, so there is no
-// separate "shown" event to hook; the ready check below also accepts "still
-// running after 1.5 s" per the spec) and its decoded answer on exit.
+// §The approval window, macOS row). osascript blocks inside display dialog,
+// so there is no "shown" event: the ready check below is "still running
+// after 1.5 s". It prints its decoded answer on exit. It activates osascript
+// itself, not System Events (which needs an Automation/TCC grant), and a
+// dialog error other than user-cancel (-128) is re-raised, so osascript
+// exits non-zero and an early failure is "not ready", never an answer
+// (review 30, M7).
 const approvalDialogScript = `
 on run
 	set t to system attribute "AGENTNET_W_TAG"
 	set k to system attribute "AGENTNET_W_KIND"
 	set s to system attribute "AGENTNET_W_SUMMARY"
 	set secs to (system attribute "AGENTNET_W_TIMEOUT_S") as integer
-	tell application "System Events" to activate
+	activate
 	try
 		set r to display dialog (k & ": " & s) with title ("AgentNet approval " & t) default answer "" buttons {"Reject", "Approve"} giving up after secs
-	on error
-		return "dismiss"
+	on error errMsg number errNum
+		if errNum is -128 then return "dismiss"
+		error errMsg number errNum
 	end try
 	if gave up of r is true then
 		return "dismiss"
@@ -61,12 +65,14 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 	var out bytes.Buffer
 	cmd.Stdout = &out
 
-	handle := newDialogHandle(func() { _ = cmd.Process.Kill() })
-
 	if err := cmd.Start(); err != nil {
-		handle.markNotReady()
-		return handle, nil
+		// No process: Kill must not touch cmd.Process, which is nil here
+		// (review 30, H2: Create always calls Kill on a not-ready handle).
+		h := newDialogHandle(func() {})
+		h.markNotReady()
+		return h, nil
 	}
+	handle := newDialogHandle(func() { _ = cmd.Process.Kill() })
 
 	go func() {
 		t := time.NewTimer(readyGrace)

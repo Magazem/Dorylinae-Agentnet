@@ -215,6 +215,16 @@ type live struct {
 	// rather than only on the next lazy sweep (Docs/protocol/approval.md
 	// §The approval window, "a per-approval timer, not only the lazy sweep").
 	timer *time.Timer
+	// reserved is true while Create holds the slot but has not yet stored
+	// the row and the check value (the window's ready wait runs outside
+	// s.mu). A reserved entry counts toward MaxPending and nothing else: it
+	// cannot be confirmed, rejected, reopened, resolved or swept, because
+	// its SQLite row does not exist yet (review 30, H1).
+	reserved bool
+	// opening is true while reopen starts a window outside s.mu, so a
+	// concurrent approval_open cannot start a second one (at most one window
+	// per approval, review 30, M3).
+	opening bool
 }
 
 // Store persists approval metadata and audits every decision. The code
@@ -232,6 +242,7 @@ type Store struct {
 
 	mu      sync.Mutex
 	pending map[string]*live
+	closed  bool // set by Close: no window or approval is created after it
 }
 
 // NewStore builds a Store with a fresh approval_key. now defaults to
@@ -257,12 +268,9 @@ func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, window WindowRunne
 // daemon stops"). Call once, at daemon shutdown.
 func (s *Store) Close() {
 	s.mu.Lock()
-	entries := make([]*live, 0, len(s.pending))
+	s.closed = true
+	handles := make([]WindowHandle, 0, len(s.pending))
 	for _, e := range s.pending {
-		entries = append(entries, e)
-	}
-	s.mu.Unlock()
-	for _, e := range entries {
 		if e.watchCancel != nil {
 			e.watchCancel()
 		}
@@ -270,8 +278,13 @@ func (s *Store) Close() {
 			e.timer.Stop()
 		}
 		if e.handle != nil {
-			e.handle.Kill()
+			handles = append(handles, e.handle)
+			e.handle = nil
 		}
+	}
+	s.mu.Unlock()
+	for _, h := range handles {
+		h.Kill()
 	}
 }
 

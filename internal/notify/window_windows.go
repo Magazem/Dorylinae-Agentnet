@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -95,18 +97,45 @@ func powershellPath() (string, error) {
 // inInteractiveSession reports whether this process can show a window a
 // human would see: not session 0 (Docs/protocol/approval.md §The approval
 // window, Windows row: "the check first requires ProcessIdToSessionId != 0
-// ...; otherwise the window is missing"). The additional window-station
-// check (WinSta0) from the same sentence needs user32 bindings
-// golang.org/x/sys/windows does not export; the session check alone already
-// catches session 0 and an SSH logon, the cases the spec calls out, and the
-// manual check (tests/phase2-manual.md) covers the rest on a real desktop.
+// ... and the process's window station to be WinSta0; otherwise the window
+// is missing"). x/sys/windows lacks the two user32 calls for the window
+// station, so they are bound through a lazy system DLL (review 30, M6).
 func inInteractiveSession() bool {
 	var sessionID uint32
 	pid := os.Getpid()                                                                              // always positive
 	if err := windows.ProcessIdToSessionId(uint32(pid), &sessionID); err != nil || sessionID == 0 { //nolint:gosec // os.Getpid() is always positive
 		return false
 	}
-	return true
+	name, ok := windowStationName()
+	return ok && strings.EqualFold(name, "WinSta0")
+}
+
+var (
+	user32                       = windows.NewLazySystemDLL("user32.dll")
+	procGetProcessWindowStation  = user32.NewProc("GetProcessWindowStation")
+	procGetUserObjectInformation = user32.NewProc("GetUserObjectInformationW")
+)
+
+// uoiName is UOI_NAME for GetUserObjectInformationW.
+const uoiName = 2
+
+// windowStationName returns the name of this process's window station.
+func windowStationName() (string, bool) {
+	if procGetProcessWindowStation.Find() != nil || procGetUserObjectInformation.Find() != nil {
+		return "", false
+	}
+	h, _, _ := procGetProcessWindowStation.Call()
+	if h == 0 {
+		return "", false
+	}
+	var buf [256]uint16
+	var needed uint32
+	r, _, _ := procGetUserObjectInformation.Call(h, uoiName,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)*2), uintptr(unsafe.Pointer(&needed))) //nolint:gosec // fixed local buffers for the Win32 call
+	if r == 0 {
+		return "", false
+	}
+	return windows.UTF16ToString(buf[:]), true
 }
 
 func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
@@ -150,39 +179,26 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 	// A Job object with KILL_ON_JOB_CLOSE, so the dialog dies with the
 	// daemon even if this handle is dropped without an explicit Kill
 	// (Docs/protocol/approval.md §The approval window, "Lifetime", Windows).
-	job, jerr := windows.CreateJobObject(nil, nil)
-	jobOK := jerr == nil
-	if jobOK {
-		info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
-			BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-				LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-			},
-		}
-		infoPtr := uintptr(unsafe.Pointer(&info)) //nolint:gosec // fixed struct pointer for the Win32 job-info call
-		_, _ = windows.SetInformationJobObject(job, uint32(windows.JobObjectExtendedLimitInformation),
-			infoPtr, uint32(unsafe.Sizeof(info)))
-		pid := cmd.Process.Pid                                                                                           // always positive
-		procHandle, oerr := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid)) //nolint:gosec // os/exec PIDs are always positive
-		if oerr == nil {
-			if aerr := windows.AssignProcessToJobObject(job, procHandle); aerr != nil {
-				// A failed assignment kills the process and counts as not
-				// ready (Docs/protocol/approval.md, review 29 L1).
-				_ = windows.CloseHandle(procHandle)
-				_ = windows.CloseHandle(job)
-				_ = cmd.Process.Kill()
-				h := newDialogHandle(func() {})
-				h.markNotReady()
-				return h, nil
-			}
-			_ = windows.CloseHandle(procHandle)
-		}
+	// Any failure to create, configure or assign the job kills the process
+	// and counts as not ready (Docs/protocol/approval.md, review 29 L1;
+	// review 30, M5: a dialog outside the job would outlive the daemon).
+	job, err := assignKillOnCloseJob(cmd.Process.Pid)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		h := newDialogHandle(func() {})
+		h.markNotReady()
+		return h, nil
 	}
+	// The job handle is closed exactly once, by whichever of Kill and the
+	// exit watcher comes first: a second CloseHandle could close an
+	// unrelated handle that reused the value (review 30, M4).
+	var jobOnce sync.Once
+	closeJob := func() { jobOnce.Do(func() { _ = windows.CloseHandle(job) }) }
 
 	handle := newDialogHandle(func() {
 		_ = cmd.Process.Kill()
-		if jobOK {
-			_ = windows.CloseHandle(job)
-		}
+		closeJob()
 	})
 
 	go func() {
@@ -203,9 +219,7 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 		_ = cmd.Wait()
 		handle.markNotReady() // no-op if already ready
 		handle.deliver(dialogAnswer{kind: "dismiss"})
-		if jobOK {
-			_ = windows.CloseHandle(job)
-		}
+		closeJob()
 	}()
 
 	// Ready within 10 s (Docs/protocol/approval.md, Windows row).
@@ -220,4 +234,36 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 	}()
 
 	return handle, nil
+}
+
+// assignKillOnCloseJob puts pid in a new Job object with KILL_ON_JOB_CLOSE,
+// so the dialog dies with the daemon (Docs/protocol/approval.md §The
+// approval window, "Lifetime"). Every step must succeed.
+func assignKillOnCloseJob(pid int) (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, err
+	}
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+		},
+	}
+	infoPtr := uintptr(unsafe.Pointer(&info)) //nolint:gosec // fixed struct pointer for the Win32 job-info call
+	if _, err := windows.SetInformationJobObject(job, uint32(windows.JobObjectExtendedLimitInformation),
+		infoPtr, uint32(unsafe.Sizeof(info))); err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, err
+	}
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(pid)) //nolint:gosec // os/exec PIDs are always positive
+	if err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, err
+	}
+	defer func() { _ = windows.CloseHandle(proc) }()
+	if err := windows.AssignProcessToJobObject(job, proc); err != nil {
+		_ = windows.CloseHandle(job)
+		return 0, err
+	}
+	return job, nil
 }

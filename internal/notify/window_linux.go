@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -148,6 +149,29 @@ func mapZenityExit(exitCode int, stdout string) dialogAnswer {
 	}
 }
 
+// decodeExit turns a finished dialog's exit status and first stdout line
+// into its answer, and reports whether that answer is a valid one: a human
+// pressed OK (exit 0) or zenity's Reject button (exit 1 with stdout
+// "Reject"). Any other exit, including zenity's timeout (5), a Cancel or a
+// failure to open the display (GTK exits 1 with no output), is dismiss and
+// not valid, so before the ready grace it counts as not ready
+// (Docs/protocol/approval.md §The approval window, "Ready when": "An early
+// non-zero exit is failure"; review 30, M2).
+func decodeExit(zenity bool, exitCode int, line string) (dialogAnswer, bool) {
+	if len(line) > maxAnswerLine {
+		return dialogAnswer{kind: "dismiss"}, false
+	}
+	if !zenity {
+		// kdialog has no Reject button: reject via agentnet approve --reject.
+		if exitCode == 0 {
+			return dialogAnswer{kind: "approve", code: strings.TrimRight(line, "\n")}, true
+		}
+		return dialogAnswer{kind: "dismiss"}, false
+	}
+	ans := mapZenityExit(exitCode, line)
+	return ans, ans.kind != "dismiss"
+}
+
 func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
 	timeoutSecs := int(time.Until(expires).Seconds())
 	if timeoutSecs < 1 {
@@ -174,6 +198,11 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 		return h, nil
 	}
 	cmd.Env = dialogEnv(ctx)
+	// SIGKILL the dialog when the thread that started it exits, so it dies
+	// with the daemon (Docs/protocol/approval.md §The approval window,
+	// "Lifetime"; review 30, M5). The daemon never calls
+	// runtime.LockOSThread, so Go never retires this thread early.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -201,36 +230,27 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 		if sc.Scan() {
 			line = sc.Text()
 		}
+		_, _ = io.Copy(io.Discard, stdout) // read to EOF before Wait
 		err := cmd.Wait()
-		var exitErr *exec.ExitError
 		code := 0
+		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			code = exitErr.ExitCode()
 		} else if err != nil {
 			code = -1
 		}
-		if !useZenity {
-			// kdialog has no Reject button; exit 0 with the text is approve,
-			// anything else is dismiss (rejected only via approval_reject).
-			if err == nil {
-				handle.markReady()
-				handle.deliver(dialogAnswer{kind: "approve", code: line})
-			} else {
-				handle.markNotReady()
-			}
-			return
-		}
-		if code == 0 || code == 1 {
-			// A valid answer (approve, or zenity's extra button): "already
-			// exited with a valid answer" counts as ready
+		ans, valid := decodeExit(useZenity, code, line)
+		if valid {
+			// "already exited with a valid answer" counts as ready
 			// (Docs/protocol/approval.md §The approval window, "Ready when").
 			handle.markReady()
-			handle.deliver(mapZenityExit(code, line))
-			return
 		}
-		// An early non-zero exit that is not a valid answer is a failure
-		// (timeout 5 included): not ready.
-		handle.markNotReady()
+		// Otherwise an exit before the 1.5 s grace is a failure (not ready);
+		// after it, the window was shown and closed: dismiss. Either way an
+		// answer is always delivered, so the Store's watcher never waits on
+		// an exited dialog and approval_open can reopen it (review 30, M1).
+		handle.markNotReady() // no-op once ready
+		handle.deliver(ans)
 	}()
 
 	return handle, nil
