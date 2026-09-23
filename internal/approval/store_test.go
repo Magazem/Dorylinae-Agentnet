@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,6 +44,11 @@ func (f *fakeNotifier) Remove(_ context.Context, id string) {
 	f.remove = append(f.remove, id)
 }
 
+// lastCode extracts the 6-digit code from the most recent Show call. Desktop
+// mode puts it in the title ("AgentNet code 482913 for approval a-...");
+// terminal mode puts it in the body ("... Code 482913. Type ..."). Both
+// formats use the literal marker "code " (case-insensitively) immediately
+// before the digits (Docs/protocol/approval.md §Delivering the code).
 func (f *fakeNotifier) lastCode(t *testing.T) string {
 	t.Helper()
 	f.mu.Lock()
@@ -50,9 +56,18 @@ func (f *fakeNotifier) lastCode(t *testing.T) string {
 	if len(f.shows) == 0 {
 		t.Fatal("no notification shown")
 	}
-	body := f.shows[len(f.shows)-1].body
-	// body ends with " Code XXXXXX"
-	return body[len(body)-6:]
+	last := f.shows[len(f.shows)-1]
+	for _, s := range []string{last.title, last.body} {
+		lower := strings.ToLower(s)
+		if i := strings.Index(lower, "code "); i >= 0 {
+			rest := s[i+len("code "):]
+			if len(rest) >= 6 {
+				return rest[:6]
+			}
+		}
+	}
+	t.Fatalf("no code found in title/body: %q / %q", last.title, last.body)
+	return ""
 }
 
 type fakeAudit struct {
@@ -101,7 +116,7 @@ func newTestStore(t *testing.T, now func() time.Time) (*Store, *fakeNotifier, *f
 	db := openTestDB(t)
 	n := &fakeNotifier{}
 	a := &fakeAudit{}
-	s, err := NewStore(db, a, n, now)
+	s, err := NewStore(db, a, n, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +242,7 @@ func TestRestartExpiresPending(t *testing.T) {
 	db := openTestDB(t)
 	n := &fakeNotifier{}
 	a := &fakeAudit{}
-	s1, err := NewStore(db, a, n, clock(&now))
+	s1, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +254,7 @@ func TestRestartExpiresPending(t *testing.T) {
 
 	// Simulate a restart: a fresh Store over the same db has a new approval_key
 	// and an empty in-memory map (Docs/protocol/approval.md §Object).
-	s2, err := NewStore(db, a, n, clock(&now))
+	s2, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +298,7 @@ func TestHourlyLimit(t *testing.T) {
 		}
 		// Reject immediately so the pending limit (5) never blocks this loop;
 		// only the hourly created-count limit (20) is under test.
-		if _, err := s.Reject(ctx, v.ID); err != nil {
+		if _, err := s.Reject(ctx, v.ID, "test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -298,7 +313,7 @@ func TestNotifierFailureLeavesNothing(t *testing.T) {
 	db := openTestDB(t)
 	n := &fakeNotifier{fail: true}
 	a := &fakeAudit{}
-	s, err := NewStore(db, a, n, clock(&now))
+	s, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +338,7 @@ func TestWrongCodeLockoutPersists(t *testing.T) {
 	db := openTestDB(t)
 	n := &fakeNotifier{}
 	a := &fakeAudit{}
-	s, err := NewStore(db, a, n, clock(&now))
+	s, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +359,7 @@ func TestWrongCodeLockoutPersists(t *testing.T) {
 			t.Fatalf("guess %d unexpectedly succeeded", i)
 		}
 		if i < MaxWrongPerDay-1 {
-			if _, err := s.Reject(ctx, v.ID); err != nil {
+			if _, err := s.Reject(ctx, v.ID, "test"); err != nil {
 				t.Fatalf("reject %d: %v", i, err)
 			}
 		}
@@ -362,7 +377,7 @@ func TestWrongCodeLockoutPersists(t *testing.T) {
 	}
 	// A fresh Store over the same db (simulating a restart) is still locked:
 	// the wrong-code window is persisted in settings, unlike the approval_key.
-	s2, err := NewStore(db, a, n, clock(&now))
+	s2, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +453,7 @@ func TestReject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rv, err := s.Reject(ctx, view.ID)
+	rv, err := s.Reject(ctx, view.ID, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,61 +6,138 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
-// Create validates a new approval, shows it on the notifier and, only on
-// success, persists and returns it (Docs/protocol/approval.md §Flow). The
-// plaintext code is dropped after this call returns; only its HMAC check
-// value stays in memory (Docs/protocol/approval.md §Object).
+// ResolveTag finds the single pending approval whose id starts with tag, a
+// full id or a prefix of at least "a-" + 6 hex characters
+// (Docs/protocol/approval.md §Headless machines, "<tag> is the full id or a
+// prefix of at least a- + 6 hex (an ambiguous prefix is refused with a
+// message and uses no attempt)").
+func (s *Store) ResolveTag(tag string) (id string, err error) {
+	const minLen = len("a-") + 6
+	if len(tag) < minLen {
+		return "", ErrUnknown
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var match string
+	count := 0
+	for pid := range s.pending {
+		if strings.HasPrefix(pid, tag) {
+			match = pid
+			count++
+		}
+	}
+	switch count {
+	case 0:
+		return "", ErrUnknown
+	case 1:
+		return match, nil
+	default:
+		return "", ErrAmbiguousTag
+	}
+}
+
+// Create validates a new approval and, in desktop mode, opens the approval
+// window before the code exists (Docs/protocol/approval.md §The approval
+// window, "Ready check"). Only once the window is ready (or, in terminal
+// mode, always) is the code generated and shown; only once that succeeds is
+// the approval persisted and returned. The plaintext code is dropped after
+// this call returns; only its HMAC check value stays in memory
+// (Docs/protocol/approval.md §Object).
 func (s *Store) Create(ctx context.Context, kind, subject, summary string, action Action) (View, error) {
 	if !validKinds[kind] {
 		return View{}, fmt.Errorf("approval: unknown kind %q", kind)
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	now := s.now()
 	locked, err := s.settings.Locked(ctx, now)
 	if err != nil {
+		s.mu.Unlock()
 		return View{}, err
 	}
 	if locked {
+		s.mu.Unlock()
 		return View{}, ErrLocked
 	}
 	if err := s.sweepExpiredLocked(ctx, now); err != nil {
+		s.mu.Unlock()
 		return View{}, err
 	}
 	s.pruneDecided(ctx, now)
 	if len(s.pending) >= MaxPending {
+		s.mu.Unlock()
 		s.auditLimit(ctx, "pending")
 		return View{}, ErrLimit
 	}
 	hourly, err := s.countCreatedSince(ctx, now.Add(-time.Hour))
 	if err != nil {
+		s.mu.Unlock()
 		return View{}, err
 	}
 	if hourly >= MaxPerHour {
+		s.mu.Unlock()
 		s.auditLimit(ctx, "hourly")
 		return View{}, ErrLimit
 	}
-
 	id, err := newID()
 	if err != nil {
+		s.mu.Unlock()
 		return View{}, err
 	}
+	// Reserve the slot now, so a concurrent Create counts it toward
+	// MaxPending even while the window's ready wait (which can take seconds)
+	// runs outside s.mu (Docs/protocol/approval.md §The approval window,
+	// "Locking").
+	s.pending[id] = &live{action: action}
+	s.mu.Unlock()
+
+	expires := now.Add(TTL)
+	var handle WindowHandle
+	if s.window != nil {
+		handle, err = s.window.Start(ctx, id, tagOf(id), kind, summary, expires)
+		if err != nil || !handle.Ready(ctx) {
+			s.dropReserved(id)
+			if handle != nil {
+				handle.Kill()
+			}
+			return View{}, ErrUnavailable
+		}
+		s.mu.Lock()
+		if entry, ok := s.pending[id]; ok {
+			entry.handle = handle
+		}
+		s.mu.Unlock()
+	}
+
 	code, err := newCode()
 	if err != nil {
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
 		return View{}, err
 	}
 	mac := codeMAC(s.key, id, code)
-	expires := now.Add(TTL)
 
 	if s.notifier == nil {
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
 		return View{}, ErrUnavailable
 	}
-	body := summary + " Code " + code
-	if err := s.notifier.Show(ctx, id, expires, "AgentNet approval", body); err != nil {
+	title, body := deliveryText(s.window != nil, tagOf(id), summary, code)
+	// A notifier failure after the window is ready kills the window and
+	// stores nothing (review 29, M4): there is never a window without a code
+	// or a code without a window.
+	if err := s.notifier.Show(ctx, id, expires, title, body); err != nil {
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
 		return View{}, ErrUnavailable
 	}
 
@@ -70,13 +147,52 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 INSERT INTO approvals (id, kind, subject, summary, created, expires, attempts, state)
 VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 		id, kind, subject, summary, created, expiresStr); err != nil {
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
+		s.notifier.Remove(ctx, id)
 		return View{}, fmt.Errorf("approval: insert: %w", err)
 	}
-	s.pending[id] = &live{mac: mac, action: action}
+	s.mu.Lock()
+	if entry, ok := s.pending[id]; ok {
+		entry.mac = mac
+		entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
+	}
+	s.mu.Unlock()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
 	}
-	return View{ID: id, Kind: kind, Summary: summary, Created: created, Expires: expiresStr, State: StatePending, AttemptsLeft: MaxAttempts}, nil
+	if handle != nil {
+		s.startWatch(id, handle)
+	}
+	return View{
+		ID: id, Kind: kind, Summary: summary, Created: created, Expires: expiresStr,
+		State: StatePending, AttemptsLeft: MaxAttempts, Window: s.windowState(id),
+	}, nil
+}
+
+// deliveryText builds the title/body of the code notification
+// (Docs/protocol/approval.md §Delivering the code, §Headless machines). The
+// two modes use different fixed wording.
+func deliveryText(desktop bool, tag, summary, code string) (title, body string) {
+	if desktop {
+		title = fmt.Sprintf("AgentNet code %s for approval %s", code, tag)
+		body = summary + fmt.Sprintf(" Type this code only into the AgentNet approval window %s. "+
+			"AgentNet never asks for it in a terminal, a chat or an agent.", tag)
+		return title, body
+	}
+	title = "AgentNet approval " + tag
+	body = fmt.Sprintf(`%s. Code %s. Type "%s %s" to approve or "reject %s" to reject.`, summary, code, tag, code, tag)
+	return title, body
+}
+
+// dropReserved removes id's reserved (possibly not-yet-coded) pending slot,
+// used when Create fails after reserving it.
+func (s *Store) dropReserved(id string) {
+	s.mu.Lock()
+	delete(s.pending, id)
+	s.mu.Unlock()
 }
 
 func (s *Store) auditLimit(ctx context.Context, reason string) {
@@ -94,12 +210,20 @@ func (s *Store) countCreatedSince(ctx context.Context, since time.Time) (int, er
 	return n, nil
 }
 
-// Confirm checks id and code and, on success, in one transaction re-checks
-// the waiting action's preconditions and performs it
-// (Docs/protocol/approval.md §Flow). The returned value is the action's
-// result with an "approval" field merged in by the daemon layer; the caller
-// of Confirm gets the bare action result.
+// Confirm checks id and code from the daemon's own terminal stdin
+// (Docs/protocol/approval.md §Headless machines) and, on success, in one
+// transaction re-checks the waiting action's preconditions and performs it
+// (§Flow). It is also used directly by tests. The desktop window path uses
+// the unexported confirm with via "window" instead, so its outcome can
+// trigger a reopened window.
 func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
+	return s.confirm(ctx, id, code, "terminal")
+}
+
+// confirm is Confirm's implementation, tagging the audit trail with via
+// ("window" or "terminal") and clearing any window handle so a caller that
+// wants to reopen the window can (Docs/protocol/approval.md §Audit).
+func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) {
 	s.mu.Lock()
 	entry, ok := s.pending[id]
 	if !ok {
@@ -107,52 +231,77 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 		return nil, s.unknownOrExpired(ctx, id)
 	}
 	now := s.now()
-	expired, expires, err := s.checkExpiry(ctx, id, now)
+	expired, _, err := s.checkExpiryLocked(ctx, id, now)
 	if err != nil {
 		s.mu.Unlock()
 		return nil, err
 	}
 	if expired {
+		handle := entry.handle
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
 		delete(s.pending, id)
 		s.mu.Unlock()
+		if handle != nil {
+			handle.Kill()
+		}
 		if s.notifier != nil {
 			s.notifier.Remove(ctx, id)
 		}
 		return nil, ErrExpired
 	}
-	_ = expires
 
 	want := codeMAC(s.key, id, code)
 	if !hmac.Equal(want[:], entry.mac[:]) {
-		attemptsLeft, rejected, err := s.recordBadCode(ctx, id)
+		handle := entry.handle
+		entry.handle = nil // the dialog already exited after sending this answer
+		attemptsLeft, rejected, err := s.recordBadCode(ctx, id, via)
 		if err != nil {
 			s.mu.Unlock()
 			return nil, err
 		}
+		var rejectedHandle WindowHandle
 		if rejected {
+			if entry.timer != nil {
+				entry.timer.Stop()
+			}
 			delete(s.pending, id)
+			rejectedHandle = handle
 		}
 		locked, lerr := s.settings.recordWrongCode(ctx, now)
-		var lockedIDs []string
+		var lockedEntries []lockedEntry
 		if lerr == nil && locked {
 			// Drop every pending entry before releasing s.mu, so no other
 			// Confirm can test a code between the 10th wrong code and the
 			// lock (review 26, M-2).
-			lockedIDs = s.dropAllLocked()
+			lockedEntries = s.dropAllLocked()
 		}
 		s.mu.Unlock()
+		if rejectedHandle != nil {
+			rejectedHandle.Kill()
+		}
 		if lerr != nil {
 			return nil, lerr
 		}
 		if locked {
-			s.lockAll(ctx, lockedIDs)
+			s.lockAll(ctx, lockedEntries)
 		}
 		return nil, &BadCodeError{AttemptsLeft: attemptsLeft}
 	}
 
 	// Code is correct: run the action inside one transaction with the
-	// approval's own state change (Docs/protocol/approval.md §Flow).
+	// approval's own state change, still under s.mu (Docs/protocol/approval.md
+	// §Flow; review 26, "Races": Confirm/Reject/Create are serialised by
+	// Store.mu, and the state change plus the action share one sql.Tx, so
+	// there is no TOCTOU).
 	action := entry.action
+	handle := entry.handle
+	entry.handle = nil
+	if entry.timer != nil {
+		entry.timer.Stop()
+		entry.timer = nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		s.mu.Unlock()
@@ -169,7 +318,10 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 			_ = tx.Rollback()
 			delete(s.pending, id)
 			s.mu.Unlock()
-			s.rejectRow(ctx, id, "precondition")
+			if handle != nil {
+				handle.Kill()
+			}
+			s.rejectRow(ctx, id, "precondition", via)
 			return nil, err
 		}
 	}
@@ -178,6 +330,16 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 		result, err = action.Perform(ctx, tx)
 		if err != nil {
 			_ = tx.Rollback()
+			// A Perform error leaves the approval pending (the code was
+			// genuinely correct): restart the timer so a caller can decide
+			// whether to reopen the window with a retry message.
+			if e, ok := s.pending[id]; ok {
+				// A real-wall-clock timer, deliberately not derived from the
+				// (possibly fake, in tests) now: it exists only as a
+				// production safety net alongside the lazy sweep, same as
+				// Create's initial timer.
+				e.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
+			}
 			s.mu.Unlock()
 			return nil, err
 		}
@@ -188,9 +350,12 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 	}
 	delete(s.pending, id)
 	s.mu.Unlock()
+	if handle != nil {
+		handle.Kill()
+	}
 	if s.audit != nil {
 		kind, subject := s.kindSubject(ctx, id)
-		_ = s.audit.Append(ctx, "cli", "approval.approve", map[string]string{"id": id, "kind": kind, "subject": subject})
+		_ = s.audit.Append(ctx, "cli", "approval.approve", map[string]string{"id": id, "kind": kind, "subject": subject, "via": via})
 	}
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
@@ -198,9 +363,10 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 	return result, nil
 }
 
-// checkExpiry reports whether id's stored expiry is at or before now, and
-// marks it expired (audited) when it is.
-func (s *Store) checkExpiry(ctx context.Context, id string, now time.Time) (expired bool, expires time.Time, err error) {
+// checkExpiryLocked reports whether id's stored expiry is at or before now,
+// and marks it expired (audited) when it is. Caller holds s.mu; it is
+// released and reacquired around the (rare) DB write.
+func (s *Store) checkExpiryLocked(ctx context.Context, id string, now time.Time) (expired bool, expires time.Time, err error) {
 	var expiresStr string
 	if err := s.db.QueryRowContext(ctx, `SELECT expires FROM approvals WHERE id = ?`, id).Scan(&expiresStr); err != nil {
 		return false, time.Time{}, fmt.Errorf("approval: read expiry: %w", err)
@@ -224,8 +390,9 @@ func (s *Store) checkExpiry(ctx context.Context, id string, now time.Time) (expi
 }
 
 // recordBadCode bumps id's attempt counter, rejecting it once attempts
-// reach MaxAttempts (Docs/protocol/approval.md §Object). Caller holds s.mu.
-func (s *Store) recordBadCode(ctx context.Context, id string) (attemptsLeft int, rejected bool, err error) {
+// reach MaxAttempts (Docs/protocol/approval.md §Object). Caller does not
+// hold s.mu.
+func (s *Store) recordBadCode(ctx context.Context, id, via string) (attemptsLeft int, rejected bool, err error) {
 	var attempts int
 	if err := s.db.QueryRowContext(ctx, `SELECT attempts FROM approvals WHERE id = ?`, id).Scan(&attempts); err != nil {
 		return 0, false, fmt.Errorf("approval: read attempts: %w", err)
@@ -247,45 +414,103 @@ func (s *Store) recordBadCode(ctx context.Context, id string) (attemptsLeft int,
 	}
 	kind, subject := s.kindSubject(ctx, id)
 	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.bad_code", map[string]any{"id": id, "attempts_left": attemptsLeft})
+		_ = s.audit.Append(ctx, "daemon", "approval.bad_code", map[string]any{"id": id, "attempts_left": attemptsLeft, "via": via})
 		if rejected {
-			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "attempts"})
+			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "attempts", "via": via})
 		}
 	}
 	return attemptsLeft, rejected, nil
 }
 
-// dropAllLocked removes every in-memory pending entry and returns their ids.
-// Caller holds s.mu.
-func (s *Store) dropAllLocked() []string {
-	ids := make([]string, 0, len(s.pending))
-	for id := range s.pending {
-		ids = append(ids, id)
+// lockedEntry is what dropAllLocked hands to lockAll: enough to reject the
+// row and kill any open window without holding s.mu.
+type lockedEntry struct {
+	id     string
+	handle WindowHandle
+}
+
+// dropAllLocked removes every in-memory pending entry, stops its timer and
+// returns enough of each to finish outside the lock. Caller holds s.mu.
+func (s *Store) dropAllLocked() []lockedEntry {
+	out := make([]lockedEntry, 0, len(s.pending))
+	for id, e := range s.pending {
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		if e.watchCancel != nil {
+			e.watchCancel()
+		}
+		out = append(out, lockedEntry{id: id, handle: e.handle})
 	}
-	for _, id := range ids {
-		delete(s.pending, id)
-	}
-	return ids
+	s.pending = map[string]*live{}
+	return out
 }
 
 // sweepExpiredLocked marks every in-memory pending approval whose expiry has
-// passed as expired (audited, notification withdrawn) and forgets it, so
-// expired approvals neither count toward MaxPending nor show in List
-// (review 26, M-1). Caller holds s.mu.
+// passed as expired (audited, notification withdrawn, window killed) and
+// forgets it, so expired approvals neither count toward MaxPending nor show
+// in List (review 26, M-1). Caller holds s.mu.
 func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) error {
-	for id := range s.pending {
-		expired, _, err := s.checkExpiry(ctx, id, now)
+	for id, e := range s.pending {
+		expired, _, err := s.checkExpiryLocked(ctx, id, now)
 		if err != nil {
 			return err
 		}
 		if expired {
+			if e.timer != nil {
+				e.timer.Stop()
+			}
+			if e.watchCancel != nil {
+				e.watchCancel()
+			}
+			handle := e.handle
 			delete(s.pending, id)
+			if handle != nil {
+				handle.Kill()
+			}
 			if s.notifier != nil {
 				s.notifier.Remove(ctx, id)
 			}
 		}
 	}
 	return nil
+}
+
+// expireNow is the per-approval timer's callback (Docs/protocol/approval.md
+// §The approval window, "a per-approval timer, not only the lazy sweep").
+func (s *Store) expireNow(id string) {
+	ctx := context.Background()
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	if entry.watchCancel != nil {
+		entry.watchCancel()
+	}
+	handle := entry.handle
+	delete(s.pending, id)
+	s.mu.Unlock()
+	if handle != nil {
+		handle.Kill()
+	}
+	now := s.now()
+	decided := now.UTC().Format(storeTimeFmt)
+	kind, subject := s.kindSubject(ctx, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return // already decided by a concurrent Confirm/Reject
+	}
+	if s.audit != nil {
+		_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
+	}
+	if s.notifier != nil {
+		s.notifier.Remove(ctx, id)
+	}
 }
 
 // decidedRetention is how long decided rows are kept (Docs/protocol/approval.md
@@ -298,12 +523,15 @@ func (s *Store) pruneDecided(ctx context.Context, now time.Time) {
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM approvals WHERE state <> 'pending' AND decided IS NOT NULL AND decided < ?`, cutoff)
 }
 
-// lockAll rejects the approvals ids (already dropped from memory under s.mu)
-// and shows a desktop warning (Docs/protocol/approval.md §Object, the 10th
-// wrong code in 24 h).
-func (s *Store) lockAll(ctx context.Context, ids []string) {
-	for _, id := range ids {
-		s.rejectRow(ctx, id, "locked")
+// lockAll rejects the approvals (already dropped from memory under s.mu),
+// kills any window each had open, and shows a desktop warning
+// (Docs/protocol/approval.md §Object, the 10th wrong code in 24 h).
+func (s *Store) lockAll(ctx context.Context, entries []lockedEntry) {
+	for _, e := range entries {
+		if e.handle != nil {
+			e.handle.Kill()
+		}
+		s.rejectRow(ctx, e.id, "locked", "")
 	}
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "daemon", "approval.locked", map[string]int{"wrong_codes": MaxWrongPerDay})
@@ -317,12 +545,16 @@ func (s *Store) lockAll(ctx context.Context, ids []string) {
 // rejectRow marks id rejected with reason and audits it. Used for reasons
 // other than a wrong-code count (attempts is audited alongside its state
 // change directly in recordBadCode).
-func (s *Store) rejectRow(ctx context.Context, id, reason string) {
+func (s *Store) rejectRow(ctx context.Context, id, reason, via string) {
 	decided := s.now().UTC().Format(storeTimeFmt)
 	kind, subject := s.kindSubject(ctx, id)
 	_, _ = s.db.ExecContext(ctx, `UPDATE approvals SET state = 'rejected', decided = ? WHERE id = ?`, decided, id)
 	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": reason})
+		detail := map[string]string{"id": id, "kind": kind, "subject": subject, "reason": reason}
+		if via != "" {
+			detail["via"] = via
+		}
+		_ = s.audit.Append(ctx, "daemon", "approval.reject", detail)
 	}
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
@@ -351,18 +583,218 @@ func (s *Store) unknownOrExpired(ctx context.Context, id string) error {
 	return ErrUnknown
 }
 
-// Reject rejects a pending approval with reason "user"
-// (Docs/protocol/approval.md §Flow, `agentnet approve --reject`).
-func (s *Store) Reject(ctx context.Context, id string) (View, error) {
+// Reject rejects a pending approval (Docs/protocol/approval.md §Flow), tagged
+// with via ("ipc" for approval_reject/--reject, "window" for the window's
+// own Reject button, "terminal" for `reject <tag>` on the daemon's stdin).
+// Any caller may reject: rejecting only removes access.
+func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 	s.mu.Lock()
-	if _, ok := s.pending[id]; !ok {
+	entry, ok := s.pending[id]
+	if !ok {
 		s.mu.Unlock()
 		return View{}, s.unknownOrExpired(ctx, id)
 	}
+	if entry.timer != nil {
+		entry.timer.Stop()
+	}
+	if entry.watchCancel != nil {
+		entry.watchCancel()
+	}
+	handle := entry.handle
 	delete(s.pending, id)
 	s.mu.Unlock()
-	s.rejectRow(ctx, id, "user")
+	if handle != nil {
+		handle.Kill()
+	}
+	s.rejectRow(ctx, id, "user", via)
 	return s.Show(ctx, id)
+}
+
+// OpenWindow reopens the approval window for a pending id, a no-op if one is
+// already open, both cases audited (Docs/protocol/approval.md §IPC and CLI,
+// "approval_open"). In terminal mode it returns ErrTerminalMode.
+func (s *Store) OpenWindow(ctx context.Context, id string) (View, error) {
+	if s.window == nil {
+		return View{}, ErrTerminalMode
+	}
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok {
+		s.mu.Unlock()
+		return View{}, s.unknownOrExpired(ctx, id)
+	}
+	alreadyOpen := entry.handle != nil
+	s.mu.Unlock()
+	if s.audit != nil {
+		_ = s.audit.Append(ctx, "cli", "approval.open", map[string]string{"id": id})
+	}
+	if alreadyOpen {
+		return s.Show(ctx, id)
+	}
+	s.reopen(ctx, id, "")
+	return s.Show(ctx, id)
+}
+
+// reopen opens a fresh window for a still-pending id, showing message (if
+// any) in addition to the stored summary (Docs/protocol/approval.md §The
+// approval window, "Outcome": "reopens the window with ..."). Best-effort:
+// a failure here leaves the approval pending with no window, retryable
+// through approval_open.
+func (s *Store) reopen(ctx context.Context, id, message string) {
+	if s.window == nil {
+		return
+	}
+	view, err := s.Show(ctx, id)
+	if err != nil || view.State != StatePending {
+		return
+	}
+	expires, err := time.Parse(storeTimeFmt, view.Expires)
+	if err != nil {
+		return
+	}
+	summary := view.Summary
+	if message != "" {
+		summary = view.Summary + " " + message
+	}
+	handle, err := s.window.Start(ctx, id, tagOf(id), view.Kind, summary, expires)
+	if err != nil || !handle.Ready(ctx) {
+		if handle != nil {
+			handle.Kill()
+		}
+		return
+	}
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok {
+		s.mu.Unlock()
+		handle.Kill()
+		return
+	}
+	entry.handle = handle
+	s.mu.Unlock()
+	s.startWatch(id, handle)
+}
+
+// startWatch runs a goroutine that waits for handle's answer and acts on it:
+// approve with a 6-digit code confirms (reopening on a wrong code or a
+// Perform error), a malformed approve reopens with a prompt, reject rejects,
+// and dismiss leaves the approval pending with no window
+// (Docs/protocol/approval.md §The approval window, "Answer format",
+// "Outcome").
+func (s *Store) startWatch(id string, handle WindowHandle) {
+	wctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	entry, ok := s.pending[id]
+	if !ok {
+		s.mu.Unlock()
+		cancel()
+		return
+	}
+	entry.watchCancel = cancel
+	s.mu.Unlock()
+	go func() {
+		kind, code, err := handle.Answer(wctx)
+		if err != nil {
+			return // killed elsewhere (decide/expiry/lockout/stop)
+		}
+		s.onWindowAnswer(id, kind, code)
+	}()
+}
+
+func (s *Store) onWindowAnswer(id, kind, code string) {
+	ctx := context.Background()
+	s.mu.Lock()
+	if entry, ok := s.pending[id]; ok {
+		entry.watchCancel = nil
+	}
+	s.mu.Unlock()
+
+	switch kind {
+	case "reject":
+		// Reject (like confirm below) captures and kills entry.handle
+		// itself, so it must still see it here.
+		_, _ = s.Reject(ctx, id, "window")
+	case "approve":
+		if !isSixDigits(code) {
+			// The dialog already exited after this malformed answer; reopen
+			// unconditionally overwrites entry.handle with a fresh one.
+			s.reopen(ctx, id, `Enter the 6-digit code from the notification`)
+			return
+		}
+		_, err := s.confirm(ctx, id, code, "window")
+		var bce *BadCodeError
+		switch {
+		case err == nil:
+			s.notifyOutcome(ctx, id, "Approved")
+		case errors.As(err, &bce):
+			if s.stillPending(id) {
+				s.reopen(ctx, id, fmt.Sprintf("Wrong code, %d attempts left", bce.AttemptsLeft))
+			} else {
+				s.notifyOutcome(ctx, id, "Rejected: too many wrong codes")
+			}
+		case s.stillPending(id):
+			// A Perform error leaves the approval pending: retry or reject.
+			s.reopen(ctx, id, "Could not complete, try again or reject")
+		default:
+			s.notifyOutcome(ctx, id, fmt.Sprintf("Not approved: %v", err))
+		}
+	default: // dismiss
+		// Leave the approval pending with no window; approval_open reopens
+		// it. The dialog already exited on its own, so this only updates
+		// bookkeeping (View.Window), not a kill.
+		s.mu.Lock()
+		if entry, ok := s.pending[id]; ok {
+			entry.handle = nil
+		}
+		s.mu.Unlock()
+	}
+}
+
+func (s *Store) stillPending(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.pending[id]
+	return ok
+}
+
+// isSixDigits reports whether v is exactly 6 ASCII digits
+// (Docs/protocol/approval.md §The approval window, "Answer format": "An
+// approve whose value is not exactly 6 ASCII digits is not counted as a
+// wrong code").
+func isSixDigits(v string) bool {
+	if len(v) != 6 {
+		return false
+	}
+	for _, c := range v {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// notifyOutcome shows a short desktop notification without a code
+// (Docs/protocol/approval.md §The approval window, "Outcome"). Best-effort.
+func (s *Store) notifyOutcome(ctx context.Context, id, text string) {
+	if s.notifier == nil {
+		return
+	}
+	_ = s.notifier.Show(ctx, "outcome-"+id, s.now().Add(time.Minute), "AgentNet", text)
+}
+
+// windowState is the View.Window field for id: "terminal" (no window at
+// all), or "open"/"closed" in desktop mode (Docs/protocol/approval.md §IPC
+// and CLI).
+func (s *Store) windowState(id string) string {
+	if s.window == nil {
+		return "terminal"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.pending[id]; ok && e.handle != nil {
+		return "open"
+	}
+	return "closed"
 }
 
 // Show returns the current view of id, whatever its state.
@@ -381,6 +813,7 @@ func (s *Store) Show(ctx context.Context, id string) (View, error) {
 	if v.AttemptsLeft < 0 {
 		v.AttemptsLeft = 0
 	}
+	v.Window = s.windowState(id)
 	return v, nil
 }
 
@@ -409,6 +842,7 @@ func (s *Store) List(ctx context.Context) ([]View, error) {
 		if v.AttemptsLeft < 0 {
 			v.AttemptsLeft = 0
 		}
+		v.Window = s.windowState(v.ID)
 		out = append(out, v)
 	}
 	return out, rows.Err()

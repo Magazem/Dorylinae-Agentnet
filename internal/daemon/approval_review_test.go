@@ -1,8 +1,9 @@
 package daemon_test
 
-// Review 26 (Docs/review/26-2.2a-review.md), ticket 2.2a acceptance: the
-// code appears in the fake notifier's call and in no IPC result and no
-// daemon log line.
+// Review 26 (Docs/review/26-2.2a-review.md), ticket 2.2a/2.2d acceptance:
+// the code appears in the fake notifier's call and in no IPC result and no
+// daemon log line, with the answer arriving through a fake window (never a
+// real dialog process).
 
 import (
 	"bytes"
@@ -52,10 +53,12 @@ func TestApprovalCodeNeverInIPCResultOrLog(t *testing.T) {
 	}
 	logs := &lockedBuffer{}
 	notifier := &fakeApprovalNotifier{}
+	win := newFakeWindowRunner()
 	var apprStore *approval.Store
 	opts := daemon.Options{
 		Logger:          slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		ApprovalNotify:  notifier,
+		ApprovalWindow:  win,
 		OnApprovalReady: func(s *approval.Store) { apprStore = s },
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -88,7 +91,7 @@ func TestApprovalCodeNeverInIPCResultOrLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := notifier.lastBody[len(notifier.lastBody)-6:]
+	code := notifier.lastCode(t)
 	wrong := "000000"
 	if code == wrong {
 		wrong = "111111"
@@ -107,17 +110,25 @@ func TestApprovalCodeNeverInIPCResultOrLog(t *testing.T) {
 		}
 	}
 	call("approval_list", nil)
-	call("approval_confirm", map[string]string{"id": view.ID, "code": wrong})
-	call("approval_confirm", map[string]string{"id": view.ID, "code": code})
+
+	// The wrong code arrives through the fake window's answer, exactly as a
+	// real dialog's stdout would deliver it, and reopens the window.
+	win.answer(view.ID, "approve", wrong)
+	pollUntil(t, 2*time.Second, func() bool { return win.startCount() >= 2 })
+	call("approval_list", nil)
+
+	win.answer(view.ID, "approve", code)
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view.ID)
+		return err == nil && v.State == approval.StateApproved
+	})
+	call("approval_list", nil)
 	stop()
 
 	for i, r := range results {
 		if strings.Contains(r, code) {
 			t.Fatalf("IPC result %d contains the code: %s", i, r)
 		}
-	}
-	if !strings.Contains(results[len(results)-1], `"approved"`) {
-		t.Fatalf("confirm did not succeed: %v", results)
 	}
 	if strings.Contains(logs.String(), code) {
 		t.Fatalf("daemon log contains the code:\n%s", logs.String())

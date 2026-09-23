@@ -76,6 +76,19 @@ func (s *Server) Handle(method string, h HandlerFunc) {
 	s.handlers[method] = h
 }
 
+// Methods returns every registered method name, in no particular order
+// (Docs/review/23-phase2-tickets.md 2.2d acceptance, "a test lists every
+// registered IPC method").
+func (s *Server) Methods() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.handlers))
+	for m := range s.handlers {
+		out = append(out, m)
+	}
+	return out
+}
+
 // Serve accepts connections until ctx is cancelled or the listener fails.
 // It closes ln and waits for in-flight connections before returning.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {

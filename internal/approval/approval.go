@@ -61,6 +61,15 @@ var (
 	ErrLimit       = errors.New("approval: limit reached")
 	ErrLocked      = errors.New("approval: locked")
 	ErrUnavailable = errors.New("approval: notifier unavailable")
+	// ErrTerminalMode is returned by OpenWindow in terminal mode: there is no
+	// window, the code is read from the daemon's own stdin
+	// (Docs/protocol/approval.md §IPC and CLI, "approval_open ... Terminal
+	// mode: bad_request").
+	ErrTerminalMode = errors.New("approval: no window in terminal mode")
+	// ErrAmbiguousTag is returned by ResolveTag when more than one pending
+	// approval matches the given prefix (Docs/protocol/approval.md §Headless
+	// machines, "an ambiguous prefix is refused").
+	ErrAmbiguousTag = errors.New("approval: ambiguous tag prefix")
 )
 
 // BadCodeError is a wrong code; AttemptsLeft is how many attempts remain
@@ -111,6 +120,50 @@ type AuditSink interface {
 	Append(ctx context.Context, actor, action string, detail any) error
 }
 
+// WindowHandle is a running approval dialog process for one approval
+// (Docs/protocol/approval.md §The approval window). Every method signature
+// uses only builtin types so a concrete type in internal/notify satisfies
+// this interface without notify needing to import approval for anything but
+// the interface's own name at the Start return site.
+type WindowHandle interface {
+	// Ready blocks until the dialog signals it is showing, or ctx is done
+	// (the per-platform "ready when" timeout), and reports which happened
+	// (Docs/protocol/approval.md §The approval window, "Ready check").
+	Ready(ctx context.Context) bool
+	// Answer blocks until the dialog exits and reports its one-line reply,
+	// decoded to kind "approve" (code holds whatever text followed, even if
+	// not 6 digits), "reject" or "dismiss" (Docs/protocol/approval.md, "Answer
+	// format"). A ctx cancellation (Kill was called, or the caller gave up)
+	// returns a non-nil err.
+	Answer(ctx context.Context) (kind, code string, err error)
+	// Kill terminates the dialog process at once. Idempotent and safe to call
+	// after the dialog has already exited on its own.
+	Kill()
+}
+
+// WindowRunner starts a per-OS approval dialog (Docs/protocol/approval.md
+// §The approval window). notify.ApprovalWindow{} is the production
+// implementation; a nil WindowRunner on the Store means terminal mode (no
+// window at all, Docs/protocol/approval.md §Headless machines).
+type WindowRunner interface {
+	// Start opens a dialog for approval id, showing tag, kind and summary,
+	// expiring at expires. The code is never passed here: it is not generated
+	// until the window is ready (Docs/protocol/approval.md, "The code is
+	// never sent to the dialog").
+	Start(ctx context.Context, id, tag, kind, summary string, expires time.Time) (WindowHandle, error)
+}
+
+// tagOf is the short tag shown in the window title and read back on the
+// daemon's stdin: "a-" plus the first 6 hex characters of the id
+// (Docs/protocol/approval.md §Delivering the code, §Headless machines).
+func tagOf(id string) string {
+	const tagLen = len("a-") + 6
+	if len(id) < tagLen {
+		return id
+	}
+	return id[:tagLen]
+}
+
 // View is the "approval view" of Docs/protocol/ipc.md-style responses
 // (Docs/protocol/approval.md §IPC and CLI). It never carries the code.
 type View struct {
@@ -121,15 +174,31 @@ type View struct {
 	Expires      string `json:"expires"`
 	State        string `json:"state"`
 	AttemptsLeft int    `json:"attempts_left"`
+	// Window is "open" or "closed" in desktop mode, or "terminal"
+	// (Docs/protocol/approval.md §IPC and CLI).
+	Window string `json:"window"`
 }
 
-// live is the in-memory-only half of a pending approval: the check value and
-// the registered action. It never touches SQLite (Docs/protocol/approval.md
-// §Object, "the daemon keeps only a check value in memory"). Losing this map
-// (a restart) is why every "pending" row is expired at start.
+// live is the in-memory-only half of a pending approval: the check value,
+// the registered action and, in desktop mode, the currently open window (if
+// any). It never touches SQLite (Docs/protocol/approval.md §Object, "the
+// daemon keeps only a check value in memory"). Losing this map (a restart)
+// is why every "pending" row is expired at start.
 type live struct {
 	mac    [sha256.Size]byte
 	action Action
+
+	// handle is the dialog currently open for this approval, or nil if none
+	// is (the dialog exited after its one answer, or was dismissed).
+	handle WindowHandle
+	// watchCancel stops the goroutine waiting on handle.Answer, used when the
+	// approval is decided some other way (lockout, expiry, --reject) while a
+	// window is still open.
+	watchCancel context.CancelFunc
+	// timer fires expireNow at TTL, killing any open window proactively
+	// rather than only on the next lazy sweep (Docs/protocol/approval.md
+	// §The approval window, "a per-approval timer, not only the lazy sweep").
+	timer *time.Timer
 }
 
 // Store persists approval metadata and audits every decision. The code
@@ -139,6 +208,7 @@ type Store struct {
 	db       *sql.DB
 	audit    AuditSink
 	notifier Notifier
+	window   WindowRunner // nil means terminal mode: no window at all
 	settings *Settings
 	now      func() time.Time
 
@@ -149,8 +219,10 @@ type Store struct {
 }
 
 // NewStore builds a Store with a fresh approval_key. now defaults to
-// time.Now. notifier may be nil only in tests that never call Create.
-func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, now func() time.Time) (*Store, error) {
+// time.Now. notifier may be nil only in tests that never call Create. window
+// is nil for terminal mode (Docs/protocol/approval.md §Headless machines);
+// otherwise it opens a dialog per approval (§The approval window).
+func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, window WindowRunner, now func() time.Time) (*Store, error) {
 	var key [32]byte
 	if _, err := rand.Read(key[:]); err != nil {
 		return nil, fmt.Errorf("approval: generate approval_key: %w", err)
@@ -159,9 +231,32 @@ func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, now func() time.Ti
 		now = time.Now
 	}
 	return &Store{
-		db: db, audit: audit, notifier: notifier, settings: NewSettings(db), now: now,
+		db: db, audit: audit, notifier: notifier, window: window, settings: NewSettings(db), now: now,
 		key: key, pending: map[string]*live{},
 	}, nil
+}
+
+// Close kills every currently open window and stops every expiry timer
+// (Docs/protocol/approval.md §The approval window, "kills it ... when the
+// daemon stops"). Call once, at daemon shutdown.
+func (s *Store) Close() {
+	s.mu.Lock()
+	entries := make([]*live, 0, len(s.pending))
+	for _, e := range s.pending {
+		entries = append(entries, e)
+	}
+	s.mu.Unlock()
+	for _, e := range entries {
+		if e.watchCancel != nil {
+			e.watchCancel()
+		}
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		if e.handle != nil {
+			e.handle.Kill()
+		}
+	}
 }
 
 // ExpireStale marks every approval left "pending" from a previous run as

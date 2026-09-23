@@ -36,14 +36,16 @@ const (
 var ErrApprovalRequiresTerminal = errors.New("DORYLINAE_APPROVAL=terminal requires stderr to be a terminal (or DORYLINAE_DEBUG=1)")
 
 // resolveApprovalMode decides the approval channel from the environment and
-// whether stderr is a terminal (Docs/protocol/approval.md §Headless
-// machines). Pulled out of RunWithOptions so it is unit-testable without a
+// whether stderr and stdin are terminals (Docs/protocol/approval.md
+// §Headless machines: "stderr must be a terminal ... the daemon's own stdin
+// ... under the same rule and the same DORYLINAE_DEBUG=1 exception as
+// stderr"). Pulled out of RunWithOptions so it is unit-testable without a
 // real terminal.
-func resolveApprovalMode(envVal string, debug, stderrIsTerminal bool) (string, error) {
+func resolveApprovalMode(envVal string, debug, stderrIsTerminal, stdinIsTerminal bool) (string, error) {
 	if envVal != "terminal" {
 		return ApprovalModeDesktop, nil
 	}
-	if stderrIsTerminal {
+	if stderrIsTerminal && stdinIsTerminal {
 		return ApprovalModeTerminal, nil
 	}
 	if debug {
@@ -52,10 +54,10 @@ func resolveApprovalMode(envVal string, debug, stderrIsTerminal bool) (string, e
 	return "", ErrApprovalRequiresTerminal
 }
 
-// isTerminal reports whether w is a terminal, for the stderr passed to
-// resolveApprovalMode.
-func isTerminal(w io.Writer) bool {
-	f, ok := w.(interface{ Fd() uintptr })
+// isTerminal reports whether x (an io.Writer such as stderr, or an
+// io.Reader such as stdin) is a terminal, for resolveApprovalMode.
+func isTerminal(x any) bool {
+	f, ok := x.(interface{ Fd() uintptr })
 	if !ok {
 		return false
 	}
@@ -98,6 +100,8 @@ func approvalError(err error) error {
 		return &ipc.Error{Code: "approval_locked", Message: "approvals are locked after too many wrong codes"}
 	case errors.Is(err, approval.ErrUnavailable):
 		return &ipc.Error{Code: "approval_unavailable", Message: "the desktop notifier is unavailable"}
+	case errors.Is(err, approval.ErrTerminalMode):
+		return &ipc.Error{Code: ipc.CodeBadRequest, Message: "answer on the daemon's terminal"}
 	case errors.As(err, &bce):
 		return &ipc.Error{Code: "bad_code", Message: bce.Error()}
 	default:
@@ -105,29 +109,11 @@ func approvalError(err error) error {
 	}
 }
 
-// mergeApproval JSON-merges an "approval" field carrying view into result
-// (Docs/protocol/approval.md §IPC and CLI, "The waiting action's result,
-// plus approval: <view>"). result may be nil (no Action.Perform was
-// registered) or any JSON-object-shaped value.
-func mergeApproval(result any, view approval.View) (any, error) {
-	m := map[string]json.RawMessage{}
-	if result != nil {
-		raw, err := json.Marshal(result)
-		if err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal(raw, &m) // non-object results (nil, scalars) leave m empty
-	}
-	viewRaw, err := json.Marshal(view)
-	if err != nil {
-		return nil, err
-	}
-	m["approval"] = viewRaw
-	return m, nil
-}
-
-// registerApproval wires "approval_list", "approval_confirm" and
+// registerApproval wires "approval_list", "approval_open" and
 // "approval_reject" (Docs/protocol/approval.md §IPC and CLI).
+// "approval_confirm" is removed by 2.2d, together with the `approve <a-id>
+// <code>` CLI form: no IPC method and no CLI form takes a code (review 26,
+// L7; D19).
 func registerApproval(srv *ipc.Server, as *approval.Store) {
 	srv.Handle("approval_list", func(ctx context.Context, _ json.RawMessage) (any, error) {
 		views, err := as.List(ctx)
@@ -140,31 +126,16 @@ func registerApproval(srv *ipc.Server, as *approval.Store) {
 		return ApprovalListResult{Approvals: views}, nil
 	})
 
-	srv.Handle("approval_confirm", func(ctx context.Context, params json.RawMessage) (any, error) {
-		var p struct{ ID, Code string }
-		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" || p.Code == "" {
-			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id and code are required"}
+	srv.Handle("approval_open", func(ctx context.Context, params json.RawMessage) (any, error) {
+		var p struct{ ID string }
+		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		result, err := as.Confirm(ctx, p.ID, p.Code)
+		view, err := as.OpenWindow(ctx, p.ID)
 		if err != nil {
 			return nil, approvalError(err)
 		}
-		// Some actions (ws_accept_result --human, ws_release, 2.1b) need to
-		// audit after Confirm's transaction commits, never inside it (review
-		// 27, C1): their Perform wraps its real result in afterCommitResult.
-		// Confirm has already committed by the time it returns, so running the
-		// callback here is safe.
-		if ac, ok := result.(afterCommitResult); ok {
-			if ac.after != nil {
-				ac.after(ctx)
-			}
-			result = ac.value
-		}
-		view, verr := as.Show(ctx, p.ID)
-		if verr != nil {
-			return nil, verr
-		}
-		return mergeApproval(result, view)
+		return map[string]approval.View{"approval": view}, nil
 	})
 
 	srv.Handle("approval_reject", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -172,7 +143,7 @@ func registerApproval(srv *ipc.Server, as *approval.Store) {
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		view, err := as.Reject(ctx, p.ID)
+		view, err := as.Reject(ctx, p.ID, "ipc")
 		if err != nil {
 			return nil, approvalError(err)
 		}

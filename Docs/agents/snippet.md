@@ -34,9 +34,11 @@ file. Ask the user before accepting work that needs access, secrets or changes y
 make on your own.
 
 Some actions (a grant, releasing a quarantined result, linking a device) need a human
-approval: `agentnet` returns `state: "pending"` and a one-time code appears only on the
-desktop notification, never in any command output you can read. You cannot approve your own
-requests. Do not ask the user to read you the code, do not try to read the notification
-history, the daemon's database or its config directory, and do not start, stop or reconfigure
-`agentnetd`; treat all of that as off limits, the same as secrets you are not given directly.
+approval: `agentnet` returns `state: "pending"`. Approvals are done by the human in the
+AgentNet window the daemon itself opens (or, on a headless machine, on the daemon's own
+terminal); no IPC method and no CLI form ever takes a code, so you cannot approve your own
+requests even if you wanted to. Never ask the user for a code, and never claim to enter one
+yourself — you have no way to. Do not try to read the notification history, the daemon's
+database or its config directory, and do not start, stop or reconfigure `agentnetd`; treat all
+of that as off limits, the same as secrets you are not given directly.
 ````

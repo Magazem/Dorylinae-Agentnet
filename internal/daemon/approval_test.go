@@ -1,10 +1,8 @@
 package daemon_test
 
-// Ticket 2.2a acceptance (Docs/review/23-phase2-tickets.md §2.2a,
+// Ticket 2.2d acceptance (Docs/review/23-phase2-tickets.md §2.2d,
 // Docs/protocol/approval.md): the approval IPC methods through a real
-// daemon. 2.2a has no caller yet that creates an approval over IPC (that
-// arrives with 2.2c/2.4/2.D1), so these tests seed one directly through the
-// approval.Store via the OnApprovalReady test hook.
+// daemon, driven by a fake window runner (never a real dialog process).
 
 import (
 	"context"
@@ -12,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,18 +22,31 @@ import (
 )
 
 // fakeApprovalNotifier is a test double that never touches the OS notifier
-// and records the code so the test can confirm it.
+// and records the title/body so the test can extract the code.
 type fakeApprovalNotifier struct {
-	lastBody string
+	lastTitle, lastBody string
 }
 
-func (f *fakeApprovalNotifier) Show(_ context.Context, _ string, _ time.Time, _, body string) error {
-	f.lastBody = body
+func (f *fakeApprovalNotifier) Show(_ context.Context, _ string, _ time.Time, title, body string) error {
+	f.lastTitle, f.lastBody = title, body
 	return nil
 }
 func (f *fakeApprovalNotifier) Remove(context.Context, string) {}
 
-func startApprovalDaemon(t *testing.T) (paths.Paths, *approval.Store, *fakeApprovalNotifier, *time.Time) {
+// lastCode extracts the 6-digit code from the desktop title
+// ("AgentNet code 482913 for approval a-...", Docs/protocol/approval.md
+// §Delivering the code).
+func (f *fakeApprovalNotifier) lastCode(t *testing.T) string {
+	t.Helper()
+	const marker = "code "
+	i := strings.Index(strings.ToLower(f.lastTitle), marker)
+	if i < 0 || len(f.lastTitle) < i+len(marker)+6 {
+		t.Fatalf("no code in title: %q", f.lastTitle)
+	}
+	return f.lastTitle[i+len(marker) : i+len(marker)+6]
+}
+
+func startApprovalDaemon(t *testing.T) (paths.Paths, *approval.Store, *fakeApprovalNotifier, *fakeWindowRunner) {
 	t.Helper()
 	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
 	dir, err := os.MkdirTemp("", "dn-approval")
@@ -47,10 +59,12 @@ func startApprovalDaemon(t *testing.T) (paths.Paths, *approval.Store, *fakeAppro
 		t.Fatal(err)
 	}
 	notifier := &fakeApprovalNotifier{}
+	win := newFakeWindowRunner()
 	now := time.Now()
 	var apprStore *approval.Store
 	opts := daemon.Options{
 		ApprovalNotify:  notifier,
+		ApprovalWindow:  win,
 		ApprovalNow:     func() time.Time { return now },
 		OnApprovalReady: func(s *approval.Store) { apprStore = s },
 	}
@@ -73,11 +87,27 @@ func startApprovalDaemon(t *testing.T) (paths.Paths, *approval.Store, *fakeAppro
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon not ready")
 	}
-	return p, apprStore, notifier, &now
+	return p, apprStore, notifier, win
 }
 
-func TestApprovalIPCConfirmRunsAction(t *testing.T) {
-	p, apprStore, notifier, _ := startApprovalDaemon(t)
+// pollUntil polls fn with a deadline, per repo convention (never read async
+// state once).
+func pollUntil(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if fn() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("condition not met within %s", timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestApprovalIPCWindowApproveRunsAction(t *testing.T) {
+	p, apprStore, notifier, win := startApprovalDaemon(t)
 	ctx := context.Background()
 
 	var performed bool
@@ -94,7 +124,10 @@ func TestApprovalIPCConfirmRunsAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := notifier.lastBody[len(notifier.lastBody)-6:]
+	if view.Window != "open" {
+		t.Fatalf("view.Window = %q, want open", view.Window)
+	}
+	code := notifier.lastCode(t)
 
 	var list daemon.ApprovalListResult
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -106,60 +139,152 @@ func TestApprovalIPCConfirmRunsAction(t *testing.T) {
 		t.Fatalf("approval_list = %+v", list)
 	}
 
-	var confirmed map[string]json.RawMessage
-	cctx2, cancel2 := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel2()
-	if err := ipc.Call(cctx2, p.Endpoint, "approval_confirm", map[string]string{"id": view.ID, "code": code}, &confirmed); err != nil {
-		t.Fatal(err)
-	}
-	if !performed {
-		t.Fatal("action.Perform was not called")
-	}
-	var av approval.View
-	if err := json.Unmarshal(confirmed["approval"], &av); err != nil {
-		t.Fatal(err)
-	}
-	if av.State != approval.StateApproved {
-		t.Fatalf("approval view = %+v", av)
-	}
-	var status string
-	_ = json.Unmarshal(confirmed["status"], &status)
-	if status != "ok" {
-		t.Fatalf("confirmed = %+v, missing merged action result", confirmed)
-	}
+	// The answer arrives on the fake window's stdout pipe, exactly as a real
+	// dialog would deliver it; no IPC method or CLI form ever takes a code.
+	win.answer(view.ID, "approve", code)
+
+	pollUntil(t, 2*time.Second, func() bool { return performed })
+
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view.ID)
+		return err == nil && v.State == approval.StateApproved
+	})
 }
 
-func TestApprovalIPCBadCodeAndReject(t *testing.T) {
-	p, apprStore, _, _ := startApprovalDaemon(t)
+func TestApprovalIPCWindowRejectAndOpen(t *testing.T) {
+	p, apprStore, _, win := startApprovalDaemon(t)
 	ctx := context.Background()
 	view, err := apprStore.Create(ctx, approval.KindRelease, "s-1", "release?", approval.Action{})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	err = ipc.Call(cctx, p.Endpoint, "approval_confirm", map[string]string{"id": view.ID, "code": "000000"}, nil)
-	var ie *ipc.Error
-	if !errors.As(err, &ie) || ie.Code != "bad_code" {
-		t.Fatalf("err = %v, want bad_code", err)
-	}
-
-	var rejected map[string]approval.View
-	cctx2, cancel2 := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel2()
-	if err := ipc.Call(cctx2, p.Endpoint, "approval_reject", map[string]string{"id": view.ID}, &rejected); err != nil {
+	// A wrong code reopens the window rather than rejecting outright.
+	win.answer(view.ID, "approve", "000000")
+	pollUntil(t, 2*time.Second, func() bool { return win.startCount() >= 2 })
+	v, err := apprStore.Show(ctx, view.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rejected["approval"].State != approval.StateRejected {
-		t.Fatalf("rejected = %+v", rejected)
+	if v.State != approval.StatePending || v.AttemptsLeft != approval.MaxAttempts-1 {
+		t.Fatalf("after one wrong code: %+v", v)
 	}
 
-	cctx3, cancel3 := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel3()
-	err = ipc.Call(cctx3, p.Endpoint, "approval_confirm", map[string]string{"id": view.ID, "code": "111111"}, nil)
-	if !errors.As(err, &ie) || ie.Code != "unknown_approval" {
-		t.Fatalf("confirm after reject: err = %v, want unknown_approval", err)
+	// The window's own Reject button rejects with via "window".
+	win.answer(view.ID, "reject", "")
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view.ID)
+		return err == nil && v.State == approval.StateRejected
+	})
+
+	// approval_open on a decided approval is unknown/expired, never bad_request.
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	err = ipc.Call(cctx, p.Endpoint, "approval_open", map[string]string{"id": view.ID}, nil)
+	var ie *ipc.Error
+	if !errors.As(err, &ie) {
+		t.Fatalf("approval_open on a rejected approval: err = %v", err)
+	}
+}
+
+func TestApprovalOpenReopensAndIsNoOpOnAnOpenWindow(t *testing.T) {
+	p, apprStore, _, win := startApprovalDaemon(t)
+	ctx := context.Background()
+	view, err := apprStore.Create(ctx, approval.KindRelease, "s-1", "release?", approval.Action{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if win.startCount() != 1 {
+		t.Fatalf("startCount after Create = %d, want 1", win.startCount())
+	}
+
+	// approval_open on an already-open window is a no-op (no new dialog).
+	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var res map[string]approval.View
+	if err := ipc.Call(cctx, p.Endpoint, "approval_open", map[string]string{"id": view.ID}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res["approval"].Window != "open" {
+		t.Fatalf("approval_open view = %+v", res["approval"])
+	}
+	if win.startCount() != 1 {
+		t.Fatalf("approval_open on an open window started a new dialog: startCount = %d", win.startCount())
+	}
+
+	// dismiss closes the window without deciding; a later approval_open
+	// reopens it.
+	win.answer(view.ID, "dismiss", "")
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view.ID)
+		return err == nil && v.Window == "closed"
+	})
+	cctx2, cancel2 := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel2()
+	if err := ipc.Call(cctx2, p.Endpoint, "approval_open", map[string]string{"id": view.ID}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if win.startCount() != 2 {
+		t.Fatalf("approval_open on a dismissed window did not reopen it: startCount = %d", win.startCount())
+	}
+}
+
+func TestApprovalIPCMethodsNeverTakeACode(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file")
+	dir, err := os.MkdirTemp("", "dn-approval-methods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	p, err := paths.In(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var methods []string
+	opts := daemon.Options{OnServerReady: func(s *ipc.Server) { methods = s.Methods() }}
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.RunWithOptions(ctx, p, ready, opts) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("daemon did not stop")
+		}
+	})
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited early: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	// No IPC method takes a code (Docs/protocol/approval.md §IPC and CLI,
+	// "approval_confirm ... is removed in 2.2d"): every registered method is
+	// checked, not just approval_confirm.
+	var found bool
+	for _, m := range methods {
+		if m == "approval_confirm" {
+			t.Fatalf("approval_confirm is still registered")
+		}
+		if m == "approval_open" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("approval_open is not registered; methods = %v", methods)
+	}
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer ccancel()
+	var res json.RawMessage
+	err = ipc.Call(cctx, p.Endpoint, "approval_confirm", map[string]string{"id": "a-x", "code": "000000"}, &res)
+	var ie *ipc.Error
+	if !errors.As(err, &ie) || ie.Code != ipc.CodeUnknownMethod {
+		t.Fatalf("approval_confirm should not exist: err = %v", err)
 	}
 }
 

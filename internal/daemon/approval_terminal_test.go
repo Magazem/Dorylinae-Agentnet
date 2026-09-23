@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -139,4 +140,129 @@ func TestTerminalModeWritesCodeToStderrOnly(t *testing.T) {
 	if !found {
 		t.Fatal("approval.mode was not audited")
 	}
+}
+
+// TestTerminalStdinApprovesAndRejects is the 2.2d headless acceptance:
+// "<tag> <code>" and "reject <tag>" on the daemon's own stdin, never a CLI
+// argument or an IPC call, and approval_open is refused in terminal mode
+// (Docs/protocol/approval.md §Headless machines, §IPC and CLI).
+func TestTerminalStdinApprovesAndRejects(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file")
+	t.Setenv(daemon.ApprovalEnv, "terminal")
+	t.Setenv(daemon.DebugEnv, "1")
+	dir, err := os.MkdirTemp("", "dn-terminal-stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	p, err := paths.In(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := &syncBuffer{}
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var apprStore *approval.Store
+	opts := daemon.Options{
+		Stderr:          stderr,
+		Stdin:           stdinR,
+		OnApprovalReady: func(s *approval.Store) { apprStore = s },
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.RunWithOptions(ctx, p, ready, opts) }()
+	t.Cleanup(func() {
+		cancel()
+		_ = stdinW.Close()
+		_ = stdinR.Close()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("daemon did not stop")
+		}
+	})
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited early: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	// approval_open is bad_request in terminal mode: there is no window.
+	cctx, ccancel := context.WithTimeout(ctx, 2*time.Second)
+	if err := ipc.Call(cctx, p.Endpoint, "approval_open", map[string]string{"id": "a-anything"}, nil); err == nil {
+		ccancel()
+		t.Fatal("approval_open in terminal mode did not fail")
+	} else {
+		var ie *ipc.Error
+		if !errors.As(err, &ie) || ie.Code != ipc.CodeBadRequest {
+			t.Fatalf("approval_open in terminal mode: err = %v, want bad_request", err)
+		}
+	}
+	ccancel()
+
+	view, err := apprStore.Create(context.Background(), approval.KindGrant, "g-1", "approve grant?", approval.Action{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := extractTerminalCode(t, stderr)
+	tag := view.ID[:len("a-")+6]
+
+	// An ambiguous or unknown prefix is refused and uses no attempt.
+	if _, err := stdinW.WriteString("a-000000 " + code + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	pollUntilContains(t, stderr, "no pending approval matches")
+	v, err := apprStore.Show(context.Background(), view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.AttemptsLeft != approval.MaxAttempts {
+		t.Fatalf("an unknown tag burned an attempt: %+v", v)
+	}
+
+	if _, err := stdinW.WriteString(tag + " " + code + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view.ID)
+		return err == nil && v.State == approval.StateApproved
+	})
+
+	view2, err := apprStore.Create(context.Background(), approval.KindGrant, "g-2", "approve grant 2?", approval.Action{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tag2 := view2.ID[:len("a-")+6]
+	if _, err := stdinW.WriteString("reject " + tag2 + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	pollUntil(t, 2*time.Second, func() bool {
+		v, err := apprStore.Show(context.Background(), view2.ID)
+		return err == nil && v.State == approval.StateRejected
+	})
+}
+
+func extractTerminalCode(t *testing.T, buf *syncBuffer) string {
+	t.Helper()
+	var code string
+	pollUntil(t, 2*time.Second, func() bool {
+		out := buf.String()
+		i := strings.Index(strings.ToLower(out), "code ")
+		if i < 0 || len(out) < i+len("code ")+6 {
+			return false
+		}
+		code = out[i+len("code ") : i+len("code ")+6]
+		return true
+	})
+	return code
+}
+
+func pollUntilContains(t *testing.T, buf *syncBuffer, substr string) {
+	t.Helper()
+	pollUntil(t, 2*time.Second, func() bool { return strings.Contains(buf.String(), substr) })
 }

@@ -29,29 +29,26 @@ type approvalViewBody struct {
 	Approval approval.View `json:"approval"`
 }
 
-const approveUsage = `Confirms or rejects a pending human approval
+const approveUsage = `Opens, rejects or lists a pending human approval
 (Docs/protocol/approval.md), used by grants, sensitive-result release, the
-own-device link and their policies.
+own-device link and their policies. The code is never given to this
+command: it is typed only into the AgentNet approval window the daemon
+itself opens (or, on a headless machine started with
+DORYLINAE_APPROVAL=terminal, on the daemon's own terminal).
 
 Usage:
-  agentnet approve <a-id> <code> [--json]   confirm with the code from the
-                                             desktop notification
+  agentnet approve --open <a-id> [--json]   show the approval window again
   agentnet approve --reject <a-id> [--json] reject; the waiting action is dropped
   agentnet approve --list [--json]          list pending approvals (never codes)
 
-The code is shown only on the desktop notification, never in this command's
-own output, the daemon log or the audit log. 3 wrong codes reject the
-approval; it also expires 10 minutes after it was created, or immediately if
-the daemon restarts meanwhile.
-
 Flags:
-  --reject ID   reject a pending approval instead of confirming one
+  --open ID     reopen the approval window for a pending approval
+  --reject ID   reject a pending approval instead of approving one
   --list        list pending approvals
   --json        print machine-readable JSON on stdout
 
-Exit codes: 0 confirmed/rejected/listed, 1 error (wrong code, expired,
-locked, unavailable, or the waiting action's own error), 2 usage,
-3 daemon not running.
+Exit codes: 0 opened/rejected/listed, 1 error (unknown approval, expired,
+locked, unavailable), 2 usage, 3 daemon not running.
 `
 
 func runApprove(args []string, stdout, stderr io.Writer) int {
@@ -59,6 +56,7 @@ func runApprove(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
 	list := fs.Bool("list", false, "list pending approvals")
+	open := fs.String("open", "", "reopen the approval window by id")
 	reject := fs.String("reject", "", "reject a pending approval by id")
 	fs.Usage = func() { _, _ = fmt.Fprint(stdout, approveUsage) }
 	pos, err := parseInterspersed(fs, args)
@@ -68,21 +66,31 @@ func runApprove(args []string, stdout, stderr io.Writer) int {
 		}
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 	}
+	given := 0
+	for _, v := range []bool{*list, *open != "", *reject != ""} {
+		if v {
+			given++
+		}
+	}
 
 	switch {
-	case *list && (*reject != "" || len(pos) > 0):
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--list takes no id or code and cannot be combined with --reject")
+	case len(pos) > 0:
+		// The old "agentnet approve <a-id> <code>" form put the code in
+		// this command's own argv (review 26, L7). It is removed by 2.2d:
+		// the code is typed only into the AgentNet approval window, or on
+		// the daemon's own terminal in terminal mode.
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage",
+			"the code is not given here; type it into the AgentNet approval window (or the daemon's terminal in terminal mode)")
+	case given == 0:
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give --open <a-id>, --reject <a-id>, or --list (see 'agentnet approve --help')")
+	case given > 1:
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--list, --open and --reject cannot be combined")
 	case *list:
 		return runApproveList(*asJSON, stdout, stderr)
-	case *reject != "":
-		if len(pos) > 0 {
-			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--reject takes no code")
-		}
-		return runApproveReject(*asJSON, stdout, stderr, *reject)
-	case len(pos) == 2:
-		return runApproveConfirm(*asJSON, stdout, stderr, pos[0], pos[1])
+	case *open != "":
+		return runApproveOpen(*asJSON, stdout, stderr, *open)
 	default:
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give <a-id> and <code>, --reject <a-id>, or --list (see 'agentnet approve --help')")
+		return runApproveReject(*asJSON, stdout, stderr, *reject)
 	}
 }
 
@@ -126,25 +134,17 @@ func runApproveReject(asJSON bool, stdout, stderr io.Writer, id string) int {
 	return exitOK
 }
 
-func runApproveConfirm(asJSON bool, stdout, stderr io.Writer, id, code string) int {
-	var res map[string]json.RawMessage
-	if exitCode := callDaemon(asJSON, stdout, stderr, approveTimeout, "approval_confirm", map[string]string{"id": id, "code": code}, &res); exitCode != exitOK {
-		return exitCode
+func runApproveOpen(asJSON bool, stdout, stderr io.Writer, id string) int {
+	var res struct {
+		Approval approval.View `json:"approval"`
 	}
-	var view approval.View
-	if raw, ok := res["approval"]; ok {
-		_ = json.Unmarshal(raw, &view)
+	if code := callDaemon(asJSON, stdout, stderr, approveTimeout, "approval_open", map[string]string{"id": id}, &res); code != exitOK {
+		return code
 	}
 	if asJSON {
-		out := make(map[string]json.RawMessage, len(res)+1)
-		for k, v := range res {
-			out[k] = v
-		}
-		okRaw, _ := json.Marshal(true)
-		out["ok"] = okRaw
-		_ = json.NewEncoder(stdout).Encode(out)
+		_ = json.NewEncoder(stdout).Encode(approvalViewBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Approved %s (%s)\n", view.Kind, view.ID)
+	_, _ = fmt.Fprintf(stdout, "Approval %s: window %s\n", res.Approval.ID, res.Approval.Window)
 	return exitOK
 }

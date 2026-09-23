@@ -160,10 +160,21 @@ type Options struct {
 	// ApprovalNow overrides the approval store's clock (a test option). Nil
 	// uses time.Now.
 	ApprovalNow func() time.Time
+	// ApprovalWindow overrides the approval window runner (a test option: a
+	// fake that records id/tag/kind/summary and replies without ever
+	// spawning a real dialog process, Docs/protocol/approval.md §The
+	// approval window). Nil selects notify.ApprovalWindow{} in desktop mode;
+	// terminal mode never has a window regardless of this option.
+	ApprovalWindow approval.WindowRunner
 	// Stderr is where terminal-mode approval codes are written and where the
 	// terminal-required-for-DORYLINAE_APPROVAL=terminal check is made. Nil
 	// uses os.Stderr.
 	Stderr io.Writer
+	// Stdin is where terminal-mode approval answers (`<tag> <code>`,
+	// `reject <tag>`) are read from, and where the same terminal-required
+	// check is made (Docs/protocol/approval.md §Headless machines). Nil uses
+	// os.Stdin.
+	Stdin io.Reader
 	// OnApprovalReady, if set, is called once with the daemon's approval.Store
 	// right after it is built (a test option: 2.2a has no IPC method yet that
 	// creates an approval, so tests seed one directly through the store).
@@ -175,6 +186,11 @@ type Options struct {
 	// Docs/protocol/work-session.md §Quarantine (2.4), D18). Nil never
 	// quarantines, the Phase 2.1b default.
 	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
+	// OnServerReady, if set, is called once with the daemon's *ipc.Server
+	// after every method is registered, just before it starts serving (a
+	// test option: lets a test enumerate every registered method,
+	// Docs/review/23-phase2-tickets.md 2.2d acceptance).
+	OnServerReady func(*ipc.Server)
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -189,7 +205,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	approvalMode, err := resolveApprovalMode(os.Getenv(ApprovalEnv), os.Getenv(DebugEnv) == "1", isTerminal(stderr))
+	stdin := opts.Stdin
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	approvalMode, err := resolveApprovalMode(os.Getenv(ApprovalEnv), os.Getenv(DebugEnv) == "1", isTerminal(stderr), isTerminal(stdin))
 	if err != nil {
 		return err
 	}
@@ -325,10 +345,19 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	defer func() { stopWebhook(); <-whDone }()
 
 	apprNotifier := opts.ApprovalNotify
-	if apprNotifier == nil {
-		if approvalMode == ApprovalModeDesktop {
+	var apprWindow approval.WindowRunner
+	if approvalMode == ApprovalModeDesktop {
+		if apprNotifier == nil {
 			apprNotifier = notify.Approval{}
-		} else {
+		}
+		apprWindow = opts.ApprovalWindow
+		if apprWindow == nil {
+			apprWindow = notify.ApprovalWindow{}
+		}
+	} else {
+		// Terminal mode has no window at all (Docs/protocol/approval.md
+		// §Headless machines): apprWindow stays nil.
+		if apprNotifier == nil {
 			apprNotifier = terminalNotifier{w: stderr}
 		}
 	}
@@ -336,11 +365,12 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if approvalNow == nil {
 		approvalNow = time.Now
 	}
-	apprStore, err := approval.NewStore(st.DB(), log, apprNotifier, approvalNow)
+	apprStore, err := approval.NewStore(st.DB(), log, apprNotifier, apprWindow, approvalNow)
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
+	defer apprStore.Close()
 	if err := apprStore.ExpireStale(ctx); err != nil {
 		_ = ln.Close()
 		return err
@@ -359,6 +389,16 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		go func() {
 			_ = notify.Desktop{}.Show(context.WithoutCancel(ctx), "AgentNet", "AgentNet daemon started with terminal approvals")
 		}()
+		// Terminal mode reads `<tag> <code>` / `reject <tag>` from the
+		// daemon's own stdin (Docs/protocol/approval.md §Headless machines).
+		// A desktop-mode daemon never reads its stdin (review 29, M6). The
+		// reader is not waited on at shutdown: a blocking Read on a real
+		// console's stdin cannot be interrupted by ctx cancellation, so this
+		// only stops promptly between lines (tests that want a clean stop
+		// close their own Stdin/pipe).
+		tctx, stopTerminal := context.WithCancel(ctx)
+		go runTerminalApprovalReader(tctx, stdin, stderr, apprStore)
+		defer stopTerminal()
 	}
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
@@ -466,6 +506,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return res, nil
 	})
 
+	if opts.OnServerReady != nil {
+		opts.OnServerReady(srv)
+	}
 	if ready != nil {
 		close(ready)
 	}

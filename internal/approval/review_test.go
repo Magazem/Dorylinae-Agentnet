@@ -84,7 +84,7 @@ func TestLockoutLeavesNoWindowForAnotherGuess(t *testing.T) {
 	db := openTestDB(t)
 	n := &fakeNotifier{}
 	a := &hookAudit{}
-	s, err := NewStore(db, a, n, clock(&now))
+	s, err := NewStore(db, a, n, nil, clock(&now))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestLockoutLeavesNoWindowForAnotherGuess(t *testing.T) {
 		if _, err := s.Confirm(ctx, v.ID, "wrong"); err == nil {
 			t.Fatal("wrong code accepted")
 		}
-		if _, err := s.Reject(ctx, v.ID); err != nil {
+		if _, err := s.Reject(ctx, v.ID, "test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,7 +164,7 @@ func TestLockoutEndsWhenWindowHasRoom(t *testing.T) {
 			t.Fatalf("create %d: %v", i, err)
 		}
 		_, _ = s.Confirm(ctx, v.ID, "wrong")
-		_, _ = s.Reject(ctx, v.ID)
+		_, _ = s.Reject(ctx, v.ID, "test")
 	}
 	if _, err := s.Create(ctx, KindGrant, "g-x", "s", Action{}); !errors.Is(err, ErrLocked) {
 		t.Fatalf("err = %v, want ErrLocked", err)
@@ -229,7 +229,7 @@ func TestNoCodeMaterialAnywhereInDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	code2 := n.lastCode(t)
-	if _, err := s.Reject(ctx, v2.ID); err != nil {
+	if _, err := s.Reject(ctx, v2.ID, "test"); err != nil {
 		t.Fatal(err)
 	}
 

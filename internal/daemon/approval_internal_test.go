@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -11,18 +10,23 @@ import (
 
 func TestResolveApprovalMode(t *testing.T) {
 	cases := []struct {
-		env, want  string
-		debug, tty bool
-		wantErr    bool
+		env       string
+		want      string
+		debug     bool
+		stderrTTY bool
+		stdinTTY  bool
+		wantErr   bool
 	}{
-		{env: "", tty: false, debug: false, want: ApprovalModeDesktop},
-		{env: "", tty: true, debug: false, want: ApprovalModeDesktop},
-		{env: "terminal", tty: true, debug: false, want: ApprovalModeTerminal},
-		{env: "terminal", tty: false, debug: true, want: ApprovalModeTerminalDebug},
-		{env: "terminal", tty: false, debug: false, wantErr: true},
+		{env: "", stderrTTY: false, stdinTTY: false, debug: false, want: ApprovalModeDesktop},
+		{env: "", stderrTTY: true, stdinTTY: true, debug: false, want: ApprovalModeDesktop},
+		{env: "terminal", stderrTTY: true, stdinTTY: true, debug: false, want: ApprovalModeTerminal},
+		{env: "terminal", stderrTTY: true, stdinTTY: false, debug: false, wantErr: true},
+		{env: "terminal", stderrTTY: false, stdinTTY: true, debug: false, wantErr: true},
+		{env: "terminal", stderrTTY: false, stdinTTY: false, debug: true, want: ApprovalModeTerminalDebug},
+		{env: "terminal", stderrTTY: false, stdinTTY: false, debug: false, wantErr: true},
 	}
 	for i, c := range cases {
-		got, err := resolveApprovalMode(c.env, c.debug, c.tty)
+		got, err := resolveApprovalMode(c.env, c.debug, c.stderrTTY, c.stdinTTY)
 		if c.wantErr {
 			if !errors.Is(err, ErrApprovalRequiresTerminal) {
 				t.Errorf("case %d: err = %v, want ErrApprovalRequiresTerminal", i, err)
@@ -45,6 +49,7 @@ func TestApprovalErrorMapping(t *testing.T) {
 		{approval.ErrLimit, "approval_limit"},
 		{approval.ErrLocked, "approval_locked"},
 		{approval.ErrUnavailable, "approval_unavailable"},
+		{approval.ErrTerminalMode, ipc.CodeBadRequest},
 		{&approval.BadCodeError{AttemptsLeft: 2}, "bad_code"},
 	}
 	for _, c := range cases {
@@ -59,47 +64,5 @@ func TestApprovalErrorMapping(t *testing.T) {
 	own := &ipc.Error{Code: "bad_state", Message: "session closed"}
 	if got := approvalError(own); !errors.Is(got, own) {
 		t.Errorf("approvalError passed through an *ipc.Error unexpectedly transformed: %v", got)
-	}
-}
-
-func TestMergeApproval(t *testing.T) {
-	view := approval.View{ID: "a-1", State: "approved"}
-	merged, err := mergeApproval(map[string]string{"status": "ok"}, view)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Round-trip through JSON to check both the caller's field and "approval" survive.
-	raw, err := json.Marshal(merged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded struct {
-		Status   string        `json:"status"`
-		Approval approval.View `json:"approval"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.Status != "ok" || decoded.Approval.ID != "a-1" {
-		t.Fatalf("decoded = %+v", decoded)
-	}
-
-	// A nil result still carries the approval view.
-	merged, err = mergeApproval(nil, view)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err = json.Marshal(merged)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded2 struct {
-		Approval approval.View `json:"approval"`
-	}
-	if err := json.Unmarshal(raw, &decoded2); err != nil {
-		t.Fatal(err)
-	}
-	if decoded2.Approval.ID != "a-1" {
-		t.Fatalf("decoded2 = %+v", decoded2)
 	}
 }
