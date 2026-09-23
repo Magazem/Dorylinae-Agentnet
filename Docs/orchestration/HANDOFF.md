@@ -33,7 +33,10 @@ commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (
 specs merged to main. Self-hosted relays: D17.
 
 **Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced). No workers running.
-**Wave P2-2 in progress:** 2.1b P2-WSIPC slot `01a0cda5-0c84…` task `01a0cda5-35ae…` worktree `ws-ipc` (also implements D18); 2.2c P2-Grants slot `01a0cda5-0dbb…` task `01a0cda5-59db…` worktree `grants` (migration 16; merge only after 2.2d); 2.2d spec written (07f8601; no CLI code entry, window per OS, terminal-mode stdin); adversarial review R-2.2d-S by `01a0cdd5-dfd2…` → Docs/review/29, then owner approval, then build 2.2d. 2.2c code done (b571815), in security review (`01a0cdd2-9cf9…` → Docs/review/28).
+**Wave P2-2 status:**
+- 2.1b: committed on `p2/ws-ipc` (rebased on main). Follow-up **2.1b-f** by the same worker (slot `01a0cda5-0c84…`, task `01a0cdfc-769c…`) aligns D18 with the review-29 H1 rule (withheld at receipt). Then gate, **an Opus security review of 2.1b is NOT required by 23**, so merge.
+- 2.2c: code + review 28 fixes on `p2/grants` (b571815, 4b1a293). **Merge only after 2.2d**, rebased after 2.1b (both touch worksession/daemon). Review-28 leftovers: L8 (pending approvals of a closed session are rejected lazily → put in 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
+- 2.2d: spec + adversarial review 29 merged to main (c3cbea4). **Awaiting owner approval of the 2.2d spec**, then build (Sonnet) + Opus security review.
 **2.1b must** (review 27): wire `reqStore.Sessions` (ws.* kinds then register themselves); trigger CheckPhase1Fallback outside any tx; never touch DB/audit inside a tx (return after-commit callbacks); build IPC on View; implement B's ws_cancel + cancel column.
 2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
 2.1a notes for **2.1b**: `reqStore.Sessions` is deliberately NOT wired in the live daemon (it broke Phase 1 e2e tests without closing IPC); 2.1b must wire it together with the ws_* IPC. `CheckPhase1Fallback` exists but isn't hooked to outbox failures yet. `Store.Release` is a raw transition; the approval gate comes in 2.4.
