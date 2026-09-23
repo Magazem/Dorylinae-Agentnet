@@ -33,7 +33,7 @@ commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (
 specs merged to main. Self-hosted relays: D17.
 
 **Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced). No workers running.
-**Wave P2-2 in progress:** 2.1b P2-WSIPC slot `01a0cda5-0c84…` task `01a0cda5-35ae…` worktree `ws-ipc` (also implements D18); 2.2c P2-Grants slot `01a0cda5-0dbb…` task `01a0cda5-59db…` worktree `grants` (migration 16; merge only after 2.2d); 2.2d spec: worktree `approval-window` / `p2/approval-window`.
+**Wave P2-2 in progress:** 2.1b P2-WSIPC slot `01a0cda5-0c84…` task `01a0cda5-35ae…` worktree `ws-ipc` (also implements D18); 2.2c P2-Grants slot `01a0cda5-0dbb…` task `01a0cda5-59db…` worktree `grants` (migration 16; merge only after 2.2d); 2.2d spec written (07f8601; no CLI code entry, window per OS, terminal-mode stdin); adversarial review R-2.2d-S by `01a0cdd5-dfd2…` → Docs/review/29, then owner approval, then build 2.2d. 2.2c code done (b571815), in security review (`01a0cdd2-9cf9…` → Docs/review/28).
 **2.1b must** (review 27): wire `reqStore.Sessions` (ws.* kinds then register themselves); trigger CheckPhase1Fallback outside any tx; never touch DB/audit inside a tx (return after-commit callbacks); build IPC on View; implement B's ws_cancel + cancel column.
 2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
 2.1a notes for **2.1b**: `reqStore.Sessions` is deliberately NOT wired in the live daemon (it broke Phase 1 e2e tests without closing IPC); 2.1b must wire it together with the ws_* IPC. `CheckPhase1Fallback` exists but isn't hooked to outbox failures yet. `Store.Release` is a raw transition; the approval gate comes in 2.4.
@@ -132,6 +132,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D17 | **Self-hosted relays in the beta:** the relay stays untrusted whoever runs it; D5 "non-loopback" includes self-hosted relays; fetch limits are daemon-side caps (grant.md). Review-05 **M2 (relay TLS + abuse limits) is a GATE BEFORE THE BETA**, not a Phase 2 ticket. |
 | D18 | Review-27 H1: a discarded / not-released quarantined result (and dropped early-complete content) is also blanked or deleted from `mail_inbox` in the same tx; ack/dedupe metadata stays. Implemented in 2.1b. |
 | D19 | Ticket **2.2d**: a daemon-owned approval window. The code is typed only there, so agents never handle it; CLI code entry is removed on desktop machines, and headless machines keep terminal mode (OD-P2-3). The spec comes first, then the build and an Opus security review. **Merges before 2.2c.** Replaces review-26 L7. |
+| D20 | OQ-2.2d-1: the Linux approval window (zenity/kdialog) gets the summary text via argv. Accept and document it: other local users can see the summary (never the code); hidepid=2 hides it. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
