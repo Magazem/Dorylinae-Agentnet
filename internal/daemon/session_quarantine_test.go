@@ -161,6 +161,11 @@ func TestD18_RequestChangesFromQuarantineLeavesNoMarker(t *testing.T) {
 		t.Fatalf("mail_inbox row for the ws.result mail is missing or non-empty")
 	}
 
+	// B's mirror must learn round 2 (open) before it may submit again.
+	harnessWait(t, "B's mirror to see open round 2", func() bool {
+		return b.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'open' AND round = 2`) == 1
+	})
+
 	// The session still works for a new round: B submits again, and this
 	// time (no quarantine on round 2 in this test) A can accept it.
 	var res2 daemon.SessionResult
