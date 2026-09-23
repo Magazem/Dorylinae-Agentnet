@@ -86,6 +86,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, Logger: logger}); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		if errors.Is(err, daemon.ErrApprovalRequiresTerminal) {
+			return 2
+		}
 		return 1
 	}
 	return 0

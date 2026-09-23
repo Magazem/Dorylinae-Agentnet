@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
@@ -47,6 +49,9 @@ type StatusResult struct {
 	// Team is the requested team's members and their presence, present only
 	// when the "team" param was given (Docs/protocol/ipc.md §status, 1.2c).
 	Team *StatusTeamResult `json:"team,omitempty"`
+	// Approval is the approval channel: "desktop", "terminal" or
+	// "terminal-debug" (Docs/protocol/approval.md §Headless machines).
+	Approval string `json:"approval"`
 }
 
 // PresenceStatus is the "presence" object of "status", own values only.
@@ -148,6 +153,21 @@ type Options struct {
 	// NotifyShow overrides the desktop notification channel (a test option).
 	// Nil uses notify.Desktop{}.Show.
 	NotifyShow notify.ShowFunc
+	// ApprovalNotify overrides the approval notification channel (a test
+	// option). Nil selects notify.Approval{} or, under
+	// DORYLINAE_APPROVAL=terminal, a notifier that writes to Stderr.
+	ApprovalNotify approval.Notifier
+	// ApprovalNow overrides the approval store's clock (a test option). Nil
+	// uses time.Now.
+	ApprovalNow func() time.Time
+	// Stderr is where terminal-mode approval codes are written and where the
+	// terminal-required-for-DORYLINAE_APPROVAL=terminal check is made. Nil
+	// uses os.Stderr.
+	Stderr io.Writer
+	// OnApprovalReady, if set, is called once with the daemon's approval.Store
+	// right after it is built (a test option: 2.2a has no IPC method yet that
+	// creates an approval, so tests seed one directly through the store).
+	OnApprovalReady func(*approval.Store)
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -158,6 +178,14 @@ func Run(ctx context.Context, p paths.Paths, ready chan<- struct{}) error {
 // RunWithOptions starts the daemon and blocks until ctx is cancelled or serving fails.
 // ready, if non-nil, is closed once the IPC endpoint accepts connections.
 func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, opts Options) (err error) {
+	stderr := opts.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	approvalMode, err := resolveApprovalMode(os.Getenv(ApprovalEnv), os.Getenv(DebugEnv) == "1", isTerminal(stderr))
+	if err != nil {
+		return err
+	}
 	if err := p.Ensure(); err != nil {
 		return err
 	}
@@ -289,6 +317,43 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	go func() { defer close(whDone); notifyWebhook.Run(wctx) }()
 	defer func() { stopWebhook(); <-whDone }()
 
+	apprNotifier := opts.ApprovalNotify
+	if apprNotifier == nil {
+		if approvalMode == ApprovalModeDesktop {
+			apprNotifier = notify.Approval{}
+		} else {
+			apprNotifier = terminalNotifier{w: stderr}
+		}
+	}
+	approvalNow := opts.ApprovalNow
+	if approvalNow == nil {
+		approvalNow = time.Now
+	}
+	apprStore, err := approval.NewStore(st.DB(), log, apprNotifier, approvalNow)
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	if err := apprStore.ExpireStale(ctx); err != nil {
+		_ = ln.Close()
+		return err
+	}
+	if opts.OnApprovalReady != nil {
+		opts.OnApprovalReady(apprStore)
+	}
+	if approvalMode != ApprovalModeDesktop {
+		if err := log.Append(ctx, audit.ActorDaemon, "approval.mode", map[string]string{"mode": approvalMode}); err != nil {
+			_ = ln.Close()
+			return err
+		}
+		// Best effort: visible on the desktop if there is one, so a restart
+		// into this mode by someone else is noticed (Docs/protocol/approval.md
+		// §Headless machines, "Visible switch").
+		go func() {
+			_ = notify.Desktop{}.Show(context.WithoutCancel(ctx), "AgentNet", "AgentNet daemon started with terminal approvals")
+		}()
+	}
+
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
 	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore}
@@ -340,6 +405,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
 	registerLifecycle(srv, reqStore, peerStore, teamStore)
 	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
+	registerApproval(srv, apprStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
@@ -364,6 +430,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			PID:           os.Getpid(),
 			StartedAt:     started.UTC().Format(time.RFC3339),
 			UptimeSeconds: time.Since(started).Seconds(),
+			Approval:      approvalMode,
 			Version:       version.Version,
 			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender, teamStore),
 		}

@@ -75,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runComplete(args[1:], stdout, stderr)
 	case "notify":
 		return runNotify(args[1:], stdout, stderr)
+	case "approve":
+		return runApprove(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -113,6 +115,7 @@ Commands:
   defer     Defer a request from your inbox
   complete  Mark an accepted request complete, optionally with a result
   notify    Configure desktop notifications
+  approve   Confirm or reject a pending human approval
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

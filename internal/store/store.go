@@ -269,6 +269,31 @@ CREATE TABLE work_sessions (
 CREATE INDEX work_sessions_state ON work_sessions (state);
 CREATE UNIQUE INDEX work_sessions_request ON work_sessions (role, peer, request_id);
 `},
+	{15, "approvals", `
+CREATE TABLE approvals (
+    id        TEXT PRIMARY KEY,                 -- a-<32 hex>
+    kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope')),
+    subject   TEXT NOT NULL,
+    summary   TEXT NOT NULL,                    -- the text shown (local data); no code material
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    state     TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','expired')),
+    decided   TEXT
+);
+CREATE INDEX approvals_state ON approvals (state, expires);
+CREATE TABLE grant_policies (
+    id        TEXT PRIMARY KEY,                 -- p-<32 hex>
+    peer      TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    scope     TEXT NOT NULL,
+    public    INTEGER NOT NULL DEFAULT 0 CHECK (public IN (0, 1)),
+    max_ttl   INTEGER,                          -- seconds; NULL = no cap beyond the grant default
+    until     TEXT,                             -- NULL = no expiry on the policy itself
+    created   TEXT NOT NULL
+);
+CREATE INDEX grant_policies_peer ON grant_policies (peer, action);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.
