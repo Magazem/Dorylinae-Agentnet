@@ -35,16 +35,30 @@ func TestSessionStateMachine_OpenToQuarantined(t *testing.T) {
 	if v.State != StateQuarantined {
 		t.Fatalf("A after result = %+v, want quarantined", v)
 	}
-	// While quarantined, A's Get still returns the result decoded (2.4 owns
-	// hiding it from IPC views); the row itself keeps it until release,
-	// discard or request-changes.
-	if v.Result == nil {
-		t.Fatal("stored result missing while quarantined")
+	// While quarantined, A's view withholds the result and keeps only its
+	// sizes and status; the row itself keeps it until release, discard or
+	// request-changes.
+	if v.Result != nil {
+		t.Fatal("quarantined result surfaced through A's view")
+	}
+	if v.ResultBytes == 0 || v.ResultStatus != "pass" {
+		t.Fatalf("quarantined view sizes/status = %+v", v)
+	}
+	var stored sql.NullString
+	if err := a.db.QueryRow(`SELECT result FROM work_sessions WHERE id = ?`, sid).Scan(&stored); err != nil || !stored.Valid {
+		t.Fatalf("stored result missing while quarantined: %v", err)
 	}
 	deliverState(t, a, b)
 	bv, err := b.ws.Get(context.Background(), sid)
 	if err != nil || bv.State != StateQuarantined {
 		t.Fatalf("B's mirror = %+v, %v", bv, err)
+	}
+	if _, err := a.ws.ReleaseApproved(context.Background(), sid, ""); err == nil {
+		t.Fatal("release without an approval id was applied")
+	}
+	rv, err := a.ws.ReleaseApproved(context.Background(), sid, "ap-test")
+	if err != nil || rv.Result == nil {
+		t.Fatalf("result not visible after release: %+v, %v", rv, err)
 	}
 }
 
@@ -100,7 +114,7 @@ func TestSessionStateMachine_QuarantinedEdges(t *testing.T) {
 		a, b, reqID, sid := setupAcceptedSession(t)
 		a.ws.Quarantine = alwaysQuarantine
 		submitAndDeliverResult(t, a, b, reqID, validResult())
-		v, err := a.ws.Release(context.Background(), sid)
+		v, err := a.ws.ReleaseApproved(context.Background(), sid, "ap-test")
 		if err != nil || v.State != StateAwaitingResult || !v.Released {
 			t.Fatalf("Release = %+v, %v", v, err)
 		}
@@ -185,7 +199,7 @@ func TestSessionStateMachine_Disallowed(t *testing.T) {
 	})
 	t.Run("Release from open", func(t *testing.T) {
 		a, _, _, sid := setupAcceptedSession(t)
-		assertBadState(t, func() error { _, err := a.ws.Release(context.Background(), sid); return err })
+		assertBadState(t, func() error { _, err := a.ws.ReleaseApproved(context.Background(), sid, "ap-test"); return err })
 	})
 	t.Run("Discard from awaiting_result", func(t *testing.T) {
 		a, b, reqID, sid := setupAcceptedSession(t)
@@ -195,7 +209,7 @@ func TestSessionStateMachine_Disallowed(t *testing.T) {
 	t.Run("Release from awaiting_result", func(t *testing.T) {
 		a, b, reqID, sid := setupAcceptedSession(t)
 		submitAndDeliverResult(t, a, b, reqID, validResult())
-		assertBadState(t, func() error { _, err := a.ws.Release(context.Background(), sid); return err })
+		assertBadState(t, func() error { _, err := a.ws.ReleaseApproved(context.Background(), sid, "ap-test"); return err })
 	})
 	t.Run("Cancel from awaiting_result", func(t *testing.T) {
 		a, b, reqID, sid := setupAcceptedSession(t)
@@ -224,7 +238,7 @@ func TestSessionStateMachine_Disallowed(t *testing.T) {
 		assertBadState(t, func() error { _, err := a.ws.RequestChanges(context.Background(), sid, "x"); return err })
 		assertBadState(t, func() error { _, err := a.ws.Discard(context.Background(), sid); return err })
 		assertBadState(t, func() error { _, err := a.ws.Cancel(context.Background(), sid, ""); return err })
-		assertBadState(t, func() error { _, err := a.ws.Release(context.Background(), sid); return err })
+		assertBadState(t, func() error { _, err := a.ws.ReleaseApproved(context.Background(), sid, "ap-test"); return err })
 	})
 	t.Run("B cannot call A-only methods", func(t *testing.T) {
 		_, b, _, sid := setupAcceptedSession(t)

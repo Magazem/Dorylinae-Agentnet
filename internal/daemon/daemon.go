@@ -297,8 +297,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// (Docs/protocol/work-session.md, "request_complete while a session
 	// exists"), which needs 2.1b's ws_accept_result/ws_request_changes IPC to
 	// ever close that session again. 2.1b flips this on once that IPC exists;
-	// until then the mail kinds are registered (ws.* is understood) but no
-	// session ever opens, so Phase 1 request_complete behaviour is unchanged.
+	// until then no session ever opens, Phase 1 request_complete behaviour is
+	// unchanged, and newMailReceiver leaves ws.* unregistered (acked
+	// unsupported) so a peer cannot create session rows here.
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore)
 	if err != nil {
 		_ = ln.Close()

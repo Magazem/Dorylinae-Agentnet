@@ -108,6 +108,7 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 	if s.Audit != nil {
 		_ = s.Audit.Append(ctx, "cli", "ws.accept_result", map[string]any{"session": id, "peer": r.peer, "round": r.round, "verification": verification})
 	}
+	s.auditClose(ctx, r, OutcomeAccepted, now)
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -201,7 +202,7 @@ func (s *Store) Discard(ctx context.Context, id string) (View, error) {
 		return View{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
-UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, result = NULL, result_round = NULL, closed = ?, state_at = ?, updated = ?
+UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, result = NULL, result_round = NULL, verification = NULL, closed = ?, state_at = ?, updated = ?
 WHERE id = ?`,
 		StateClosed, OutcomeCancelled, seq, wireTime(now), wireTime(now), storeTime(now), id); err != nil {
 		return View{}, fmt.Errorf("worksession: discard: %w", err)
@@ -213,6 +214,7 @@ WHERE id = ?`,
 	if s.Audit != nil {
 		_ = s.Audit.Append(ctx, "cli", "ws.discard", map[string]any{"session": id, "peer": r.peer, "round": r.round})
 	}
+	s.auditClose(ctx, r, OutcomeCancelled, now)
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -257,6 +259,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	if s.Audit != nil {
 		_ = s.Audit.Append(ctx, "cli", "ws.cancel", map[string]any{"session": id, "peer": r.peer, "role": RoleRequester})
 	}
+	s.auditClose(ctx, r, OutcomeCancelled, now)
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -264,12 +267,18 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	return toView(newRow)
 }
 
-// Release runs the DB transition of ws_release once its approval is
+// ReleaseApproved runs the DB transition of ws_release once its approval is
 // confirmed (Docs/protocol/work-session.md §Quarantine): quarantined ->
 // awaiting_result, released = 1. The quarantine rule is not re-evaluated
 // after a release for this round. The approval gate itself (kind "release")
-// is added by 2.2a/2.4; this method performs only the state change.
-func (s *Store) Release(ctx context.Context, id string) (View, error) {
+// is added by 2.2a/2.4; this method performs only the state change, and
+// must be called only by the approval-confirm path with the id of the
+// confirmed approval, never straight from IPC or mail. An empty approvalID
+// is refused.
+func (s *Store) ReleaseApproved(ctx context.Context, id, approvalID string) (View, error) {
+	if approvalID == "" {
+		return View{}, errors.New("worksession: release needs a confirmed approval")
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return View{}, fmt.Errorf("worksession: begin: %w", err)
@@ -300,7 +309,7 @@ func (s *Store) Release(ctx context.Context, id string) (View, error) {
 	}
 	s.Outbox.Wake()
 	if s.Audit != nil {
-		_ = s.Audit.Append(ctx, "cli", "ws.release", map[string]any{"session": id, "peer": r.peer, "round": r.round})
+		_ = s.Audit.Append(ctx, "cli", "ws.release", map[string]any{"session": id, "peer": r.peer, "round": r.round, "approval": approvalID})
 	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
@@ -327,4 +336,20 @@ func jsonObject(v any) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// auditClose appends ws.close {session, peer, outcome, rounds, age_s}
+// (Docs/protocol/work-session.md §Audit; age_s since opened is the
+// time-to-result metric). Called after commit.
+func (s *Store) auditClose(ctx context.Context, row storedRow, outcome string, now time.Time) {
+	if s.Audit == nil {
+		return
+	}
+	age := 0
+	if opened := parseWireTime(row.opened); !opened.IsZero() {
+		age = int(now.Sub(opened) / time.Second)
+	}
+	_ = s.Audit.Append(ctx, "daemon", "ws.close", map[string]any{
+		"session": row.id, "peer": row.peer, "outcome": outcome, "rounds": row.round, "age_s": age,
+	})
 }

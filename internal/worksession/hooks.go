@@ -50,6 +50,17 @@ func idB(role, self, peer string) string {
 func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID string, hadResult bool) (keepContent bool, err error) {
 	row, err := findRowTx(ctx, tx, RoleRequester, peer, requestID)
 	if errors.Is(err, ErrUnknownSession) {
+		// No session (yet): B skipped or overtook the accept. The session is
+		// "not closed", so this is still an early complete, and the rule's
+		// peer-wide clause (a sensitive grant to this peer in another
+		// session, less than 7 d ago) can hold without a row here.
+		if hadResult && s.Quarantine != nil {
+			q, qerr := s.Quarantine(ctx, tx, DeriveID(s.Self, peer, requestID), peer, 0)
+			if qerr != nil {
+				return true, qerr
+			}
+			return !q, nil
+		}
 		return true, nil
 	}
 	if err != nil {

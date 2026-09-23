@@ -19,8 +19,10 @@ import (
 // note; for a failed ws.cancel, with no result and note "session cancelled".
 //
 // There is no per-mail linkage from an outbox row back to its session (the
-// outbox does not know about sessions), so this looks for any matching
-// failed ws.* mail to peer since the session's row was last updated; a
+// outbox does not know about sessions, and drops the signed body once a row
+// is final), so this looks for a ws.result or ws.cancel to peer, created
+// since this session opened, that ended failed/unsupported_kind. Older
+// failures (a peer that was Phase 1 and has since upgraded) do not count. A
 // daemon calls it after an outbox row addressed to a session's peer turns
 // failed with unsupported_kind (2.1b wires that trigger; this method is the
 // testable unit run directly here).
@@ -35,7 +37,7 @@ func (s *Store) CheckPhase1Fallback(ctx context.Context, peer, requestID string)
 	if row.state == StateClosed {
 		return nil
 	}
-	unsupported, err := peerIsUnsupported(ctx, s.DB, peer)
+	unsupported, err := peerIsUnsupported(ctx, s.DB, peer, storeTime(parseWireTime(row.opened)))
 	if err != nil {
 		return err
 	}
@@ -49,6 +51,14 @@ func (s *Store) CheckPhase1Fallback(ctx context.Context, peer, requestID string)
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Re-read inside the transaction: a ws.state may have been applied since.
+	row, err = findRowTx(ctx, tx, RoleWorker, peer, requestID)
+	if err != nil {
+		return err
+	}
+	if row.state == StateClosed {
+		return nil
+	}
 	now := s.now()
 	if _, err := tx.ExecContext(ctx, `
 UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updated = ? WHERE id = ?`,
@@ -66,10 +76,13 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 		res = &request.Result{Status: stored.Status, Summary: stored.Summary, ExitCode: stored.ExitCode, Output: stored.Output, Artifacts: stored.Artifacts}
 		note = stored.Notes
 	}
+	var auditComplete func(context.Context)
 	if s.Requests != nil {
-		if err := s.Requests.CompleteInTx(ctx, tx, peer, requestID, note, res); err != nil {
+		fn, err := s.Requests.CompleteInTx(ctx, tx, peer, requestID, note, res)
+		if err != nil {
 			return fmt.Errorf("worksession: complete request (phase 1 fallback): %w", err)
 		}
+		auditComplete = fn
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("worksession: commit: %w", err)
@@ -77,9 +90,10 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
-	if s.Audit != nil {
-		_ = s.Audit.Append(ctx, "daemon", "ws.close", map[string]any{"session": row.id, "peer": peer, "outcome": OutcomeCancelled})
+	if auditComplete != nil {
+		auditComplete(ctx)
 	}
+	s.auditClose(ctx, row, OutcomeCancelled, now)
 	return nil
 }
 
@@ -97,13 +111,15 @@ func findRow(ctx context.Context, db *sql.DB, peer, requestID string) (storedRow
 	return r, nil
 }
 
-// peerIsUnsupported reports whether peer's outbox has any ws.* mail that
-// ended failed/unsupported_kind (mail.Outbox.OnAck).
-func peerIsUnsupported(ctx context.Context, db *sql.DB, peer string) (bool, error) {
+// peerIsUnsupported reports whether peer's outbox has a ws.result or
+// ws.cancel (the kinds B sends) created at or after since that ended
+// failed/unsupported_kind (mail.Outbox.OnAck). since and outbox.created are
+// both mail.StoreTimeFmt, which orders as text.
+func peerIsUnsupported(ctx context.Context, db *sql.DB, peer, since string) (bool, error) {
 	var one int
 	err := db.QueryRowContext(ctx, `
-SELECT 1 FROM outbox WHERE to_key = ? AND kind IN (?, ?, ?) AND state = 'failed' AND error = 'unsupported_kind' LIMIT 1`,
-		peer, KindResult, KindState, KindCancel).Scan(&one)
+SELECT 1 FROM outbox WHERE to_key = ? AND kind IN (?, ?) AND state = 'failed' AND error = 'unsupported_kind' AND created >= ? LIMIT 1`,
+		peer, KindResult, KindCancel, since).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

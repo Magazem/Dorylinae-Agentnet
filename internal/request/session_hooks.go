@@ -58,25 +58,30 @@ type SessionHooks interface {
 // the request): the caller commits after this and its own row update both
 // succeed, so a crash cannot leave the session closed with the request still
 // accepted, or vice versa.
-func (s *Store) CompleteInTx(ctx context.Context, tx *sql.Tx, peer, id, note string, result *Result) error {
+//
+// It writes no audit row itself: the audit log shares the daemon's single
+// SQLite connection, which tx holds, so an Append here would block until ctx
+// ends. The returned function appends the request.complete audit row; the
+// caller runs it after tx commits.
+func (s *Store) CompleteInTx(ctx context.Context, tx *sql.Tx, peer, id, note string, result *Result) (func(context.Context), error) {
 	if err := ValidateComplete(note, result); err != nil {
-		return err
+		return nil, err
 	}
 	row, err := getRow(ctx, tx, "in", peer, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if row.state != StateAccepted {
-		return &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", id, row.state)}
+		return nil, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", id, row.state)}
 	}
 	now := s.now()
 	seq := row.stateSeq + 1
 	canon, err := completeBodyCanonical(id, seq, now, note, result)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := CheckCompleteSize(canon); err != nil {
-		return err
+		return nil, err
 	}
 	body := map[string]any{"at": wireTime(now), "request": id, "seq": seq}
 	var resultCanon []byte
@@ -87,7 +92,7 @@ func (s *Store) CompleteInTx(ctx context.Context, tx *sql.Tx, peer, id, note str
 		body["result"] = resultWire(result)
 		resultCanon, err = CanonicalResult(result)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	var noteArg, resultArg any
@@ -99,25 +104,26 @@ func (s *Store) CompleteInTx(ctx context.Context, tx *sql.Tx, peer, id, note str
 	}
 	lastReply, err := jsonObject(map[string]any{"kind": KindComplete, "body": body})
 	if err != nil {
-		return fmt.Errorf("request: encode last_reply: %w", err)
+		return nil, fmt.Errorf("request: encode last_reply: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE requests SET state = ?, state_seq = ?, state_at = ?, note = ?, result = ?, last_reply = ?, last_reply_sent = ?, updated = ?
 WHERE direction = 'in' AND peer = ? AND id = ?`,
 		StateCompleted, seq, wireTime(now), noteArg, resultArg, lastReply, storeTime(now), storeTime(now), peer, id); err != nil {
-		return fmt.Errorf("request: complete in row (tx): %w", err)
+		return nil, fmt.Errorf("request: complete in row (tx): %w", err)
 	}
 	if _, err := s.Outbox.SubmitTx(ctx, tx, peer, KindComplete, body); err != nil {
-		return err
+		return nil, err
 	}
-	if s.Audit != nil {
-		extra := map[string]any{"request": id, "peer": peer, "team": row.teamID, "type": row.typ, "urgency": row.urgency, "seq": seq, "age_s": ageSeconds(row, now)}
-		if result != nil {
-			extra["result_bytes"] = ResultBytes(resultCanon)
-			extra["output_bytes"] = OutputBytes(result.Output)
-			extra["artifacts"] = len(result.Artifacts)
+	extra := map[string]any{"request": id, "peer": peer, "team": row.teamID, "type": row.typ, "urgency": row.urgency, "seq": seq, "age_s": ageSeconds(row, now)}
+	if result != nil {
+		extra["result_bytes"] = ResultBytes(resultCanon)
+		extra["output_bytes"] = OutputBytes(result.Output)
+		extra["artifacts"] = len(result.Artifacts)
+	}
+	return func(ctx context.Context) {
+		if s.Audit != nil {
+			_ = s.Audit.Append(ctx, "daemon", "request.complete", extra)
 		}
-		_ = s.Audit.Append(ctx, "daemon", "request.complete", extra)
-	}
-	return nil
+	}, nil
 }

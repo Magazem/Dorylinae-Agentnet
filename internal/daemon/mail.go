@@ -150,7 +150,12 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 		rcv.Kinds[request.KindCancelled] = rs.CancelledKind()
 		rcv.Kinds[request.KindCancel] = rs.CancelKind()
 	}
-	if ws != nil {
+	// ws.* is registered only once sessions are wired into the request
+	// lifecycle (rs.Sessions, 2.1b). Before that no session ever opens here,
+	// so a ws.* mail can only come from a misbehaving peer, and must not be
+	// able to create session rows or store results: unregistered, it is
+	// acked unsupported, which is also the honest Phase 1 answer.
+	if ws != nil && rs != nil && rs.Sessions != nil {
 		rcv.Kinds[worksession.KindResult] = ws.ResultKind()
 		rcv.Kinds[worksession.KindCancel] = ws.CancelKind()
 		rcv.Kinds[worksession.KindState] = ws.StateKind()

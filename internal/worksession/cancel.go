@@ -19,6 +19,7 @@ type cancelOutcome struct {
 	sessionID string
 	peer      string
 	requestID string
+	closed    *storedRow // the row before a close, for ws.close
 }
 
 var pendingCancel sync.Map // map[*mail.Opened]*cancelOutcome
@@ -72,7 +73,7 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", s.now()); err != nil {
 		return err
 	}
-	pendingCancel.Store(op, &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+	pendingCancel.Store(op, &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From, closed: &row})
 	return nil
 }
 
@@ -98,4 +99,7 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	_ = s.Audit.Append(ctx, "daemon", "ws.cancel_in", map[string]any{"session": out.sessionID, "peer": out.peer, "result": out.result})
+	if out.closed != nil {
+		s.auditClose(ctx, *out.closed, OutcomeCancelled, s.now())
+	}
 }

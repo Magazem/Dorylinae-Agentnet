@@ -40,8 +40,10 @@ type Store struct {
 	// Quarantine reports whether the quarantine rule
 	// (Docs/protocol/work-session.md §Quarantine) holds for a result on
 	// session sid from peer at round, evaluated in the same transaction as
-	// the result. nil means never quarantine, correct before grants exist
-	// (2.4 wires the real check).
+	// the result. round 0 means no session row exists yet (an early
+	// request.complete that overtook or skipped the accept): only the
+	// peer-wide clause can hold. nil means never quarantine, correct before
+	// grants exist (2.4 wires the real check).
 	Quarantine func(ctx context.Context, tx *sql.Tx, sid, peer string, round int) (bool, error)
 
 	Now func() time.Time
@@ -134,6 +136,8 @@ type View struct {
 	Result       *Result
 	ResultBytes  int
 	OutputBytes  int
+	Artifacts    int    // number of result artifacts, kept while Result is withheld
+	ResultStatus string // result status, kept while Result is withheld
 	ResultRound  int
 	Verification string
 	Changes      string
@@ -174,9 +178,16 @@ func toView(r storedRow) (View, error) {
 		if err != nil {
 			return View{}, err
 		}
-		v.Result = res
 		v.ResultBytes = len(r.result.String)
 		v.OutputBytes = OutputBytes(res.Output)
+		v.Artifacts = len(res.Artifacts)
+		v.ResultStatus = res.Status
+		// A quarantined result is never handed out on the requester's side:
+		// only its sizes (Docs/protocol/work-session.md §Quarantine (2.4)).
+		// Withholding it here means no view built on View can leak it.
+		if r.role != RoleRequester || r.state != StateQuarantined {
+			v.Result = res
+		}
 	}
 	return v, nil
 }

@@ -23,6 +23,9 @@ type stateOutcome struct {
 	requestID  string
 	state      string
 	seq, round int
+	// auditComplete appends the request.complete audit row of a close,
+	// after commit (request.Store.CompleteInTx).
+	auditComplete func(context.Context)
 }
 
 var pendingState sync.Map // map[*mail.Opened]*stateOutcome
@@ -152,7 +155,12 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return fmt.Errorf("worksession: apply mirror state: %w", err)
 	}
 
-	if state == StateClosed && s.Requests != nil {
+	// Complete B's request only on the step into closed. A later ws.state
+	// (a higher seq from a misbehaving A, "closed" again or after a reopen)
+	// must not fail the mail transaction: a non-bad-body error is never
+	// acked, so the sender would resend it for 14 days.
+	var auditComplete func(context.Context)
+	if state == StateClosed && row.state != StateClosed && s.Requests != nil {
 		note := ""
 		var res *request.Result
 		if outcome == OutcomeAccepted {
@@ -166,12 +174,20 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		} else {
 			note = "session cancelled"
 		}
-		if err := s.Requests.CompleteInTx(ctx, tx, op.Msg.From, reqID, note, res); err != nil {
+		fn, err := s.Requests.CompleteInTx(ctx, tx, op.Msg.From, reqID, note, res)
+		var bse *request.BadStateError
+		switch {
+		case errors.As(err, &bse):
+			// The request is no longer accepted (already completed, for
+			// example by the Phase 1 fallback): nothing left to complete.
+		case err != nil:
 			return fmt.Errorf("worksession: complete request on close: %w", err)
+		default:
+			auditComplete = fn
 		}
 	}
 
-	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round})
+	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, auditComplete: auditComplete})
 	return nil
 }
 
@@ -184,6 +200,9 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	out := v.(*stateOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
+	}
+	if out.auditComplete != nil {
+		out.auditComplete(ctx)
 	}
 	if s.Audit == nil {
 		return
