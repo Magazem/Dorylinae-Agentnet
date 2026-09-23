@@ -2,6 +2,41 @@
 
 Mark each step `[x] PASS` or `[x] FAIL` and add notes.
 
+## Two-machine only
+
+[phase1-smoke.ps1](phase1-smoke.ps1) / [phase1-smoke.sh](phase1-smoke.sh) automate
+everything below that fits on one machine: pairing v2 and fingerprints; team
+create/invite/join (including a third member); presence levels
+(visible/invisible/only-team/human) and the "outside peer sees offline"
+visibility check; a request with brief/artifacts/urgency, queued while the peer
+is offline then delivered; inbox ordering by urgency; accept/decline/defer/
+complete with a D14 result; cancel before accept (→ cancelled) and cancel after
+accept (→ refused); the 6th-high-in-a-week urgency downgrade; a webhook to a
+local HTTP listener with HMAC verification; the desktop notification *setting*
+(not a visible toast); and an audit-log content check. Each corresponding
+section below is marked "(smoke script)".
+
+What genuinely needs the owner's two separate machines, and is **not** covered by
+the smoke scripts:
+
+- **Reboot / service survival**: `agentnetd install` as an OS service, a real
+  reboot or logoff/logon, and the daemon coming back up unattended. The smoke
+  scripts only run `agentnetd` as a plain foreground child process (no admin
+  rights available here) and never install a service.
+- **Cross-OS pairing and requests**: one real Windows machine and one real
+  macOS or Linux machine (or two different real OSes) exchanging pairing
+  codes, presence, and requests over an actual network path, not loopback.
+- **A real network relay**: a relay reachable over the internet or a LAN
+  (TLS, real latency, NAT, reconnect after a real network drop), instead of
+  `ws://127.0.0.1:<port>` on one host.
+- **Idle detection per OS** ([below](#idle-detection-ticket-12d-internalidle)):
+  needs a real logged-in desktop session left untouched for 10 minutes, once
+  per OS (Windows, macOS, Linux).
+- **Desktop notifications actually appearing on screen** per OS
+  ([below](#desktop-notifications-ticket-18a-internalnotify)): the smoke
+  scripts only check the `notify --test`/event *setting* and that the call
+  path runs without requiring a human to see a toast.
+
 ## Two-machine run (ticket 1.9)
 
 The automated e2e (`internal/daemon` `TestOfflineLifecycleEndToEnd`,
@@ -9,7 +44,7 @@ The automated e2e (`internal/daemon` `TestOfflineLifecycleEndToEnd`,
 This checklist is the owner's manual run of the same features across two real machines
 (A and B), each paired and running its own daemon.
 
-### Team invite/join (ticket 1.1)
+### Team invite/join (ticket 1.1) (smoke script)
 
 1. On A: `agentnet team create backend`.
    - [ ] Prints the team id and confirms A is the owner.
@@ -20,7 +55,7 @@ This checklist is the owner's manual run of the same features across two real ma
 4. On both: `agentnet team list` / `agentnet team show backend`.
    - [ ] Both machines see a 2-member roster within a few seconds.
 
-### Presence levels and visibility (tickets 1.2, 1.3)
+### Presence levels and visibility (tickets 1.2, 1.3) (smoke script)
 
 1. On A: `agentnet status --team backend`.
    - [ ] B shows as online, with a fresh `last_seen`.
@@ -32,7 +67,7 @@ This checklist is the owner's manual run of the same features across two real ma
    - [ ] `agentnet presence` on B reports `only_team backend`; a peer outside the team sees B
      as never seen / offline.
 
-### Request → inbox → accept/complete with result (tickets 1.4-1.6a)
+### Request → inbox → accept/complete with result (tickets 1.4-1.6a) (smoke script)
 
 1. On A: `agentnet request @bob task --title "Run the tests" --brief "What: run go test"`.
    - [ ] Returns in under 2 s with `status: queued`.
@@ -45,7 +80,7 @@ This checklist is the owner's manual run of the same features across two real ma
    - [ ] On A, `agentnet request show <id>` shows `state: completed` with the result (status,
      summary, output).
 
-### Cancel (ticket 1.6a, D11)
+### Cancel (ticket 1.6a, D11) (smoke script)
 
 1. On A: send a second request, then `agentnet request cancel <id2> --reason "not needed"`
    before B answers it.
@@ -54,18 +89,21 @@ This checklist is the owner's manual run of the same features across two real ma
 2. On A: `agentnet request show <id2>`.
    - [ ] Shows `state: cancelled` once B's daemon confirms.
 
-### Urgency downgrade (ticket 1.7)
+### Urgency downgrade (ticket 1.7) (smoke script)
 
 1. On A: send 6 `high` requests to B inside a few minutes.
    - [ ] The 6th is shown (on both `request show` on A and `inbox` on B) as
      `urgency: normal`, `urgency_declared: high`, with a note explaining the weekly budget.
 
-### Desktop notification (ticket 1.8a)
+### Desktop notification (ticket 1.8a) (setting only: smoke script; visible toast: two machines / per OS)
 
 See [Desktop notifications](#desktop-notifications-ticket-18a-internalnotify) below; run at
-least the accept/complete/cancel steps against the live request exchanged above.
+least the accept/complete/cancel steps against the live request exchanged above. The smoke
+scripts check `notify --desktop on|off` and that `notify --test` runs the call path
+(`shown`, `failed`, or `disabled` when off) without requiring a human to see a toast; actually
+seeing the toast, per OS, still needs a manual run below.
 
-### Webhook (ticket 1.8b)
+### Webhook (ticket 1.8b) (smoke script)
 
 1. On B: `agentnet notify --webhook https://example.test/hook` (a URL you control, or a
    local `httptest`-style receiver).
@@ -76,7 +114,7 @@ least the accept/complete/cancel steps against the live request exchanged above.
 3. `agentnet notify --webhook off` on B.
    - [ ] `agentnet notify` no longer lists a webhook; no further deliveries.
 
-## Idle detection (ticket 1.2d, `internal/idle`)
+## Idle detection (ticket 1.2d, `internal/idle`) (two machines / per OS, not covered by the smoke scripts)
 
 Run once per OS (Windows, macOS, Linux with GNOME, KDE, or X11 + `xprintidle`). Human present
 means OS idle time under 10 min ([presence.md](../Docs/protocol/presence.md#idle-detection)).
@@ -101,7 +139,7 @@ For each OS:
 | macOS | ioreg HIDIdleTime | | |
 | Linux | gdbus Mutter / ScreenSaver / xprintidle | | |
 
-## Desktop notifications (ticket 1.8a, `internal/notify`)
+## Desktop notifications (ticket 1.8a, `internal/notify`) (visible toast: two machines / per OS; setting only is covered by the smoke scripts)
 
 Run once per OS (Windows, macOS, Linux with a session bus running `org.freedesktop.Notifications`).
 `agentnet notify --desktop on` first, then trigger each event with a paired peer
