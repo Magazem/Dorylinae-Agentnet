@@ -88,7 +88,12 @@ decode caps and adds an accept-and-submit path; 2.3c parses peer fragments and w
   - the session-id vector of [work-session.md](../protocol/work-session.md#session-id);
   - **2.1: every transition of the diagram, and nothing else** (table test over all
     `state × event` pairs: allowed ones reach the listed state, every other pair is
-    `bad_state` at IPC-level functions or `ws.ignored` for peer mail) (`TestSessionStateMachine`);
+    `bad_state` at IPC-level functions or `ws.ignored` for peer mail) (`TestSessionStateMachine`),
+    including the two OD-P2-6 (c) edges from `quarantined` — **discard** (→ `closed`,
+    `cancelled`, no approval, `ws_discard`, CLI `agentnet session <id> --discard`) and
+    **request-changes without release** (→ `open`, `round += 1`, no approval, `ws_request_changes`
+    now also accepted from `quarantined`) — and that in both the stored result is deleted and
+    never surfaced through any IPC view or mail to B;
   - accept opens the session in the same transaction (an injected failure after the accept
     leaves neither); A creates its row on `request.accept`, or on a `ws.result` that
     overtakes it;
@@ -329,11 +334,10 @@ updated.
 
 ## Owner decisions needed
 
-The specs are written with the recommendation, so approving the specs as they are accepts
-every recommendation below. **Exception:** review 24 changed the recommendation of OD-P2-6 to
-(c); the specs still describe (a) until the owner decides, and 2.1a adds the two edges only
-if (c) is approved. D1–D15 are not reopened; OD-P2-8 is an interpretation of D13's
-wording, not a change of it.
+**Decided.** All of OD-P2-1..15 were approved by the owner on 2026-09-23 as recommended:
+OD-P2-6 = **(c)** (the specs now describe (c) throughout), OD-P2-2's confinement boundary is
+accepted, and (d) (an OS user-presence check) is deferred to Phase 3/4 hardening. D1–D15 are
+not reopened; OD-P2-8 is an interpretation of D13's wording, not a change of it.
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
@@ -342,7 +346,7 @@ wording, not a change of it.
 | OD-P2-3 | Approval on machines without a desktop | (a) `DORYLINAE_APPROVAL=terminal` at daemon start (code on the daemon's stderr; review 24: stderr must be a terminal unless `DORYLINAE_DEBUG=1`, the start is audited and announced on the desktop if there is one); (b) no approvals there (policies set elsewhere cannot exist either, so no grants) | **(a)**, documented as weaker. It is also what the 2.H harness uses (with `DORYLINAE_DEBUG=1`) |
 | OD-P2-4 | Read-only database URL grants (plan 2.2 example) | (a) defer; (b) sealed hand-over of a URL (not revocable); (c) a query proxy | **(a)**. (b) fails "revocable", (c) is a large new attack surface, and no Phase 2 acceptance test needs a database |
 | OD-P2-5 | Who may grant in a session | (a) the requester only; (b) either party | **(a)**. The plan's wording; one direction keeps quarantine semantics simple |
-| OD-P2-6 | Leaving `awaiting_result` / `quarantined` other than by accept-result or request-changes (**amended by review 24**) | (a) not allowed (the diagram exactly); (b) cancel from `awaiting_result` and `quarantined` (→ `closed`, `cancelled`); (c) from `quarantined` only: **discard** (→ `closed`, `cancelled`) and **request-changes without release** (→ `open`, `round + 1`), both without an approval and with the result deleted unseen | **(c)** (changed from (a)). Under (a) a human who distrusts a quarantined result can only get rid of it by releasing it, which exposes it to the agent the quarantine protects: the one exit adds exposure. Both (c) moves reduce exposure, so they need no approval. It adds two edges to the diagram, so it is the owner's call; if approved, 2.1a adds them to `TestSessionStateMachine` and work-session.md gets them in its transition table |
+| OD-P2-6 | Leaving `awaiting_result` / `quarantined` other than by accept-result or request-changes (**amended by review 24, decided by the owner 2026-09-23**) | (a) not allowed (the diagram exactly); (b) cancel from `awaiting_result` and `quarantined` (→ `closed`, `cancelled`); (c) from `quarantined` only: **discard** (→ `closed`, `cancelled`) and **request-changes without release** (→ `open`, `round + 1`), both without an approval and with the result deleted unseen | **Decided: (c)** (changed from (a)). Under (a) a human who distrusts a quarantined result can only get rid of it by releasing it, which exposes it to the agent the quarantine protects: the one exit adds exposure. Both (c) moves reduce exposure, so they need no approval. It adds two edges to the diagram; 2.1a adds them to `TestSessionStateMachine` and work-session.md has them in its transition table |
 | OD-P2-7 | Deciding a quarantine release | (a) on metadata (status, sizes) and out-of-band knowledge; (b) add a human-only preview behind an approval | **(a)** for Phase 2; (b) if beta users ask |
 | OD-P2-8 | Representation of D13's `device` trust | (a) its own table `device_links`, not a `peers.trust` value; (b) add `device` to `peers.trust` (a peers rebuild) | **(a)**. `peers.trust` ranks key authenticity and is written by pairing, teams and `peers verify`; a separate table cannot be raised by any of those paths, which is D13's point. It is still called "device trust" in the docs |
 | OD-P2-9 | Depth of the one-way hierarchy | (a) depth 1: a device is only helper or only controller, no reverse links; (b) allow chains without cycles | **(a)**. Simplest, and nothing in Phase 2 needs chains |

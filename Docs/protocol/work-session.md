@@ -21,8 +21,8 @@ characters" means none of U+0000–U+001F and U+007F.
 
 A request `r` from **A** (the *requester*) to **B** (the *worker*) becomes a work session
 when B accepts it. The session carries the grants A gives B ([grant.md](grant.md)) and the
-result B returns. It closes when A accepts the result, or when either side cancels while the
-work is open.
+result B returns. It closes when A accepts the result, when either side cancels while the
+work is open, or when A discards a quarantined result (OD-P2-6 (c)).
 
 **Authority.** Two state machines exist, each with one authoritative owner:
 
@@ -61,8 +61,9 @@ sid        s-36375782ceb6baea9cee4d4273dfb035
 
 ## State machine
 
-The session states and transitions are **exactly** those of the plan's diagram (Phase 2).
-The first four states belong to the request; the session starts at `Open`.
+The session states and transitions are those of the plan's diagram (Phase 2), **extended by
+two edges from `Quarantined` per OD-P2-6 (c)**. The first four states belong to the request;
+the session starts at `Open`.
 
 ```mermaid
 stateDiagram-v2
@@ -77,6 +78,8 @@ stateDiagram-v2
     Quarantined --> AwaitingResult: release
     AwaitingResult --> Closed: accept-result
     AwaitingResult --> Open: changes requested
+    Quarantined --> Closed: discard
+    Quarantined --> Open: changes requested (no release)
     Open --> Closed: cancel
     Closed --> [*]
 ```
@@ -110,10 +113,14 @@ request; what the requester can do after accept is cancel the *session* while it
 | `awaiting_result` | `accept-result` | `closed`, `outcome = accepted` | A | |
 | `awaiting_result` | `request-changes` | `open`, `round += 1` | A | Carries a `changes` text for B |
 | `open` | `cancel` (A), a valid `ws.cancel` from B, or an [early complete](#early-complete-and-phase-1-workers) from B | `closed`, `outcome = cancelled` | A or B | B's cancel is applied automatically by A's daemon when the state is `open`; otherwise refused |
+| `quarantined` | `discard` | `closed`, `outcome = cancelled` | A | No approval. The stored result is deleted, never shown to A's IPC/agent (OD-P2-6 (c)) |
+| `quarantined` | `request-changes` (without release) | `open`, `round += 1` | A | No approval. Carries a `changes` text for B; the stored result is deleted, never shown to A's IPC/agent (OD-P2-6 (c)) |
 
-**Nothing else is reachable.** In particular: no cancel from `awaiting_result` or
-`quarantined` (A either accepts the result or requests changes; see OD-P2-6), no transition
-out of `closed`, no `ws.result` outside `open`. Every other IPC action is `bad_state` with a
+**Nothing else is reachable.** In particular: no cancel from `awaiting_result` (A either
+accepts the result or requests changes), from `quarantined` A has four exits — `release`,
+`discard`, `request-changes` (without release), or (after release) `accept-result`/
+`request-changes` once back in `awaiting_result` — see OD-P2-6. No transition out of
+`closed`, no `ws.result` outside `open`. Every other IPC action is `bad_state` with a
 message naming the state. Every other peer mail is ignored and audited `ws.ignored {session,
 peer, kind, reason}`.
 
@@ -227,10 +234,22 @@ to B carries the final `verification`.
 
 ### Request changes
 
-`agentnet session <id> --request-changes "<text>"` (A only): `awaiting_result → open`,
-`round += 1`, `changes` = the text (1–4000 code points, `\n` and `\t` allowed, content: never
-audited). B's agent reads it with `agentnet session <id>` and submits a new result for the
-new round.
+`agentnet session <id> --request-changes "<text>"` (A only): `awaiting_result → open`, or
+`quarantined → open` **without a release** (OD-P2-6 (c)), `round += 1`, `changes` = the text
+(1–4000 code points, `\n` and `\t` allowed, content: never audited). B's agent reads it with
+`agentnet session <id>` and submits a new result for the new round. From `quarantined`, the
+quarantined result is deleted unseen ([Quarantine](#quarantine-24)); B is told only `open`
+with the round and `changes`, never that a result existed or what it was.
+
+### Discard
+
+`agentnet session <id> --discard` (A only): `quarantined → closed`, `outcome = cancelled`
+(OD-P2-6 (c)). No approval. The stored result is deleted unseen, never shown to A's IPC or
+agent, and never stored beyond the transaction that deletes it. B is told only `closed` /
+`cancelled`, the same as any other cancelled close; B learns nothing about A's view of the
+content. This is the diagram's `Quarantined → Closed: discard` edge — a human who distrusts a
+quarantined result can get rid of it without exposing it to the agent the quarantine
+protects.
 
 ## Quarantine (2.4)
 
@@ -267,6 +286,16 @@ back to the requester's side, that is, B's result. While `quarantined`:
 - `agentnet release <session>` requires a [human approval](approval.md) (kind `release`).
   On approval: `quarantined → awaiting_result`, audit `ws.release {session, peer, round,
   approval}`, `ws.state` to B. The result then becomes visible.
+- **Leaving `quarantined` without a release (OD-P2-6 (c)):** `discard` and `request-changes`
+  need no approval, because both **reduce** exposure — neither shows the quarantined result
+  to A's IPC or agent. In the same transaction as the state change, the stored `result` (and
+  `result_round`) are deleted and never re-derivable; nothing computed from the content
+  survives the transaction. B is told only the new `ws.state` (`closed`/`cancelled`, or `open`
+  with the new `round` and `changes`) — the same shape B would see from an ordinary
+  request-changes or cancel, so B learns nothing about whether A's human ever saw the
+  content. Audited as `ws.discard {session, peer, round}` or `ws.request_changes {session,
+  peer, round, from: "quarantined"}` — no content, matching every other audit row in this
+  document.
 - The plan's acceptance test: a session with a sensitive grant cannot deliver a result until
   released, and the audit log records the release.
 
@@ -401,7 +430,8 @@ Every method returns within 2 s and never waits for the relay or a peer.
 | `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session` |
 | `ws_result` | `{"id", "result", "notes"?}` (B only) | `{"session": <view>, "mail_id"}`. `bad_state` unless B's mirror is `open` (and `cancel` not requested), or the id names a `pending`/`deferred` request of type `question`, which is accepted in the same call ([consult.md §Answering](consult.md#answering)); `bad_request` naming the field; `result_too_large`; `not_worker` |
 | `ws_accept_result` | `{"id", "human"?: bool}` (A only) | `{"session": <view>, "mail_id"}` or, with `human`, `{"approval": <approval view>}` ([approval.md](approval.md)). `bad_state`, `not_requester` |
-| `ws_request_changes` | `{"id", "changes"}` (A only) | `{"session", "mail_id"}`. `bad_state`, `bad_request`, `not_requester` |
+| `ws_request_changes` | `{"id", "changes"}` (A only) | `{"session", "mail_id"}`. `bad_state` unless `awaiting_result` or `quarantined` (from `quarantined`, no approval, per OD-P2-6 (c)); `bad_request`, `not_requester` |
+| `ws_discard` | `{"id"}` (A only) | `{"session", "mail_id"}`. No approval. `bad_state` unless `quarantined`; `not_requester` (OD-P2-6 (c)) |
 | `ws_cancel` | `{"id", "reason"?}` | A: `{"session", "mail_id"}`; B: `{"session", "mail_id", "duplicate"}`. `bad_state` |
 | `ws_release` | `{"id"}` (A only) | `{"approval": <approval view>}`; the release happens when the approval is confirmed. `bad_state` unless `quarantined` |
 
@@ -418,7 +448,8 @@ Per-command pages (`Docs/cli/session.md`) are written by ticket 2.1b.
 |---|---|---|
 | `agentnet sessions [--state S] [--role requester\|worker] [--json]` | `ws_list` | |
 | `agentnet session <id> [--json]` | `ws_show` | `<id>` is `s-…` or `r-…` |
-| `agentnet session <id> --request-changes TEXT \| --changes-from-file F` | `ws_request_changes` | |
+| `agentnet session <id> --request-changes TEXT \| --changes-from-file F` | `ws_request_changes` | Also allowed from `quarantined`, without a release (OD-P2-6 (c)) |
+| `agentnet session <id> --discard` | `ws_discard` | `quarantined` only; no approval (OD-P2-6 (c)) |
 | `agentnet session <id> --cancel [--reason R]` | `ws_cancel` | |
 | `agentnet result <id> --status S [--summary T] [--file F \| --output-from-file F] [--exit-code N] [--artifact SPEC]… [--verification none\|tests_passed] [--notes T] [--json]` | `ws_result` | `--file` is the plan's name and is the same as `--output-from-file` (CRLF → LF, ANSI CSI stripped, other controls rejected, `-` = stdin, as `agentnet complete` in 1.6b). For a consult, `--status` defaults to `n/a` ([consult.md](consult.md)) |
 | `agentnet wait <id> [--timeout SECONDS] [--json]` | polls `ws_show` | See below |
@@ -459,7 +490,8 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 | `ws.result_in` | A / `daemon` | `{session, peer, round, result_bytes, output_bytes, artifacts, quarantined}` |
 | `ws.release` | A / `cli` | `{session, peer, round, approval}` |
 | `ws.accept_result` | A / `cli` | `{session, peer, round, verification}` |
-| `ws.request_changes` | A / `cli` | `{session, peer, round}` |
+| `ws.request_changes` | A / `cli` | `{session, peer, round, from?}` (`from: "quarantined"` when it left `quarantined` without a release, OD-P2-6 (c)) |
+| `ws.discard` | A / `cli` | `{session, peer, round}` (no content; OD-P2-6 (c)) |
 | `ws.cancel` | either / `cli` | `{session, peer, role}` |
 | `ws.cancel_in` | A / `daemon` | `{session, peer, result}` |
 | `ws.state` | B / `daemon` | `{session, peer, state, seq, round}` |
