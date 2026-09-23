@@ -4,13 +4,13 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-23, end of Phase 1 (context reset follows).
+Last updated: 2026-09-23, Phase 2 wave P2-1.
 
 ## 0. Status and next steps
 
 **Phase 0 and Phase 1 are code-complete, merged and pushed; CI is green on all 15 jobs.**
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is
-free. No workers, no worktrees, no open branches: `git worktree list` shows only `main`.
+free. Phase 2 work is in flight: see the wave table below for workers, worktrees and branches.
 
 **Open items (all owner-side, none blocks Phase 2 spec work):**
 1. **Owner's two-machine run.** The top of `tests/phase1-manual.md` lists the only checks
@@ -30,11 +30,15 @@ free. No workers, no worktrees, no open branches: `git worktree list` shows only
 + `Docs/review/23-phase2-tickets.md` (15 tickets, migrations 14–17, OD-P2-1..15). Step 2 done:
 `Docs/review/24-phase2-spec-review.md` (0 C, 3 H fixed, 11 M (10 fixed, M10 → OD-P2-6), 17 L),
 commit faefa85. Step 3 done: owner approved all ODs (D16); OD-P2-6 (c) applied (4f28a2b);
-specs merged to main. **Pending owner answer (self-hosted relays in beta):** (1) move review-05
-M2 (relay TLS + abuse limits) into Phase 2 as a ticket, or keep it as a gate before the beta?
-(2)+(3) proposed docs-only clarifications: fetch limits must be daemon-side caps, not relay
-config; "non-loopback" in D5 explicitly includes self-hosted relays. **Next:** dispatch tickets
-per `Docs/review/23-phase2-tickets.md` in dependency order.
+specs merged to main. Self-hosted relays: D17.
+
+**Wave P2-1 in progress** (Sonnet workers; each needs an Opus security review before merge):
+| Ticket | Worker slot | Task | Worktree / branch | Migration |
+|---|---|---|---|---|
+| 2.1a work sessions | `01a0cd5e-eafe…` P2-WSCore | `01a0cd5f-0c95…` | `ws-core` / `p2/ws-core` | 14 |
+| 2.2a approval | `01a0cd5e-ec75…` P2-Approval | `01a0cd5f-2990…` | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge; merge after 2.1a) |
+| 2.2b tokens | `01a0cd5e-ee47…` P2-CapToken | `01a0cd5f-3c1c…` | `captoken` / `p2/captoken` | — |
+Next after these merge: 2.1b, 2.2c (then 2.D1 after 2.2c).
 
 **Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
 helper (D13). Follow the same flow as Phase 1:
@@ -47,7 +51,7 @@ helper (D13). Follow the same flow as Phase 1:
 4. Then implementation tickets in dependency order, Opus security review on the sensitive ones.
 
 **Backlog (not blocking):** review Lows in `Docs/review/07`–`22`; 05-review M1 (direct path
-at-most-once) and M2 (relay abuse limits + TLS, before 4.1); relay pairing limits L1/L5 (08b)
+at-most-once); **M2 (relay abuse limits + TLS) is a beta gate (D17)**; relay pairing limits L1/L5 (08b)
 before hosted relay; a dedicated `stale` ack status instead of `unsupported`; `status` cannot
 split delivered vs failed counts; accept/decline/defer `--from` takes a raw key only;
 team-invite table prune and `team_delete` not cancelling pending invites (18).
@@ -124,6 +128,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D13 | **Own-device helper (Phase 2):** separate `device` trust never created by team/roster/pairing; dedicated link flow confirmed on BOTH devices; only the obeying device can make itself a helper and holds the scope locally (request types, repos/paths, commands, expiry); off by default, audited, revocable from either side; out-of-scope requests go to the normal inbox; one-way hierarchy. |
 | D14 | Optional size-capped **result payload on `request.complete`** (status, summary, exit_code, output ≤32 KiB, artifacts). Implemented in 1.6a. |
 | D16 | **Phase 2 specs approved (2026-09-23)**, OD-P2-1..15 as recommended in `Docs/review/23-phase2-tickets.md`: in-house signed token (not Biscuit); desktop approval code with the stated boundary (agents with a raw shell need harness confinement; OS user-presence = Phase 3/4 hardening); DB grants deferred; requester-only grants; **OD-P2-6 = (c)** (from `quarantined`: discard, or request changes without release, result deleted unseen); every accept opens a work session; weekly CI with a scripted stand-in agent, real agents manual before releases. |
+| D17 | **Self-hosted relays in the beta:** the relay stays untrusted whoever runs it; D5 "non-loopback" includes self-hosted relays; fetch limits are daemon-side caps (grant.md). Review-05 **M2 (relay TLS + abuse limits) is a GATE BEFORE THE BETA**, not a Phase 2 ticket. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);

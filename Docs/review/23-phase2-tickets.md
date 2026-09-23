@@ -1,6 +1,6 @@
 # 23: Phase 2 tickets (2.1–2.7 and the own-device helper, D13)
 
-Status: **draft, reviewed (adversarial spec review: [24-phase2-spec-review.md](24-phase2-spec-review.md), fixes applied), awaiting owner approval.** No code
+Status: **draft, reviewed (adversarial spec review: [24-phase2-spec-review.md](24-phase2-spec-review.md), fixes applied), approved by the owner 2026-09-23 (D16 in HANDOFF).** No code
 starts before approval (HANDOFF rule 3). Specs:
 [work-session.md](../protocol/work-session.md), [approval.md](../protocol/approval.md),
 [grant.md](../protocol/grant.md), [consult.md](../protocol/consult.md),

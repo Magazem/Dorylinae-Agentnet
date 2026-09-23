@@ -113,7 +113,8 @@ The grantor's daemon, in order:
 
 1. The session exists with `role = requester`, `peer` = the resolved peer, state `open`;
    otherwise `unknown_session`, `not_requester` or `bad_state`.
-2. D5: refused to a `trust = relay` peer on a non-loopback relay (`unverified_peer`).
+2. D5: refused to a `trust = relay` peer on a non-loopback relay (`unverified_peer`). "Non-loopback" includes self-hosted relays (on a LAN or a VPS): the relay
+   is untrusted whoever runs it (D17).
 3. Resource: `<path>` must be an **absolute, existing** directory. For `git.read` it must be
    the top of a git work tree or a bare repository (`git rev-parse --show-toplevel` /
    `--is-bare-repository`), and `#<branch>` must name an existing `refs/heads/` branch. The
@@ -197,7 +198,9 @@ whose lines are limited to 1 MiB ([ipc.md](ipc.md#framing); a 1 MiB read is abou
 base64), and a burst of fragments larger than the relay's per-connection buffer (64 frames)
 spills into the recipient's persistent relay queue, where it competes with the holder's
 mail (`queue_full`). With 8 fragments per read and 2 reads in flight per holder
-([Limits](#limits)), at most 16 fragments are in flight towards one holder.
+([Limits](#limits)), at most 16 fragments are in flight towards one holder. These caps are
+**daemon-side** and hold whatever the relay is configured with: a self-hosted relay may use
+other buffer or queue sizes, and nothing here depends on the relay's configuration (D17).
 
 `entry` = `{"name", "type": "file"|"dir"|"symlink"|"other", "size"?}`. `git.read` responses
 carry `commit`: the branch tip the operation was served from (the tip is resolved per call;
