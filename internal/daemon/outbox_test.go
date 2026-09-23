@@ -191,8 +191,14 @@ func TestOutboxExpiry(t *testing.T) {
 	if c, _ := ob.Counts(ctx); c.Expired != 1 {
 		t.Errorf("Counts = %+v", c)
 	}
+	// The audit row is written just after the state change, so poll for it.
 	var n int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'mail.expired'`).Scan(&n); err != nil || n != 1 {
+	var err error
+	waitFor(t, "mail.expired audit row", func() bool {
+		err = a.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action = 'mail.expired'`).Scan(&n)
+		return err != nil || n >= 1
+	})
+	if err != nil || n != 1 {
 		t.Errorf("mail.expired audit rows = %d, %v", n, err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"regexp"
@@ -187,8 +188,9 @@ func TestQueuePersistsAcrossRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Let the last ack land before stopping.
-	time.Sleep(200 * time.Millisecond)
+	// The relay applies acks after reading them; wait until all three have
+	// removed their rows before stopping, or the third start redelivers.
+	waitQueueEmpty(t, db, keyB)
 	stop2()
 
 	// Delivered exactly once: a third start has nothing left for B, so the
@@ -205,6 +207,31 @@ func TestQueuePersistsAcrossRestart(t *testing.T) {
 	}
 	if got := readEnvelopeID(t, cb); got != "self" {
 		t.Fatalf("first frame after third start = %s, want self (redelivery)", got)
+	}
+}
+
+// waitQueueEmpty polls the relay's queue database at path until nothing is
+// queued for key.
+func waitQueueEmpty(t *testing.T, path, key string) {
+	t.Helper()
+	qdb, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = qdb.Close() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int
+		if err := qdb.QueryRow(`SELECT COUNT(*) FROM queue WHERE to_key = ?`, key).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d envelopes still queued for B after its acks", n)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

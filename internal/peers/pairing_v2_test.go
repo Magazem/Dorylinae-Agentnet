@@ -647,6 +647,7 @@ func TestV2ThreeBadTagsAbort(t *testing.T) {
 	if st.Error.Code != peers.FailBadConfirm || !strings.Contains(st.Error.Message, "too many") {
 		t.Fatalf("error = %+v", st.Error)
 	}
+	waitCancel(t, e, lookup)
 	if last := e.send.last(t); last.Op != envelope.OpPairCancel || last.Lookup != lookup {
 		t.Errorf("last frame = %+v, want pair_cancel", last)
 	}
@@ -778,6 +779,7 @@ func TestV2CodeExpiresLocally(t *testing.T) {
 	if got.Error.Code != peers.FailExpired {
 		t.Fatalf("error = %+v", got.Error)
 	}
+	waitCancel(t, e, lookup)
 	if last := e.send.last(t); last.Op != envelope.OpPairCancel || last.Lookup != lookup {
 		t.Errorf("last frame = %+v", last)
 	}
@@ -924,4 +926,20 @@ func waitState2(t *testing.T, e *env, id, state string) peers.Status {
 		return st.State == state
 	})
 	return st
+}
+
+// waitCancel waits for the pair_cancel of lookup. The issuer sends it after
+// the pairing has ended, so seeing the failed state does not mean it is out.
+func waitCancel(t *testing.T, e *env, lookup string) {
+	t.Helper()
+	waitFor(t, "pair_cancel", func() bool {
+		e.send.mu.Lock()
+		defer e.send.mu.Unlock()
+		for _, c := range e.send.sent {
+			if c.Op == envelope.OpPairCancel && c.Lookup == lookup {
+				return true
+			}
+		}
+		return false
+	})
 }

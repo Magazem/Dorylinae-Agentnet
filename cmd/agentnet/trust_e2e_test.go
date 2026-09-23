@@ -107,14 +107,9 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 		t.Fatalf("trust after verify = %+v", ps)
 	}
 	// A duplicate pairing never lowers it (Store.Add keeps the higher rank).
-	// The 1.5 s IPC bound can be missed on a loaded runner; retry, a real failure repeats.
-	reverified := false
-	for i := 0; i < 3 && !reverified; i++ {
-		code, _, _ := cli(t, a, "peers", "verify", b.key, bobFP)
-		reverified = code == exitOK
-	}
-	if !reverified {
-		t.Fatal("re-verify by key failed")
+	// By key: about 1 in 32 keys start with '-', which must still parse as the peer.
+	if code, out, errs := cli(t, a, "peers", "verify", b.key, bobFP); code != exitOK {
+		t.Fatalf("re-verify by key %s: %d %s %s", b.key, code, out, errs)
 	}
 	acts := map[string]int{}
 	for _, act := range []string{audit.ActionPeerVerify, audit.ActionPeerVerifyFail} {

@@ -267,6 +267,7 @@ func TestReconnectMidFlushRedeliversOnlyUnacked(t *testing.T) {
 			t.Fatalf("after reconnect got %s, want %s", got, id)
 		}
 	}
+	waitDrained(t, s, b.key)
 	stillAlive(t, cb, b) // and nothing else is pending
 }
 

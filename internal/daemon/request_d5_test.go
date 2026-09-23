@@ -129,6 +129,11 @@ func TestRequestSubmitRefusesRelayTrust(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// On Unix the endpoint is a socket file inside p.Dir, so the
+		// directory must exist before Listen (Windows uses a named pipe).
+		if err := p.Ensure(); err != nil {
+			t.Fatal(err)
+		}
 		ln, err := ipc.Listen(p.Endpoint)
 		if err != nil {
 			t.Fatal(err)

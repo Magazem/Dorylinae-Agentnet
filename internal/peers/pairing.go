@@ -184,6 +184,7 @@ type session struct {
 	tag       Tag           // caller-supplied, delivered to a Completer once the session ends
 	codeReady chan struct{} // closed once the issuer has its code, or the pairing ended
 	done      chan struct{} // closed when the pairing ends
+	settled   chan struct{} // closed after done, once the end is audited
 	timer     *time.Timer
 	finished  time.Time
 
@@ -285,7 +286,7 @@ func (m *Manager) StartTagged(ctx context.Context, tag Tag) (Status, error) {
 	case <-s.codeReady:
 	case <-wctx.Done():
 	}
-	return m.snapshot(s), nil
+	return m.settledSnapshot(wctx, s), nil
 }
 
 // Redeem redeems a code typed by the user. A 15-character code is v2. A
@@ -322,7 +323,23 @@ func (m *Manager) RedeemTagged(ctx context.Context, rawCode string, allowV1 bool
 	case <-s.done:
 	case <-wctx.Done():
 	}
-	return m.snapshot(s), nil
+	return m.settledSnapshot(wctx, s), nil
+}
+
+// settledSnapshot is snapshot, except that a pairing that has ended is
+// returned only once its pair.complete or pair.fail audit row is written, so
+// whatever the caller does next is audited after it. It stops waiting when
+// ctx ends.
+func (m *Manager) settledSnapshot(ctx context.Context, s *session) Status {
+	select {
+	case <-s.done:
+		select {
+		case <-s.settled:
+		case <-ctx.Done():
+		}
+	default:
+	}
+	return m.snapshot(s)
 }
 
 func (m *Manager) snapshot(s *session) Status {
@@ -389,6 +406,7 @@ func (m *Manager) newSession(role string, tag Tag, mutate func(*session)) (*sess
 		tag:       tag,
 		codeReady: make(chan struct{}),
 		done:      make(chan struct{}),
+		settled:   make(chan struct{}),
 	}
 	if mutate != nil {
 		mutate(s)
@@ -1006,6 +1024,7 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 	role, lookup := s.st.Role, s.lookup
 	cancelEntry := role == RoleIssuer && !s.v1 && lookup != ""
 	m.mu.Unlock()
+	defer close(s.settled)
 
 	if cancelEntry {
 		ctx, cancel := context.WithTimeout(context.Background(), sendBudget)

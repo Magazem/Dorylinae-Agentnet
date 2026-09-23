@@ -142,6 +142,23 @@ func stillAlive(t *testing.T, c *websocket.Conn, p peer) {
 	}
 }
 
+// waitDrained waits until key is connected and its queued backlog is fully
+// sent, so envelopes to it are routed directly instead of queued. The relay
+// sends "ready" before it has checked the queue, and a flush ends only after
+// its last batch is sent, so neither reading "ready" nor reading the backlog
+// proves this.
+func waitDrained(t *testing.T, s *relay.Server, key string) {
+	t.Helper()
+	waitConnected(t, s, key, true)
+	deadline := time.Now().Add(wait)
+	for s.Draining(key) {
+		if time.Now().After(deadline) {
+			t.Fatalf("backlog of %s never finished draining", key[:8])
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func waitConnected(t *testing.T, s *relay.Server, key string, want bool) {
 	t.Helper()
 	deadline := time.Now().Add(wait)
@@ -415,9 +432,10 @@ func (s *syncBuffer) String() string {
 func TestLogsContainNoPayload(t *testing.T) {
 	var logs syncBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	_, url := start(t, relay.Options{Logger: logger})
+	s, url := start(t, relay.Options{Logger: logger})
 	a, b, ghost := newPeer(t), newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
+	waitDrained(t, s, b.key) // so log-1 is routed, not queued
 
 	marker := []byte("TOP-SECRET-PAYLOAD-MARKER-0123456789")
 	frame, err := a.env(b.key, "log-1", marker).Marshal()
