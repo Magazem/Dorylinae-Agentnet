@@ -1,6 +1,7 @@
-// Command verifyvectors independently recomputes the pairing v2 and sealed-mail
-// test vectors published in Docs/protocol/pairing.md and Docs/protocol/mail.md
-// and compares them with the values in vectors.json (transcribed from those docs).
+// Command verifyvectors independently recomputes the pairing v2, sealed-mail
+// and capability-grant test vectors published in Docs/protocol/pairing.md,
+// Docs/protocol/mail.md and Docs/protocol/grant.md, and compares them with
+// the values in vectors.json (transcribed from those docs).
 //
 // It is deliberately self-contained: it uses only the Go standard library and
 // golang.org/x/crypto, and imports no internal/ package and nothing from
@@ -73,6 +74,15 @@ type vectors struct {
 		Created    string `json:"created"`
 		StaleNow   string `json:"stale_now"`
 	} `json:"mail"`
+	Capability struct {
+		Iss       string `json:"iss"`
+		Aud       string `json:"aud"`
+		Session   string `json:"session"`
+		Canonical string `json:"canonical"`
+		HashHex   string `json:"hash_hex"`
+		Sig       string `json:"sig"`
+		Token     string `json:"token"`
+	} `json:"capability"`
 }
 
 // --- canonical JSON (agent-card.md §Canonical serialisation) ---
@@ -389,6 +399,7 @@ func run(w io.Writer, raw []byte) int {
 	}
 	pairing(c, &v)
 	mail(c, &v)
+	capability(c, &v)
 	return c.fail
 }
 
@@ -615,6 +626,128 @@ func mail(c *checker, v *vectors) {
 	stale, e2 := parseRFC3339Z(m.StaleNow)
 	c.ok("negative: receiver clock 2026-02-02T03:10:01Z is stale (>30 d after created)",
 		e1 == nil && e2 == nil && stale-created > 30*24*3600, fmt.Sprint(e1, e2))
+}
+
+// --- capability grant (Docs/protocol/grant.md §Test vectors) ---
+
+// capability rebuilds the grant object as ordinary Go values (so its JSON
+// key order is irrelevant), re-canonicalises with this file's own canonical
+// (the RFC 8785-style canonicaliser used for pairing/mail above, not
+// internal/agentcard), and checks the hash, signature and wire token
+// independently of internal/capability.
+func capability(c *checker, v *vectors) {
+	cp := &v.Capability
+
+	type resource struct {
+		Kind   string `json:"kind"`
+		Label  string `json:"label"`
+		Branch string `json:"branch"`
+	}
+	type grant struct {
+		V         int      `json:"v"`
+		ID        string   `json:"id"`
+		Iss       string   `json:"iss"`
+		Aud       string   `json:"aud"`
+		Session   string   `json:"session"`
+		Action    string   `json:"action"`
+		Resource  resource `json:"resource"`
+		Scope     string   `json:"scope"`
+		Nbf       string   `json:"nbf"`
+		Exp       string   `json:"exp"`
+		Sensitive bool     `json:"sensitive"`
+	}
+	g := grant{
+		V:         1,
+		ID:        "g-00112233445566778899aabbccddeeff",
+		Iss:       cp.Iss,
+		Aud:       cp.Aud,
+		Session:   cp.Session,
+		Action:    "git.read",
+		Resource:  resource{Kind: "git", Label: "agentnet-3f2a", Branch: "feat-x"},
+		Scope:     "internal/mail",
+		Nbf:       "2026-01-02T03:00:00Z",
+		Exp:       "2026-01-02T05:00:00Z",
+		Sensitive: true,
+	}
+	canon, err := canonicalOf(c, "capability grant", g)
+	if err != nil {
+		return
+	}
+	c.eqs("capability canonical grant", string(canon), cp.Canonical)
+
+	sum := sha256.Sum256(canon)
+	c.eqs("capability grant hash", hex.EncodeToString(sum[:]), cp.HashHex)
+
+	issPub, err := base64.RawURLEncoding.DecodeString(cp.Iss)
+	if err != nil || len(issPub) != ed25519.PublicKeySize {
+		c.ok("capability iss key decodes", false, fmt.Sprint(err))
+		return
+	}
+	sig, err := base64.RawURLEncoding.DecodeString(cp.Sig)
+	if err != nil || len(sig) != ed25519.SignatureSize {
+		c.ok("capability sig decodes", false, fmt.Sprint(err))
+		return
+	}
+	c.ok("capability signature verifies",
+		ed25519.Verify(issPub, append([]byte("dorylinae-grant-v1\n"), canon...), sig),
+		"Ed25519 verification failed")
+
+	tokenCanon, err := canonicalOf(c, "capability token", struct {
+		Grant json.RawMessage `json:"grant"`
+		Sig   string          `json:"sig"`
+	}{Grant: canon, Sig: cp.Sig})
+	if err != nil {
+		return
+	}
+	c.eqs("capability token", string(tokenCanon), cp.Token)
+
+	// Negative: the widened caveat. The holder changes exp and re-serialises;
+	// the original signature must not verify over the new canonical bytes.
+	widened := g
+	widened.Exp = "2026-01-03T05:00:00Z"
+	widenedCanon, err := canonicalOf(c, "capability widened exp", widened)
+	if err == nil {
+		c.ok("negative: widened exp fails signature",
+			!ed25519.Verify(issPub, append([]byte("dorylinae-grant-v1\n"), widenedCanon...), sig),
+			"signature verified after widening exp")
+	}
+
+	// Negative: scope removed, same sig.
+	type grantNoScope struct {
+		V         int      `json:"v"`
+		ID        string   `json:"id"`
+		Iss       string   `json:"iss"`
+		Aud       string   `json:"aud"`
+		Session   string   `json:"session"`
+		Action    string   `json:"action"`
+		Resource  resource `json:"resource"`
+		Nbf       string   `json:"nbf"`
+		Exp       string   `json:"exp"`
+		Sensitive bool     `json:"sensitive"`
+	}
+	noScope := grantNoScope{g.V, g.ID, g.Iss, g.Aud, g.Session, g.Action, g.Resource, g.Nbf, g.Exp, g.Sensitive}
+	noScopeCanon, err := canonicalOf(c, "capability scope removed", noScope)
+	if err == nil {
+		c.ok("negative: scope removed fails signature",
+			!ed25519.Verify(issPub, append([]byte("dorylinae-grant-v1\n"), noScopeCanon...), sig),
+			"signature verified after removing scope")
+	}
+}
+
+// canonicalOf marshals v with encoding/json and re-canonicalises the result,
+// recording a check failure (and a non-nil error) if either step fails.
+func canonicalOf(c *checker, name string, v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		c.ok(name+" marshals", false, err.Error())
+		return nil, err
+	}
+	canon, err := canonical(raw)
+	if err != nil {
+		c.ok(name+" canonicalises", false, err.Error())
+		return nil, err
+	}
+	return canon, nil
 }
 
 // parseRFC3339Z converts "YYYY-MM-DDThh:mm:ssZ" to unix seconds without the time package's

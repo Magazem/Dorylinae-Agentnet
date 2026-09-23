@@ -94,6 +94,12 @@ func write(buf *bytes.Buffer, v any) {
 		buf.Truncate(buf.Len() - 1) // Encode appends '\n'
 	case int:
 		fmt.Fprintf(buf, "%d", t)
+	case bool:
+		if t {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
 	default:
 		log.Fatalf("canonical: unsupported %T", v)
 	}
@@ -277,6 +283,50 @@ func main() {
 	fmt.Printf("enc   %x\n", enc)
 	fmt.Printf("ct    %x\n", ct)
 	fmt.Printf("payload (base64) %s\n", base64.StdEncoding.EncodeToString(payload))
+
+	fmt.Println("== capability grant (2.2b, grant.md §Test vectors)")
+	printGrantVector(privI, keyI, keyR)
+}
+
+// grantDomain and grantSession are Docs/protocol/grant.md's signing domain
+// and the session id vector from work-session.md §Session id (not rederived
+// here: that derivation is ticket 2.1a's vector).
+const (
+	grantDomain  = "dorylinae-grant-v1\n"
+	grantSession = "s-36375782ceb6baea9cee4d4273dfb035"
+)
+
+// printGrantVector prints the canonical grant, its hash and signature, and
+// the wire token, for Docs/protocol/grant.md §Test vectors. privI signs as
+// the grantor (iss = keyI); keyR is the holder (aud).
+func printGrantVector(privI ed25519.PrivateKey, keyI, keyR string) {
+	grant := map[string]any{
+		"v":       1,
+		"id":      "g-00112233445566778899aabbccddeeff",
+		"iss":     keyI,
+		"aud":     keyR,
+		"session": grantSession,
+		"action":  "git.read",
+		"resource": map[string]any{
+			"kind":   "git",
+			"label":  "agentnet-3f2a",
+			"branch": "feat-x",
+		},
+		"scope":     "internal/mail",
+		"nbf":       "2026-01-02T03:00:00Z",
+		"exp":       "2026-01-02T05:00:00Z",
+		"sensitive": true,
+	}
+	canon := canonical(grant)
+	sum := sha256.Sum256(canon)
+	sig := ed25519.Sign(privI, append([]byte(grantDomain), canon...))
+	sigB64 := b64u.EncodeToString(sig)
+	token := canonical(map[string]any{"grant": json.RawMessage(canon), "sig": sigB64})
+	fmt.Printf("grant canonical %s\n", canon)
+	fmt.Printf("grant hash      %x\n", sum)
+	fmt.Printf("grant sig       %s\n", sigB64)
+	fmt.Printf("token           %s\n", token)
+	fmt.Printf("token len       %d\n", len(token))
 }
 
 const mailID = "m-0123456789abcdef0123456789abcdef"

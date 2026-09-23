@@ -33,5 +33,14 @@
   "msg_id": "m-0123456789abcdef0123456789abcdef",
   "created": "2026-01-02T03:10:00Z",
   "stale_now": "2026-02-02T03:10:01Z"
+ },
+ "capability": {
+  "iss": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "aud": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc",
+  "session": "s-36375782ceb6baea9cee4d4273dfb035",
+  "canonical": "{\"action\":\"git.read\",\"aud\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"exp\":\"2026-01-02T05:00:00Z\",\"id\":\"g-00112233445566778899aabbccddeeff\",\"iss\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"nbf\":\"2026-01-02T03:00:00Z\",\"resource\":{\"branch\":\"feat-x\",\"kind\":\"git\",\"label\":\"agentnet-3f2a\"},\"scope\":\"internal/mail\",\"sensitive\":true,\"session\":\"s-36375782ceb6baea9cee4d4273dfb035\",\"v\":1}",
+  "hash_hex": "78da9339e8a1500ec1781d5d4be3b9b52149eac7e7f815a77b0b6dab0abe239d",
+  "sig": "l3c5wKLJPH0BGLjAXQk0Z1cjYlQ0aWb0ueo1ZnI4ooCBLXMqbMH8r6n1ox3Wem0q1jXl-MQEpGcGgewtCa_CCg",
+  "token": "{\"grant\":{\"action\":\"git.read\",\"aud\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"exp\":\"2026-01-02T05:00:00Z\",\"id\":\"g-00112233445566778899aabbccddeeff\",\"iss\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"nbf\":\"2026-01-02T03:00:00Z\",\"resource\":{\"branch\":\"feat-x\",\"kind\":\"git\",\"label\":\"agentnet-3f2a\"},\"scope\":\"internal/mail\",\"sensitive\":true,\"session\":\"s-36375782ceb6baea9cee4d4273dfb035\",\"v\":1},\"sig\":\"l3c5wKLJPH0BGLjAXQk0Z1cjYlQ0aWb0ueo1ZnI4ooCBLXMqbMH8r6n1ox3Wem0q1jXl-MQEpGcGgewtCa_CCg\"}"
  }
 }
