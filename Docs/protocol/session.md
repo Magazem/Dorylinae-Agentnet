@@ -4,6 +4,10 @@ Status: v1, introduced by ticket 0.6. Implemented in `internal/noise`
 (handshake, static-key binding, transport nonces) and `internal/session`
 (envelope framing, session table, ping). Change this document first.
 
+> Not to be confused with the Phase 2 **work session** (`s-…` ids, `agentnet sessions`),
+> the persisted unit of work an accepted request becomes: see [work-session.md](work-session.md).
+> This document covers only the Noise transport session.
+
 Two **paired** daemons (see [pairing.md](pairing.md)) talk end to end through
 the relay inside a Noise session. The relay routes the envelopes of
 [envelope.md](envelope.md) unchanged; after the handshake every envelope

@@ -332,6 +332,22 @@ Lifecycle errors: `unknown_request`, `ambiguous_request`, `bad_state`, `bad_requ
 
 Errors: `bad_webhook`, `bad_request`.
 
+## Phase 2 methods (draft)
+
+Specified in their documents, with the same rules (every call returns within 2 s; `fetch_start`
+waits at most 1 s like `ping`):
+
+- work sessions `ws_list`, `ws_show`, `ws_result`, `ws_accept_result`, `ws_request_changes`,
+  `ws_cancel`, `ws_release` ([work-session.md](work-session.md#ipc)); the request view gains
+  `session`, and the submit result gains `session` ([consult.md](consult.md#agentnet-consult));
+- `approval_list`, `approval_confirm`, `approval_reject` ([approval.md](approval.md#ipc-and-cli));
+- `grant_create`, `grant_list`, `grant_show`, `grant_revoke`, `grant_policy_add`,
+  `grant_policy_list`, `grant_policy_remove`, `fetch_start`, `fetch_status`
+  ([grant.md](grant.md#ipc));
+- `request_submit` gains `context` ([consult.md](consult.md#agentnet-consult));
+- `device_link`, `device_list`, `device_unlink`, `device_scope_set`, `device_scope_clear`,
+  `device_scope_show` ([device.md](device.md#ipc-and-cli)).
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.

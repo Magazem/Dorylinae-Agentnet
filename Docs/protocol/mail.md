@@ -314,7 +314,9 @@ sender's newest mailbox key and has a fresh `id`.
 | `note` | `{"text": "..."}`, stored to `mail_inbox`, no other effect. **Debug only**: registered when the daemon runs with `DORYLINAE_DEBUG=1` | yes / yes | 1.0f |
 | `team.roster`, `team.join`, `team.leave` | [team.md](team.md#kinds) | yes / yes | 1.1b |
 | `request`, `request.accept`, `request.decline`, `request.defer`, `request.complete`, `request.cancel`, `request.cancelled` | [request.md](request.md) | yes / yes | 1.4c, 1.6a |
-| `result`, `grant`, … | defined by their tickets | yes / yes | Phase 2 |
+| `ws.result`, `ws.state`, `ws.cancel` | [work-session.md](work-session.md#kinds) (draft) | yes / yes | 2.1a |
+| `grant`, `grant.revoke` | [grant.md](grant.md#kinds) (draft) | yes / yes | 2.2c |
+| `device.link`, `device.unlink` | [device.md](device.md#kinds) (draft) | yes / yes | 2.D1 |
 
 Presence heartbeats reuse this seal and signature with kind `presence`, but as envelope type
 `presence`, not `mail` ([presence.md](presence.md)). From 1.4b, an `Apply` error wrapping

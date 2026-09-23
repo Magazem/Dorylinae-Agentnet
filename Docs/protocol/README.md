@@ -19,6 +19,11 @@ Nothing is specified yet; Phase 0 adds the first documents.
 - [presence.md](presence.md): three presence levels, sealed heartbeats, ephemeral relay type, visibility, idle detection (tickets 1.2, 1.3, draft)
 - [request.md](request.md): request object, lifecycle, idempotency, inbox priority, urgency budget, offline (tickets 1.4–1.7, 1.9, draft)
 - [notify.md](notify.md): desktop notifications and signed webhooks (ticket 1.8, draft)
+- [work-session.md](work-session.md): Phase 2 work sessions (not Noise sessions), state machine, result object, accept-result, quarantine (tickets 2.1, 2.4, 2.6, draft)
+- [approval.md](approval.md): human approval with an out-of-band code from the desktop notification (ticket 2.2a, draft)
+- [grant.md](grant.md): capability tokens, grant issuance, fetch and enforcement over Noise, revocation, sensitive grants, test vectors (tickets 2.2–2.4, draft)
+- [consult.md](consult.md): consult = `question` request with context files, answer with `result`, `wait` (ticket 2.5, draft)
+- [device.md](device.md): own-device helper (D13): device link, helper scope, allowlisted commands (tickets 2.D1–2.D2, draft)
 - [../cli/ping.md](../cli/ping.md): `agentnet ping` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.6)
 - [../cli/relay.md](../cli/relay.md): `relay` flags and exit codes, and how `agentnetd` connects to it
 - [../cli/pair.md](../cli/pair.md): `agentnet pair` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.5b)

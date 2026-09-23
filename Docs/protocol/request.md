@@ -42,6 +42,8 @@ The body of kind `request` is `{"request": <object>}`, and nothing else. The obj
 | `requested_grant` | no | object | [Requested grant](#requested-grant). Informational only |
 | `deadline` | no | string | Time. Must be later than `created` |
 | `created` | yes | string | Time. Set once at first submit. **Not** changed by a resend. Must be ≤ `msg.created` |
+| `context` | no | array | **Phase 2 draft.** Only with `type = question`: 1–8 context files, and the total cap becomes 327680 bytes. See [consult.md](consult.md#request-object-additions) |
+| `run` | no | object | **Phase 2 draft.** `{"command": "<name>"}` for an own-device helper. See [device.md](device.md#running-in-scope-requests) |
 
 No other members are allowed. Optional members are absent, never `null`. The canonical form of
 the object (`canonical(request)`) is what `body_hash` covers:
@@ -293,7 +295,10 @@ the lifecycle mail as `last_reply`, and `Outbox.SubmitTx` the lifecycle mail. Af
 write the audit event ([Audit](#audit-and-metrics)).
 
 Phase 2 (2.1) replaces `accepted → completed` with a session. `request.complete` stays valid
-for requests that never open a session.
+for requests that never open a session. **Phase 2 draft:** every accept opens a
+[work session](work-session.md); the request stays `accepted` until the session closes, and
+then the recipient's daemon completes it ([work-session.md §Closing the request](work-session.md#closing-the-request)).
+`request_complete` on a request with an open session is a shorthand for submitting a result.
 
 ### Result payload (D14)
 
