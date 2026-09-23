@@ -36,9 +36,10 @@ specs merged to main. Self-hosted relays: D17.
 | Ticket | Worker slot | Task | Worktree / branch | Migration |
 |---|---|---|---|---|
 | 2.1a work sessions | done (9588987); review: `01a0cd93-9b53…` P2-Review-2.1a, task `01a0cd93-c7d4…` → Docs/review/27 | — | `ws-core` / `p2/ws-core` | 14 |
-| 2.2a approval | done (9fb681a); review: `01a0cd8e-1c26…` P2-Review-2.2a, task `01a0cd8e-4a17…` → Docs/review/26 | — | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge; merge after 2.1a) |
+| 2.2a approval | done + review 26 fixes (602bd69), **ready to merge after 2.1a** | — | `approval` / `p2/approval` | 15 (NO-OP placeholder 14 — replace at merge) |
 2.2a note: the manual Windows toast-history-removal check belongs in `tests/phase2-manual.md` (created by 2.9). 2.1a was paused by a usage limit and resumed from its worktree.
 2.1a notes for **2.1b**: `reqStore.Sessions` is deliberately NOT wired in the live daemon (it broke Phase 1 e2e tests without closing IPC); 2.1b must wire it together with the ws_* IPC. `CheckPhase1Fallback` exists but isn't hooked to outbox failures yet. `Store.Release` is a raw transition; the approval gate comes in 2.4.
+Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 (the approve CLI puts the code in argv, contradicting approval.md) is waiting for the owner.
 **2.2b merged** (0e1b64a + review 25 fixes 6b94bb1). Notes for **2.2c** (from review 25): store/compare `canonical(token)` never raw bytes; never audit `err.Error()` from capability (use `ReasonOf`); add a helper returning the canonical token; review-25 L9 (grant.md §Paths: CONIN$/CONOUT$, COM/LPT with superscript digits, C1/bidi chars) goes into the 2.3a fs ticket.
 Next after these merge: 2.1b, 2.2c (then 2.D1 after 2.2c).
 
