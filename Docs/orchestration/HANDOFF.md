@@ -46,9 +46,9 @@ Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state 
 **Wave P2-3 in progress** (Sonnet; each gets an Opus security review):
 | Ticket | Slot | Task | Worktree | Migration |
 |---|---|---|---|---|
-| 2.3a fetch server + fs | `01a0d2c3-00a9…` P2-FetchFS | `01a0d2c3-2b7c…` | `fetch-fs` | — |
-| 2.4 quarantine (+ review-28 L8; the review also covers D18) | `01a0d2c3-010a…` P2-Quarantine | `01a0d2c3-4bdd…` | `quarantine` | — |
-| 2.D1 device link | `01a0d2c3-0228…` P2-DeviceLink | `01a0d2c3-6811…` | `device-link` | 17 |
+| 2.3a fetch server + fs | done 282bc62; review `01a0d2dc-aa38…` task `01a0d2dc-d95e…` → Docs/review/33 or 34 | | `fetch-fs` | — |
+| 2.4 quarantine (+L8; review covers D18) | done 51c081b; review `01a0d2dc-aa6e…` task `01a0d2dc-fe4d…` → Docs/review/35 | | `quarantine` | — |
+| 2.D1 device link | done 3b77107; **review not started yet** (machine load: at most 3 workers) | | `device-link` | 17 |
 Then: 2.3b (git serving), 2.3c (fetch client + e2e), 2.D2 (helper runner), 2.9, 2.H, 2.P.
 
 **Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device

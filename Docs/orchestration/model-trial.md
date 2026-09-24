@@ -32,6 +32,9 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | 2.1b session IPC | M | 95 | 2 (missing tests; D18 rework) | 0 | not reviewed | 2 (flaky tests) |
 | 2.2d approval window | M | 44 | 1 (integration after rebase) | 0 | 0/1/9 | 3 (per-OS lint; test races) |
 | 2.5 consult | M | overnight usage limit, not comparable | 0 | 0 | 0/0/1 | — |
+| 2.3a fetch server | L | ~60 (one restart when idle at start) | 0 | load flakes only | pending | — |
+| 2.4 quarantine | S | ~60 | 0 | load flakes only | pending | — |
+| 2.D1 device link | M | ~60 | 0 | load flakes only | pending | — |
 
 ## Opus 5.5 tickets
 
