@@ -41,6 +41,8 @@ specs merged to main. Self-hosted relays: D17.
 - 2.4 **merged** (quarantine + L8; review 35: H1 stale release approval now bound to seq, H2 D18 gaps closed). Noted Lows: pre-2.4 revoked rows have NULL approval; SQLite secure_delete off/WAL keeps discarded bytes (→ backlog); session.quarantined text vs work-session.md.
 - 2.D1 **merged** (device link, migration 17; review 36: M1 mail_submit could forge device.* kinds, fixed). Open from review 36: L4 (spec: offer freshness + ignore offers older than the last unlink), L5 (notify on activation: implement or amend the spec), L6 (link ids may differ per side, so 2.D2 must not key on it), L7 (mail_submit allowlist for all daemon-owned kinds), L8 (approval OnReject hook, needed by 2.D2).
 - 2.3b git serving: **Opus trial** P2-Opus-GitServing slot `01a0d2e8-7535…`, task `01a0d2e8-a2ea…`, worktree `git-serving`.
+- 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
+- 2.3c fetch client + e2e: **Sonnet control** P2-FetchClient slot `01a0d2ee-b44b…`, task `01a0d2ef-0b5f…`, worktree `fetch-client`.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
@@ -149,6 +151,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D19 | Ticket **2.2d**: a daemon-owned approval window. The code is typed only there, so agents never handle it; CLI code entry is removed on desktop machines, and headless machines keep terminal mode (OD-P2-3). The spec comes first, then the build and an Opus security review. **Merges before 2.2c.** Replaces review-26 L7. |
 | D20 | OQ-2.2d-1: the Linux approval window (zenity/kdialog) gets the summary text via argv. Accept and document it: other local users can see the summary (never the code); hidepid=2 hides it. |
 | D21 | **Model trial (2026-09-24):** gradually move complex implementation and investigations to Opus 5.5 workers and measure against Sonnet (`Docs/orchestration/model-trial.md`: minutes, follow-ups, gate failures, review findings, CI after merge). Sonnet stays the default for well-specified tickets. Plan: INV-1 flake investigation (running), then 2.3b git serving and 2.D2 helper runner on Opus, with 2.3c on Sonnet as a control. |
+| D22 | Review-36 device link: **L4** tighten offer freshness (now < offer.at + 10 min; ignore offers older than the last unlink from that peer); **L5** content-free desktop notification when a device link becomes active. Both folded into 2.D2. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
