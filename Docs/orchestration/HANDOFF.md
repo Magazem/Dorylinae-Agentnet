@@ -36,6 +36,7 @@ specs merged to main. Self-hosted relays: D17.
 **Wave P2-2 status:**
 - 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
 - 2.2c **merged** (1ceb40e, 9503c6c review 28, bb46694 integration: approvals via window/Store.Confirm; the grant Perform returns an AfterCommitter that wakes the outbox). Review-28 leftovers: L8 (→ 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
+- 2.5 **merged** (7a68d33 + review 32 fixes a4b1093).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
@@ -48,7 +49,6 @@ Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state 
 | 2.3a fetch server + fs | `01a0d2c3-00a9…` P2-FetchFS | `01a0d2c3-2b7c…` | `fetch-fs` | — |
 | 2.4 quarantine (+ review-28 L8; the review also covers D18) | `01a0d2c3-010a…` P2-Quarantine | `01a0d2c3-4bdd…` | `quarantine` | — |
 | 2.D1 device link | `01a0d2c3-0228…` P2-DeviceLink | `01a0d2c3-6811…` | `device-link` | 17 |
-| 2.5 consult (review light) | `01a0ce43-22be…` P2-Consult | `01a0ce43-450c…` | `consult` (based on 5e21a12; rebase at merge) | — |
 Then: 2.3b (git serving), 2.3c (fetch client + e2e), 2.D2 (helper runner), 2.9, 2.H, 2.P.
 
 **Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
@@ -188,6 +188,7 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
   `taskkill /T /F`. `$Home` is reserved. Wrap `Where-Object` results in `@()` before `.Count`.
 - **Headless agents on Windows:** Claude Code's shell tool is **PowerShell**, not Bash; isolate
   connectors (`--strict-mcp-config`, empty `--mcp-config`, `--setting-sources project`).
+- **Machine load:** with 4+ workers each running `go test ./...` at the same time, IPC tests time out (i/o timeout in pairing/ping/mail/e2e). Keep at most ~3 implementation workers at once, and re-run failing packages alone before blaming a change.
 - **-race runs only in CI** (no cgo here). Every implementation task must say: guard test variables written by goroutines (Perform/AfterCommit hooks, window/notifier fakes) with a mutex or an atomic (review 31). After merging concurrency code, watch the CI `race` job.
 - **Test flakiness patterns:** never read async state/audit once; poll with a deadline. Tests
   that write files use `internal/testutil.TempDir(t)` (Windows AV holds deleted files).
