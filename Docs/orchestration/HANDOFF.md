@@ -41,6 +41,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.4 **merged** (quarantine + L8; review 35: H1 stale release approval now bound to seq, H2 D18 gaps closed). Noted Lows: pre-2.4 revoked rows have NULL approval; SQLite secure_delete off/WAL keeps discarded bytes (→ backlog); session.quarantined text vs work-session.md.
 - 2.D1 **merged** (device link, migration 17; review 36: M1 mail_submit could forge device.* kinds, fixed). Open from review 36: L4 (spec: offer freshness + ignore offers older than the last unlink), L5 (notify on activation: implement or amend the spec), L6 (link ids may differ per side, so 2.D2 must not key on it), L7 (mail_submit allowlist for all daemon-owned kinds), L8 (approval OnReject hook, needed by 2.D2).
 - 2.3b **merged** (git serving; review 37: M1 exact branch ref via for-each-ref, M2 real git.exe on Windows). Open: L2 → D23 (enforce in 2.9); L3 include/alternates can read local paths (the grantor's own config).
+- **CI RED on main since 2.3a:** TestFetchSymlinkEscapes (every OS) and TestFetchRatePerSecond (race). FIX-CI (Opus) P2-Opus-SymlinkFix slot `01a0d30a-c9bd…`, task `01a0d30b-18db…`, worktree `symlink-fix`. Merge it before anything else.
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
 - 2.3c fetch client (Sonnet 5 control): done in ~17 min, gate clean; security review R-2.3c `01a0d300-08ef…` task `01a0d300-34a5…` → Docs/review/38, worktree `fetch-client`.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
@@ -194,6 +195,8 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
 - **Headless agents on Windows:** Claude Code's shell tool is **PowerShell**, not Bash; isolate
   connectors (`--strict-mcp-config`, empty `--mcp-config`, `--setting-sources project`).
 - **Machine load:** with 4+ workers each running `go test ./...` at the same time, IPC tests time out (i/o timeout in pairing/ping/mail/e2e). Keep at most ~3 implementation workers at once, and re-run failing packages alone before blaming a change.
+- **Symlink tests are skipped on this Windows machine** (no symlink privilege), so symlink behaviour is only tested in CI. After merging fs/fetch code, check that CI is green before building on top. TestFetchSymlinkEscapes was red on every OS from the 2.3a merge until FIX-CI.
+- **GitHub API rate limit:** 5000/h shared by me and every worker. Poll CI sparingly (one `gh run list` per merge), and tell workers to avoid gh unless needed.
 - **-race runs only in CI** (no cgo here). Every implementation task must say: guard test variables written by goroutines (Perform/AfterCommit hooks, window/notifier fakes) with a mutex or an atomic (review 31). After merging concurrency code, watch the CI `race` job.
 - **Test flakiness patterns:** never read async state/audit once; poll with a deadline. Tests
   that write files use `internal/testutil.TempDir(t)` (Windows AV holds deleted files).
