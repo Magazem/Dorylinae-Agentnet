@@ -391,16 +391,19 @@ func (s *Store) AuditAfterHumanAccept(ctx context.Context, id, peer string, roun
 	})
 }
 
-// PeekTx reads a session row's role and state inside tx, for an
+// PeekTx reads a session row's role, state and seq inside tx, for an
 // approval.Action's Precondition (Docs/protocol/approval.md §Flow): the
 // waiting action's preconditions are re-checked immediately before Perform,
-// in the same transaction as the approval's own decision.
-func (s *Store) PeekTx(ctx context.Context, tx *sql.Tx, id string) (role, state string, err error) {
+// in the same transaction as the approval's own decision. seq moves on every
+// transition, so a caller that recorded it when the approval was created can
+// refuse an approval that has gone stale (review 35 H1: a release approval
+// for round 1 must not release round 2's result).
+func (s *Store) PeekTx(ctx context.Context, tx *sql.Tx, id string) (role, state string, seq int, err error) {
 	r, err := scanByID(ctx, tx, id)
 	if err != nil {
-		return "", "", err
+		return "", "", 0, err
 	}
-	return r.role, r.state, nil
+	return r.role, r.state, r.seq, nil
 }
 
 func scanByID(ctx context.Context, tx *sql.Tx, id string) (storedRow, error) {

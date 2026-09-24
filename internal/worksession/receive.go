@@ -87,6 +87,10 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	// Step 2: find the out request row (peer = msg.from, id = request).
 	teamID, requestState, terr := requestOutState(ctx, tx, op.Msg.From, reqID)
 	if errors.Is(terr, sql.ErrNoRows) {
+		// An orphan result is applied nowhere either, like an ignored one
+		// (#inbox-copy-d18 (2)); keeping its plaintext would let B park
+		// content in A's database past the peer-wide clause (review 35 H2).
+		op.Withhold = true
 		pendingResult.Store(op, &resultOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
 		return nil
 	}

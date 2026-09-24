@@ -252,3 +252,66 @@ func TestD18_QuarantinedCancelReasonWithheld(t *testing.T) {
 		t.Fatalf("mail_inbox row for the ws.cancel mail is missing or non-empty")
 	}
 }
+
+// TestD18_RefusedCancelReasonWithheld (review 35 H2): a ws.cancel that A
+// refuses (its session is not open) is applied nowhere; while the quarantine
+// rule holds its reason must not survive in the inbox copy either
+// (#inbox-copy-d18 (4)). A's row is nudged to awaiting_result directly, so
+// B's mirror is still open and its ws_cancel sends real mail.
+func TestD18_RefusedCancelReasonWithheld(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.Quarantine = alwaysQuarantineDaemon
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	_, sid := openSession(t, a, b, teamID, "refused cancel test")
+	const marker = "D18-REFUSED-CANCEL-MARKER"
+	if err := a.exec(`UPDATE work_sessions SET state = 'awaiting_result' WHERE id = '` + sid + `'`); err != nil {
+		t.Fatalf("nudge A's state: %v", err)
+	}
+	var cr daemon.SessionCancelResult
+	b.call("ws_cancel", map[string]any{"id": sid, "reason": marker}, &cr)
+
+	harnessWait(t, "A to refuse B's cancel", func() bool {
+		return a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'ws.cancel_in' AND detail LIKE '%refused%'`) == 1
+	})
+	noMarkerAnywhere(t, a, marker)
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.cancel' AND signed = ''`) != 1 {
+		t.Fatalf("mail_inbox row for the refused ws.cancel is missing or non-empty")
+	}
+}
+
+// TestD18_OrphanResultWithheld (review 35 H2): a ws.result for a request A
+// has no out row for is applied nowhere, so its inbox copy is blank too.
+func TestD18_OrphanResultWithheld(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	reqID, sid := openSession(t, a, b, teamID, "orphan result test")
+	const marker = "D18-ORPHAN-MARKER"
+	if err := a.exec(`DELETE FROM requests WHERE direction = 'out' AND id = '` + reqID + `'`); err != nil {
+		t.Fatalf("drop A's out row: %v", err)
+	}
+	var res daemon.SessionResult
+	b.call("ws_result", map[string]any{
+		"id":     sid,
+		"result": map[string]any{"status": "pass", "summary": marker, "verification": "tests_passed"},
+	}, &res)
+
+	harnessWait(t, "A's ws.orphan audit", func() bool {
+		return a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'ws.orphan' AND detail LIKE '%ws.result%'`) == 1
+	})
+	noMarkerAnywhere(t, a, marker)
+	if a.count(`SELECT COUNT(*) FROM mail_inbox WHERE kind = 'ws.result' AND signed = ''`) != 1 {
+		t.Fatalf("mail_inbox row for the orphan ws.result is missing or non-empty")
+	}
+}

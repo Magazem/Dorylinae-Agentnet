@@ -122,29 +122,37 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	}
 
 	row, err := findRowTx(ctx, tx, RoleRequester, op.Msg.From, reqID)
-	if errors.Is(err, ErrUnknownSession) {
-		pendingCancel.Store(op, &cancelOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
-		return nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrUnknownSession) {
 		return err
-	}
-	if row.state != StateOpen {
-		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
-		return nil
 	}
 	// Docs/protocol/work-session.md §Quarantine (2.4): "the reason of a
 	// ws.cancel from B is not stored or shown on A" while the quarantine
 	// rule holds for the session; #inbox-copy-d18 (4) extends that to the
 	// mail_inbox copy, which otherwise still carries the reason in plaintext.
+	// Evaluated before the orphan and refused branches too (review 35 H2): a
+	// cancel refused in quarantined or awaiting_result, or one for a session
+	// A has no row for (the rule's peer-wide clause), is applied nowhere, and
+	// its reason must not survive in the inbox copy either.
 	if s.Quarantine != nil {
-		q, qerr := s.Quarantine(ctx, tx, row.id, op.Msg.From, row.round)
+		round := row.round
+		if errors.Is(err, ErrUnknownSession) {
+			round = 0
+		}
+		q, qerr := s.Quarantine(ctx, tx, sid, op.Msg.From, round)
 		if qerr != nil {
 			return fmt.Errorf("worksession: quarantine check: %w", qerr)
 		}
 		if q {
 			op.Withhold = true
 		}
+	}
+	if errors.Is(err, ErrUnknownSession) {
+		pendingCancel.Store(op, &cancelOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
+		return nil
+	}
+	if row.state != StateOpen {
+		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		return nil
 	}
 	if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", s.now()); err != nil {
 		return err

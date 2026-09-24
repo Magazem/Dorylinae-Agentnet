@@ -522,11 +522,6 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 		sessionID := p.Session
 		grantID := g.ID
 		peerKey := peer.PublicKey
-		// approvalID is set right after Create returns, before Perform can run
-		// (Perform runs only once a human confirms through the window or the
-		// terminal, 2.2d); it marks the row as once-active for the quarantine
-		// rule (capability.QuarantineHolds).
-		var approvalID string
 		action := approval.Action{
 			// Re-check steps 1-3 against the current state (Docs/protocol/
 			// grant.md §Issuance step 7; review 28 M2): session, peer and
@@ -546,6 +541,17 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			},
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
 				now := time.Now()
+				// The approval id marks the row as once-active for the
+				// quarantine rule (capability.QuarantineHolds). It is read in
+				// tx, where Confirm has just marked this grant's approval
+				// approved, not from a variable the IPC goroutine sets after
+				// Create returns: a confirm can in principle win that race
+				// (review 35 L2).
+				var approvalID string
+				if err := tx.QueryRowContext(ctx, `SELECT id FROM approvals WHERE kind = ? AND subject = ? AND state = 'approved'`,
+					approval.KindGrant, grantID).Scan(&approvalID); err != nil {
+					return nil, fmt.Errorf("grant: read approval id: %w", err)
+				}
 				_, err := capStore.ActivateTx(ctx, tx, grantID, approvalID, now)
 				if err != nil {
 					return nil, err
@@ -574,7 +580,6 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			_ = capStore.Delete(ctx, g.ID) // review 26 N5: drop the pending row if Create fails
 			return nil, approvalError(aerr)
 		}
-		approvalID = view.ID
 		if log != nil {
 			_ = log.Append(ctx, audit.ActorCLI, "grant.create", map[string]any{
 				"grant": g.ID, "session": p.Session, "peer": peer.PublicKey, "action": p.Action,

@@ -394,9 +394,10 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 			return nil, sessionError(&worksession.BadStateError{State: v.State, Msg: fmt.Sprintf("%s is %s", sid, v.State)})
 		}
 		summary := fmt.Sprintf("Accept the result for session %s?", sid)
+		createdSeq := v.Seq
 		view, err := as.Create(ctx, "accept_result", sid, summary, approval.Action{
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
-				role, state, err := ws.PeekTx(ctx, tx, sid)
+				role, state, seq, err := ws.PeekTx(ctx, tx, sid)
 				if err != nil {
 					return err
 				}
@@ -405,6 +406,11 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 				}
 				if state != worksession.StateAwaitingResult {
 					return &worksession.BadStateError{State: state, Msg: fmt.Sprintf("%s is %s", sid, state)}
+				}
+				// Bound to the result the human was asked about (review 35
+				// H1): a new round since Create moves seq.
+				if seq != createdSeq {
+					return &worksession.BadStateError{State: state, Msg: fmt.Sprintf("%s changed since this approval was requested", sid)}
 				}
 				return nil
 			},
@@ -526,9 +532,10 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		// approval window or the daemon's terminal stdin, 2.2d): the closure
 		// captures the variable, not its zero value.
 		var approvalID string
+		createdSeq := v.Seq
 		view, err := as.Create(ctx, "release", sid, summary, approval.Action{
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
-				role, state, err := ws.PeekTx(ctx, tx, sid)
+				role, state, seq, err := ws.PeekTx(ctx, tx, sid)
 				if err != nil {
 					return err
 				}
@@ -537,6 +544,13 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 				}
 				if state != worksession.StateQuarantined {
 					return &worksession.BadStateError{State: state, Msg: fmt.Sprintf("%s is %s", sid, state)}
+				}
+				// Bound to the quarantined result the human was asked about
+				// (review 35 H1): request-changes from quarantined and a new
+				// quarantined result bring the state back to quarantined, but
+				// seq has moved, so a round-1 approval cannot release round 2.
+				if seq != createdSeq {
+					return &worksession.BadStateError{State: state, Msg: fmt.Sprintf("%s changed since this approval was requested", sid)}
 				}
 				return nil
 			},

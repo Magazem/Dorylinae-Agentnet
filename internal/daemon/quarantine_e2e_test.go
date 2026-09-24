@@ -312,6 +312,46 @@ func TestSensitiveQuarantine(t *testing.T) {
 		}
 	})
 
+	// review 35 H1: a release approval asked for round 1 must not release
+	// round 2, even though the session is back in quarantined when the human
+	// answers it.
+	t.Run("stale_release_approval_cannot_release_the_next_round", func(t *testing.T) {
+		e := newQEnv(t)
+		reqID, sid := openSession(t, e.a, e.b, e.teamID, "stale release")
+		e.grant(t, sid, "fs.read", qDir(t), false)
+		e.result(t, sid, qMarkerResult("QMARK-STALE-1"))
+		e.waitState(t, sid, "quarantined")
+		var rel struct {
+			Approval struct {
+				ID string `json:"id"`
+			} `json:"approval"`
+		}
+		e.a.call("ws_release", map[string]any{"id": sid}, &rel)
+		var rc daemon.SessionResult
+		e.a.call("ws_request_changes", map[string]any{"id": sid, "changes": "redo"}, &rc)
+		harnessWait(t, "B's session to reopen at round 2", func() bool {
+			return e.b.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'open' AND round = 2`) == 1
+		})
+		const m2 = "QMARK-STALE-2"
+		e.result(t, sid, qMarkerResult(m2))
+		harnessWait(t, "A's round-2 result to be quarantined", func() bool {
+			return e.a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'quarantined' AND round = 2`) == 1
+		})
+		e.approve(t, rel.Approval.ID)
+		harnessWait(t, "the stale release approval to be rejected", func() bool {
+			return e.a.count(`SELECT COUNT(*) FROM approvals WHERE id = '`+rel.Approval.ID+`' AND state = 'rejected'`) == 1
+		})
+		if e.a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'quarantined'`) != 1 {
+			t.Fatal("a round-1 release approval released round 2")
+		}
+		if e.a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'ws.release'`) != 0 {
+			t.Fatal("ws.release audited for a stale approval")
+		}
+		if v := e.aViews(t, sid, reqID); strings.Contains(v, m2) {
+			t.Fatalf("leak: %s", v)
+		}
+	})
+
 	t.Run("revoked_before_result_still_quarantines", func(t *testing.T) {
 		e := newQEnv(t)
 		reqID, sid := openSession(t, e.a, e.b, e.teamID, "revoked grant")
