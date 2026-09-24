@@ -44,7 +44,7 @@ specs merged to main. Self-hosted relays: D17.
 - FIX-CI **merged** (review 39): stat/list/read refuse ANY symlink (final component too); in-flight slots are freed before the last response (a real bug for sequential holders). No security impact.
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
 - 2.3c **merged** (fetch client + CLI; review 38: 0/0/4 fixed). Open: L3 fs `changed` can't detect same-size rewrites (protocol change → owner, Phase 3). 
-- 2.D2 helper runner (Opus trial, ~45 min): committed 73140ce on `p2/helper-runner`; security review R-2.D2 `01a0d318-d2ae…` task `01a0d319-0956…` → Docs/review/40. Spec note: runner output control chars become "?" (not U+FFFD, which the D14 validators reject); device.md updated.
+- 2.D2 **merged** (helper runner + mail_submit allowlist + OnReject + D22; review 40: M1 bidi/zero-width in approval text, M2 Linux Pdeathsig (macOS gap documented)). Runner output control chars become "?" (not U+FFFD). L1/L11 → D24 (2.D3).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
@@ -155,6 +155,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D21 | **Model trial (2026-09-24):** gradually move complex implementation and investigations to Opus 5.5 workers and measure against Sonnet (`Docs/orchestration/model-trial.md`: minutes, follow-ups, gate failures, review findings, CI after merge). Sonnet stays the default for well-specified tickets. Plan: INV-1 flake investigation (running), then 2.3b git serving and 2.D2 helper runner on Opus, with 2.3c on Sonnet as a control. |
 | D22 | Review-36 device link: **L4** tighten offer freshness (now < offer.at + 10 min; ignore offers older than the last unlink from that peer); **L5** content-free desktop notification when a device link becomes active. Both folded into 2.D2. |
 | D23 | Enforce **Git ≥ 2.32** at daemon start. If the git found is older, git.read grants are refused (`unsupported`) with a clear message; fs serving is unaffected. Folded into 2.9. |
+| D24 | Review-40 helper runner: **L1** clearing the scope, unlinking, or scope expiry **kills a running command's process tree** (reported as cancelled). **L11** refuse a program (or its folder) that users other than the owner (or admins) can write, checked at scope-set and at every run. Ticket 2.D3. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
