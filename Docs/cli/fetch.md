@@ -16,7 +16,7 @@ session, not as mail.
 
 | Flag | Meaning |
 |------|---------|
-| `--out FILE` | Write the file to `FILE` (mode 0600) instead of stdout. The file is written only after the whole read succeeded |
+| `--out FILE` | Write the file to `FILE` (mode 0600) instead of stdout. The file is written only after the whole read succeeded, to a temporary file in the same directory that is then renamed over `FILE`: an existing `FILE` is replaced (a symlink is replaced, not followed) and a failure leaves it unchanged |
 | `--list` | List a directory (no argument or `""` = the root of the scope), following the paging cursor |
 | `--stat` | One entry: name, type, size |
 | `--timeout SECONDS` | Default 30, 1 to 300: how long to wait for the grantor |
@@ -28,8 +28,11 @@ A read fetches the **whole file** in 256 KiB reads (files up to 8 MiB), each an 
 `fetch_start` followed by `fetch_status` while it is pending; every IPC call returns
 within 2 s. The grantor sends each read as up to eight fragments of 32 KiB and the daemon
 reassembles them; a read that lacks a fragment for 10 s is sent again, whole, up to twice.
-Without `--out` and `--json` the raw bytes go to stdout. If the file (or, for `git.read`,
-the branch tip) changes between two reads, the command fails with `changed`: run it again.
+Without `--out` and `--json` the raw bytes go to stdout. If the branch tip (`git.read`)
+or the file's size (`fs.read`) changes between two reads, the command fails with `changed`:
+run it again. An `fs.read` file rewritten in place with the same size between two reads is
+not detected (the protocol carries no version for plain files); a file over 256 KiB that
+may change while it is fetched should be read from a `git.read` grant.
 
 The grantor checks the grant on **every** read, so `agentnet revoke` stops a fetch at its
 next read, and one in progress at its next fragment. An expired grant, a grant of an ended
@@ -46,7 +49,10 @@ served; the grantor's limits (two reads in flight per holder, 20 operations per 
 | `--list` | a table `NAME TYPE SIZE` | `{"ok":true,"path","entries":[{"name","type","size"?}],"commit"?}` |
 | `--stat` | `name<TAB>type<TAB>size` | `{"ok":true,"path","entry":{"name","type","size"?},"commit"?}` |
 
-`type` is `file`, `dir`, `symlink` or `other`. `commit` (the branch tip the answer was
+`type` is `file`, `dir`, `symlink` or `other`. In the human output a name with a
+non-printable character (a control or format character) is shown quoted with Go escapes
+(`"a\x1bb"`), so that a name chosen by the grantor cannot drive the terminal; `--json`
+carries the names unchanged. `commit` (the branch tip the answer was
 served from) appears for `git.read` grants only. Failures print
 `{"ok":false,"error":{"code","message"}}` under `--json`, and `agentnet: <message>` on
 stderr otherwise.

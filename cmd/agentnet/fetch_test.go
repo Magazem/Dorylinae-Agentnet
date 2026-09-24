@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -299,6 +300,85 @@ func TestFetchNoNetworkForLocalFailure(t *testing.T) {
 	defer mu.Unlock()
 	if statusCalls != 0 {
 		t.Fatalf("%d fetch_status calls after a local failure", statusCalls)
+	}
+}
+
+// --out replaces an existing file whole, with mode 0600, and a failed fetch
+// leaves it untouched with no temporary file behind.
+func TestFetchOutReplacesTheFile(t *testing.T) {
+	p := shortHome(t)
+	startFakeDaemon(t, p, map[string]ipc.HandlerFunc{
+		"fetch_start": func(_ context.Context, params json.RawMessage) (any, error) {
+			var q daemon.FetchStartParams
+			_ = json.Unmarshal(params, &q)
+			if q.Grant == "g-bad" {
+				return daemon.FetchStatus{FetchID: "ft-r", State: "failed", Error: &daemon.FetchError{Code: "revoked", Message: "revoked"}}, nil
+			}
+			return contentServer([]byte("new"), "")(q)
+		},
+	})
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "copy.txt")
+	if err := os.WriteFile(dest, []byte("old content"), 0o644); err != nil { //nolint:gosec // the test checks the mode is narrowed
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := run([]string{"fetch", "g-bad", "a.txt", "--out", dest}, &out, &errb); code != exitError {
+		t.Fatalf("failed fetch: code %d", code)
+	}
+	//nolint:gosec // dest is under t.TempDir
+	if got, _ := os.ReadFile(dest); string(got) != "old content" {
+		t.Fatalf("a failed fetch changed the file to %q", got)
+	}
+	if code := run([]string{"fetch", "g-1", "a.txt", "--out", dest}, &out, &errb); code != exitOK {
+		t.Fatalf("code %d, stderr %q", code, errb.String())
+	}
+	//nolint:gosec // dest is under t.TempDir
+	if got, _ := os.ReadFile(dest); string(got) != "new" {
+		t.Fatalf("file = %q, want the fetched bytes only", got)
+	}
+	fi, err := os.Stat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
+		t.Fatalf("%d files in the directory, want only the output", len(ents))
+	}
+	// a directory as --out fails without leaving a temporary file
+	if code := run([]string{"fetch", "g-1", "a.txt", "--out", dir}, &out, &errb); code != exitError {
+		t.Fatalf("--out a directory: code %d", code)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 1 {
+		t.Fatalf("%d files after a failed write, want 1", len(ents))
+	}
+}
+
+// Names chosen by the grantor cannot write control sequences to the terminal.
+func TestFetchListQuotesControlCharacters(t *testing.T) {
+	p := shortHome(t)
+	evil := "a\x1b]52;c;aGk=\x07b\xe2\x80\xae" // ESC, BEL, RIGHT-TO-LEFT OVERRIDE
+	startFakeDaemon(t, p, map[string]ipc.HandlerFunc{"fetch_start": func(_ context.Context, params json.RawMessage) (any, error) {
+		var q daemon.FetchStartParams
+		_ = json.Unmarshal(params, &q)
+		if q.Op == capability.OpStat {
+			return complete(map[string]any{"entry": capability.Entry{Name: evil, Type: "file"}}), nil
+		}
+		return complete(map[string]any{"entries": []capability.Entry{{Name: evil, Type: "file"}, {Name: "plain é", Type: "dir"}}}), nil
+	}})
+	for _, args := range [][]string{{"fetch", "g-1", "--list"}, {"fetch", "g-1", "--stat", "x"}} {
+		var out, errb bytes.Buffer
+		if code := run(args, &out, &errb); code != exitOK {
+			t.Fatalf("%v: code %d, stderr %q", args, code, errb.String())
+		}
+		if strings.ContainsAny(out.String(), "\x1b\x07\xe2\x80\xae") || !strings.Contains(out.String(), `\x1b`) {
+			t.Fatalf("%v: output %q carries raw control characters", args, out.String())
+		}
+		if args[2] == "--list" && !strings.Contains(out.String(), "plain é") {
+			t.Fatalf("a printable name was changed: %q", out.String())
+		}
 	}
 }
 

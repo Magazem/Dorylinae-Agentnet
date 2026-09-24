@@ -14,6 +14,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // sendLog records what a fetch client sends. The janitor goroutine can send
@@ -84,6 +85,42 @@ func newTestFetchClient(t *testing.T) (*fetchClient, *sendLog) {
 	return c, log
 }
 
+// insertHeldGrant stores a grant issued by h to holder in session sid, as the
+// holder's row.
+func insertHeldGrant(t *testing.T, h *grantHarness, holder, sid string, exp time.Time, state string) string {
+	t.Helper()
+	ctx := context.Background()
+	nbf := exp.Add(-2 * time.Hour)
+	tok, err := capability.Sign(h.priv, capability.Grant{
+		V: 1, ID: capability.NewID(), Iss: h.self, Aud: holder, Session: sid, Action: capability.ActionFSRead,
+		Resource: capability.Resource{Kind: capability.KindFS, Label: "res-ab12"}, Nbf: nbf, Exp: exp, Sensitive: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, _ := capability.Canonical(tok)
+	rec := capability.Record{
+		ID: tok.Grant.ID, Direction: capability.DirectionHeld, Peer: h.self, Session: sid, Action: capability.ActionFSRead,
+		Label: "res-ab12", Sensitive: true, Nbf: nbf, Exp: exp, Token: string(wire),
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.caps.InsertHeldTx(ctx, tx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if state == capability.StateRevoked {
+		if _, err := h.caps.RevokeTx(ctx, tx, rec.ID, capability.ReasonUser, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return rec.ID
+}
+
 func TestFetchExpiredGrantFailsLocally(t *testing.T) {
 	h, _ := newGrantHarness(t, "code", false)
 	ctx := context.Background()
@@ -91,40 +128,8 @@ func TestFetchExpiredGrantFailsLocally(t *testing.T) {
 	holder := envelope.KeyString(hpub)
 	sid := h.openSession(holder, "r-"+strings.Repeat("c", 32))
 
-	insert := func(exp time.Time, state string) string {
-		t.Helper()
-		nbf := exp.Add(-2 * time.Hour)
-		tok, err := capability.Sign(h.priv, capability.Grant{
-			V: 1, ID: capability.NewID(), Iss: h.self, Aud: holder, Session: sid, Action: capability.ActionFSRead,
-			Resource: capability.Resource{Kind: capability.KindFS, Label: "res-ab12"}, Nbf: nbf, Exp: exp, Sensitive: true,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		wire, _ := capability.Canonical(tok)
-		rec := capability.Record{
-			ID: tok.Grant.ID, Direction: capability.DirectionHeld, Peer: h.self, Session: sid, Action: capability.ActionFSRead,
-			Label: "res-ab12", Sensitive: true, Nbf: nbf, Exp: exp, Token: string(wire),
-		}
-		tx, err := h.db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := h.caps.InsertHeldTx(ctx, tx, rec); err != nil {
-			t.Fatal(err)
-		}
-		if state == capability.StateRevoked {
-			if _, err := h.caps.RevokeTx(ctx, tx, rec.ID, capability.ReasonUser, time.Now()); err != nil {
-				t.Fatal(err)
-			}
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
-		return rec.ID
-	}
-	expired := insert(time.Now().Add(-time.Hour), capability.StateActive)
-	revoked := insert(time.Now().Add(time.Hour), capability.StateRevoked)
+	expired := insertHeldGrant(t, h, holder, sid, time.Now().Add(-time.Hour), capability.StateActive)
+	revoked := insertHeldGrant(t, h, holder, sid, time.Now().Add(time.Hour), capability.StateRevoked)
 
 	sl := &sendLog{}
 	c := newFetchClient(h.caps, h.ws, holder, sl.send)
@@ -234,6 +239,17 @@ func TestFetchRefusesBadResponses(t *testing.T) {
 		{"data beyond the request", func(c *fetchClient, req string) {
 			c.onResp(testGrantor, fragResp(req, 0, 1, 3, []byte("abcdef")))
 		}, "io_error"},
+		{"base64 larger than a fragment", func(c *fetchClient, req string) {
+			c.onResp(testGrantor, []byte(`{"type":"fetch.resp","req":"`+req+`","ok":true,"frag":0,"frags":1,"size":3,"data":"`+strings.Repeat("A", 50000)+`"}`))
+		}, "io_error"},
+		{"commit not a hash", func(c *fetchClient, req string) {
+			c.onResp(testGrantor, []byte(`{"type":"fetch.resp","req":"`+req+`","ok":true,"frag":0,"frags":2,"size":40000,"commit":"\u001b[31m","data":""}`))
+		}, "io_error"},
+		{"commit changes between fragments", func(c *fetchClient, req string) {
+			for i, commit := range []string{strings.Repeat("a", 40), strings.Repeat("b", 40)} {
+				c.onResp(testGrantor, []byte(`{"type":"fetch.resp","req":"`+req+`","ok":true,"frag":`+string(rune('0'+i))+`,"frags":2,"size":40000,"commit":"`+commit+`","data":""}`))
+			}
+		}, "io_error"},
 	} {
 		c, _ := newTestFetchClient(t)
 		op := addReadOp(c, 0, capability.MaxReadBytes)
@@ -329,5 +345,100 @@ func TestFetchListAndStatResultsPassThrough(t *testing.T) {
 	var r map[string]json.RawMessage
 	if err := json.Unmarshal(res, &r); err != nil || len(r) != 3 || r["entries"] == nil || r["cursor"] == nil || r["commit"] == nil {
 		t.Fatalf("result = %s (%v), want entries, cursor and commit only", res, err)
+	}
+}
+
+// A stat or list response from the grantor is checked and only its known
+// members are kept.
+func TestFetchChecksListAndStatResponses(t *testing.T) {
+	longName := strings.Repeat("n", 1025)
+	for _, tc := range []struct {
+		name, op, body string
+		want           string // "" = complete
+	}{
+		{"extra members dropped", capability.OpStat, `"entry":{"name":"a","type":"file","size":1},"injected":"x"`, ""},
+		{"stat without entry", capability.OpStat, `"entries":[]`, "io_error"},
+		{"unknown type", capability.OpStat, `"entry":{"name":"a","type":"fifo"}`, "io_error"},
+		{"negative size", capability.OpStat, `"entry":{"name":"a","type":"file","size":-1}`, "io_error"},
+		{"empty name", capability.OpList, `"entries":[{"name":"","type":"file"}]`, "io_error"},
+		{"name too long", capability.OpList, `"entries":[{"name":"` + longName + `","type":"file"}]`, "io_error"},
+		{"bad commit", capability.OpList, `"entries":[],"commit":"HEAD"`, "io_error"},
+		{"entries not a list", capability.OpList, `"entries":{"a":1}`, "io_error"},
+		{"empty listing", capability.OpList, ``, ""},
+	} {
+		c, _ := newTestFetchClient(t)
+		op := &fetchOp{
+			id: "ft-v", req: randHexID("f-", 16), peer: testGrantor, state: fetchPending, done: make(chan struct{}),
+			p: FetchStartParams{Op: tc.op}, deadline: time.Now().Add(time.Hour),
+		}
+		c.mu.Lock()
+		c.ops[op.id], c.reqs[op.req] = op, op
+		c.mu.Unlock()
+		body := `{"type":"fetch.resp","req":"` + op.req + `","ok":true`
+		if tc.body != "" {
+			body += "," + tc.body
+		}
+		c.onResp(testGrantor, []byte(body+"}"))
+		st, code, res := opState(c, op)
+		switch {
+		case tc.want == "" && (st != fetchComplete || strings.Contains(string(res), "injected") || strings.Contains(string(res), `"req"`)):
+			t.Errorf("%s: %s (%s) %s, want complete with known members only", tc.name, st, code, res)
+		case tc.want != "" && (st != fetchFailed || code != tc.want):
+			t.Errorf("%s: %s (%s), want failed with %s", tc.name, st, code, tc.want)
+		}
+	}
+}
+
+// Finished fetches kept for fetch_status do not count against the live limit:
+// the oldest is dropped instead. A slow send shortens the wait so that the call
+// still returns within the IPC budget.
+func TestFetchStartKeepsFinishedBoundedAndReturnsInTime(t *testing.T) {
+	h, _ := newGrantHarness(t, "code", false)
+	hpub, _, _ := ed25519.GenerateKey(rand.Reader)
+	holder := envelope.KeyString(hpub)
+	// the holder's view of the session: worker, with the grantor as peer
+	hws := &worksession.Store{DB: h.db, Self: holder, Audit: h.log}
+	reqID := "r-" + strings.Repeat("d", 32)
+	ctx := context.Background()
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hws.OpenSession(ctx, tx, worksession.RoleWorker, h.self, reqID, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	sid := worksession.DeriveID(h.self, holder, reqID)
+	grant := insertHeldGrant(t, h, holder, sid, time.Now().Add(time.Hour), capability.StateActive)
+
+	slow := func(context.Context, string, []byte) error {
+		time.Sleep(1200 * time.Millisecond)
+		return nil
+	}
+	c := newFetchClient(h.caps, hws, holder, slow)
+	t.Cleanup(c.Close)
+	old := time.Now().Add(-time.Minute / 2)
+	c.mu.Lock()
+	for i := range fetchMaxKept {
+		id := "ft-done" + string(rune('A'+i))
+		c.ops[id] = &fetchOp{id: id, peer: "p", state: fetchComplete, finished: old.Add(time.Duration(i) * time.Millisecond), done: make(chan struct{})}
+	}
+	c.mu.Unlock()
+
+	begin := time.Now()
+	st, err := c.start(context.Background(), FetchStartParams{Grant: grant, Op: capability.OpStat, Path: "f"})
+	if err != nil || st.State != fetchPending {
+		t.Fatalf("start = %+v, %v; want pending", st, err)
+	}
+	if d := time.Since(begin); d > fetchCallBudget+300*time.Millisecond {
+		t.Fatalf("start took %s with a slow send, want about %s", d, fetchCallBudget)
+	}
+	c.mu.Lock()
+	n, oldestGone := len(c.ops), c.ops["ft-doneA"] == nil
+	c.mu.Unlock()
+	if n != fetchMaxKept || !oldestGone {
+		t.Fatalf("%d ops kept (oldest dropped: %v), want %d finished plus the new one", n, oldestGone, fetchMaxKept-1)
 	}
 }

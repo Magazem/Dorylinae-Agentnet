@@ -9,8 +9,12 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
@@ -208,7 +212,7 @@ func fetchFile(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		data = append(data, chunk...)
 	}
 	if outFile != "" {
-		if err := os.WriteFile(outFile, data, 0o600); err != nil {
+		if err := writeFileAtomic(outFile, data); err != nil {
 			return failJSON(asJSON, stdout, stderr, exitError, "io_error", fmt.Sprintf("cannot write %s: %v", outFile, err))
 		}
 	}
@@ -231,6 +235,40 @@ func fetchFile(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		_, _ = stdout.Write(data)
 	}
 	return exitOK
+}
+
+// writeFileAtomic writes data to a new mode-0600 file next to name and renames
+// it over name, so a failure leaves no partial file, an existing file does not
+// keep a wider mode, and a symlink at name is replaced rather than followed.
+func writeFileAtomic(name string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(name), "."+filepath.Base(name)+".*.part")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, name)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
+}
+
+// termSafe quotes s when it holds a character that is not printable, so that
+// a name chosen by the grantor cannot send escape sequences to the terminal.
+func termSafe(s string) string {
+	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
+		return strconv.QuoteToGraphic(s)
+	}
+	return s
 }
 
 func fetchList(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantID, dir string) int {
@@ -279,7 +317,7 @@ func fetchList(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		if e.Size != nil {
 			size = fmt.Sprint(*e.Size)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", e.Name, e.Type, size)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", termSafe(e.Name), termSafe(e.Type), size)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -307,6 +345,6 @@ func fetchStat(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 	if r.Entry.Size != nil {
 		size = fmt.Sprint(*r.Entry.Size)
 	}
-	_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", r.Entry.Name, r.Entry.Type, size)
+	_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", termSafe(r.Entry.Name), termSafe(r.Entry.Type), size)
 	return exitOK
 }

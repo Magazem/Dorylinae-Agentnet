@@ -30,6 +30,10 @@ const (
 	// fetchWait is how long fetch_start and fetch_status wait for an answer
 	// before returning "pending" (every IPC call returns within 2 s).
 	fetchWait = time.Second
+	// fetchCallBudget bounds the whole fetch_start / fetch_status call: the
+	// wait is cut short when sending took long, so the reply still comes back
+	// within the CLI's 1.9 s IPC timeout.
+	fetchCallBudget = 1500 * time.Millisecond
 	// fetchKeep is how long a finished fetch stays readable.
 	fetchKeep = 60 * time.Second
 	// fetchDefaultTimeout and fetchMaxTimeout bound how long an operation may
@@ -43,9 +47,12 @@ const (
 	// fetchMaxPerPeer matches the grantor's limit of two in flight per holder
 	// (Docs/protocol/grant.md §Limits): more would only be answered rate_limited.
 	fetchMaxPerPeer = 2
-	fetchMaxLive    = 64
-	fetchTick       = 200 * time.Millisecond
-	maxFragments    = capability.MaxReadBytes / capability.FragmentBytes
+	// fetchMaxLive bounds the pending fetches, fetchMaxKept the finished ones
+	// kept for fetch_status (the oldest is dropped first).
+	fetchMaxLive = 64
+	fetchMaxKept = 64
+	fetchTick    = 200 * time.Millisecond
+	maxFragments = capability.MaxReadBytes / capability.FragmentBytes
 )
 
 // Fetch states, as in ping.
@@ -55,7 +62,10 @@ const (
 	fetchFailed   = "failed"
 )
 
-var fetchCodePattern = regexp.MustCompile(`^[a-z_]{1,32}$`)
+var (
+	fetchCodePattern   = regexp.MustCompile(`^[a-z_]{1,32}$`)
+	fetchCommitPattern = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+)
 
 // FetchStartParams are the params of "fetch_start". Path is required for stat
 // and read; Length defaults to (and is at most) 256 KiB. TimeoutS is how long
@@ -274,14 +284,66 @@ func (c *fetchClient) onResp(peer string, pt []byte) {
 		return
 	}
 	if op.p.Op != capability.OpRead {
-		delete(m, "type")
-		delete(m, "req")
-		delete(m, "ok")
-		res, _ := json.Marshal(m)
+		res, ok := fetchMetaResult(op.p.Op, pt)
+		if !ok {
+			c.finishLocked(op, nil, &FetchError{Code: capability.CodeIO, Message: "the grantor sent a malformed " + op.p.Op + " response"}, now)
+			return
+		}
 		c.finishLocked(op, res, nil, now)
 		return
 	}
 	c.onFragLocked(op, m, now)
+}
+
+// fetchMetaResult checks a stat or list response from the grantor and keeps
+// only its known members, so that nothing unchecked or oversized reaches the
+// IPC reply (whose lines are limited to 1 MiB).
+func fetchMetaResult(op string, pt []byte) (json.RawMessage, bool) {
+	var r struct {
+		Entry   *capability.Entry  `json:"entry"`
+		Entries []capability.Entry `json:"entries"`
+		Cursor  string             `json:"cursor"`
+		Commit  string             `json:"commit"`
+	}
+	if json.Unmarshal(pt, &r) != nil || (r.Commit != "" && !fetchCommitPattern.MatchString(r.Commit)) {
+		return nil, false
+	}
+	validEntry := func(e capability.Entry) bool {
+		switch e.Type {
+		case "file", "dir", "symlink", "other":
+		default:
+			return false
+		}
+		return e.Name != "" && len(e.Name) <= 1024 && utf8.ValidString(e.Name) && (e.Size == nil || *e.Size >= 0)
+	}
+	out := map[string]any{}
+	if r.Commit != "" {
+		out["commit"] = r.Commit
+	}
+	if op == capability.OpStat {
+		if r.Entry == nil || !validEntry(*r.Entry) {
+			return nil, false
+		}
+		out["entry"] = r.Entry
+	} else {
+		if len(r.Entries) > capability.MaxListEntries || len(r.Cursor) > 1024 || !utf8.ValidString(r.Cursor) {
+			return nil, false
+		}
+		for _, e := range r.Entries {
+			if !validEntry(e) {
+				return nil, false
+			}
+		}
+		if r.Entries == nil {
+			r.Entries = []capability.Entry{}
+		}
+		out["entries"] = r.Entries
+		if r.Cursor != "" {
+			out["cursor"] = r.Cursor
+		}
+	}
+	b, err := json.Marshal(out)
+	return b, err == nil
 }
 
 func (c *fetchClient) onFragLocked(op *fetchOp, m map[string]json.RawMessage, now time.Time) {
@@ -296,14 +358,16 @@ func (c *fetchClient) onFragLocked(op *fetchOp, m map[string]json.RawMessage, no
 	bad := func(msg string) {
 		c.finishLocked(op, nil, &FetchError{Code: capability.CodeIO, Message: msg}, now)
 	}
-	if frags < 1 || frags > maxFragments || frag < 0 || frag >= frags || size < 0 {
+	if frags < 1 || frags > maxFragments || frag < 0 || frag >= frags || size < 0 ||
+		(commit != "" && !fetchCommitPattern.MatchString(commit)) ||
+		len(data) > base64.StdEncoding.EncodedLen(capability.FragmentBytes) {
 		bad("the grantor sent a malformed fragment")
 		return
 	}
 	if op.frags == nil {
 		op.frags, op.size, op.commit = make([][]byte, frags), size, commit
 	}
-	if frags != len(op.frags) || size != op.size {
+	if frags != len(op.frags) || size != op.size || commit != op.commit {
 		bad("the grantor sent inconsistent fragments")
 		return
 	}
@@ -345,9 +409,10 @@ func (c *fetchClient) snapshotLocked(op *fetchOp) FetchStatus {
 	return FetchStatus{FetchID: op.id, State: op.state, Result: op.result, Error: op.err}
 }
 
-// wait returns the status of op after at most fetchWait.
-func (c *fetchClient) wait(ctx context.Context, op *fetchOp) FetchStatus {
-	t := time.NewTimer(fetchWait)
+// wait returns the status of op after at most fetchWait, and no later than
+// callStart plus fetchCallBudget.
+func (c *fetchClient) wait(ctx context.Context, op *fetchOp, callStart time.Time) FetchStatus {
+	t := time.NewTimer(max(0, min(fetchWait, time.Until(callStart.Add(fetchCallBudget)))))
 	defer t.Stop()
 	select {
 	case <-op.done:
@@ -364,6 +429,7 @@ func badFetch(msg string) error { return &ipc.Error{Code: ipc.CodeBadRequest, Me
 // start runs the local checks (Verify steps 1-8: an expired or ended grant
 // fails here, with no message sent), sends the request and waits briefly.
 func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatus, error) {
+	callStart := time.Now()
 	if p.Grant == "" {
 		return FetchStatus{}, badFetch("grant is required")
 	}
@@ -435,15 +501,27 @@ func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatu
 		deadline: now.Add(timeout), state: fetchPending, done: make(chan struct{}),
 	}
 	c.mu.Lock()
-	inflight := 0
+	inflight, pending, kept := 0, 0, 0
+	var oldest *fetchOp
 	for _, o := range c.ops {
-		if o.state == fetchPending && o.peer == op.peer {
+		if o.state != fetchPending {
+			kept++
+			if oldest == nil || o.finished.Before(oldest.finished) {
+				oldest = o
+			}
+			continue
+		}
+		pending++
+		if o.peer == op.peer {
 			inflight++
 		}
 	}
-	if inflight >= fetchMaxPerPeer || len(c.ops) >= fetchMaxLive {
+	if inflight >= fetchMaxPerPeer || pending >= fetchMaxLive {
 		c.mu.Unlock()
 		return FetchStatus{}, &ipc.Error{Code: capability.CodeRateLimited, Message: "too many fetches in progress; wait for one to finish"}
+	}
+	if kept >= fetchMaxKept {
+		delete(c.ops, oldest.id)
 	}
 	c.ops[op.id] = op
 	c.reqs[op.req] = op
@@ -461,17 +539,18 @@ func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatu
 		}
 		return FetchStatus{}, &ipc.Error{Code: capability.CodeIO, Message: "could not send the fetch request"}
 	}
-	return c.wait(ctx, op), nil
+	return c.wait(ctx, op, callStart), nil
 }
 
 func (c *fetchClient) status(ctx context.Context, id string) (FetchStatus, error) {
+	callStart := time.Now()
 	c.mu.Lock()
 	op := c.ops[id]
 	c.mu.Unlock()
 	if op == nil {
 		return FetchStatus{}, &ipc.Error{Code: capability.CodeNotFound, Message: "no fetch with that id (finished fetches are kept for 60 s)"}
 	}
-	return c.wait(ctx, op), nil
+	return c.wait(ctx, op, callStart), nil
 }
 
 func registerFetch(srv *ipc.Server, c *fetchClient) {
