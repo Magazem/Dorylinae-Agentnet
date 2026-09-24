@@ -294,19 +294,42 @@ variable removed** (an inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_OBJECT_DIRECTO
 or inject configuration) and then these added: `GIT_CONFIG_NOSYSTEM=1`,
 `GIT_CONFIG_GLOBAL=<os.DevNull>`, `GIT_TERMINAL_PROMPT=0`, `GIT_NO_LAZY_FETCH=1`,
 `GIT_OPTIONAL_LOCKS=0`, `GIT_LITERAL_PATHSPECS=1` (no `*`, `?`, `[` or `:(magic)` in a
-path), `GIT_NO_REPLACE_OBJECTS=1`, `GIT_ATTR_NOSYSTEM=1`. The `git` executable is resolved
-once at daemon start with `exec.LookPath`. Commands:
+path), `GIT_NO_REPLACE_OBJECTS=1`, `GIT_ATTR_NOSYSTEM=1`, and for served commands
+`GIT_CEILING_DIRECTORIES=<parent of repo>` (if the repository is gone, git must not serve an
+enclosing one). The `git` executable is resolved once at daemon start with `exec.LookPath`;
+on Windows the `git.exe` in `git --exec-path` is used instead, because Git for Windows'
+`cmd\git.exe` is a launcher whose child outlives a kill on timeout. Requires Git ≥ 2.32
+(`GIT_CONFIG_GLOBAL`); `GIT_NO_LAZY_FETCH` needs 2.44 and is backed by the `protocol`
+overrides below. Every served command is prefixed with the command-line overrides
+`-c core.fsmonitor=false -c core.hooksPath=<os.DevNull> -c protocol.allow=never` and
+`-c protocol.<p>.allow=never` for `ext`, `file`, `git`, `ssh`, `http` and `https`; the
+command line outranks any repository config or include. `safe.directory` is not
+overridden: a repository owned by another user fails (`not_found`). Commands:
 
 ```
-git -C <repo> rev-parse --verify --end-of-options refs/heads/<branch>^{commit}
-git -C <repo> ls-tree -z --full-tree <commit> -- <dir>/        (list)
+git -C <repo> for-each-ref --count=1 --sort=refname --format=%(refname)%00%(objecttype)%00%(objectname)%00%(symref) refs/heads/<branch>
+git -C <repo> ls-tree -z --full-tree -l <commit> -- <dir>/     (list)
 git -C <repo> ls-tree -z --full-tree -l <commit> -- <path>     (stat)
 git -C <repo> cat-file blob <blob-oid>                          (read, after a stat gave a 100644/100755 blob)
 ```
 
+The branch resolves only if the first line names exactly `refs/heads/<branch>`, a
+`commit`, and no symbolic-ref target: `rev-parse` is not used because it would DWIM a
+missing branch to `refs/tags/refs/heads/<branch>` or `refs/remotes/refs/heads/<branch>`, and a
+symbolic ref could name any other ref. A missing, symbolic or non-commit branch →
+`not_found`; issuance applies the same check (`forbidden_resource`), and accepts a bare
+repository only at its git directory (`--absolute-git-dir`), not a directory inside it.
+A stat matches the one tree entry whose path equals the request byte for byte; a symlink or
+submodule in an intermediate component is not traversed → `not_found`. A `ls-tree` output
+above 32 MiB or 100 000 entries → `too_large`. git's stderr is discarded, never reported.
+
 Peer-supplied strings reach `git` only as the `<path>` after `--`, already validated by
 [Paths](#paths); the branch comes from the token, validated at issuance. None of these
 commands runs hooks, filters or diff drivers. Blobs larger than 8 MiB → `too_large`.
+Residual (the grantor's own repository config): an `include.path`, `objects/info/alternates`,
+a `.git` file (`gitdir:`) or `commondir` can make git read other local paths — on Windows a
+UNC path, which opens an SMB connection. No command-line switch disables these; the exposure
+is the same as the grantor running any git command in that repository.
 
 ### Limits
 

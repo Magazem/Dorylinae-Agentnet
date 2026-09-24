@@ -25,6 +25,8 @@ import (
 const (
 	fakeGitMode = "CAPTEST_FAKE_GIT"
 	fakeGitOut  = "CAPTEST_FAKE_GIT_OUT"
+	// fakeGitExecPath is what the fake prints for --exec-path.
+	fakeGitExecPath = "CAPTEST_FAKE_GIT_EXEC_PATH"
 )
 
 func TestMain(m *testing.M) {
@@ -54,8 +56,11 @@ func fakeGit(mode string) int {
 		_, _ = f.Write(append(b, '\n'))
 		_ = f.Close()
 	}
-	if slices.Contains(args, "rev-parse") {
-		fmt.Println(strings.Repeat("a", 40))
+	switch {
+	case slices.Contains(args, "for-each-ref"):
+		fmt.Printf("%s\x00commit\x00%s\x00\n", args[len(args)-1], strings.Repeat("a", 40))
+	case slices.Contains(args, "--exec-path"):
+		fmt.Println(os.Getenv(fakeGitExecPath))
 	}
 	return 0 // ls-tree: no entries
 }
@@ -319,6 +324,66 @@ func TestGitOtherRefsUnreachable(t *testing.T) {
 	}
 	r.run("branch", "-D", "other")
 	h.expectErr(otherTok, readOpts("secret.txt"), CodeNotFound)
+}
+
+// Review 37 M1: a missing branch must not DWIM to a ref that merely ends in
+// refs/heads/<branch>, a symbolic ref must not stand in for another ref, and
+// a branch must name a commit.
+func TestGitBranchResolvesExactly(t *testing.T) {
+	r, repo := gitFixture(t)
+	other := r.run("rev-parse", "refs/heads/other")
+	r.run("update-ref", "refs/tags/refs/heads/gone", other)
+	r.run("update-ref", "refs/remotes/refs/heads/gone2", other)
+	r.run("update-ref", "refs/refs/heads/gone3", other)
+	r.run("symbolic-ref", "refs/heads/alias", "refs/heads/other")
+	// git refuses to point a branch at a non-commit: write the loose refs.
+	for name, rev := range map[string]string{"tree": "refs/heads/other^{tree}", "annotated": "refs/tags/v1"} {
+		ref := filepath.Join(repo, ".git", "refs", "heads", name)
+		if err := os.WriteFile(ref, []byte(r.run("rev-parse", rev)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.run("update-ref", "refs/heads/mainx", other) // shares the prefix "main"
+
+	be := GitBackend{Git: r.git}
+	h := newGitHarness(t, be)
+	for _, b := range []string{"gone", "gone2", "gone3", "alias", "tree", "annotated", "mai"} {
+		if c, err := be.BranchTip(context.Background(), repo, b); FetchCode(err) != CodeNotFound {
+			t.Errorf("BranchTip(%q) = %q, %v; want not_found", b, c, err)
+		}
+		_, tok := h.issueGit(repo, b, "")
+		h.expectErr(tok, reqOpts{op: OpStat, path: "secret.txt"}, CodeNotFound)
+	}
+	if c, err := be.BranchTip(context.Background(), repo, "main"); err != nil || c != r.run("rev-parse", "refs/heads/main") {
+		t.Fatalf("BranchTip(main) = %q, %v", c, err)
+	}
+}
+
+func TestGitExecPathBinary(t *testing.T) {
+	dir := testutil.TempDir(t)
+	t.Setenv(fakeGitMode, "exec-path")
+	t.Setenv(fakeGitExecPath, filepath.ToSlash(dir))
+	fake := fakeGitPath(t)
+	if got := gitExecPathBinary(fake, "git.exe"); got != "" {
+		t.Fatalf("no git.exe in the exec path: got %q", got)
+	}
+	want := filepath.Join(dir, "git.exe")
+	if err := os.WriteFile(want, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitExecPathBinary(fake, "git.exe"); got != want {
+		t.Fatalf("gitExecPathBinary = %q, want %q", got, want)
+	}
+	t.Setenv(fakeGitExecPath, "relative/dir")
+	if got := gitExecPathBinary(fake, "git.exe"); got != "" {
+		t.Fatalf("relative exec path accepted: %q", got)
+	}
+	if runtime.GOOS == "windows" {
+		// Review 37 M2: the resolved git is the real one, not the cmd\ launcher.
+		if p, err := LookGit(); err == nil && strings.EqualFold(filepath.Base(filepath.Dir(p)), "cmd") {
+			t.Fatalf("LookGit = %q: the launcher, whose child outlives a kill", p)
+		}
+	}
 }
 
 func TestGitSymlinkAndSubmoduleNotServed(t *testing.T) {
@@ -600,7 +665,7 @@ func TestGitEnvironmentAndArgv(t *testing.T) {
 
 	calls := readFakeCalls(t, out)
 	if len(calls) != 3 {
-		t.Fatalf("%d git calls, want 3 (rev-parse, ls-tree, show-ref)", len(calls))
+		t.Fatalf("%d git calls, want 3 (for-each-ref, ls-tree, show-ref)", len(calls))
 	}
 	fixed := map[string]string{
 		"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.DevNull, "GIT_TERMINAL_PROMPT": "0",
@@ -627,15 +692,16 @@ func TestGitEnvironmentAndArgv(t *testing.T) {
 		}
 	}
 
-	revParse, lsTree := calls[0].Args, calls[1].Args
+	forEachRef, lsTree := calls[0].Args, calls[1].Args
 	prefix := append([]string{"-C", repo}, gitHardening()...)
-	for _, a := range [][]string{revParse, lsTree} {
+	for _, a := range [][]string{forEachRef, lsTree} {
 		if !slices.Equal(a[:len(prefix)], prefix) {
 			t.Fatalf("argv %q does not start with -C <repo> and the -c overrides", a)
 		}
 	}
-	if w := []string{"rev-parse", "-q", "--verify", "--end-of-options", "refs/heads/main^{commit}"}; !slices.Equal(revParse[len(prefix):], w) {
-		t.Fatalf("rev-parse argv %q", revParse[len(prefix):])
+	if w := []string{"for-each-ref", "--count=1", "--sort=refname",
+		"--format=%(refname)%00%(objecttype)%00%(objectname)%00%(symref)", "refs/heads/main"}; !slices.Equal(forEachRef[len(prefix):], w) {
+		t.Fatalf("for-each-ref argv %q", forEachRef[len(prefix):])
 	}
 	if w := []string{"ls-tree", "-z", "--full-tree", "-l", strings.Repeat("a", 40), "--", "-x.go"}; !slices.Equal(lsTree[len(prefix):], w) {
 		t.Fatalf("ls-tree argv %q", lsTree[len(prefix):])

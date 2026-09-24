@@ -239,11 +239,10 @@ func validateGitResource(resolved, branch string) *ipc.Error {
 	if !isGitTopLevel(gitPath, resolved) {
 		return &ipc.Error{Code: CodeForbiddenResource, Message: "resource is not a git work tree or bare repository"}
 	}
-	// branch matches the strict refs/heads/ grammar of capability.checkBranch.
-	cmd, cancel := gitCommand(context.Background(), gitPath, "-C", resolved, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	defer cancel()
-	if err := cmd.Run(); err != nil {
-		return &ipc.Error{Code: CodeForbiddenResource, Message: "branch does not exist"}
+	// The same exact resolution as serving: no DWIM, no symbolic ref, a
+	// commit (review 37 M1).
+	if _, err := (capability.GitBackend{Git: gitPath}).BranchTip(context.Background(), resolved, branch); err != nil {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "branch does not exist or is not a plain branch"}
 	}
 	return nil
 }
@@ -258,10 +257,20 @@ func isGitTopLevel(gitPath, resolved string) bool {
 		top, terr := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
 		return terr == nil && pathsEqual(top, resolved)
 	}
-	cmd2, cancel2 := gitCommand(context.Background(), gitPath, "-C", resolved, "rev-parse", "--is-bare-repository")
+	// Bare: resolved must be the git directory itself, not a directory inside
+	// one (discovery from repo.git/objects finds repo.git; review 37 L1).
+	cmd2, cancel2 := gitCommand(context.Background(), gitPath, "-C", resolved, "rev-parse", "--is-bare-repository", "--absolute-git-dir")
 	defer cancel2()
 	out, err = cmd2.Output()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
+	if err != nil {
+		return false
+	}
+	bare, dir, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	if strings.TrimSpace(bare) != "true" {
+		return false
+	}
+	gd, gerr := filepath.EvalSymlinks(filepath.FromSlash(strings.TrimSpace(dir)))
+	return gerr == nil && pathsEqual(gd, resolved)
 }
 
 // deriveLabel builds the label of Docs/protocol/grant.md §Grant object: the

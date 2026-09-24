@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,13 +58,45 @@ func GitEnv(environ []string) []string {
 }
 
 // LookGit resolves the git executable to an absolute path. The daemon calls
-// it once at start; requests never search PATH.
+// it once at start; requests never search PATH. On Windows, PATH usually
+// holds Git for Windows' cmd\git.exe, a launcher that runs the real git as a
+// child: killing the launcher on timeout leaves that child running (review
+// 37 M2), so the git.exe of `git --exec-path` is used instead.
 func LookGit() (string, error) {
 	p, err := exec.LookPath("git")
 	if err != nil {
 		return "", err
 	}
-	return filepath.Abs(p)
+	p, err = filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "windows" {
+		if bin := gitExecPathBinary(p, "git.exe"); bin != "" {
+			return bin, nil
+		}
+	}
+	return p, nil
+}
+
+// gitExecPathBinary returns <git --exec-path>/<name> if it is a regular file,
+// else "".
+func gitExecPathBinary(gitPath, name string) string {
+	cmd, cancel := GitCommand(context.Background(), gitPath, "--exec-path")
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.FromSlash(strings.TrimSpace(string(out)))
+	if !filepath.IsAbs(dir) {
+		return ""
+	}
+	bin := filepath.Join(dir, name)
+	if fi, err := os.Stat(bin); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return bin
 }
 
 // GitCommand builds a git command with no shell, a GitTimeout deadline and
@@ -89,7 +122,7 @@ func gitCommandTimeout(ctx context.Context, d time.Duration, gitPath string, arg
 // gitHardening are the -c overrides put before every served command. The
 // command line has the highest configuration priority, so a hostile
 // .git/config (or a file it includes) cannot turn these back on. The
-// commands served (rev-parse, ls-tree, cat-file blob) run no hooks, filters
+// commands served (for-each-ref, ls-tree, cat-file blob) run no hooks, filters
 // or diff drivers anyway; these close the remaining paths to a subprocess:
 // fsmonitor, hooks and any transport (a lazy fetch of a partial clone).
 func gitHardening() []string {
@@ -157,25 +190,51 @@ func (b GitBackend) check(rec Record) error {
 	return nil
 }
 
-// tip resolves refs/heads/<branch> to its commit, exactly (no DWIM: other
-// branches and tags are unreachable).
 func (b GitBackend) tip(ctx context.Context, rec Record) (string, error) {
-	cmd, cctx, cancel := b.command(ctx, rec.Path, "rev-parse", "-q", "--verify", "--end-of-options",
-		"refs/heads/"+rec.Branch+"^{commit}")
+	return b.BranchTip(ctx, rec.Path, rec.Branch)
+}
+
+// BranchTip resolves refs/heads/<branch> of repo to the commit it names,
+// exactly. for-each-ref matches the full ref name only: rev-parse would DWIM
+// a missing branch to refs/tags/refs/heads/<branch> or
+// refs/remotes/refs/heads/<branch> (review 37 M1). A symbolic ref (which
+// could name any other ref) and a ref to anything but a commit are
+// not_found. Issuance runs the same check.
+func (b GitBackend) BranchTip(ctx context.Context, repo, branch string) (string, error) {
+	if b.Git == "" {
+		return "", fetchErr(CodeUnsupported)
+	}
+	if !filepath.IsAbs(repo) || checkBranch(branch) != nil {
+		return "", fetchErr(CodeNotFound)
+	}
+	ref := "refs/heads/" + branch
+	// Sorted by name, the exact ref comes before any refs/heads/<branch>/...
+	cmd, cctx, cancel := b.command(ctx, repo, "for-each-ref", "--count=1", "--sort=refname",
+		"--format=%(refname)%00%(objecttype)%00%(objectname)%00%(symref)", ref)
 	defer cancel()
 	var out bytes.Buffer
-	cmd.Stdout = &limitedWriter{w: &out, n: 256}
+	cmd.Stdout = &limitedWriter{w: &out, n: 2048}
 	if err := cmd.Run(); err != nil {
 		if cctx.Err() != nil {
 			return "", fetchErr(CodeIO) // timed out or cancelled
 		}
+		return "", fetchErr(CodeNotFound) // no longer a repository
+	}
+	line := strings.TrimSuffix(out.String(), "\n")
+	if line == "" {
 		return "", fetchErr(CodeNotFound) // the branch is gone
 	}
-	c := strings.TrimSpace(out.String())
-	if !isHexOID(c) {
+	f := strings.Split(line, "\x00")
+	if len(f) != 4 {
 		return "", fetchErr(CodeIO)
 	}
-	return c, nil
+	if f[0] != ref || f[1] != "commit" || f[3] != "" {
+		return "", fetchErr(CodeNotFound)
+	}
+	if !isHexOID(f[2]) {
+		return "", fetchErr(CodeIO)
+	}
+	return f[2], nil
 }
 
 func isHexOID(s string) bool {
