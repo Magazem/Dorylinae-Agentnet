@@ -198,6 +198,7 @@ type Manager struct {
 	queue    map[string][]queued
 	pings    map[string]*ping
 	refs     map[string]ref // envelope id -> peer, to match relay errors
+	handlers map[string]DataHandler
 	closed   bool
 
 	rejMu      sync.Mutex
@@ -219,6 +220,7 @@ func NewManager(cfg Config) *Manager {
 		inbox: make(chan envelope.Envelope, inboxSize), stop: make(chan struct{}),
 		sessions: map[string]*sess{}, current: map[string]string{}, dialing: map[string]string{},
 		queue: map[string][]queued{}, pings: map[string]*ping{}, refs: map[string]ref{},
+		handlers: map[string]DataHandler{},
 	}
 	if m.log == nil {
 		m.log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -227,6 +229,47 @@ func NewManager(cfg Config) *Manager {
 	go m.worker()
 	go m.sweeper()
 	return m
+}
+
+// DataHandler receives the decrypted plaintext of a session.data message of a
+// registered type, with the authenticated identity of the sending peer. It runs
+// on the manager's receive goroutine while the send lock is held, so it must
+// return quickly and must not call SendData itself: it hands the work to its
+// own workers (Docs/protocol/grant.md §Transport).
+type DataHandler func(peer string, plaintext []byte)
+
+// ErrNoSession means there is no open session to the peer to send on.
+var ErrNoSession = errors.New("session: no open session with the peer")
+
+// Handle registers h for session.data plaintexts whose "type" is typ (for
+// example "fetch.req"). Call it before envelopes flow. Built-in ping and pong
+// cannot be replaced.
+func (m *Manager) Handle(typ string, h DataHandler) {
+	if typ == "ping" || typ == "pong" || h == nil {
+		return
+	}
+	m.mu.Lock()
+	m.handlers[typ] = h
+	m.mu.Unlock()
+}
+
+// SendData encrypts pt on the peer's current open session and sends it. It
+// never starts a handshake: a reply needs the session the request arrived on.
+func (m *Manager) SendData(ctx context.Context, peer string, pt []byte) error {
+	m.sendMu.Lock()
+	defer m.sendMu.Unlock()
+	m.mu.Lock()
+	sid, ok := m.current[peer]
+	if !ok {
+		m.mu.Unlock()
+		return ErrNoSession
+	}
+	env, err := m.sealLocked(m.sessions[sid], pt, "")
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return m.send(ctx, env)
 }
 
 // SetSender sets the relay connection once it exists.
@@ -652,6 +695,12 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 			rtt := float64(time.Since(p.sentAt).Microseconds()) / 1000
 			p.st.RTTMillis = &rtt
 			m.finishLocked(p, nil)
+		}
+	default:
+		if h := m.handlers[msg.Type]; h != nil {
+			m.mu.Unlock()
+			h(from, bytes.Clone(pt))
+			return ""
 		}
 	}
 	m.mu.Unlock()

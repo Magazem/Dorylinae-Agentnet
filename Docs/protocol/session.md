@@ -131,6 +131,9 @@ connection's frames in order, so honest traffic never trips the check.
 {"type":"pong","id":"ping-..."}
 ```
 
+`fetch.req` and `fetch.resp` ([grant.md §Transport](grant.md#transport)) are handled through
+registered handlers (`Manager.Handle`; replies use `Manager.SendData`, which never starts a
+handshake); a handler runs on the receive goroutine and must hand slow work to its own workers.
 Unknown types are ignored. Later tickets add types; the envelope `type` stays
 `session.data` so the relay learns only that a session message was sent.
 

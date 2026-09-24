@@ -448,6 +448,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}
+	defer startFetchServer(sessions, capStore, wsStore, log, id.Card().Card.PublicKey)()
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
 	if err != nil {
 		_ = ln.Close()

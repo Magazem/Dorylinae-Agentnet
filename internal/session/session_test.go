@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -271,4 +272,55 @@ func TestRelayErrorFailsPing(t *testing.T) {
 	if st.State != StateFailed || st.Error.Code != envelope.CodePeerOffline {
 		t.Fatalf("status = %+v", st)
 	}
+}
+
+func TestDataHandlerAndSendData(t *testing.T) {
+	_, a, b := pair(t)
+	if err := a.m.SendData(context.Background(), b.key, []byte(`{"type":"x.test"}`)); !errors.Is(err, ErrNoSession) {
+		t.Fatalf("SendData without a session = %v, want ErrNoSession", err)
+	}
+	type got struct {
+		peer string
+		pt   string
+	}
+	var mu sync.Mutex
+	var seen []got
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	b.m.Handle("x.test", func(peer string, pt []byte) {
+		mu.Lock()
+		seen = append(seen, got{peer, string(pt)})
+		mu.Unlock()
+		// A handler hands slow work to its own goroutine; it must not block the receiver.
+		go func() {
+			<-release
+		}()
+	})
+	b.m.Handle("ping", func(string, []byte) { t.Error("ping must not be replaceable") })
+	if st := mustPing(t, a, b); st.State != StateComplete {
+		t.Fatalf("ping = %+v", st)
+	}
+	if err := a.m.SendData(context.Background(), b.key, []byte(`{"type":"x.test","n":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "handler call", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) == 1 })
+	mu.Lock()
+	if seen[0].peer != a.key || seen[0].pt != `{"type":"x.test","n":1}` {
+		t.Fatalf("handler got %+v", seen[0])
+	}
+	mu.Unlock()
+	// pings still work while the handler's work is outstanding
+	if st := mustPing(t, a, b); st.State != StateComplete {
+		t.Fatalf("second ping = %+v", st)
+	}
+	// and the reply path: b answers on the same session
+	a.m.Handle("x.reply", func(peer string, pt []byte) {
+		mu.Lock()
+		seen = append(seen, got{peer, string(pt)})
+		mu.Unlock()
+	})
+	if err := b.m.SendData(context.Background(), a.key, []byte(`{"type":"x.reply"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "reply", func() bool { mu.Lock(); defer mu.Unlock(); return len(seen) == 2 })
 }

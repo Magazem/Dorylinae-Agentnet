@@ -302,7 +302,7 @@ func ValidScopePath(s string) bool {
 	if strings.HasPrefix(s, "/") || strings.HasSuffix(s, "/") {
 		return false
 	}
-	if strings.ContainsAny(s, `\:`) || hasControl(s) {
+	if strings.ContainsAny(s, `\:`) || hasPathControl(s) {
 		return false
 	}
 	for _, seg := range strings.Split(s, "/") {
@@ -331,11 +331,35 @@ func isWindowsReserved(seg string) bool {
 	// Windows ignores trailing spaces in a device name: "CON .txt" is CON.
 	name = strings.ToUpper(strings.TrimRight(name, " "))
 	switch name {
-	case "CON", "PRN", "AUX", "NUL":
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
 		return true
 	}
-	if len(name) == 4 && (strings.HasPrefix(name, "COM") || strings.HasPrefix(name, "LPT")) && name[3] >= '1' && name[3] <= '9' {
+	// COM1-COM9 and LPT1-LPT9, and also the superscript digits Windows treats
+	// as device numbers (COM¹, COM², COM³; review 25 L9).
+	if len(name) > 3 && (strings.HasPrefix(name, "COM") || strings.HasPrefix(name, "LPT")) {
+		switch name[3:] {
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+			return true
+		}
+	}
+	return false
+}
+
+// hasPathControl is hasControl plus the C1 controls (U+0080-U+009F) and the
+// bidirectional formatting characters, which can make a path read differently
+// from what it is (review 25 L9, review 20 L1).
+func hasPathControl(s string) bool {
+	if hasControl(s) {
 		return true
+	}
+	for _, r := range s {
+		switch {
+		case r >= 0x80 && r <= 0x9F,
+			r == 0x061C, r == 0x200E, r == 0x200F,
+			r >= 0x202A && r <= 0x202E,
+			r >= 0x2066 && r <= 0x2069:
+			return true
+		}
 	}
 	return false
 }

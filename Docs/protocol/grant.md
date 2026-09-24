@@ -255,8 +255,10 @@ A request `path` (and a grant `scope`) is a **relative, slash-separated** path:
 - 0–1024 bytes of UTF-8 (`""` only for `list` = the scope root); segments separated by `/`;
 - no empty segment, no `.` or `..` segment, no leading or trailing `/`, no `\`, no `:`, no
   NUL or control character, no segment that is a Windows reserved name (`CON`, `PRN`, `AUX`,
-  `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without extension), no segment ending in `.`
-  or space;
+  `NUL`, `CONIN$`, `CONOUT$`, `COM1`–`COM9`, `LPT1`–`LPT9`, and `COM`/`LPT` followed by a
+  superscript digit `¹²³`, with or without extension), no segment ending in `.` or space;
+- no C1 control character (U+0080–U+009F) and no bidirectional formatting character
+  (U+061C, U+200E, U+200F, U+202A–U+202E, U+2066–U+2069);
 - the effective path is `scope + "/" + path`; `out_of_scope` is decided on the segment list
   (prefix of segments), never by string prefix.
 
@@ -339,8 +341,11 @@ Grant view: `{"id", "direction": "issued"|"held", "peer": <peer ref>, "session",
 
 New error codes: `unknown_grant`, `not_grantor`, `forbidden_resource`, `bad_path`,
 `out_of_scope`, `revoked`, `expired`, `session_not_open`, `symlink`, `not_regular`,
-`too_large`, `rate_limited`, `stale`, `timeout`, `not_found` (exit 1); plus the approval
-codes.
+`too_large`, `rate_limited`, `stale`, `timeout`, `not_found`, `io_error` (any other failure
+of the grantor's filesystem or send path; the text is never an OS error) and `unsupported`
+(a resource kind the daemon does not serve yet) (exit 1); plus the approval codes. A `list`
+response is also capped at about 48 KiB of entries (the Noise plaintext limit), so a page can
+hold fewer than 1000 entries; the `cursor` continues after the last returned name.
 
 ## CLI
 
