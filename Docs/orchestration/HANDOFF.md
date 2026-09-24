@@ -35,14 +35,21 @@ specs merged to main. Self-hosted relays: D17.
 **Wave P2-1 merged:** 2.2b (0e1b64a, 6b94bb1), 2.1a (01b50c0 + review 27 fixes 0313404), 2.2a (efc62fa + review 26 fixes 80724c0; placeholder 14 replaced).
 **Wave P2-2 status:**
 - 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
-- 2.2c: rebased onto main (0471f70, 5e7b2c9); conflicts resolved textually but it doesn't compile against 2.1b/2.2d. **2.2c-i** integration: P2-GrantsIntegrate slot `01a0ce42-b2ea…`, task `01a0ce42-e4f8…`. Then gate + merge (no new review unless security behaviour changed). Review-28 leftovers: L8 (→ 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
+- 2.2c **merged** (1ceb40e, 9503c6c review 28, bb46694 integration: approvals via window/Store.Confirm; the grant Perform returns an AfterCommitter that wakes the outbox). Review-28 leftovers: L8 (→ 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
 `tests/phase2-manual.md` exists (created by 2.2d; includes the 2.2a toast-history check).
 Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 is resolved by D19 (2.2d).
 **2.2b merged** (0e1b64a + review 25 fixes 6b94bb1). Notes for **2.2c** (from review 25): store/compare `canonical(token)` never raw bytes; never audit `err.Error()` from capability (use `ReasonOf`); add a helper returning the canonical token; review-25 L9 (grant.md §Paths: CONIN$/CONOUT$, COM/LPT with superscript digits, C1/bidi chars) goes into the 2.3a fs ticket.
-Next after 2.2c merges: 2.3a (fetch server + fs), 2.4 (quarantine; also review D18 + review-28 L8), 2.5 (consult), 2.D1 (device link, migration 17).
+**Wave P2-3 in progress** (Sonnet; each gets an Opus security review):
+| Ticket | Slot | Task | Worktree | Migration |
+|---|---|---|---|---|
+| 2.3a fetch server + fs | `01a0d2c3-00a9…` P2-FetchFS | `01a0d2c3-2b7c…` | `fetch-fs` | — |
+| 2.4 quarantine (+ review-28 L8; the review also covers D18) | `01a0d2c3-010a…` P2-Quarantine | `01a0d2c3-4bdd…` | `quarantine` | — |
+| 2.D1 device link | `01a0d2c3-0228…` P2-DeviceLink | `01a0d2c3-6811…` | `device-link` | 17 |
+| 2.5 consult (review light) | `01a0ce43-22be…` P2-Consult | `01a0ce43-450c…` | `consult` (based on 5e21a12; rebase at merge) | — |
+Then: 2.3b (git serving), 2.3c (fetch client + e2e), 2.D2 (helper runner), 2.9, 2.H, 2.P.
 
 **Phase 2** (plan: grants, consult, sessions; see the build plan) plus the own-device
 helper (D13). Follow the same flow as Phase 1:
