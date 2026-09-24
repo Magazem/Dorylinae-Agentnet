@@ -215,32 +215,17 @@ func isFilesystemRoot(p string) bool {
 	return p == string(filepath.Separator)
 }
 
-var lookupGit = func() (string, error) { return exec.LookPath("git") }
+var lookupGit = capability.LookGit
 
-// gitTimeout bounds each issuance-time git call. The approval Precondition
-// runs these under the approval Store's lock and inside its transaction
-// (review 28 L5), so a hung git must not hold them for long.
-const gitTimeout = 10 * time.Second
-
-// gitCommand builds a git command with a timeout and the environment rules
-// of Docs/protocol/grant.md §Serving git: every inherited GIT_* variable
-// removed (an inherited GIT_DIR or GIT_CONFIG_* would redirect the check to
-// another repository), system and global config disabled, no prompts.
+// gitCommand builds an issuance-time git command with the shared rules of
+// capability.GitCommand (Docs/protocol/grant.md §Serving git): every inherited
+// GIT_* variable removed, system and global config disabled, no prompts, and
+// a 10 s timeout. The approval Precondition runs these under the approval
+// Store's lock and inside its transaction (review 28 L5), so a hung git must
+// not hold them for long. Callers pass a validated path (an absolute,
+// existing, resolved directory) and fixed arguments.
 func gitCommand(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
-	//nolint:gosec // no shell; gitPath comes from exec.LookPath and every
-	// caller passes a validated path (an absolute, existing, resolved
-	// directory) and fixed arguments.
-	cmd := exec.CommandContext(ctx, gitPath, args...)
-	env := make([]string, 0, len(os.Environ())+4)
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(strings.ToUpper(kv), "GIT_") {
-			env = append(env, kv)
-		}
-	}
-	cmd.Env = append(env, "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_NO_REPLACE_OBJECTS=1", "GIT_ATTR_NOSYSTEM=1")
-	return cmd, cancel
+	return capability.GitCommand(ctx, gitPath, args...)
 }
 
 // validateGitResource checks that resolved is the top of a git work tree or

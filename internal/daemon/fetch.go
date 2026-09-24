@@ -30,8 +30,12 @@ func startFetchServer(sessions *session.Manager, caps *capability.Store, ws *wor
 			}
 			return true, v.State == worksession.StateOpen
 		},
-		Send:     sessions.SendData,
-		Backends: map[string]capability.Backend{capability.KindFS: capability.FSBackend{}},
+		Send: sessions.SendData,
+		Backends: map[string]capability.Backend{
+			capability.KindFS: capability.FSBackend{},
+			// git is resolved once here, never per request.
+			capability.KindGit: capability.NewGitBackend(),
+		},
 		Audit: func(ctx context.Context, action string, detail map[string]any) {
 			actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), fetchAuditBudget)
 			defer cancel()
