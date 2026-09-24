@@ -37,6 +37,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
 - 2.2c **merged** (1ceb40e, 9503c6c review 28, bb46694 integration: approvals via window/Store.Confirm; the grant Perform returns an AfterCommitter that wakes the outbox). Review-28 leftovers: L8 (→ 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
 - 2.5 **merged** (7a68d33 + review 32 fixes a4b1093).
+- 2.3a **merged** (fetch server + fs; review 34: 0/0/3 fixed; open Lows L3–L6, L6 = COM0/LPT0 needs a vector change, owner call later).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
@@ -46,7 +47,6 @@ Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state 
 **Wave P2-3 in progress** (Sonnet; each gets an Opus security review):
 | Ticket | Slot | Task | Worktree | Migration |
 |---|---|---|---|---|
-| 2.3a fetch server + fs | done 282bc62; review `01a0d2dc-aa38…` task `01a0d2dc-d95e…` → Docs/review/33 or 34 | | `fetch-fs` | — |
 | 2.4 quarantine (+L8; review covers D18) | done 51c081b; review `01a0d2dc-aa6e…` task `01a0d2dc-fe4d…` → Docs/review/35 | | `quarantine` | — |
 | 2.D1 device link | done 3b77107; **review not started yet** (machine load: at most 3 workers) | | `device-link` | 17 |
 Then: 2.3b (git serving), 2.3c (fetch client + e2e), 2.D2 (helper runner), 2.9, 2.H, 2.P.
