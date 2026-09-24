@@ -147,6 +147,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D18 | Review-27 H1: a discarded / not-released quarantined result (and dropped early-complete content) is also blanked or deleted from `mail_inbox` in the same tx; ack/dedupe metadata stays. Implemented in 2.1b. |
 | D19 | Ticket **2.2d**: a daemon-owned approval window. The code is typed only there, so agents never handle it; CLI code entry is removed on desktop machines, and headless machines keep terminal mode (OD-P2-3). The spec comes first, then the build and an Opus security review. **Merges before 2.2c.** Replaces review-26 L7. |
 | D20 | OQ-2.2d-1: the Linux approval window (zenity/kdialog) gets the summary text via argv. Accept and document it: other local users can see the summary (never the code); hidepid=2 hides it. |
+| D21 | **Model trial (2026-09-24):** gradually move complex implementation and investigations to Opus 5.5 workers and measure against Sonnet (`Docs/orchestration/model-trial.md`: minutes, follow-ups, gate failures, review findings, CI after merge). Sonnet stays the default for well-specified tickets. Plan: INV-1 flake investigation (running), then 2.3b git serving and 2.D2 helper runner on Opus, with 2.3c on Sonnet as a control. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
