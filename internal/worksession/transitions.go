@@ -375,6 +375,7 @@ func (s *Store) AuditAfterHumanAccept(ctx context.Context, id, peer string, roun
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
+	s.closedAfterCommit(ctx, id)
 	if s.Audit == nil {
 		return
 	}
@@ -426,6 +427,7 @@ func jsonObject(v any) (string, error) {
 // (Docs/protocol/work-session.md §Audit; age_s since opened is the
 // time-to-result metric). Called after commit.
 func (s *Store) auditClose(ctx context.Context, row storedRow, outcome string, now time.Time) {
+	s.closedAfterCommit(ctx, row.id)
 	if s.Audit == nil {
 		return
 	}

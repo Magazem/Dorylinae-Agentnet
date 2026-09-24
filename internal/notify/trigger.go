@@ -208,6 +208,8 @@ func titleLine(ev Event) string {
 		return fmt.Sprintf("%s completed your %s request", name, ev.Type)
 	case EventCancelled:
 		return fmt.Sprintf("%s cancelled their %s request", name, ev.Type)
+	case EventQuarantined:
+		return fmt.Sprintf("%s's result is quarantined and waits for your release", name)
 	default:
 		return ""
 	}

@@ -31,7 +31,7 @@ type notifyTestBody struct {
 	daemon.NotifyTestResult
 }
 
-var knownNotifyEvents = []string{"request.received", "request.accepted", "request.declined", "request.deferred", "request.completed", "request.cancelled"}
+var knownNotifyEvents = []string{"request.received", "request.accepted", "request.declined", "request.deferred", "request.completed", "request.cancelled", "session.quarantined"}
 
 const notifyUsage = `Configures desktop notifications and the outgoing webhook.
 

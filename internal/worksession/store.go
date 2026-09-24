@@ -53,7 +53,27 @@ type Store struct {
 	// closeSessionTx. Must touch only tx (Docs/review/27-2.1a-review.md C1).
 	RevokeGrants func(ctx context.Context, tx *sql.Tx, sid string, now time.Time) error
 
+	// OnClosed, if set, is called once per closed session after the closing
+	// transaction committed, on both roles and on every close path (review 28
+	// L8: the daemon rejects the session's pending approvals here, because the
+	// approval Store must never be called under a tx, review 26 N4). It runs
+	// outside any transaction.
+	OnClosed func(ctx context.Context, sid string)
+
+	// OnQuarantined, if set, is called after the commit of a ws.result that
+	// entered quarantine (the daemon fires the content-free session.quarantined
+	// notification here). It receives ids only, never any result content.
+	OnQuarantined func(ctx context.Context, sid, peer, requestID string)
+
 	Now func() time.Time
+}
+
+// closedAfterCommit runs OnClosed. Call it after the commit of any
+// transaction that closed session sid.
+func (s *Store) closedAfterCommit(ctx context.Context, sid string) {
+	if s.OnClosed != nil {
+		s.OnClosed(ctx, sid)
+	}
 }
 
 func (s *Store) now() time.Time {

@@ -228,7 +228,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 			_ = json.NewEncoder(stdout).Encode(out)
 			return exitOK
 		}
-		_, _ = fmt.Fprintf(stdout, "Approval %s pending; confirm with 'agentnet approve %s <code>' (the code arrives by desktop notification).\n", view.ID, view.ID)
+		_, _ = fmt.Fprintf(stdout, "Approval %s pending; answer it in the approval window ('agentnet approve --open %s' shows it again).\n", view.ID, view.ID)
 		return exitOK
 
 	default:
@@ -418,8 +418,8 @@ Usage:
 
 Flags:
   --human   require a human approval first; the stored verification becomes
-            human_accepted. Prints the approval id; confirm with
-            'agentnet approve <id> <code>'
+            human_accepted. Prints the approval id; answer it in the approval window
+            ('agentnet approve --open <id>' shows it again)
   --json    print machine-readable JSON on stdout
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
@@ -456,7 +456,7 @@ func runAcceptResult(args []string, stdout, stderr io.Writer) int {
 			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": true, "approval": view})
 			return exitOK
 		}
-		_, _ = fmt.Fprintf(stdout, "Approval %s pending; confirm with 'agentnet approve %s <code>' (the code arrives by desktop notification).\n", view.ID, view.ID)
+		_, _ = fmt.Fprintf(stdout, "Approval %s pending; answer it in the approval window ('agentnet approve --open %s' shows it again).\n", view.ID, view.ID)
 		return exitOK
 	}
 	var sessionRaw daemon.SessionResult

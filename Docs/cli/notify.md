@@ -14,7 +14,7 @@ agentnet notify --rotate-secret [--json]
 agentnet notify --test [--json]
 ```
 
-The events are `request.received`, `request.accepted`, `request.declined`, `request.cancelled` (on by
+The events are `request.received`, `request.accepted`, `request.declined`, `request.cancelled`, `session.quarantined` (on by
 default), `request.deferred` and `request.completed` (off by default).
 
 The webhook URL must be `https://` (`http://` only to localhost). When a webhook is first

@@ -217,6 +217,9 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	if out.auditComplete != nil {
 		out.auditComplete(ctx)
 	}
+	if out.applied && out.state == StateClosed {
+		s.closedAfterCommit(ctx, out.sessionID)
+	}
 	if s.Audit == nil {
 		return
 	}

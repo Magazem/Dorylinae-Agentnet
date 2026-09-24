@@ -267,7 +267,12 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Record, error) {
 // Perform step, Docs/protocol/grant.md §Issuance step 7). It returns the
 // updated record; the caller sends the grant mail itself (Outbox.SubmitTx)
 // so it can build the mail body from the token.
-func (s *Store) ActivateTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (Record, error) {
+//
+// approvalID is stored in the row's approval column: it is what marks a
+// revoked row as "was once active" for the quarantine rule (a pending row
+// carries neither an approval nor a policy, so one revoked before approval
+// never counts, Docs/protocol/work-session.md §Quarantine). It must be non-empty.
+func (s *Store) ActivateTx(ctx context.Context, tx *sql.Tx, id, approvalID string, now time.Time) (Record, error) {
 	rec, err := s.GetTx(ctx, tx, id)
 	if err != nil {
 		return Record{}, err
@@ -275,12 +280,36 @@ func (s *Store) ActivateTx(ctx context.Context, tx *sql.Tx, id string, now time.
 	if rec.State != StatePendingApproval {
 		return Record{}, fmt.Errorf("capability: grant %s is %s, not pending_approval", id, rec.State)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE grants SET state = ?, updated = ? WHERE id = ?`, StateActive, fmtTime(now), id); err != nil {
+	if approvalID == "" {
+		return Record{}, errors.New("capability: activating a grant needs its approval id")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE grants SET state = ?, approval = ?, updated = ? WHERE id = ?`, StateActive, approvalID, fmtTime(now), id); err != nil {
 		return Record{}, fmt.Errorf("capability: activate grant: %w", err)
 	}
 	rec.State = StateActive
+	rec.Approval = approvalID
 	rec.Updated = now
 	return rec, nil
+}
+
+// QuarantineHolds reports whether the quarantine rule of Docs/protocol/
+// work-session.md §Quarantine holds for a result from peer on session sid,
+// inside tx. It holds when (1) this daemon issued a sensitive grant in sid
+// that was ever active (active now, or revoked after it had been approved:
+// approval or policy set; a never-approved row gave no access), or (2) it
+// issued any sensitive grant to peer, in any session, whose exp is later than
+// now - 7 d (also only rows that were ever active). Read-only.
+func (s *Store) QuarantineHolds(ctx context.Context, tx *sql.Tx, sid, peer string) (bool, error) {
+	now := s.now()
+	const everActive = `direction = 'issued' AND sensitive = 1 AND
+		(state = 'active' OR (state = 'revoked' AND (COALESCE(approval, '') <> '' OR COALESCE(policy, '') <> '')))`
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE `+everActive+` AND (session = ? OR (peer = ? AND exp > ?))`,
+		sid, peer, fmtTime(now.Add(-7*24*time.Hour))).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("capability: quarantine rule: %w", err)
+	}
+	return n > 0, nil
 }
 
 // RevokeTx marks one grant revoked inside tx, idempotent (a second revoke of

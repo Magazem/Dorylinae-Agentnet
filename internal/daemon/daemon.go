@@ -445,6 +445,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// It runs inside the transaction that deletes the peer, on every removal
 	// path (peers remove and team GC), review 28 M4.
 	peerStore.OnRemovedTx = revokeForRemovedPeer(capStore)
+	wireQuarantine(wsStore, capStore, apprStore, reqStore, opts.Quarantine)
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}

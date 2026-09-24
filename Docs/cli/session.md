@@ -23,6 +23,12 @@ Newest `state_at` first. List views omit `result.output`, `result.notes` and
 `changes`, keeping their sizes (`result.output_bytes`, `result.result_bytes`)
 and, while quarantined, only the sizes and status.
 
+A result is quarantined when the session ever had an approved sensitive grant, or you issued
+a sensitive grant to the same peer whose expiry is less than 7 days ago
+([work-session.md §Quarantine](../protocol/work-session.md#quarantine-24)). The
+`session.quarantined` notification (on by default, content-free) tells you one is waiting.
+Closing a session also rejects its still-pending approvals.
+
 ### Human output
 
 ```
@@ -60,7 +66,7 @@ agentnet session <id> --release [--json]
 | `--discard` | `quarantined` only: close the session, cancelled, without ever seeing the result (OD-P2-6 (c)); no approval |
 | `--cancel` | Close an `open` session |
 | `--reason R` | Optional, with `--cancel`, 1-500 characters, never audited |
-| `--release` | Release a `quarantined` result; needs a human approval (kind `release`). Prints the approval id; confirm with `agentnet approve <id> <code>` |
+| `--release` | Release a `quarantined` result; needs a human approval (kind `release`). Prints the approval id; answer it in the approval window (`agentnet approve --open <id>` shows it again) |
 | `--json` | Machine-readable output on stdout |
 
 At most one action flag may be given; with none, the command shows the
@@ -235,7 +241,7 @@ agentnet accept-result <id> [--human] [--json]
 
 | Flag | Meaning |
 |------|---------|
-| `--human` | Require a human approval first (kind `accept_result`); on confirm, the stored `verification` becomes `human_accepted` (`verification_by: "requester"`). Prints the approval id; confirm with `agentnet approve <id> <code>` |
+| `--human` | Require a human approval first (kind `accept_result`); on confirm, the stored `verification` becomes `human_accepted` (`verification_by: "requester"`). Prints the approval id; answer it in the approval window (`agentnet approve --open <id>` shows it again) |
 | `--json` | Machine-readable output on stdout |
 
 Without `--human`, the worker's claimed `verification` stays. Without a human
@@ -251,7 +257,7 @@ Accepted result for s-36375782ceb6baea9cee4d4273dfb035 (now closed)
 or, with `--human`:
 
 ```
-Approval a-0123456789abcdef0123456789abcdef pending; confirm with 'agentnet approve a-0123456789abcdef0123456789abcdef <code>' (the code arrives by desktop notification).
+Approval a-0123456789abcdef0123456789abcdef pending; answer it in the approval window ('agentnet approve --open a-0123456789abcdef0123456789abcdef' shows it again).
 ```
 
 ### `--json` output

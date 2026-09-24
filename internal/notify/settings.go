@@ -26,6 +26,10 @@ const (
 	EventDeferred  = "request.deferred"
 	EventCompleted = "request.completed"
 	EventCancelled = "request.cancelled"
+	// EventQuarantined fires when a work session's result enters quarantine
+	// (Docs/protocol/work-session.md §Quarantine, 2.4). It carries no content:
+	// the peer name only.
+	EventQuarantined = "session.quarantined"
 )
 
 // DefaultEvents is the default on/off state of each event
@@ -37,9 +41,11 @@ var DefaultEvents = map[string]bool{
 	EventDeferred:  false,
 	EventCompleted: false,
 	EventCancelled: true,
+	// On by default: a quarantined result waits for a human to release it.
+	EventQuarantined: true,
 }
 
-// ValidEvent reports whether event is one of the six known events.
+// ValidEvent reports whether event is one of the known events.
 func ValidEvent(event string) bool {
 	_, ok := DefaultEvents[event]
 	return ok

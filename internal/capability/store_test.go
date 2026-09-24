@@ -77,7 +77,7 @@ func TestActivateAndRevoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ar, err := s.ActivateTx(ctx, tx, rec.ID, now)
+	ar, err := s.ActivateTx(ctx, tx, rec.ID, "a-test", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestActivateAndRevoke(t *testing.T) {
 
 	// A second Activate (already active) is refused.
 	tx2, _ := db.BeginTx(ctx, nil)
-	if _, err := s.ActivateTx(ctx, tx2, rec.ID, now); err == nil {
+	if _, err := s.ActivateTx(ctx, tx2, rec.ID, "a-test", now); err == nil {
 		t.Error("re-activate of an active grant should fail")
 	}
 	_ = tx2.Rollback()
@@ -137,7 +137,7 @@ func TestRevokeForSessionIncludesPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	tx0, _ := db.BeginTx(ctx, nil)
-	if _, err := s.ActivateTx(ctx, tx0, active.ID, now); err != nil {
+	if _, err := s.ActivateTx(ctx, tx0, active.ID, "a-test", now); err != nil {
 		t.Fatal(err)
 	}
 	_ = tx0.Commit()

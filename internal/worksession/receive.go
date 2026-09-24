@@ -197,6 +197,9 @@ func (s *Store) afterResult(ctx context.Context, op *mail.Opened) {
 	if out.ignored != "" {
 		s.resendLastState(ctx, out.sessionID, s.now())
 	}
+	if out.quarantined && out.ignored == "" && !out.orphan && s.OnQuarantined != nil {
+		s.OnQuarantined(ctx, out.sessionID, out.peer, out.requestID)
+	}
 	if s.Audit == nil {
 		return
 	}

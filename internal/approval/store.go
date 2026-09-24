@@ -641,6 +641,53 @@ func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 	return s.Show(ctx, id)
 }
 
+// RejectSubjects rejects every still-pending approval whose subject is one of
+// subjects, with reason "precondition" (Docs/protocol/grant.md §Session end:
+// closing a session rejects its pending grant approvals; review 28 L8). It is
+// called by the daemon after the closing transaction committed, never from
+// inside a hook (review 26 N4). Approvals a concurrent confirm has already
+// reserved are left to that confirm, whose Precondition fails.
+func (s *Store) RejectSubjects(ctx context.Context, subjects []string) {
+	if len(subjects) == 0 {
+		return
+	}
+	var ids []string
+	for _, subj := range subjects {
+		rows, err := s.db.QueryContext(ctx, `SELECT id FROM approvals WHERE state = 'pending' AND subject = ?`, subj)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		_ = rows.Close()
+	}
+	for _, id := range ids {
+		s.mu.Lock()
+		entry, ok := s.pending[id]
+		if !ok || entry.reserved {
+			s.mu.Unlock()
+			continue
+		}
+		if entry.timer != nil {
+			entry.timer.Stop()
+		}
+		if entry.watchCancel != nil {
+			entry.watchCancel()
+		}
+		handle := entry.handle
+		delete(s.pending, id)
+		s.mu.Unlock()
+		if handle != nil {
+			handle.Kill()
+		}
+		s.rejectRow(ctx, id, "precondition", "")
+	}
+}
+
 // OpenWindow reopens the approval window for a pending id, a no-op if one is
 // already open, both cases audited (Docs/protocol/approval.md §IPC and CLI,
 // "approval_open"). In terminal mode it returns ErrTerminalMode.
