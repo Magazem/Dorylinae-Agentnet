@@ -42,13 +42,13 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | Ticket | Kind | Minutes | Follow-ups | Gate failures | Review C/H/M | CI after merge | Model id |
 |---|---|---|---|---|---|---|---|
 | INV-1 pairing flake | investigation + test fix | 24 | 0 | 0 | n/a (test-only) | — | claude-opus-5-5 |
-| 2.3b git serving | M, security-heavy | ~16 | 0 | 0 | pending | — | claude-opus-5-5 |
+| 2.3b git serving | M, security-heavy | ~16 | 0 | 0 | 0/0/2 | — | claude-opus-5-5 |
 
 ## Findings
 
 - **Measurement caveat (important):** the earlier Sonnet "minutes" were measured from task creation to **my commit**, which includes my own processing delay and other waits. From 2.3b/2.3c on, the time is dispatch to the **worker's report** (the worker states it). On that fairer measure, **Sonnet 5 (2.3c) took ~17 min, the same as Opus 5.5 (2.3b, ~16 min)**, both with a clean first gate. So far speed is a tie; the comparison must come from review findings and follow-ups.
 
-- **2.3b (Opus 5.5):** ~16 min from dispatch to report for an M security ticket (Sonnet M tickets: 44–95 min). My gate passed on the first run. Tests cover every acceptance item plus a positive control (a porcelain commit must trigger the hostile hook, which proves the fixture is really hostile). It flagged its own residual risks. Review pending.
+- **2.3b (Opus 5.5):** ~16 min from dispatch to report for an M security ticket (Sonnet M tickets: 44–95 min). My gate passed on the first run. Tests cover every acceptance item plus a positive control (a porcelain commit must trigger the hostile hook, which proves the fixture is really hostile). It flagged its own residual risks. Review 37: 0/0/2, both subtle (git rev-parse resolving a missing branch to a same-named tag; the Windows git.exe launcher surviving the timeout kill).
 
 - **INV-1 (Opus 5.5):** 24 min, no follow-ups, my gate found nothing. It reproduced the flake under synthetic load, proved the root cause (a 1.5 s test ConfirmWait vs Argon2id under load, not the bus), fixed three other tests with the same exposure, and reported an unrelated flake instead of guessing at it. No Sonnet baseline for investigations; qualitatively above the Sonnet reports so far (evidence-based, scoped).
 
