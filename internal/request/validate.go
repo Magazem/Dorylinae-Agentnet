@@ -119,14 +119,14 @@ func validateContext(r *Request) error {
 		if err := checkBytes(nameField, f.Name, minContextNameBytes, maxContextNameBytes); err != nil {
 			return err
 		}
-		if f.Name == "." || f.Name == ".." || strings.ContainsAny(f.Name, `/\`) || hasControl(f.Name, "") {
+		if f.Name == "." || f.Name == ".." || strings.ContainsAny(f.Name, `/\`) || hasControl(f.Name, "") || hasC1(f.Name) {
 			return fieldErr(nameField, "must be a base name without / \\ or control characters, not . or ..")
 		}
 		textField := "context[" + itoa(i) + "].text"
 		if err := checkBytes(textField, f.Text, minContextTextBytes, maxContextTextBytes); err != nil {
 			return err
 		}
-		if hasControl(f.Text, "\n\t") {
+		if hasControl(f.Text, "\n\t") || hasC1(f.Text) {
 			return fieldErr(textField, "must not contain control characters other than \\n and \\t")
 		}
 	}
@@ -281,6 +281,19 @@ func checkBriefBytes(s string) error {
 
 // hasControl reports whether s has a control character (U+0000-U+001F,
 // U+007F) not present in allowed.
+// hasC1 reports whether s holds a C1 control character (U+0080-U+009F), such
+// as U+009B (CSI), which some terminals honour like ESC [. Context files
+// refuse them (Docs/protocol/consult.md: "no control characters"); the Phase 1
+// fields keep hasControl alone.
+func hasC1(s string) bool {
+	for _, r := range s {
+		if r >= 0x80 && r <= 0x9F {
+			return true
+		}
+	}
+	return false
+}
+
 func hasControl(s, allowed string) bool {
 	for _, r := range s {
 		if r == utf8.RuneError {

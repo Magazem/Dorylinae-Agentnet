@@ -377,15 +377,17 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		id := p.ID
-		if worksession.ValidID(id) {
-			rid, err := requestIDForSession(ctx, rs, ts.Self, id)
-			if err != nil {
-				return nil, lifecycleError(err)
+		var v request.View
+		var err error
+		if worksession.ValidID(p.ID) {
+			k, kerr := requestKeyForSession(ctx, rs, ts.Self, p.ID)
+			if kerr != nil {
+				return nil, lifecycleError(kerr)
 			}
-			id = rid
+			v, err = rs.ShowKey(ctx, k)
+		} else {
+			v, err = rs.Show(ctx, p.ID, p.From)
 		}
-		v, err := rs.Show(ctx, id, p.From)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}

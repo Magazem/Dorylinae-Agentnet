@@ -12,31 +12,20 @@ import (
 // back to its request before the session exists, and finding the question a
 // `result` answers in one step.
 
-// requestIDForSession finds the request whose derived session id is sid, on
+// requestKeyForSession finds the request whose derived session id is sid, on
 // either side: an `out` request (this daemon is the requester, A) or an `in`
 // request (this daemon is the worker, B). The session row may not exist yet
 // (Docs/protocol/consult.md: the id is derivable at submit time). It returns
-// request.ErrUnknownRequest when no request derives to sid.
-func requestIDForSession(ctx context.Context, rs *request.Store, self, sid string) (string, error) {
-	out, err := rs.List(ctx, request.ListFilter{})
-	if err != nil {
-		return "", err
-	}
-	for _, v := range out {
-		if worksession.DeriveID(self, v.Peer, v.ID) == sid {
-			return v.ID, nil
+// the exact row's key, so a request of another peer that reuses the id is
+// never shown in its place, and request.ErrUnknownRequest when no request
+// derives to sid. The scan reads only the key columns: wait polls it.
+func requestKeyForSession(ctx context.Context, rs *request.Store, self, sid string) (request.Key, error) {
+	return rs.FindKey(ctx, func(k request.Key) bool {
+		if k.Direction == "out" {
+			return worksession.DeriveID(self, k.Peer, k.ID) == sid
 		}
-	}
-	in, err := rs.InboxList(ctx, request.InboxFilter{All: true})
-	if err != nil {
-		return "", err
-	}
-	for _, v := range in {
-		if worksession.DeriveID(v.Peer, self, v.ID) == sid {
-			return v.ID, nil
-		}
-	}
-	return "", request.ErrUnknownRequest
+		return worksession.DeriveID(k.Peer, self, k.ID) == sid
+	})
 }
 
 // answerTarget is a pending or deferred question a result can answer in one
@@ -52,6 +41,7 @@ type answerTarget struct {
 // the id is not such a question.
 func findAnswerable(ctx context.Context, ws *worksession.Store, rs *request.Store, self, id string) (*answerTarget, error) {
 	rid := id
+	var key *request.Key // set for an s- id: the exact row
 	switch {
 	case worksession.ValidID(id):
 		if _, err := ws.Get(ctx, id); err == nil {
@@ -59,14 +49,15 @@ func findAnswerable(ctx context.Context, ws *worksession.Store, rs *request.Stor
 		} else if !errors.Is(err, worksession.ErrUnknownSession) {
 			return nil, err
 		}
-		r, err := requestIDForSession(ctx, rs, self, id)
-		if errors.Is(err, request.ErrUnknownRequest) {
+		k, err := requestKeyForSession(ctx, rs, self, id)
+		if errors.Is(err, request.ErrUnknownRequest) || (err == nil && k.Direction != "in") {
 			return nil, nil
 		}
 		if err != nil {
 			return nil, err
 		}
-		rid = r
+		key = &k
+		rid = k.ID
 	case request.ValidID(id):
 		if _, err := ws.GetByRequestID(ctx, id); err == nil {
 			return nil, nil
@@ -76,7 +67,13 @@ func findAnswerable(ctx context.Context, ws *worksession.Store, rs *request.Stor
 	default:
 		return nil, nil
 	}
-	v, err := rs.Show(ctx, rid, "")
+	var v request.View
+	var err error
+	if key != nil {
+		v, err = rs.ShowKey(ctx, *key)
+	} else {
+		v, err = rs.Show(ctx, rid, "")
+	}
 	if errors.Is(err, request.ErrUnknownRequest) {
 		return nil, nil
 	}

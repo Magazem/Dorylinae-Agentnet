@@ -232,6 +232,7 @@ func TestReadContextFile(t *testing.T) {
 		"binary.bin": {0x00, 0x01, 0x02, 'a'},
 		"esc.txt":    []byte("a\x1b[31mred"),
 		"latin1.txt": {'c', 'a', 'f', 0xe9},
+		"c1csi.txt":  []byte("a\u009b31mred"),
 	} {
 		if _, err := readContextFile(write(name, data)); err == nil || !strings.Contains(err.Error(), "is not text") {
 			t.Errorf("%s: err = %v, want \"is not text\"", name, err)
@@ -246,6 +247,9 @@ func TestReadContextFile(t *testing.T) {
 	if _, err := readContextFile("-"); err == nil {
 		t.Error("stdin was accepted as a context file")
 	}
+	if _, err := readContextFile(dir); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a directory: err = %v, want \"not a regular file\"", err)
+	}
 }
 
 func TestConsultTitle(t *testing.T) {
@@ -259,6 +263,9 @@ func TestConsultTitle(t *testing.T) {
 	got := consultTitle(long)
 	if n := len([]rune(got)); n != 120 || !strings.HasSuffix(got, "…") {
 		t.Fatalf("cut title = %d code points %q, want 120 ending in an ellipsis", n, got)
+	}
+	if got := consultTitle("Is\tthis safe?"); got != "Is this safe?" {
+		t.Fatalf("tab title = %q, want the tab as a space", got)
 	}
 	exact := strings.Repeat("a", 120)
 	if got := consultTitle(exact); got != exact {

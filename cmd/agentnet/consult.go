@@ -166,6 +166,8 @@ func consultTitle(question string) string {
 			break
 		}
 	}
+	// A title allows no control characters at all, not even a tab.
+	line = strings.ReplaceAll(line, "\t", " ")
 	runes := []rune(line)
 	if len(runes) <= 120 {
 		return line
@@ -185,6 +187,15 @@ func readContextFile(path string) (daemon.ContextParam, error) {
 		return daemon.ContextParam{}, fmt.Errorf("read %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
+	// Only a regular file (after symlinks): a FIFO or device would block or
+	// never end.
+	fi, err := f.Stat()
+	if err != nil {
+		return daemon.ContextParam{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return daemon.ContextParam{}, fmt.Errorf("context file %s is not a regular file", path)
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxContextFileRead+1))
 	if err != nil {
 		return daemon.ContextParam{}, fmt.Errorf("read %s: %w", path, err)
@@ -200,7 +211,7 @@ func readContextFile(path string) (daemon.ContextParam, error) {
 		if r == '\n' || r == '\t' {
 			continue
 		}
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return daemon.ContextParam{}, fmt.Errorf("context file %s is not text", path)
 		}
 	}

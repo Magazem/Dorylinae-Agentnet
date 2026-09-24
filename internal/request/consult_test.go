@@ -77,8 +77,50 @@ func TestContextFileNames(t *testing.T) {
 			t.Errorf("name %q: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", strings.Repeat("n", 256), ".", "..", "a/b", `a\b`, "a\x00b", "a\nb", "a\x1bb"} {
+	for _, bad := range []string{"", strings.Repeat("n", 256), ".", "..", "a/b", `a\b`, "a\x00b", "a\nb", "a\x1bb", "a\u009bb", "a\u0085b"} {
 		wantContextField(t, Validate(questionWithContext(ContextFile{Name: bad, Text: "x"})), "context[0].name")
+	}
+	// C1 controls (U+009B is CSI) are refused in the text too (R-2.5 L1).
+	wantContextField(t, Validate(questionWithContext(ContextFile{Name: "a.txt", Text: "a\u009b31mb"})), "context[0].text")
+}
+
+// TestShowKeyExactRow: R-2.5 M1. FindKey and ShowKey address one row by
+// (direction, peer, id), so an in request that reuses an out request's id is
+// never shown in its place.
+func TestShowKeyExactRow(t *testing.T) {
+	s, _, _ := newTestStore(t, testTo, &policy{})
+	req := questionWithContext(ContextFile{Name: "a.txt", Text: "in-row"})
+	req.Created = time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
+	if err := deliverRequest(t, s, req, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// A fake out row with the same id to another peer.
+	for _, q := range []string{
+		`CREATE TEMP TABLE dup AS SELECT * FROM requests`,
+		`UPDATE dup SET direction = 'out', peer = 'other'`,
+		`INSERT INTO requests SELECT * FROM dup`,
+	} {
+		if _, err := s.DB.ExecContext(t.Context(), q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if n := countRows(t, s.DB, `SELECT COUNT(*) FROM requests WHERE id = '`+testID+`'`); n != 2 {
+		t.Fatalf("rows with the id = %d, want 2", n)
+	}
+	// Show by id alone prefers the out row: the ambiguity ShowKey avoids.
+	if v, err := s.Show(t.Context(), testID, ""); err != nil || v.Direction != "out" {
+		t.Fatalf("Show = %s, %v; want the out row", v.Direction, err)
+	}
+	k, err := s.FindKey(t.Context(), func(k Key) bool { return k.Direction == "in" })
+	if err != nil || k.Peer != testFrom || k.ID != testID {
+		t.Fatalf("FindKey = %+v, %v", k, err)
+	}
+	v, err := s.ShowKey(t.Context(), k)
+	if err != nil || v.Direction != "in" || v.Peer != testFrom {
+		t.Fatalf("ShowKey = %s/%s, %v; want the in row", v.Direction, v.Peer, err)
+	}
+	if _, err := s.FindKey(t.Context(), func(Key) bool { return false }); !errors.Is(err, ErrUnknownRequest) {
+		t.Fatalf("FindKey no match = %v, want ErrUnknownRequest", err)
 	}
 }
 
