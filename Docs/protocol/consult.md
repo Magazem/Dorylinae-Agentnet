@@ -106,8 +106,9 @@ normal flow applies (`accept`, then `result`).
 
 The requester accepts the answer with `agentnet accept-result`, which closes the session and
 completes the request on both sides. A consult usually carries no grant, so no quarantine
-applies; if the requester did grant sensitive access during the session, the answer is
-quarantined like any result.
+applies. The answer is quarantined like any result when the
+[quarantine rule](work-session.md#quarantine-24) holds: a sensitive grant was active in
+the session, **or** a sensitive grant to the same peer was active in the last 7 days.
 
 ## `agentnet wait`
 
@@ -121,7 +122,7 @@ Specified in [work-session.md §CLI](work-session.md#cli). For a consult: exit 0
 - The question and the context are untrusted text for the recipient's agent, like a brief.
   They grant nothing.
 - The answer is untrusted text for the requester's agent. It grants nothing, and it is
-  quarantined when a sensitive grant was issued in the session.
+  quarantined whenever the quarantine rule holds (including the 7-day peer-wide clause).
 - Context files can leak what the sender did not mean to share; the CLI lists them before
   sending and the audit records only counts and sizes.
 - The 320 KiB body cap bounds storage per consult; the Phase 1 urgency budget and request
