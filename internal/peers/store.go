@@ -286,7 +286,22 @@ func (s *Store) List(ctx context.Context) ([]Peer, error) {
 // lowers it. Raising to code or fingerprint (a direct confirmation) clears
 // introduced_by. It returns ErrNoPeer if the key is not paired.
 func (s *Store) SetTrust(ctx context.Context, key, trust string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE peers SET trust = CASE
+	return setTrust(ctx, s.db, key, trust)
+}
+
+// SetTrustTx is SetTrust inside the caller's transaction, for a waiting
+// action that must raise the trust atomically with its other rows (the
+// own-device link, Docs/protocol/device.md §Link flow step 2).
+func SetTrustTx(ctx context.Context, tx *sql.Tx, key, trust string) error {
+	return setTrust(ctx, tx, key, trust)
+}
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func setTrust(ctx context.Context, db execer, key, trust string) error {
+	res, err := db.ExecContext(ctx, `UPDATE peers SET trust = CASE
 	WHEN (CASE trust WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END) >=
 	     (CASE ? WHEN 'fingerprint' THEN 3 WHEN 'code' THEN 2 WHEN 'team' THEN 1 ELSE 0 END) THEN trust ELSE ? END,
 	introduced_by = CASE WHEN ? IN ('code', 'fingerprint') THEN NULL ELSE introduced_by END

@@ -329,6 +329,39 @@ ALTER TABLE grant_policies ADD COLUMN path TEXT NOT NULL DEFAULT '';
 ALTER TABLE grant_policies ADD COLUMN branch TEXT;
 ALTER TABLE grant_policies ADD COLUMN approval TEXT NOT NULL DEFAULT '';
 `},
+	// Own-device link (Docs/protocol/device.md §Tables, 2.D1). device_links is
+	// the "device" trust of D13: only the device link handlers write it.
+	{17, "device_links", `
+CREATE TABLE device_links (
+    id           TEXT PRIMARY KEY,               -- l-<32 hex>; intents use i-<32 hex> until active
+    peer         TEXT NOT NULL,
+    role         TEXT NOT NULL CHECK (role IN ('controller', 'helper')),   -- this device's role
+    state        TEXT NOT NULL CHECK (state IN ('pending_approval', 'waiting', 'active', 'revoked')),
+    nonce        TEXT NOT NULL,                  -- own nonce (32 hex)
+    peer_nonce   TEXT,
+    approval     TEXT,
+    created      TEXT NOT NULL,
+    expires      TEXT,                           -- intents only
+    activated_at TEXT,
+    revoked_at   TEXT,
+    updated      TEXT NOT NULL
+);
+CREATE UNIQUE INDEX device_links_peer ON device_links (peer) WHERE state IN ('pending_approval', 'waiting', 'active');
+
+CREATE TABLE device_scopes (                     -- helper only (2.D2)
+    link     TEXT PRIMARY KEY,
+    scope    TEXT NOT NULL CHECK (json_valid(scope)),   -- canonical, with resolved paths
+    expires  TEXT NOT NULL,
+    approval TEXT NOT NULL,
+    created  TEXT NOT NULL
+);
+
+CREATE TABLE device_offers (                     -- received offers waiting for a local intent
+    peer        TEXT PRIMARY KEY,
+    body        TEXT NOT NULL CHECK (json_valid(body)),
+    received_at TEXT NOT NULL                    -- dropped after 10 min
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

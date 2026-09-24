@@ -18,6 +18,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -197,6 +198,10 @@ type Options struct {
 	// lets a test seed a work session directly, without a relay peer to run
 	// the accept flow).
 	OnStoresReady func(*capability.Store, *worksession.Store)
+	// DeviceNow overrides the own-device link's clock (a test option: intents
+	// and offers expire after 10 minutes, Docs/protocol/device.md §Link flow).
+	// Nil uses time.Now.
+	DeviceNow func() time.Time
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -444,7 +449,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// (Docs/protocol/grant.md §Session end, §Policies).
 	// It runs inside the transaction that deletes the peer, on every removal
 	// path (peers remove and team GC), review 28 M4.
-	peerStore.OnRemovedTx = revokeForRemovedPeer(capStore)
+	// The own-device link (2.D1) ends the same way (Docs/protocol/device.md
+	// §Unlink and expiry), and its two mail kinds join the receiver's.
+	devStore := &device.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Now: opts.DeviceNow}
+	peerStore.OnRemovedTx = chainRemovedTx(revokeForRemovedPeer(capStore), revokeDeviceForRemovedPeer(devStore))
+	opts.MailKinds = withDeviceKinds(opts.MailKinds, devStore, id.Card().Card.PublicKey)
 	wireQuarantine(wsStore, capStore, apprStore, reqStore, opts.Quarantine)
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
@@ -494,6 +503,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerApproval(srv, apprStore)
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
 		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
+	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

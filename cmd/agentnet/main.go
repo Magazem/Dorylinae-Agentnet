@@ -89,6 +89,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runNotify(args[1:], stdout, stderr)
 	case "approve":
 		return runApprove(args[1:], stdout, stderr)
+	case "device":
+		return runDevice(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -129,6 +131,7 @@ Commands:
   complete  Mark an accepted request complete, optionally with a result
   notify    Configure desktop notifications
   approve   Confirm or reject a pending human approval
+  device    Link two of your own devices (controller and helper)
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)
