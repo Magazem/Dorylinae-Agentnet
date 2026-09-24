@@ -194,9 +194,8 @@ type Options struct {
 	OnServerReady func(*ipc.Server)
 	// OnStoresReady, if set, is called once with the daemon's capability.Store
 	// and worksession.Store right after they are built (a test option: 2.2c
-	// needs a work session already open before it can test grant issuance,
-	// and 2.1b's accept-based session opening is not wired into the live
-	// daemon yet, Docs/review/27-2.1a-review.md design choice (1)).
+	// lets a test seed a work session directly, without a relay peer to run
+	// the accept flow).
 	OnStoresReady func(*capability.Store, *worksession.Store)
 }
 

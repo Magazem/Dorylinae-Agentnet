@@ -27,12 +27,11 @@ import (
 )
 
 // IPC error codes for grants (Docs/protocol/grant.md §IPC).
+// CodeNotRequester and CodeUnknownSession are declared in session.go.
 const (
 	CodeUnknownGrant      = "unknown_grant"
 	CodeNotGrantor        = "not_grantor"
 	CodeForbiddenResource = "forbidden_resource"
-	CodeNotRequester      = "not_requester"
-	CodeUnknownSession    = "unknown_session"
 	CodeUnknownPolicy     = "unknown_policy"
 )
 
@@ -97,17 +96,6 @@ func peerRef(ctx context.Context, ps *peers.Store, key string) GrantPeerRef {
 		return GrantPeerRef{Name: p.Name, PublicKey: p.PublicKey}
 	}
 	return GrantPeerRef{PublicKey: key}
-}
-
-// grantViewTx builds a GrantView without any DB call outside the caller's
-// transaction (the peer ref carries only the key, not its name): safe to
-// call from inside an approval Action's Perform, which runs under the
-// approval Store's own transaction on the daemon's single connection
-// (Docs/review/27-2.1a-review.md C1, Docs/review/26-2.2a-review.md N3).
-func grantViewTx(rec capability.Record) GrantView {
-	v := grantViewCommon(rec)
-	v.Peer = GrantPeerRef{PublicKey: rec.Peer}
-	return v
 }
 
 func grantView(ctx context.Context, ps *peers.Store, rec capability.Record) GrantView {
@@ -553,7 +541,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			},
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
 				now := time.Now()
-				ar, err := capStore.ActivateTx(ctx, tx, grantID, now)
+				_, err := capStore.ActivateTx(ctx, tx, grantID, now)
 				if err != nil {
 					return nil, err
 				}
@@ -572,7 +560,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 						return nil, err
 					}
 				}
-				return map[string]GrantView{"grant": grantViewTx(ar)}, nil
+				return afterCommitResult{after: func(context.Context) { ob.Wake() }}, nil
 			},
 		}
 		summary := fmt.Sprintf("approve grant %s on %s to %s for %s?", p.Action, label, peer.Name, expires.String())
@@ -587,11 +575,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				"sensitive": sensitive, "expires_s": int(expires.Seconds()), "approval": view.ID,
 			})
 		}
-		res, merr := mergeApproval(map[string]GrantView{"grant": grantView(ctx, ps, rec)}, view)
-		if merr != nil {
-			return nil, merr
-		}
-		return res, nil
+		return map[string]any{"grant": grantView(ctx, ps, rec), "approval": view}, nil
 	})
 
 	srv.Handle("grant_list", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -916,11 +900,7 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 		if aerr != nil {
 			return nil, approvalError(aerr)
 		}
-		res, merr := mergeApproval(nil, view)
-		if merr != nil {
-			return nil, merr
-		}
-		return res, nil
+		return map[string]approval.View{"approval": view}, nil
 	})
 
 	srv.Handle("grant_policy_list", func(ctx context.Context, _ json.RawMessage) (any, error) {

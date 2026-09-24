@@ -6,9 +6,8 @@ package daemon
 // satisfied by a peer row whose mailbox_keys announces a throwaway X25519 key,
 // so SubmitTx can seal mail without a live counterparty), following the same
 // lightweight pattern as TestRequestSubmitRefusesRelayTrust (request_d5_test.go).
-// A live work session is seeded directly (reqStore.Sessions is not wired into
-// the daemon binary yet, review 27 design choice (1); 2.1b turns on the real
-// accept path later).
+// The work session is seeded directly: this harness has no relay peer to run
+// the real accept flow (which the live daemon now does, 2.1b).
 
 import (
 	"context"
@@ -23,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -47,13 +47,13 @@ type fakeApprovalNotifier struct {
 	codes map[string]string
 }
 
-func (f *fakeApprovalNotifier) Show(_ context.Context, id string, _ time.Time, _, body string) error {
+func (f *fakeApprovalNotifier) Show(_ context.Context, id string, _ time.Time, title, body string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.codes == nil {
 		f.codes = map[string]string{}
 	}
-	f.codes[id] = body[len(body)-6:]
+	f.codes[id] = extractApprovalCode(title, body)
 	return nil
 }
 
@@ -82,6 +82,7 @@ type grantHarness struct {
 	caps     *capability.Store
 	appr     *approval.Store
 	notifier *fakeApprovalNotifier
+	win      *grantFakeWindow
 	ob       *mail.Outbox
 	log      *audit.Log
 	self     string
@@ -154,8 +155,9 @@ VALUES (?, 'peerb', 'h', '[]', '{}', ?, ?, ?)`, peerKey, time.Now().UTC().Format
 	}
 	ws.Outbox = ob
 	notifier := &fakeApprovalNotifier{}
+	win := newGrantFakeWindow()
 	fixedNow := time.Now()
-	apprStore, err := approval.NewStore(db, log, notifier, func() time.Time { return fixedNow })
+	apprStore, err := approval.NewStore(db, log, notifier, win, func() time.Time { return fixedNow })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +183,17 @@ VALUES (?, 'peerb', 'h', '[]', '{}', ?, ?, ?)`, peerKey, time.Now().UTC().Format
 	go func() { done <- srv.Serve(sctx, ln) }()
 	t.Cleanup(func() { cancel(); <-done })
 
-	h := &grantHarness{t: t, db: db, ps: ps, ws: ws, caps: caps, appr: apprStore, notifier: notifier, ob: ob, log: log,
+	h := &grantHarness{t: t, db: db, ps: ps, ws: ws, caps: caps, appr: apprStore, notifier: notifier, win: win, ob: ob, log: log,
 		self: self, priv: priv, peer: peerKey, endpoint: p.Endpoint, cancel: cancel, done: done}
 	return h, peerKey
+}
+
+// confirm answers approval id through the store's terminal path (terminal path (2.2d has no IPC method that takes a code), returning the waiting
+// action's own error mapped as the daemon does.
+func (h *grantHarness) confirm(id string) error {
+	h.t.Helper()
+	_, err := h.appr.Confirm(context.Background(), id, h.notifier.code(h.t, id))
+	return approvalError(err)
 }
 
 func (h *grantHarness) call(method string, params, out any) error {
@@ -427,9 +437,7 @@ func TestGrantApprovalFlowPendingThenConfirm(t *testing.T) {
 	if err := h.call("grant_create", GrantCreateParams{Peer: peer, Session: sid, Action: "fs.read", Resource: dir}, &out2); err != nil {
 		t.Fatal(err)
 	}
-	code := h.notifier.code(t, out2.Approval.ID)
-	var confirmOut map[string]json.RawMessage
-	if err := h.call("approval_confirm", struct{ ID, Code string }{out2.Approval.ID, code}, &confirmOut); err != nil {
+	if err := h.confirm(out2.Approval.ID); err != nil {
 		t.Fatal(err)
 	}
 	rec2, err := h.caps.Get(context.Background(), out2.Grant.ID)
@@ -500,9 +508,7 @@ func TestGrantSessionCloseRevokesPendingApproval(t *testing.T) {
 		t.Fatalf("grant after session close = %+v, %v", rec, err)
 	}
 
-	code := h.notifier.code(t, out.Approval.ID)
-	var confirmOut map[string]json.RawMessage
-	err = h.call("approval_confirm", struct{ ID, Code string }{out.Approval.ID, code}, &confirmOut)
+	err = h.confirm(out.Approval.ID)
 	if got := ipcCode(err); got != CodeBadState {
 		t.Fatalf("confirm after close: err = %v, want bad_state (precondition)", err)
 	}
@@ -543,9 +549,7 @@ func TestGrantApprovedAfterSessionLeftOpenIsDropped(t *testing.T) {
 	if _, err := h.db.Exec(`UPDATE work_sessions SET state = 'awaiting_result' WHERE id = ?`, sid); err != nil {
 		t.Fatal(err)
 	}
-	code := h.notifier.code(t, out.Approval.ID)
-	var confirmOut map[string]json.RawMessage
-	err := h.call("approval_confirm", struct{ ID, Code string }{out.Approval.ID, code}, &confirmOut)
+	err := h.confirm(out.Approval.ID)
 	if got := ipcCode(err); got != CodeBadState {
 		t.Fatalf("err = %v, want bad_state", err)
 	}
@@ -581,9 +585,7 @@ func TestGrantPolicyAddNeedsApproval(t *testing.T) {
 	if len(pols) != 0 {
 		t.Fatal("policy exists before approval")
 	}
-	code := h.notifier.code(t, out.Approval.ID)
-	var confirmOut map[string]json.RawMessage
-	if err := h.call("approval_confirm", struct{ ID, Code string }{out.Approval.ID, code}, &confirmOut); err != nil {
+	if err := h.confirm(out.Approval.ID); err != nil {
 		t.Fatal(err)
 	}
 	pols, err = h.caps.PolicyList(context.Background())
@@ -756,4 +758,94 @@ func containsSubstr(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+var approvalCodeRe = regexp.MustCompile(`(?i)\bcode (\d{6})\b`)
+
+// extractApprovalCode reads the 6-digit code from the desktop title
+// ("AgentNet code 482913 for approval a-...") or the terminal body
+// ("... Code 482913. Type ..."), Docs/protocol/approval.md §Delivering the code.
+func extractApprovalCode(title, body string) string {
+	for _, s := range []string{title, body} {
+		if m := approvalCodeRe.FindStringSubmatch(s); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// grantFakeWindow is a fake approval.WindowRunner (package daemon's copy of
+// fake_window_test.go's daemon_test double): it never spawns a dialog, and a
+// test delivers the window's answer with answer.
+type grantFakeWindow struct {
+	mu      sync.Mutex
+	handles map[string]*grantFakeHandle
+}
+
+func newGrantFakeWindow() *grantFakeWindow {
+	return &grantFakeWindow{handles: map[string]*grantFakeHandle{}}
+}
+
+func (w *grantFakeWindow) Start(_ context.Context, id, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	h := &grantFakeHandle{answers: make(chan [2]string, 1)}
+	w.handles[id] = h
+	return h, nil
+}
+
+func (w *grantFakeWindow) answer(id, kind, code string) {
+	w.mu.Lock()
+	h := w.handles[id]
+	w.mu.Unlock()
+	h.answers <- [2]string{kind, code}
+}
+
+type grantFakeHandle struct{ answers chan [2]string }
+
+func (h *grantFakeHandle) Ready(context.Context) bool { return true }
+
+func (h *grantFakeHandle) Answer(ctx context.Context) (string, string, error) {
+	select {
+	case a := <-h.answers:
+		return a[0], a[1], nil
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	}
+}
+
+func (h *grantFakeHandle) Kill() {}
+
+// TestGrantApprovedThroughWindow: a pending grant becomes active, and its
+// mail is queued, only when the approval window answers "approve <code>"
+// (Docs/protocol/approval.md §Flow; no IPC method takes the code).
+func TestGrantApprovedThroughWindow(t *testing.T) {
+	dir := testutil.TempDir(t)
+	h, peer := newGrantHarness(t, peers.TrustCode, false)
+	sid := h.openSession(peer, "r-77777777777777777777777777777777")
+	var out struct {
+		Grant    GrantView     `json:"grant"`
+		Approval approval.View `json:"approval"`
+	}
+	if err := h.call("grant_create", GrantCreateParams{Peer: peer, Session: sid, Action: "fs.read", Resource: dir}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Approval.ID == "" {
+		t.Fatalf("no approval returned: %+v", out)
+	}
+	h.win.answer(out.Approval.ID, "approve", h.notifier.code(t, out.Approval.ID))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec, err := h.caps.Get(context.Background(), out.Grant.ID)
+		if err == nil && rec.State == capability.StateActive {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("grant not active after window approval: %+v, %v", rec, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := outboxRows(t, h.db, "grant"); n != 1 {
+		t.Fatalf("outbox has %d grant rows, want 1", n)
+	}
 }

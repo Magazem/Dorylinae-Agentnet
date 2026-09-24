@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -136,8 +135,7 @@ func TestReview28ApprovalRechecksResource(t *testing.T) {
 	if err := os.Remove(dir); err != nil {
 		t.Fatal(err)
 	}
-	var confirmOut map[string]json.RawMessage
-	err := h.call("approval_confirm", struct{ ID, Code string }{out.Approval.ID, h.notifier.code(t, out.Approval.ID)}, &confirmOut)
+	err := h.confirm(out.Approval.ID)
 	if got := ipcCode(err); got != CodeForbiddenResource {
 		t.Fatalf("confirm after the resource vanished: err = %v, want forbidden_resource", err)
 	}
@@ -159,8 +157,7 @@ func TestReview28PolicyApprovalAfterPeerRemoved(t *testing.T) {
 	if err := h.ps.Remove(context.Background(), peer); err != nil {
 		t.Fatal(err)
 	}
-	var confirmOut map[string]json.RawMessage
-	err := h.call("approval_confirm", struct{ ID, Code string }{out.Approval.ID, h.notifier.code(t, out.Approval.ID)}, &confirmOut)
+	err := h.confirm(out.Approval.ID)
 	if got := ipcCode(err); got != CodeBadState {
 		t.Fatalf("confirm after peers remove: err = %v, want bad_state", err)
 	}
