@@ -11,7 +11,7 @@ var allowedMembers = map[string]bool{
 	"v": true, "id": true, "from": true, "to": true, "team": true, "type": true,
 	"title": true, "brief": true, "urgency": true, "urgency_declared": true,
 	"urgency_reason": true, "artifacts": true, "requested_grant": true,
-	"deadline": true, "created": true, "context": true,
+	"deadline": true, "created": true, "context": true, "run": true,
 }
 
 var requiredMembers = []string{
@@ -96,6 +96,13 @@ func Decode(body map[string]any) (*Request, error) {
 			return nil, err
 		}
 		r.Context = files
+	}
+	if raw, ok := body["run"]; ok {
+		run, err := decodeRun(raw)
+		if err != nil {
+			return nil, err
+		}
+		r.Run = run
 	}
 	created, err := decodeTime("created", body["created"])
 	if err != nil {
@@ -208,6 +215,23 @@ func decodeContext(raw any) ([]ContextFile, error) {
 		out = append(out, ContextFile{Name: name, Text: text})
 	}
 	return out, nil
+}
+
+func decodeRun(raw any) (*Run, error) {
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fieldErr("run", "must be an object")
+	}
+	for k := range obj {
+		if k != "command" {
+			return nil, fieldErr("run", "has unknown member %q", k)
+		}
+	}
+	cmd, ok := obj["command"].(string)
+	if !ok {
+		return nil, fieldErr("run.command", "is required and must be a string")
+	}
+	return &Run{Command: cmd}, nil
 }
 
 func decodeGrant(raw any) (*RequestedGrant, error) {

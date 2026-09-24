@@ -75,6 +75,9 @@ type RequestSubmitParams struct {
 	RequestedGrant *GrantParam     `json:"requested_grant,omitempty"`
 	Deadline       string          `json:"deadline,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	// Run names a command an own-device helper may have configured
+	// (Docs/protocol/device.md §Running): a name only.
+	Run *RunParam `json:"run,omitempty"`
 }
 
 // teamRefResult is the "team": {"id","name"} member of the submit result.
@@ -203,6 +206,9 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 			From: ts.Self, To: peer.PublicKey, Team: t.ID, Type: p.Type, Title: p.Title, Brief: p.Brief,
 			Urgency: urgency, UrgencyReason: p.UrgencyReason, Artifacts: artifacts, RequestedGrant: grant,
 			Context: contextFiles, Deadline: deadline, IdempotencyKey: p.IdempotencyKey,
+		}
+		if p.Run != nil {
+			sp.Run = &request.Run{Command: p.Run.Command}
 		}
 		if p.IdempotencyKey != "" {
 			sp.ParamsHash = submitParamsHash(peer.PublicKey, t.ID, p)
@@ -370,6 +376,9 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams) string {
 			arr[i] = map[string]any{"name": c.Name, "text": c.Text}
 		}
 		m["context"] = arr
+	}
+	if p.Run != nil {
+		m["run"] = map[string]any{"command": p.Run.Command}
 	}
 	canon, err := agentcard.CanonicalValue(m)
 	if err != nil {

@@ -64,6 +64,9 @@ func WireBody(r *Request) map[string]any {
 		}
 		obj["context"] = files
 	}
+	if r.Run != nil {
+		obj["run"] = map[string]string{"command": r.Run.Command}
+	}
 	return map[string]any{"request": obj}
 }
 

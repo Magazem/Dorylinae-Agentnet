@@ -115,6 +115,15 @@ type RequestView struct {
 	ContextFiles *int           `json:"context_files,omitempty"`
 	ContextBytes *int           `json:"context_bytes,omitempty"`
 	Context      []ContextParam `json:"context,omitempty"`
+	// Run is the own-device helper command the request names
+	// (Docs/protocol/device.md §Running), a name only.
+	Run *RunParam `json:"run,omitempty"`
+}
+
+// RunParam is the request's "run" member: {"command": "<name>"}
+// (Docs/protocol/device.md §Running).
+type RunParam struct {
+	Command string `json:"command"`
 }
 
 // SessionRef is the request view's "session" member.
@@ -199,6 +208,9 @@ func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, ws *workse
 		r.Due = &due
 	}
 	r.UrgencyNote = v.UrgencyNote
+	if v.Run != nil {
+		r.Run = &RunParam{Command: v.Run.Command}
+	}
 	if n := len(v.Context); n > 0 {
 		b := request.ContextBytes(v.Context)
 		r.ContextFiles, r.ContextBytes = &n, &b

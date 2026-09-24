@@ -18,6 +18,8 @@ Usage:
   agentnet device link <peer> --as controller|helper --fingerprint FP [--json]
   agentnet device list [--json]
   agentnet device unlink <peer> [--json]
+  agentnet device scope <controller> (--types ... --repo ... --command ...
+                        --expires D | --from-file F | --clear | --show) [--json]
 
 Subcommands:
   link     start a link with a paired device of yours. Run it on BOTH devices:
@@ -27,6 +29,8 @@ Subcommands:
   list     show links and link attempts on this device.
   unlink   end the link with <peer>, on either device. The other device is told
            even if this one holds no active link.
+  scope    on the helper: set (with your approval), clear or show what the
+           controller may run here.
 
 A link does nothing by itself: no request runs on a helper until its owner sets
 a scope on the helper.
@@ -49,6 +53,8 @@ func runDevice(args []string, stdout, stderr io.Writer) int {
 		return runDeviceList(args[1:], stdout, stderr)
 	case "unlink":
 		return runDeviceUnlink(args[1:], stdout, stderr)
+	case "scope":
+		return runDeviceScope(args[1:], stdout, stderr)
 	}
 	_, _ = fmt.Fprintf(stderr, "agentnet device: unknown subcommand %q\n\n", args[0])
 	_, _ = fmt.Fprint(stderr, deviceUsage)

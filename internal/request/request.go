@@ -123,4 +123,27 @@ type Request struct {
 	Deadline        time.Time       // zero if absent
 	Created         time.Time
 	Context         []ContextFile // nil if absent; question only
+	Run             *Run          // nil if absent; own-device helper (Docs/protocol/device.md)
+}
+
+// Run is the request's "run" member (Docs/protocol/device.md §Running): the
+// name of a command an own-device helper may have configured. It is a name
+// only: no argument, path or environment ever comes from a request.
+type Run struct {
+	Command string
+}
+
+// ValidRunCommand reports whether s is a valid run.command: 1-64 characters
+// from [a-z0-9._-] (Docs/protocol/device.md §Running).
+func ValidRunCommand(s string) bool {
+	if len(s) < 1 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '.' && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
 }

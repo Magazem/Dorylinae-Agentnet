@@ -97,6 +97,69 @@ create ...`; until then, any build with a small Go program that calls
 - [ ] `agentnet approve --open <id>` against a terminal-mode daemon fails
       `bad_request` ("answer on the daemon's terminal").
 
+## Own-device helper runs (ticket 2.D2, [device.md](../Docs/protocol/device.md#running-in-scope-requests))
+
+Automated coverage (`internal/device/runner_test.go`,
+`internal/daemon/device_run_e2e_test.go`) runs a test program built with `go build`.
+These checks run a real repository's tests between two real machines of one person.
+Setup on each OS pair: pair the two devices, share a team, run `agentnet device link` on
+both (`--as controller` on the laptop, `--as helper` on the desktop) and confirm both
+approval windows. Then, on the **helper**:
+
+```
+agentnet device scope @laptop --types task --repo agentnet=<abs path of a Go repo> \
+    --command 'test=agentnet:["go","test","./...","-count=1"]' --env test=GOFLAGS --expires 1d
+```
+
+and on the **controller**: `agentnet request @desktop task --title t --brief b --run test`,
+then `agentnet wait <session>`.
+
+### Windows 11 helper (PowerShell 5.1, no admin)
+
+- [ ] The scope approval window lists `test`, the repo path and the argv with `go`
+      resolved to its absolute path (e.g. `C:\Program Files\Go\bin\go.exe`), JSON-quoted.
+- [ ] The run needs no agent on the helper: no console window flashes up while it runs
+      (`CREATE_NO_WINDOW`), and Task Manager shows `go.exe` (and its test binaries) as
+      children of `agentnetd`, never of `cmd.exe`.
+- [ ] The controller's `wait` gets `pass` with `exit_code` 0 and the test output tail; `go
+      env GOCACHE` works with the minimal environment (no "GOCACHE is not defined").
+- [ ] A command with `--timeout test=5` on a slow suite: the result is `fail`,
+      `test: timed out after 5 s`, and Task Manager shows no leftover `go.exe` or test
+      process (the job object killed the tree).
+- [ ] A `--command` naming a `.bat` file is refused with `bad_scope`.
+- [ ] Set a user environment variable `SECRET_TOKEN` before starting `agentnetd`; a command
+      that prints its environment (`["powershell.exe","-NoProfile","-Command","Get-ChildItem Env:"]`)
+      does not show it.
+
+### macOS helper
+
+- [ ] Same flow: `go` resolved to `/usr/local/go/bin/go` (or the Homebrew path), `pass`
+      result on the controller.
+- [ ] Timeout: `ps -ax | grep go` after the timeout result shows no leftover process
+      (process group killed).
+- [ ] A daemon started by launchd (not a terminal) runs the command: the minimal `PATH`
+      of a launchd agent may lack `/usr/local/bin`; the absolute `argv[0]` stored at scope
+      time still starts it. Note here whether the test suite itself needed `--env` names.
+
+### Linux helper
+
+- [ ] Same flow under a systemd user unit; `pass` result on the controller.
+- [ ] Timeout on a suite that starts a background process (`sleep 600 &` in a test helper):
+      `ps -eo pid,pgid,cmd` shows none left after the timeout result.
+- [ ] `ps`/`/proc/<pid>/environ` of the running test shows only the minimal environment.
+
+### Either OS pair
+
+- [ ] `agentnet device unlink @laptop` on the helper while a long run executes: the run
+      finishes and its result arrives; the next `--run` request lands in the helper's
+      inbox (`agentnet inbox`) and nothing runs.
+- [ ] `agentnet device scope @laptop --clear` while runs are queued: the queued ones end
+      `cancelled` on the controller, the running one finishes.
+- [ ] Stop `agentnetd` on the helper during a run and start it again: the controller gets
+      `fail`, `test: interrupted`; queued runs end `cancelled`.
+- [ ] `agentnet audit` (or the `audit_events` table) on both devices holds no command name,
+      argv, repo path or output.
+
 ## 2.H headless harness note
 
 The 2.H script drives this through pipes with `DORYLINAE_DEBUG=1` and is

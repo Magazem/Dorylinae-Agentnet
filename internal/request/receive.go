@@ -69,7 +69,24 @@ type Store struct {
 	// shorthand. nil is Phase 1 behaviour unchanged.
 	Sessions SessionHooks
 
+	// Helper, when set, routes every new request that passed the receive
+	// steps and was stored pending to the own-device helper
+	// (Docs/protocol/device.md §Running (in-scope requests)). nil is the
+	// normal inbox for everything.
+	Helper HelperRouter
+
 	Now func() time.Time
+}
+
+// HelperRouter decides, inside the receive transaction, whether a new pending
+// request is in an own-device helper's scope (Docs/protocol/device.md
+// §Running). It must read and write only through tx. When autoAccept is true
+// the Store accepts the request in tx (actor daemon), which opens its work
+// session. after, if non-nil, is called once after the commit, outside any
+// transaction (for the device audit rows and to queue the run); it is never
+// called when the transaction rolls back.
+type HelperRouter interface {
+	RouteTx(ctx context.Context, tx *sql.Tx, req *Request, now time.Time) (autoAccept bool, after func(context.Context), err error)
 }
 
 func (s *Store) now() time.Time {
@@ -102,6 +119,9 @@ type applyOutcome struct {
 	title           string
 	contextFiles    int // sizes only: context text is never audited
 	contextBytes    int
+	autoAccepted    bool                  // accepted by the own-device helper in the receive tx
+	acceptAfter     func(context.Context) // audits the daemon's request.accept
+	helperAfter     func(context.Context) // the helper's after-commit step
 }
 
 var pendingApply sync.Map // map[*mail.Opened]*applyOutcome
@@ -210,6 +230,20 @@ INSERT INTO requests (
 	if downgradedBy != "" {
 		out.urgencyDeclared = declared
 		out.downgradedBy = downgradedBy
+	}
+	if s.Helper != nil {
+		accept, after, err := s.Helper.RouteTx(ctx, tx, req, now)
+		if err != nil {
+			return err
+		}
+		out.helperAfter = after
+		if accept {
+			acceptAfter, err := s.AutoAcceptInTx(ctx, tx, req.ID, op.Msg.From)
+			if err != nil {
+				return err
+			}
+			out.autoAccepted, out.acceptAfter = true, acceptAfter
+		}
 	}
 	pendingApply.Store(op, out)
 	return nil
@@ -373,15 +407,27 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 	if !out.newRow && !out.conflict {
 		s.resubmitStale(ctx, "in", out.peer, out.requestID, s.now())
 	}
-	if out.newRow && !out.cancelled && !out.autoDecline && s.Notify != nil {
+	// An in-scope helper request was accepted by the daemon: nobody needs to
+	// look at it, so there is no "received" notification.
+	if out.newRow && !out.cancelled && !out.autoDecline && !out.autoAccepted && s.Notify != nil {
 		s.Notify(ctx, EventReceived, NotifyInfo{
 			Peer: out.peer, Type: out.typ, Urgency: out.urgency, Title: out.title,
 			RequestID: out.requestID, State: "pending", TeamID: out.teamID,
 		})
 	}
-	if s.Audit == nil {
-		return
+	if s.Audit != nil {
+		s.auditReceived(ctx, out)
 	}
+	if out.acceptAfter != nil {
+		out.acceptAfter(ctx)
+	}
+	if out.helperAfter != nil {
+		out.helperAfter(ctx)
+	}
+}
+
+// auditReceived appends the receive outcome's audit row.
+func (s *Store) auditReceived(ctx context.Context, out *applyOutcome) {
 	switch {
 	case out.cancelled:
 		// Stored cancelled via a tombstone: no notification, and no audit

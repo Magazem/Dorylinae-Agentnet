@@ -195,11 +195,21 @@ daemon resends it until the peer acks it ([mail.md](mail.md#outbox)). A relay re
 `peer_offline` or `peer_busy` never fails the mail: it stays `queued`. The only CLI front end
 is the debug command `agentnet mail send` ([../cli/mail.md](../cli/mail.md)).
 
+**Allowlist (review 36 L7).** `mail_submit` sends only kinds the daemon does **not** own. It
+refuses (`bad_request`) every kind the daemon registers a handler for (`keys`, `ack`,
+`request`, `request.*`, `team.*`, `ws.*`, `grant`, `grant.revoke`, `device.*`), taken from the
+same code that builds the mail receiver, so a kind added there is refused here too; and,
+as a backstop, every kind in a reserved namespace (`device.`, `ws.`, `request`, `team.`,
+`grant`, `presence`, `fetch`, `consult`, `approval`, `pair`, `keys`, `ack`), even one no
+build registers yet. Each daemon kind is sent only by its own method, after that method's
+checks: `device.link`, for example, has no signature of its own, and the mail signature is
+its only proof that the local human approved ([device.md §Kinds](device.md#kinds)). What
+remains sendable are application and debug kinds with no daemon handler, such as the debug
+kind `note`.
+
 Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the peer was
-paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body,
-kind `ack`, or a `device.*` kind: those are sent only by the `device_*` methods after the
-local approval, because the mail signature is their only proof of that approval
-([device.md §Kinds](device.md#kinds)).
+paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or
+a kind the daemon owns (above).
 
 ## Phase 1 methods
 
@@ -346,7 +356,9 @@ waits at most 1 s like `ping`):
 - `grant_create`, `grant_list`, `grant_show`, `grant_revoke`, `grant_policy_add`,
   `grant_policy_list`, `grant_policy_remove`, `fetch_start`, `fetch_status`
   ([grant.md](grant.md#ipc));
-- `request_submit` gains `context` ([consult.md](consult.md#agentnet-consult));
+- `request_submit` gains `context` ([consult.md](consult.md#agentnet-consult)) and
+  `run: {"command": "<name>"}` ([device.md](device.md#running-in-scope-requests)); the
+  request view gains `run`;
 - `device_link`, `device_list`, `device_unlink`, `device_scope_set`, `device_scope_clear`,
   `device_scope_show` ([device.md](device.md#ipc-and-cli)).
 

@@ -137,38 +137,8 @@ func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed2551
 			"keys": mail.KeysKind(peers.MergeMailboxKeysTx, nil),
 		},
 	}
-	if ts != nil {
-		rcv.Kinds["team.roster"] = ts.RosterKind()
-		rcv.Kinds["team.join"] = ts.JoinKind()
-		rcv.Kinds["team.leave"] = ts.LeaveKind()
-	}
-	if rs != nil {
-		rcv.Kinds["request"] = rs.Kind()
-		rcv.Kinds[request.KindAccept] = rs.AcceptKind()
-		rcv.Kinds[request.KindDecline] = rs.DeclineKind()
-		rcv.Kinds[request.KindDefer] = rs.DeferKind()
-		rcv.Kinds[request.KindComplete] = rs.CompleteKind()
-		rcv.Kinds[request.KindCancelled] = rs.CancelledKind()
-		rcv.Kinds[request.KindCancel] = rs.CancelKind()
-	}
-	// ws.* is registered only once sessions are wired into the request
-	// lifecycle (rs.Sessions, 2.1b). Before that no session ever opens here,
-	// so a ws.* mail can only come from a misbehaving peer, and must not be
-	// able to create session rows or store results: unregistered, it is
-	// acked unsupported, which is also the honest Phase 1 answer.
-	if ws != nil && rs != nil && rs.Sessions != nil {
-		rcv.Kinds[worksession.KindResult] = ws.ResultKind()
-		rcv.Kinds[worksession.KindCancel] = ws.CancelKind()
-		rcv.Kinds[worksession.KindState] = ws.StateKind()
-	}
-	// grant/grant.revoke are safe to register even before sessions ever open
-	// here (2.1b): a grant mail's step 7 (session known and open) fails
-	// closed for a session this daemon has never seen, so nothing is stored
-	// (Docs/protocol/grant.md §Kinds, "a session the holder does not know yet
-	// is an orphan").
-	if caps != nil && ws != nil {
-		rcv.Kinds["grant"] = grantKind(caps, ws, selfKey, log)
-		rcv.Kinds["grant.revoke"] = grantRevokeKind(caps, log)
+	for k, v := range daemonKinds(ts, rs, ws, caps, selfKey, log) {
+		rcv.Kinds[k] = v
 	}
 	if os.Getenv(mail.DebugEnv) == "1" {
 		// Debug only: lets `agentnet mail send --kind note` exercise the mail
@@ -253,4 +223,46 @@ func identityPriv(ks *keystore.Store) func() (ed25519.PrivateKey, error) {
 		}
 		return ed25519.NewKeyFromSeed(seed), nil
 	}
+}
+
+// daemonKinds are the application kinds the daemon itself owns: each has a
+// handler here and is sent only by the daemon's own methods. mail_submit
+// refuses all of them (review 36 L7): a local IPC client must never be able
+// to send the daemon's half of a protocol.
+func daemonKinds(ts *team.Store, rs *request.Store, ws *worksession.Store, caps *capability.Store, selfKey string, log *audit.Log) map[string]mail.Kind {
+	kinds := map[string]mail.Kind{}
+	if ts != nil {
+		kinds["team.roster"] = ts.RosterKind()
+		kinds["team.join"] = ts.JoinKind()
+		kinds["team.leave"] = ts.LeaveKind()
+	}
+	if rs != nil {
+		kinds["request"] = rs.Kind()
+		kinds[request.KindAccept] = rs.AcceptKind()
+		kinds[request.KindDecline] = rs.DeclineKind()
+		kinds[request.KindDefer] = rs.DeferKind()
+		kinds[request.KindComplete] = rs.CompleteKind()
+		kinds[request.KindCancelled] = rs.CancelledKind()
+		kinds[request.KindCancel] = rs.CancelKind()
+	}
+	// ws.* is registered only once sessions are wired into the request
+	// lifecycle (rs.Sessions, 2.1b). Before that no session ever opens here,
+	// so a ws.* mail can only come from a misbehaving peer, and must not be
+	// able to create session rows or store results: unregistered, it is
+	// acked unsupported, which is also the honest Phase 1 answer.
+	if ws != nil && rs != nil && rs.Sessions != nil {
+		kinds[worksession.KindResult] = ws.ResultKind()
+		kinds[worksession.KindCancel] = ws.CancelKind()
+		kinds[worksession.KindState] = ws.StateKind()
+	}
+	// grant/grant.revoke are safe to register even before sessions ever open
+	// here (2.1b): a grant mail's step 7 (session known and open) fails
+	// closed for a session this daemon has never seen, so nothing is stored
+	// (Docs/protocol/grant.md §Kinds, "a session the holder does not know yet
+	// is an orphan").
+	if caps != nil && ws != nil {
+		kinds["grant"] = grantKind(caps, ws, selfKey, log)
+		kinds["grant.revoke"] = grantRevokeKind(caps, log)
+	}
+	return kinds
 }

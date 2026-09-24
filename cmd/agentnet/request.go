@@ -50,7 +50,7 @@ Usage:
   agentnet request <peer> <type> --title T (--brief B | --brief-from-file F)
                    [--urgency low|normal|high|blocking] [--urgency-reason R]
                    [--artifact SPEC]... [--grant ACTION=RESOURCE] [--deadline D]
-                   [--team TEAM] [--idempotency-key K] [--json]
+                   [--team TEAM] [--idempotency-key K] [--run NAME] [--json]
 
 <peer> is a peer name or public key, with an optional "@". <type> is review,
 task or question.
@@ -72,6 +72,13 @@ Flags:
   --idempotency-key K    1-64 characters of [A-Za-z0-9._:-]. Running the same
                          command again with the same key returns the first
                          request instead of sending a second one
+  --run NAME             for your own helper device: the name of a command
+                         its owner allowed ('agentnet device scope' on the
+                         helper). A name only, 1-64 characters of
+                         [a-z0-9._-]. If the request is in the helper's scope
+                         it runs at once and the result comes back through
+                         'agentnet wait'; otherwise it lands in the helper's
+                         normal inbox
   --json                 print machine-readable JSON on stdout
 
 The brief. Write the brief for the other agent; it gets nothing else from you:
@@ -101,6 +108,7 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 	team := fs.String("team", "", "team ref, needed only when you share several teams with the peer")
 	idemKey := fs.String("idempotency-key", "", "1-64 characters of [A-Za-z0-9._:-]")
 	grant := fs.String("grant", "", "ACTION=RESOURCE: an optional hint about the access needed")
+	runName := fs.String("run", "", "own-device helper: the name of a command its owner allowed")
 	var artifacts []string
 	fs.Func("artifact", "an artifact pointer (repeatable, up to 20)", func(v string) error {
 		artifacts = append(artifacts, v)
@@ -153,6 +161,10 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--grant must be ACTION=RESOURCE")
 		}
 		params.RequestedGrant = &daemon.GrantParam{Action: action, Resource: resource}
+	}
+
+	if *runName != "" {
+		params.Run = &daemon.RunParam{Command: *runName}
 	}
 
 	var res daemon.RequestSubmitResult

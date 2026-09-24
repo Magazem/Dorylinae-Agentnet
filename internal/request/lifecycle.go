@@ -220,6 +220,19 @@ func (s *Store) transitionTx(ctx context.Context, tx *sql.Tx, id, from string, a
 // audits request.accept (the audit log shares the daemon's one SQLite
 // connection, which tx holds); the caller wakes the outbox after commit.
 func (s *Store) AcceptInTx(ctx context.Context, tx *sql.Tx, id, from, onlyType string) (peer string, after func(context.Context), err error) {
+	return s.acceptInTx(ctx, tx, id, from, onlyType, "cli")
+}
+
+// AutoAcceptInTx is AcceptInTx done by the daemon itself (actor "daemon"),
+// for an own-device helper's in-scope request, in the receive transaction
+// (Docs/protocol/device.md §Running: "auto-accepted (request.accept,
+// first_response = accept, actor daemon), and its work session opens").
+func (s *Store) AutoAcceptInTx(ctx context.Context, tx *sql.Tx, id, from string) (after func(context.Context), err error) {
+	_, after, err = s.acceptInTx(ctx, tx, id, from, "", "daemon")
+	return after, err
+}
+
+func (s *Store) acceptInTx(ctx context.Context, tx *sql.Tx, id, from, onlyType, actor string) (peer string, after func(context.Context), err error) {
 	row, seq, _, err := s.transitionTx(ctx, tx, id, from, allowedAcceptDeclineDefer, func(row storedRow, now time.Time, seq int) (transitionBuild, error) {
 		if onlyType != "" && row.typ != onlyType {
 			return transitionBuild{}, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is a %s request and %s: accept it first", id, row.typ, row.state)}
@@ -231,7 +244,7 @@ func (s *Store) AcceptInTx(ctx context.Context, tx *sql.Tx, id, from, onlyType s
 		return "", nil, err
 	}
 	return row.peer, func(ctx context.Context) {
-		s.auditLifecycle(ctx, "cli", "request.accept", row, seq, nil)
+		s.auditLifecycle(ctx, actor, "request.accept", row, seq, nil)
 	}, nil
 }
 

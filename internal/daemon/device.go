@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -38,13 +39,14 @@ type DeviceUnlinkParams struct {
 }
 
 // DeviceLinkView is the "link view" of Docs/protocol/device.md §IPC and CLI.
-// The scope member is added by 2.D2.
+// Scope is present only on the helper, for an active link with a scope.
 type DeviceLinkView struct {
-	ID          string       `json:"id"`
-	Peer        GrantPeerRef `json:"peer"`
-	Role        string       `json:"role"`
-	State       string       `json:"state"`
-	ActivatedAt string       `json:"activated_at,omitempty"`
+	ID          string           `json:"id"`
+	Peer        GrantPeerRef     `json:"peer"`
+	Role        string           `json:"role"`
+	State       string           `json:"state"`
+	ActivatedAt string           `json:"activated_at,omitempty"`
+	Scope       *DeviceScopeView `json:"scope,omitempty"`
 }
 
 // DeviceLinkResult is the result of "device_link".
@@ -65,10 +67,15 @@ type DeviceListResult struct {
 	Links []DeviceLinkView `json:"links"`
 }
 
-func deviceView(ctx context.Context, ps *peers.Store, l device.Link) DeviceLinkView {
+func deviceView(ctx context.Context, ps *peers.Store, ds *device.Store, l device.Link) DeviceLinkView {
 	v := DeviceLinkView{ID: l.ID, Peer: peerRef(ctx, ps, l.Peer), Role: l.Role, State: l.State}
 	if !l.ActivatedAt.IsZero() {
 		v.ActivatedAt = wireTimeStr(l.ActivatedAt)
+	}
+	if l.Role == device.RoleHelper && l.State == device.StateActive {
+		if sc, err := ds.Scope(ctx, l.ID); err == nil {
+			v.Scope = &DeviceScopeView{Expires: sc.Expires, Types: sc.Types, Commands: sc.CommandNames()}
+		}
 	}
 	return v
 }
@@ -182,14 +189,35 @@ func parseOffer(body map[string]any, from, self string) (offerBody, device.Offer
 	return ob, o, nil
 }
 
+// deviceHooks are what the device kinds call after their commit.
+type deviceHooks struct {
+	// onUnlinked runs after a device.unlink from peer was applied.
+	onUnlinked func(peer string)
+	// onLinked runs after a link with peer became active; role is this
+	// device's role (D22, review 36 L5: notify on activation).
+	onLinked func(ctx context.Context, peer, role string)
+}
+
+// activatedRoles carries an activation from Apply to After, keyed by the
+// *mail.Opened pointer (unique for one Handle call).
+var activatedRoles sync.Map // map[*mail.Opened]string
+
 // deviceLinkKind is the receiver Kind for "device.link" (Docs/protocol/device.md
 // §Link flow step 3): activate when the local intent is complementary and
 // unexpired, otherwise keep the offer (one per peer) for IntentTTL. An offer
-// never creates a link on its own.
-func deviceLinkKind(ds *device.Store, self string) mail.Kind {
+// never creates a link on its own. An offer that is stale by its sender's
+// clock, or older than the last device.unlink from that peer, is ignored
+// (D22, review 36 L4).
+func deviceLinkKind(ds *device.Store, self string, hooks deviceHooks) mail.Kind {
 	return mail.Kind{
 		Inbox: true,
+		After: func(ctx context.Context, op *mail.Opened) {
+			if role, ok := activatedRoles.LoadAndDelete(op); ok && hooks.onLinked != nil {
+				hooks.onLinked(ctx, op.Msg.From, role.(string))
+			}
+		},
 		Apply: func(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
+			activatedRoles.Delete(op) // a retried Apply starts clean
 			ob, offer, err := parseOffer(op.Msg.Body, op.Msg.From, self)
 			if err != nil {
 				return err
@@ -198,11 +226,20 @@ func deviceLinkKind(ds *device.Store, self string) mail.Kind {
 			if err := ds.ExpireTx(ctx, tx, now); err != nil {
 				return err
 			}
+			if !device.OfferFresh(offer, now) {
+				return nil // stale by the sender's own clock: not kept, never activates
+			}
+			if before, err := ds.OfferBeforeUnlinkTx(ctx, tx, op.Msg.From, offer); err != nil {
+				return err
+			} else if before {
+				return nil // made before that peer's last unlink
+			}
 			l, activated, err := ds.TryActivateTx(ctx, tx, op.Msg.From, offer, now)
 			if err != nil {
 				return err
 			}
 			if activated {
+				activatedRoles.Store(op, l.Role)
 				return auditTx(ctx, tx, audit.ActorDaemon, "device.link_active", map[string]any{"link": l.ID, "peer": l.Peer, "role": l.Role})
 			}
 			raw, err := json.Marshal(ob)
@@ -217,9 +254,16 @@ func deviceLinkKind(ds *device.Store, self string) mail.Kind {
 // deviceUnlinkKind is the receiver Kind for "device.unlink": revoke every
 // link, intent and offer with msg.from, and delete their scopes. The "link"
 // member is informational (review 24 M8): a peer can only end its own links.
-func deviceUnlinkKind(ds *device.Store) mail.Kind {
+func deviceUnlinkKind(ds *device.Store, onUnlinked func(peer string)) mail.Kind {
 	return mail.Kind{
 		Inbox: true,
+		// Queued runs of that controller are dropped at once, and a scope
+		// still waiting for its code is rejected.
+		After: func(_ context.Context, op *mail.Opened) {
+			if onUnlinked != nil {
+				onUnlinked(op.Msg.From)
+			}
+		},
 		Apply: func(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 			body := op.Msg.Body
 			for k := range body {
@@ -231,7 +275,8 @@ func deviceUnlinkKind(ds *device.Store) mail.Kind {
 			if !ok {
 				return badMailBody("at is required")
 			}
-			if _, err := time.Parse(time.RFC3339, at); err != nil {
+			atTime, err := time.Parse(time.RFC3339, at)
+			if err != nil {
 				return badMailBody("at is not a timestamp")
 			}
 			if raw, present := body["link"]; present {
@@ -242,6 +287,11 @@ func deviceUnlinkKind(ds *device.Store) mail.Kind {
 			}
 			revoked, err := ds.RevokeForPeerTx(ctx, tx, op.Msg.From, ds.Time())
 			if err != nil {
+				return err
+			}
+			// Kept per peer, so that an older offer arriving late is ignored
+			// (D22, review 36 L4).
+			if err := ds.NoteUnlinkTx(ctx, tx, op.Msg.From, atTime, ds.Time()); err != nil {
 				return err
 			}
 			if len(revoked) == 0 {
@@ -264,23 +314,26 @@ func unlinkAudit(revoked []device.Link, peer, side string) map[string]any {
 
 // withDeviceKinds returns kinds plus the two device kinds, without changing the
 // caller's map.
-func withDeviceKinds(kinds map[string]mail.Kind, ds *device.Store, self string) map[string]mail.Kind {
+func withDeviceKinds(kinds map[string]mail.Kind, ds *device.Store, self string, hooks deviceHooks) map[string]mail.Kind {
 	out := make(map[string]mail.Kind, len(kinds)+2)
 	for k, v := range kinds {
 		out[k] = v
 	}
-	out[device.KindLink] = deviceLinkKind(ds, self)
-	out[device.KindUnlink] = deviceUnlinkKind(ds)
+	out[device.KindLink] = deviceLinkKind(ds, self, hooks)
+	out[device.KindUnlink] = deviceUnlinkKind(ds, hooks.onUnlinked)
 	return out
 }
 
 // revokeDeviceForRemovedPeer is an OnRemovedTx hook: removing the other device
 // ends its link locally (Docs/protocol/device.md §Unlink and expiry).
-func revokeDeviceForRemovedPeer(ds *device.Store) func(ctx context.Context, tx *sql.Tx, key string) error {
+func revokeDeviceForRemovedPeer(ds *device.Store, runner *helperRunner) func(ctx context.Context, tx *sql.Tx, key string) error {
 	return func(ctx context.Context, tx *sql.Tx, key string) error {
 		revoked, err := ds.RevokeForPeerTx(ctx, tx, key, ds.Time())
 		if err != nil || len(revoked) == 0 {
 			return err
+		}
+		if runner != nil {
+			runner.kick() // asynchronous: its sweep waits for this tx
 		}
 		return auditTx(ctx, tx, audit.ActorDaemon, "device.unlink", unlinkAudit(revoked, key, "local"))
 	}
@@ -301,7 +354,7 @@ func chainRemovedTx(hooks ...func(context.Context, *sql.Tx, string) error) func(
 
 // registerDevice wires "device_link", "device_list" and "device_unlink"
 // (Docs/protocol/device.md §IPC and CLI). Scope and run are 2.D2.
-func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store, ps *peers.Store, ob *mail.Outbox, log *audit.Log, nonLoopbackRelay bool) {
+func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store, ps *peers.Store, ob *mail.Outbox, log *audit.Log, nonLoopbackRelay bool, runner *helperRunner, scopes *scopeApprovals, hooks deviceHooks) {
 	srv.Handle("device_link", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p DeviceLinkParams
 		if err := json.Unmarshal(params, &p); err != nil {
@@ -371,6 +424,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 			// the audit rows commit together (review 26 N1, review 27 C1).
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
 				now := ds.Time()
+				linked := false
 				l, err := ds.ApproveTx(ctx, tx, linkID, now)
 				if err != nil {
 					return nil, err
@@ -402,7 +456,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 				} else if ok {
 					var kept offerBody
 					if json.Unmarshal([]byte(raw), &kept) == nil {
-						if o, oerr := kept.offer(); oerr == nil {
+						if o, oerr := kept.offer(); oerr == nil && device.OfferFresh(o, now) {
 							act, activated, err := ds.TryActivateTx(ctx, tx, peerKey, o, now)
 							if err != nil {
 								return nil, err
@@ -411,11 +465,23 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 								if err := auditTx(ctx, tx, audit.ActorDaemon, "device.link_active", map[string]any{"link": act.ID, "peer": peerKey, "role": role}); err != nil {
 									return nil, err
 								}
+								linked = true
 							}
 						}
 					}
 				}
-				return afterCommitResult{after: func(context.Context) { ob.Wake() }}, nil
+				return afterCommitResult{after: func(ctx context.Context) {
+					ob.Wake()
+					if linked && hooks.onLinked != nil {
+						hooks.onLinked(ctx, peerKey, role)
+					}
+				}}, nil
+			},
+			// A rejected or expired attempt frees its hierarchy slot at once
+			// instead of after IntentTTL (review 36 L8). Only a row still
+			// pending approval is touched.
+			OnReject: func(ctx context.Context) {
+				_ = ds.RevokePending(ctx, linkID)
 			},
 		}
 		who := stripLongDigits(notify.Clean(peer.Name, 40))
@@ -427,7 +493,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		}
 		_ = ds.SetApproval(ctx, linkID, view.ID)
 		link.Approval = view.ID
-		return DeviceLinkResult{Approval: view, Link: deviceView(ctx, ps, link)}, nil
+		return DeviceLinkResult{Approval: view, Link: deviceView(ctx, ps, ds, link)}, nil
 	})
 
 	srv.Handle("device_list", func(ctx context.Context, _ json.RawMessage) (any, error) {
@@ -437,7 +503,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		}
 		views := make([]DeviceLinkView, 0, len(links))
 		for _, l := range links {
-			views = append(views, deviceView(ctx, ps, l))
+			views = append(views, deviceView(ctx, ps, ds, l))
 		}
 		return DeviceListResult{Links: views}, nil
 	})
@@ -494,6 +560,12 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 				_, _ = apprStore.Reject(ctx, r.Approval, "unlinked")
 			}
 		}
+		// A scope waiting for its code is dead too, and the helper stops
+		// running this controller's queued requests at once.
+		if old := scopes.take(peer.PublicKey); old != "" {
+			_, _ = apprStore.Reject(ctx, old, "unlinked")
+		}
+		runner.kick()
 		res := DeviceUnlinkResult{MailID: sub.ID}
 		if len(revoked) > 0 {
 			l := revoked[0]
@@ -503,7 +575,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 				}
 			}
 			l.State = device.StateRevoked
-			v := deviceView(ctx, ps, l)
+			v := deviceView(ctx, ps, ds, l)
 			res.Link = &v
 		}
 		return res, nil

@@ -52,6 +52,9 @@ func Canonical(r *Request) ([]byte, error) {
 		}
 		obj["context"] = files
 	}
+	if r.Run != nil {
+		obj["run"] = map[string]any{"command": r.Run.Command}
+	}
 	return agentcard.CanonicalValue(obj)
 }
 

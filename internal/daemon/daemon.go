@@ -452,8 +452,37 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// The own-device link (2.D1) ends the same way (Docs/protocol/device.md
 	// §Unlink and expiry), and its two mail kinds join the receiver's.
 	devStore := &device.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Now: opts.DeviceNow}
-	peerStore.OnRemovedTx = chainRemovedTx(revokeForRemovedPeer(capStore), revokeDeviceForRemovedPeer(devStore))
-	opts.MailKinds = withDeviceKinds(opts.MailKinds, devStore, id.Card().Card.PublicKey)
+	// The own-device helper (2.D2, Docs/protocol/device.md §Running): every
+	// new pending request passes through the router, and in-scope ones run
+	// one at a time on the runner's goroutine.
+	helper := newHelperRunner(st.DB(), devStore, wsStore, log, id.Card().Card.PublicKey, opts.Logger)
+	reqStore.Helper = helper
+	scopeApprovalsPending := newScopeApprovals()
+	onUnlinked := func(peer string) {
+		if old := scopeApprovalsPending.take(peer); old != "" {
+			_, _ = apprStore.Reject(context.WithoutCancel(ctx), old, "unlinked")
+		}
+		helper.kick()
+	}
+	peerStore.OnRemovedTx = chainRemovedTx(revokeForRemovedPeer(capStore), revokeDeviceForRemovedPeer(devStore, helper))
+	// A link that became active is announced on the desktop, content-free
+	// (D22, review 36 L5): the peer's name and its role.
+	onLinked := func(ctx context.Context, peer, role string) {
+		if reqStore.Notify != nil {
+			reqStore.Notify(ctx, notify.EventDeviceLinked, request.NotifyInfo{Peer: peer, Type: device.ComplementaryRole(role)})
+		}
+	}
+	devHooks := deviceHooks{onUnlinked: onUnlinked, onLinked: onLinked}
+	opts.MailKinds = withDeviceKinds(opts.MailKinds, devStore, id.Card().Card.PublicKey, devHooks)
+	if err := helper.recoverAfterRestart(ctx); err != nil && opts.Logger != nil {
+		// Not fatal: the daemon must still start; a bad queue row only
+		// means some controller sessions stay open until cancelled there.
+		opts.Logger.Warn("device: recover run queue", "error", err)
+	}
+	hctx, stopHelper := context.WithCancel(ctx)
+	hDone := make(chan struct{})
+	go func() { defer close(hDone); helper.loop(hctx) }()
+	defer func() { stopHelper(); <-hDone }()
 	wireQuarantine(wsStore, capStore, apprStore, reqStore, opts.Quarantine)
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
@@ -506,7 +535,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
 		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
 	registerFetch(srv, fetchClient)
-	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay)
+	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay, helper, scopeApprovalsPending, devHooks)
+	registerDeviceScope(srv, devStore, apprStore, peerStore, helper, p.Dir, scopeApprovalsPending)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

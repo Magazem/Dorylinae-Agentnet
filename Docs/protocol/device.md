@@ -62,6 +62,17 @@ agentnet device link @laptop --as helper \                agentnet device link @
    link `active`, delete the intent, audit `device.link_active`, notify. If no intent
    exists, keep the offer for 10 minutes (at most one per peer) so the other device can
    still confirm; after that it is dropped. An offer never creates a link on its own.
+   **Freshness (D22, review 36 L4):** an offer counts, and is kept, only while
+   `now < offer.at + 10 min`, so it is alive by its sender's own clock too: a relay that
+   delays it cannot stretch the window past the sender's intent. An offer whose `at` is
+   older than the `at` of the last `device.unlink` received from that peer is ignored, so
+   a delayed offer reordered after an unlink cannot revive the link. The receiver keeps,
+   per peer, the latest `device.unlink` `at` it applied (the `settings` row
+   `device.unlinked`; no migration).
+   **Notify (D22, review 36 L5):** on activation, on either path (the offer arriving, or
+   the local approval finding a kept offer), the device shows the content-free desktop
+   notification `device.linked` ([notify.md](notify.md#triggers)): `<peer name> is now
+   linked as your helper|controller`.
 4. Each side activates independently when it holds both halves, so no third message is
    needed. Both compute the same `link_id`.
 
@@ -75,7 +86,13 @@ at most one is kept per peer.
 summary states, each command's name, repo path and **resolved** absolute `argv[0]` with its
 full argv, so the human approves exactly what will run. The scope replaces any previous one
 atomically. `agentnet device scope @controller --clear` removes it (no approval needed:
-narrowing is always allowed).
+narrowing is always allowed); queued runs are then dropped like on unlink, and a scope still
+waiting for its code is rejected. A newer `device_scope_set` rejects an older one still
+waiting for its code. The summary quotes every repo path and argv as JSON strings, so no
+quote or control character can change how it reads; a scope whose summary would exceed
+16384 bytes is refused (`bad_scope`, field `scope`), because the approval window must show
+all of it. The scope is keyed on the controller's **key**, never on the link id: the two
+devices can hold different link ids after an asymmetric retry (review 36 L6).
 
 ```json
 {
@@ -92,8 +109,8 @@ narrowing is always allowed).
 | Member | Rules |
 |---|---|
 | `types` | 1–3 of `review`, `task`, `question` |
-| `repos` | 1–16. `label` 1–64 `[a-z0-9._-]`, unique. `path` absolute, an existing directory, resolved with `EvalSymlinks` at set time; not the config dir, home dir or a filesystem root |
-| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** passed through (values are the helper daemon's own) |
+| `repos` | 1–16. `label` 1–64 `[a-z0-9._-]`, unique. `path` absolute, an existing directory, resolved with `EvalSymlinks` at set time; not the config dir (nor inside it or containing it), the home dir or a filesystem root: the same rule as a grant's `fs` resource ([grant.md](grant.md)). A refused path is `forbidden_resource`, any other rule `bad_scope` |
+| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `argv[0]` is a program name or an absolute path (a relative path with a directory part is refused). On Windows a `.bat` or `.cmd` file is refused: `CreateProcess` would run it through `cmd.exe`, and the runner never uses a shell. `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 characters, unique, never `DORYLINAE_*`) passed through (values are the helper daemon's own) |
 | `expires` | `now < expires ≤ now + 30 d`. Required: every scope expires |
 
 The scope is stored only on the helper and is never sent anywhere. The controller learns only
@@ -116,13 +133,16 @@ scope** when **all** of these hold:
 2. the scope exists and `now < expires`;
 3. `request.type` is in `types`;
 4. the request has `run`, and `run.command` names a configured command;
-5. `request.created ≥ link.activated_at` (a request queued before the link existed never
-   runs);
+5. `request.created ≥ link.activated_at`, compared at whole seconds because `created` is
+   truncated to the second (a request queued before the link existed never runs);
 6. the helper is not over its [limits](#limits).
 
 **Out of scope** (any check fails): the request goes to the **normal inbox**, exactly as in
 Phase 1, and nothing runs. The reason is recorded in the audit (`device.out_of_scope
-{request, peer, check}`), not sent to the controller.
+{request, peer, check}`), not sent to the controller. The checks are made, and audited, only
+for a request that has `run` or comes from this device's controller; any other request is
+an ordinary request and gets no `device.*` audit row. The checks are applied in the order
+above, and `check` names the first that failed.
 
 **In scope**: in the receive transaction the request is stored and **auto-accepted**
 (`request.accept`, `first_response = accept`, actor `daemon`), and its
@@ -137,11 +157,19 @@ Phase 1, and nothing runs. The reason is recorded in the audit (`device.out_of_s
   everything else (tokens, `DORYLINAE_*`) is dropped;
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
 - keeps the **last** 32768 bytes of combined stdout/stderr, turns CRLF into LF, strips ANSI
-  CSI sequences and replaces other control characters (except `\n`, `\t`) with U+FFFD, and
-  cuts at a UTF-8 boundary;
+  CSI sequences (`ESC [` and U+009B) and replaces other control characters (except `\n`,
+  `\t`), invalid UTF-8 and U+FFFD itself with `?`, and cuts at a UTF-8 boundary. (Not U+FFFD:
+  the [D14 result](request.md#result-payload-d14) rules refuse U+FFFD in every text field,
+  as the mark of invalid UTF-8.) If JSON escaping makes the whole result larger than its
+  65536-byte cap, the output is shortened further from the front;
+- when the program ends on its own, kills what it left running in its tree too;
 - submits `ws.result` with `status = pass` if the exit code is 0, `fail` otherwise
-  (`partial` never), `exit_code`, `output`, `summary = "<name>: exit <code> in <duration>"`
-  (or `"<name>: timed out after <n> s"` with status `fail`), and `verification = none`.
+  (`partial` never), `exit_code`, `output` (absent when empty), `summary = "<name>: exit
+  <code> in <duration>"` (a Go duration, e.g. `1.5s`), or `"<name>: timed out after <n> s"`
+  (status `fail`, no `exit_code`), or `"<name>: could not start"` (status `fail`, no
+  `exit_code`), and `verification = none`.
+- The command runs as looked up in the scope **when it starts**: a scope replaced, cleared or
+  expired while the run was queued is re-checked, and a run no longer allowed is dropped.
 
 The controller's agent reads it with `agentnet wait <session>` and closes it with
 `accept-result` (or requests changes, which re-opens the session; a re-run needs a new
@@ -150,7 +178,9 @@ request, because the runner acts only on arrival).
 ### Limits
 
 One run at a time per helper; at most 8 queued (beyond that: out of scope, `check:
-"queue"`); at most 60 runs per controller per 24 h. A run still queued when the scope expires
+"queue"`); at most 60 runs per controller per 24 h (a 61st is also `check: "queue"`; the
+count is of runs accepted in the last 24 h). The queue is kept in the `settings` row
+`device.runs` (no migration), so a restart knows what was queued or running. A run still queued when the scope expires
 or the link ends is dropped; the helper (the worker) then sends `ws.cancel` with no reason,
 which the controller's daemon applies because the session is still `open`. A daemon restart
 drops queued runs the same way; a run that was executing is reported as `fail` with summary
@@ -191,7 +221,12 @@ Sealed mail, outboxed, acked, `Inbox: true`, strict. A `device.link` carries no 
 of its own: the mail signature is its only proof that the sender's human confirmed. So only
 the `device_link` and `device_unlink` handlers send these kinds; `mail_submit` refuses any
 `device.*` kind (`bad_request`), so a local agent cannot send the other half of a link
-itself (review 36 M1).
+itself (review 36 M1). More generally `mail_submit` is an allowlist: it refuses every kind the
+daemon owns ([ipc.md](ipc.md#mail_submit), review 36 L7).
+
+A `device_link` or `device_scope` approval that is rejected or expires frees what it held at
+once: a rejected link attempt stops counting toward the hierarchy limits without waiting 10
+minutes (review 36 L8).
 
 | Kind | Body |
 |---|---|
@@ -213,9 +248,9 @@ link_id  l-ee417e25d0625afad79d54cd3539dd64
 | `device_link` | `{"peer", "as": "controller"\|"helper", "fingerprint"}` | `{"approval", "link"}` |
 | `device_list` | none | `{"links": [<link view>]}` |
 | `device_unlink` | `{"peer"}` | `{"link", "mail_id"}` |
-| `device_scope_set` | `{"peer", "scope": {...}}` (helper only) | `{"approval"}` |
+| `device_scope_set` | `{"peer", "scope": {...}}` (helper only) | `{"approval", "scope"}` (`scope` as it will be stored: paths and `argv[0]` resolved) |
 | `device_scope_clear` | `{"peer"}` | `{"link"}` |
-| `device_scope_show` | `{"peer"}` (helper only) | `{"scope"}` |
+| `device_scope_show` | `{"peer"}` (helper only) | `{"scope"}` (`bad_state` when none is set) |
 
 Link view: `{"id", "peer": <peer ref>, "role": "controller"|"helper" (this device's role),
 "state": "pending_approval"|"waiting"|"active"|"revoked", "activated_at"?, "scope"?:
@@ -223,8 +258,10 @@ Link view: `{"id", "peer": <peer ref>, "role": "controller"|"helper" (this devic
 
 CLI: `agentnet device link @peer --as controller|helper --fingerprint FP`, `device list`,
 `device unlink @peer`, `device scope @controller --types … --repo LABEL=PATH… --command
-'NAME=REPO:ARGV-JSON'… --expires D` (or `--from-file scope.json`), `device scope @controller
---clear|--show`. Page `Docs/cli/device.md` in 2.D1/2.D2.
+'NAME=REPO:ARGV-JSON'… [--timeout NAME=S]… [--env NAME=VAR]… --expires D` (or `--from-file
+scope.json`), `device scope @controller --clear|--show`. A command's timeout defaults to 900 s.
+The controller sends a run with `agentnet request <helper> task --run NAME …`. Page
+`Docs/cli/device.md` in 2.D1/2.D2.
 
 Error codes: `fingerprint_mismatch`, `device_cycle`, `not_helper`, `unknown_link`,
 `bad_scope` (with the field), `forbidden_resource`, plus the approval codes.

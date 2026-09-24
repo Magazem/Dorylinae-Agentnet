@@ -96,6 +96,9 @@ func Validate(r *Request) error {
 			return err
 		}
 	}
+	if r.Run != nil && !ValidRunCommand(r.Run.Command) {
+		return fieldErr("run.command", "must be 1-64 characters from [a-z0-9._-]")
+	}
 	if r.Created.IsZero() {
 		return fieldErr("created", "is required")
 	}

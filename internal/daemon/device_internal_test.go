@@ -38,7 +38,7 @@ func TestDeviceUnlinkNamingAnotherPeersLink(t *testing.T) {
 			t.Fatal(err)
 		}
 		op := &mail.Opened{Msg: mail.Msg{From: from, Kind: device.KindUnlink, Body: map[string]any{"at": "2026-10-01T09:05:00Z", "link": id}}}
-		if err := deviceUnlinkKind(ds).Apply(ctx, tx, op); err != nil {
+		if err := deviceUnlinkKind(ds, nil).Apply(ctx, tx, op); err != nil {
 			_ = tx.Rollback()
 			t.Fatal(err)
 		}

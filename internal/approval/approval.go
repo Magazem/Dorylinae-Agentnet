@@ -106,6 +106,24 @@ type Action struct {
 	// returned (2.2d: from the window's answer or the terminal's stdin,
 	// never from a synchronous IPC caller).
 	Perform func(ctx context.Context, tx *sql.Tx) (any, error)
+	// OnReject, if set, is called once when the approval ends without being
+	// approved: rejected (by the human, a failed Precondition, too many wrong
+	// codes or a lockout) or expired. It lets the waiting action free what it
+	// holds at once instead of when it lapses (review 36 L8). It runs after
+	// the decision is stored, outside Store.mu and outside any transaction, so
+	// it may use the database; it must never call back into the Store. It is
+	// not called when Create itself fails (the caller undoes that, review 26
+	// N5), nor for approvals left from a previous run (their actions are gone).
+	OnReject func(ctx context.Context)
+}
+
+// runOnReject calls each action's OnReject hook, if any.
+func runOnReject(ctx context.Context, hooks ...func(context.Context)) {
+	for _, h := range hooks {
+		if h != nil {
+			h(ctx)
+		}
+	}
 }
 
 // AfterCommitter is implemented by a Perform result that needs to do

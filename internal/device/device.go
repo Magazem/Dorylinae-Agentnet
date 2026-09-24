@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -362,6 +363,18 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// RevokePending revokes a row that is still pending_approval, and nothing
+// else: a rejected or expired link attempt then no longer counts toward the
+// hierarchy (review 36 L8).
+func (s *Store) RevokePending(ctx context.Context, id string) error {
+	now := fmtTime(s.Time())
+	_, err := s.DB.ExecContext(ctx, `UPDATE device_links SET state = 'revoked', revoked_at = ?, updated = ? WHERE id = ? AND state = 'pending_approval'`, now, now, id)
+	if err != nil {
+		return fmt.Errorf("device: revoke pending: %w", err)
+	}
+	return nil
+}
+
 // GetTx reads one row by id.
 func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, id string) (Link, error) {
 	l, err := scanLink(tx.QueryRowContext(ctx, `SELECT `+linkCols+` FROM device_links WHERE id = ?`, id))
@@ -471,6 +484,72 @@ func (s *Store) OfferDeleteTx(ctx context.Context, tx *sql.Tx, peer string) erro
 	return nil
 }
 
+// OfferFresh reports whether an offer is still alive by its sender's own
+// clock: now < offer.at + IntentTTL (owner decision D22, review 36 L4). A
+// relay that delays an offer cannot stretch the window past the sender's own
+// intent expiry.
+func OfferFresh(offer Offer, now time.Time) bool {
+	return now.Before(offer.At.Add(IntentTTL))
+}
+
+// unlinkedKey is the settings row holding, per peer, the "at" of the last
+// device.unlink received from it (D22, review 36 L4).
+const unlinkedKey = "device.unlinked"
+
+func loadUnlinked(ctx context.Context, tx *sql.Tx) (map[string]string, error) {
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, unlinkedKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("device: read unlinked: %w", err)
+	}
+	m := map[string]string{}
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return map[string]string{}, nil // unreadable: start over, the next write replaces it
+	}
+	return m, nil
+}
+
+// NoteUnlinkTx records at as the time of the last device.unlink received
+// from peer, keeping the latest.
+func (s *Store) NoteUnlinkTx(ctx context.Context, tx *sql.Tx, peer string, at, now time.Time) error {
+	m, err := loadUnlinked(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if prev, err := time.Parse(time.RFC3339, m[peer]); err == nil && !at.After(prev) {
+		return nil
+	}
+	m[peer] = at.UTC().Format(time.RFC3339)
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value, updated) VALUES (?, ?, ?)
+ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated = excluded.updated`, unlinkedKey, string(raw), fmtTime(now)); err != nil {
+		return fmt.Errorf("device: write unlinked: %w", err)
+	}
+	return nil
+}
+
+// OfferBeforeUnlinkTx reports whether an offer from peer was made before the
+// last device.unlink received from it: such an offer is ignored (D22, review
+// 36 L4), so a relay that reorders a delayed offer after an unlink cannot
+// revive the link.
+func (s *Store) OfferBeforeUnlinkTx(ctx context.Context, tx *sql.Tx, peer string, offer Offer) (bool, error) {
+	m, err := loadUnlinked(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	last, err := time.Parse(time.RFC3339, m[peer])
+	if err != nil {
+		return false, nil
+	}
+	return offer.At.Before(last), nil
+}
+
 // TryActivateTx activates the waiting intent with peer if offer completes it
 // (Docs/protocol/device.md §Link flow step 3): a local intent exists with the
 // complementary role, it has not expired, and the offer's "at" is not older
@@ -485,7 +564,7 @@ func (s *Store) TryActivateTx(ctx context.Context, tx *sql.Tx, peer string, offe
 	if err != nil {
 		return Link{}, false, fmt.Errorf("device: read intent: %w", err)
 	}
-	if intent.Role != ComplementaryRole(offer.Role) || !intent.Expires.After(now) || offer.At.Before(intent.Created.Add(-IntentTTL)) {
+	if intent.Role != ComplementaryRole(offer.Role) || !intent.Expires.After(now) || offer.At.Before(intent.Created.Add(-IntentTTL)) || !OfferFresh(offer, now) {
 		return Link{}, false, nil
 	}
 	if err := s.CheckHierarchyTx(ctx, tx, peer, intent.Role, intent.ID); err != nil {

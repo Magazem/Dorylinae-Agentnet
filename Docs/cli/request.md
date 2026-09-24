@@ -9,7 +9,7 @@ requests you sent.
 agentnet request <peer> <type> --title T (--brief B | --brief-from-file F)
                  [--urgency low|normal|high|blocking] [--urgency-reason R]
                  [--artifact SPEC]... [--grant ACTION=RESOURCE] [--deadline D]
-                 [--team TEAM] [--idempotency-key K] [--json]
+                 [--team TEAM] [--idempotency-key K] [--run NAME] [--json]
 agentnet request show <id> [--from <peer>] [--json]
 agentnet request list [--state S] [--team TEAM] [--peer <peer>] [--json]
 agentnet request resend <id> [--json]
@@ -31,6 +31,7 @@ agentnet request cancel <id> [--reason R] [--json]
 | `--deadline D` | RFC 3339 time, or a duration from now (`90m`, `2h`, `3d`) |
 | `--team TEAM` | Needed only when you share several teams with the peer |
 | `--idempotency-key K` | 1–64 characters of `[A-Za-z0-9._:-]`. Running the same command again with the same key returns the first request instead of sending a second one. Recommended for agents that retry |
+| `--run NAME` | For your own helper device ([device.md](device.md)): the name of a command its owner allowed with `agentnet device scope`. A name only, 1–64 characters of `[a-z0-9._-]`; no arguments, paths or environment. If the request is in the helper's scope it runs at once and the result comes back through `agentnet wait`; otherwise it lands in the helper's normal inbox |
 | `--state S` | `list`: `pending`, `accepted`, `declined`, `deferred`, `completed` or `cancelled` |
 | `--reason R` | `cancel`: optional, 1–500 characters, shown to the recipient |
 | `--from <peer>` | `show`: pick the sender when the id matches requests from several peers |

@@ -136,7 +136,9 @@ func (t *Trigger) fire(ctx context.Context, ev Event) {
 		}
 	}
 	t.fireDesktop(ctx, ev)
-	t.fireWebhook(ctx, ev)
+	if ev.Kind != EventDeviceLinked { // local device news only, never to a webhook
+		t.fireWebhook(ctx, ev)
+	}
 }
 
 func (t *Trigger) fireDesktop(ctx context.Context, ev Event) {
@@ -210,6 +212,9 @@ func titleLine(ev Event) string {
 		return fmt.Sprintf("%s cancelled their %s request", name, ev.Type)
 	case EventQuarantined:
 		return fmt.Sprintf("%s's result is quarantined and waits for your release", name)
+	case EventDeviceLinked:
+		// Type holds the peer's role in the link: helper or controller.
+		return fmt.Sprintf("%s is now linked as your %s", name, ev.Type)
 	default:
 		return ""
 	}

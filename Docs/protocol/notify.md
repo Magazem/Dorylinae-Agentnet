@@ -19,6 +19,7 @@ crosses the relay.
 | `request.completed` | The sender mirror applies `request.complete` | off |
 | `request.cancelled` | The **recipient** commits a `pending` or `deferred` request as `cancelled` by its sender ([request.md §Cancel](request.md#cancel-od-p1-11)). Not for a cancel that arrives before its request, and not on the sender side | on |
 | `session.quarantined` | The requester's daemon commits a `ws.result` as `quarantined` ([work-session.md §Quarantine](work-session.md#quarantine-24), 2.4). Content-free: the peer name only, no title, status or sizes | on |
+| `device.linked` | An own-device link becomes `active` on this device ([device.md §Link flow](device.md#link-flow), D22). Content-free: the peer name and its role only. **Desktop only**: never sent to the webhook, because it is news about this person's own devices | on |
 
 A mirror update that is ignored (`seq` not higher) fires nothing. The trigger runs in the mail
 kind's `After` hook ([mail.md](mail.md), `internal/mail.Kind.After`). It enqueues work and
@@ -32,7 +33,7 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
 ```json
 "notify.events":  {"request.received": true, "request.accepted": true, "request.declined": true,
                    "request.deferred": false, "request.completed": false, "request.cancelled": true,
-                   "session.quarantined": true}
+                   "session.quarantined": true, "device.linked": true}
 "notify.desktop": {"enabled": true}
 "notify.webhook": {"url": "https://...", "format": "generic", "title": false}
 ```
@@ -61,6 +62,7 @@ Desktop text, where `Urgency` is capitalised and `(from)` is the local peer name
 | `request.completed` | `<name> completed your <type> request`, plus ` (<status>)` when the completion carried a [result](request.md#result-payload-d14) | `<title>` |
 | `request.cancelled` | `<name> cancelled their <type> request` | `<title>` |
 | `session.quarantined` | `<name>'s result is quarantined and waits for your release` | (empty) |
+| `device.linked` | `<name> is now linked as your helper` (or `controller`: the other device's role) | (empty) |
 
 The brief, reasons, notes and artifacts are **never** shown. Of a completion
 [result](request.md#result-privacy) (D14), only the `status` (`pass`, `fail`, `partial` or

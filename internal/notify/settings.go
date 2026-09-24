@@ -30,6 +30,10 @@ const (
 	// (Docs/protocol/work-session.md §Quarantine, 2.4). It carries no content:
 	// the peer name only.
 	EventQuarantined = "session.quarantined"
+	// EventDeviceLinked fires when an own-device link becomes active on this
+	// device (D22, review 36 L5). Content-free: the peer's name and its role.
+	// Desktop only: it is not sent to the webhook.
+	EventDeviceLinked = "device.linked"
 )
 
 // DefaultEvents is the default on/off state of each event
@@ -43,6 +47,8 @@ var DefaultEvents = map[string]bool{
 	EventCancelled: true,
 	// On by default: a quarantined result waits for a human to release it.
 	EventQuarantined: true,
+
+	EventDeviceLinked: true,
 }
 
 // ValidEvent reports whether event is one of the known events.

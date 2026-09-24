@@ -34,6 +34,7 @@ type SubmitParams struct {
 	Artifacts              []Artifact
 	RequestedGrant         *RequestedGrant
 	Context                []ContextFile // question only
+	Run                    *Run          // own-device helper command name
 	Deadline               time.Time     // zero: absent
 	IdempotencyKey         string
 	// ParamsHash is the caller-computed hash of Docs/protocol/request.md
@@ -83,7 +84,7 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 		V: 1, ID: NewID(), From: p.From, To: p.To, Team: p.Team, Type: p.Type,
 		Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
 		Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
-		Created: now.UTC().Truncate(time.Second), Context: p.Context,
+		Created: now.UTC().Truncate(time.Second), Context: p.Context, Run: p.Run,
 	}
 	if err := Validate(req); err != nil {
 		return SubmitOutcome{}, err

@@ -43,12 +43,13 @@ type devNode struct {
 	clk      *devClock
 	notifier *fakeApprovalNotifier
 	win      *fakeWindowRunner
+	shown    *qShown // desktop notifications (D22: device.linked)
 }
 
 func newDevNode(t *testing.T, name string, r *harnessRelay) *devNode {
 	t.Helper()
 	d := &devNode{harnessNode: newHarnessNode(t, name, r), clk: &devClock{t: time.Now()},
-		notifier: &fakeApprovalNotifier{}, win: newFakeWindowRunner()}
+		notifier: &fakeApprovalNotifier{}, win: newFakeWindowRunner(), shown: &qShown{}}
 	d.ApprovalNotify = d.notifier
 	d.ApprovalWindow = d.win
 	return d
@@ -74,6 +75,7 @@ func (d *devNode) start() {
 			ApprovalNotify: d.notifier,
 			ApprovalWindow: d.win,
 			DeviceNow:      d.clk.Now,
+			NotifyShow:     d.shown.show,
 		})
 	}()
 	select {
@@ -401,9 +403,20 @@ func TestDeviceUnlinkAsymmetricActivation(t *testing.T) {
 	ctrl.clk.Advance(10*time.Minute + time.Second) // only the controller's clock: its intent lapses
 	help.link(ctrl, "helper")
 	harnessWait(t, "the helper to be active", func() bool { return help.linkCount("active") == 1 })
-	harnessWait(t, "the controller to receive the helper's offer", func() bool { return ctrl.count(`SELECT COUNT(*) FROM device_offers`) == 1 })
+	var offerID string
+	if err := help.query(`SELECT id FROM outbox WHERE kind = 'device.link'`, &offerID); err != nil {
+		t.Fatal(err)
+	}
+	harnessWait(t, "the controller to receive the helper's offer", func() bool {
+		return ctrl.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '`+offerID+`'`) == 1
+	})
 	if ctrl.linkCount("active") != 0 {
 		t.Fatal("the controller must not be active: its intent lapsed")
+	}
+	// Its clock is 10 min ahead, so by that clock the helper's offer is already
+	// stale: it is not even kept (D22, review 36 L4).
+	if n := ctrl.count(`SELECT COUNT(*) FROM device_offers`); n != 0 {
+		t.Fatalf("a stale offer was kept (%d)", n)
 	}
 
 	var res daemon.DeviceUnlinkResult

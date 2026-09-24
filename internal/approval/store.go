@@ -62,7 +62,10 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		s.mu.Unlock()
 		return View{}, ErrLocked
 	}
-	if err := s.sweepExpiredLocked(ctx, now); err != nil {
+	swept, err := s.sweepExpiredLocked(ctx, now)
+	// Every return below releases s.mu first, so the hooks run unlocked.
+	defer runOnReject(context.WithoutCancel(ctx), swept...)
+	if err != nil {
 		s.mu.Unlock()
 		return View{}, err
 	}
@@ -269,6 +272,7 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		if s.notifier != nil {
 			s.notifier.Remove(ctx, id)
 		}
+		runOnReject(ctx, entry.action.OnReject)
 		return nil, ErrExpired
 	}
 
@@ -300,6 +304,9 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		s.mu.Unlock()
 		if rejectedHandle != nil {
 			rejectedHandle.Kill()
+		}
+		if rejected {
+			runOnReject(ctx, entry.action.OnReject)
 		}
 		if lerr != nil {
 			return nil, lerr
@@ -342,6 +349,7 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 				handle.Kill()
 			}
 			s.rejectRow(ctx, id, "precondition", via)
+			runOnReject(ctx, action.OnReject)
 			return nil, err
 		}
 	}
@@ -448,8 +456,9 @@ func (s *Store) recordBadCode(ctx context.Context, id, via string) (attemptsLeft
 // lockedEntry is what dropAllLocked hands to lockAll: enough to reject the
 // row and kill any open window without holding s.mu.
 type lockedEntry struct {
-	id     string
-	handle WindowHandle
+	id       string
+	handle   WindowHandle
+	onReject func(context.Context)
 }
 
 // dropAllLocked removes every in-memory pending entry, stops its timer and
@@ -468,7 +477,7 @@ func (s *Store) dropAllLocked() []lockedEntry {
 			// stores nothing (review 30, H1).
 			continue
 		}
-		out = append(out, lockedEntry{id: id, handle: e.handle})
+		out = append(out, lockedEntry{id: id, handle: e.handle, onReject: e.action.OnReject})
 	}
 	s.pending = map[string]*live{}
 	return out
@@ -477,17 +486,20 @@ func (s *Store) dropAllLocked() []lockedEntry {
 // sweepExpiredLocked marks every in-memory pending approval whose expiry has
 // passed as expired (audited, notification withdrawn, window killed) and
 // forgets it, so expired approvals neither count toward MaxPending nor show
-// in List (review 26, M-1). Caller holds s.mu.
-func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) error {
+// in List (review 26, M-1). Caller holds s.mu. It returns the OnReject
+// hooks of the expired approvals; the caller runs them after releasing s.mu.
+func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) ([]func(context.Context), error) {
+	var hooks []func(context.Context)
 	for id, e := range s.pending {
 		if e.reserved {
 			continue // no row yet (review 30, H1)
 		}
 		expired, _, err := s.checkExpiryLocked(ctx, id, now)
 		if err != nil {
-			return err
+			return hooks, err
 		}
 		if expired {
+			hooks = append(hooks, e.action.OnReject)
 			if e.timer != nil {
 				e.timer.Stop()
 			}
@@ -504,7 +516,7 @@ func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) error {
 			}
 		}
 	}
-	return nil
+	return hooks, nil
 }
 
 // expireNow is the per-approval timer's callback (Docs/protocol/approval.md
@@ -542,6 +554,7 @@ func (s *Store) expireNow(id string) {
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
 	}
+	runOnReject(ctx, entry.action.OnReject)
 }
 
 // decidedRetention is how long decided rows are kept (Docs/protocol/approval.md
@@ -563,6 +576,7 @@ func (s *Store) lockAll(ctx context.Context, entries []lockedEntry) {
 			e.handle.Kill()
 		}
 		s.rejectRow(ctx, e.id, "locked", "")
+		runOnReject(ctx, e.onReject)
 	}
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "daemon", "approval.locked", map[string]int{"wrong_codes": MaxWrongPerDay})
@@ -638,6 +652,7 @@ func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 		handle.Kill()
 	}
 	s.rejectRow(ctx, id, "user", via)
+	runOnReject(ctx, entry.action.OnReject)
 	return s.Show(ctx, id)
 }
 
@@ -685,6 +700,7 @@ func (s *Store) RejectSubjects(ctx context.Context, subjects []string) {
 			handle.Kill()
 		}
 		s.rejectRow(ctx, id, "precondition", "")
+		runOnReject(ctx, entry.action.OnReject)
 	}
 }
 
@@ -918,8 +934,9 @@ func (s *Store) Show(ctx context.Context, id string) (View, error) {
 // (Docs/protocol/approval.md §IPC and CLI).
 func (s *Store) List(ctx context.Context) ([]View, error) {
 	s.mu.Lock()
-	err := s.sweepExpiredLocked(ctx, s.now())
+	swept, err := s.sweepExpiredLocked(ctx, s.now())
 	s.mu.Unlock()
+	runOnReject(ctx, swept...)
 	if err != nil {
 		return nil, err
 	}
