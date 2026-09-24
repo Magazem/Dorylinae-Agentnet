@@ -91,6 +91,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runApprove(args[1:], stdout, stderr)
 	case "device":
 		return runDevice(args[1:], stdout, stderr)
+	case "grant":
+		return runGrant(args[1:], stdout, stderr)
+	case "grants":
+		return runGrants(args[1:], stdout, stderr)
+	case "revoke":
+		return runRevoke(args[1:], stdout, stderr)
+	case "fetch":
+		return runFetch(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -132,6 +140,8 @@ Commands:
   notify    Configure desktop notifications
   approve   Confirm or reject a pending human approval
   device    Link two of your own devices (controller and helper)
+  grant     Give a teammate's agent scoped read access (also: grants, revoke, grant policy)
+  fetch     Read a file or listing under a grant you hold
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

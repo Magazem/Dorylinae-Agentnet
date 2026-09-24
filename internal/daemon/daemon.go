@@ -459,6 +459,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		opts.OnStoresReady(capStore, wsStore)
 	}
 	defer startFetchServer(sessions, capStore, wsStore, log, id.Card().Card.PublicKey)()
+	fetchClient := startFetchClient(sessions, capStore, wsStore, id.Card().Card.PublicKey)
+	defer fetchClient.Close()
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
 	if err != nil {
 		_ = ln.Close()
@@ -503,6 +505,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerApproval(srv, apprStore)
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
 		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
+	registerFetch(srv, fetchClient)
 	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()

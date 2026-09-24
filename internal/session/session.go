@@ -272,6 +272,13 @@ func (m *Manager) SendData(ctx context.Context, peer string, pt []byte) error {
 	return m.send(ctx, env)
 }
 
+// Send encrypts pt to peer on its current session, or queues it and starts a
+// handshake (unlike SendData, which only replies on an open session). The
+// fetch client uses it to reach a grantor (Docs/protocol/grant.md §Transport).
+func (m *Manager) Send(ctx context.Context, peer string, pt []byte) error {
+	return m.sendApp(ctx, peer, pt, "")
+}
+
 // SetSender sets the relay connection once it exists.
 func (m *Manager) SetSender(s Sender) {
 	m.mu.Lock()
