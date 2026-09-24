@@ -41,8 +41,11 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | Ticket | Kind | Minutes | Follow-ups | Gate failures | Review C/H/M | CI after merge | Model id |
 |---|---|---|---|---|---|---|---|
 | INV-1 pairing flake | investigation + test fix | 24 | 0 | 0 | n/a (test-only) | — | claude-opus-5-5 |
+| 2.3b git serving | M, security-heavy | ~16 | 0 | 0 | pending | — | claude-opus-5-5 |
 
 ## Findings
+
+- **2.3b (Opus 5.5):** ~16 min from dispatch to report for an M security ticket (Sonnet M tickets: 44–95 min). My gate passed on the first run. Tests cover every acceptance item plus a positive control (a porcelain commit must trigger the hostile hook, which proves the fixture is really hostile). It flagged its own residual risks. Review pending.
 
 - **INV-1 (Opus 5.5):** 24 min, no follow-ups, my gate found nothing. It reproduced the flake under synthetic load, proved the root cause (a 1.5 s test ConfirmWait vs Argon2id under load, not the bus), fixed three other tests with the same exposure, and reported an unrelated flake instead of guessing at it. No Sonnet baseline for investigations; qualitatively above the Sonnet reports so far (evidence-based, scoped).
 

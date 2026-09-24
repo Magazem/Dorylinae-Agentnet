@@ -40,7 +40,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.3a **merged** (fetch server + fs; review 34: 0/0/3 fixed; open Lows L3–L6, L6 = COM0/LPT0 needs a vector change, owner call later).
 - 2.4 **merged** (quarantine + L8; review 35: H1 stale release approval now bound to seq, H2 D18 gaps closed). Noted Lows: pre-2.4 revoked rows have NULL approval; SQLite secure_delete off/WAL keeps discarded bytes (→ backlog); session.quarantined text vs work-session.md.
 - 2.D1 **merged** (device link, migration 17; review 36: M1 mail_submit could forge device.* kinds, fixed). Open from review 36: L4 (spec: offer freshness + ignore offers older than the last unlink), L5 (notify on activation: implement or amend the spec), L6 (link ids may differ per side, so 2.D2 must not key on it), L7 (mail_submit allowlist for all daemon-owned kinds), L8 (approval OnReject hook, needed by 2.D2).
-- 2.3b git serving: **Opus trial** P2-Opus-GitServing slot `01a0d2e8-7535…`, task `01a0d2e8-a2ea…`, worktree `git-serving`.
+- 2.3b git serving (Opus trial): done in ~16 min, gate clean; security review R-2.3b `01a0d2fc-0a8b…` task `01a0d2fc-3af0…` → Docs/review/37, worktree `git-serving`.
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
 - 2.3c fetch client + e2e: **Sonnet control** P2-FetchClient slot `01a0d2ee-b44b…`, task `01a0d2ef-0b5f…`, worktree `fetch-client`.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
