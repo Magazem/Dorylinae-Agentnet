@@ -75,6 +75,13 @@ The **submit result** ([request.md](request.md#submit-result-19)) gains `"sessio
 only consults). So the caller can `wait` on it at once, although the session does not exist
 until the peer answers.
 
+The default title is cut to 120 code points **in total** (119 code points and `…`), so it is
+always a valid title. The daemon (not only the CLI) turns CRLF into LF in each context text.
+`request_show` (and so `wait`) also accepts a derived session id `s-…` for a request whose
+session does not exist yet, and resolves it to the request. `ws_result` (`agentnet result`) on
+a pending or deferred question, given its `r-` or `s-` id, does the one-step answer below; there
+`status` defaults to `n/a`, elsewhere it stays required.
+
 IPC: `request_submit` gains the optional param `context: [{"name", "text"}]`. There is no
 separate consult method.
 

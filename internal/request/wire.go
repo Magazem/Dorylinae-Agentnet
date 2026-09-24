@@ -57,6 +57,13 @@ func WireBody(r *Request) map[string]any {
 	if !r.Deadline.IsZero() {
 		obj["deadline"] = wireTime(r.Deadline)
 	}
+	if len(r.Context) > 0 {
+		files := make([]map[string]string, len(r.Context))
+		for i, f := range r.Context {
+			files[i] = map[string]string{"name": f.Name, "text": f.Text}
+		}
+		obj["context"] = files
+	}
 	return map[string]any{"request": obj}
 }
 

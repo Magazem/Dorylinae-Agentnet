@@ -23,6 +23,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/presence"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // IPC error codes for requests, documented in Docs/protocol/ipc.md and
@@ -53,8 +54,16 @@ type GrantParam struct {
 	Note     string `json:"note,omitempty"`
 }
 
+// ContextParam is one context file of request_submit's "context"
+// (Docs/protocol/consult.md §Context files).
+type ContextParam struct {
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
 // RequestSubmitParams are the params of "request_submit".
 type RequestSubmitParams struct {
+	Context        []ContextParam  `json:"context,omitempty"`
 	To             string          `json:"to"`
 	Type           string          `json:"type"`
 	Team           string          `json:"team,omitempty"`
@@ -94,6 +103,10 @@ type RequestSubmitResult struct {
 	UrgencyDeclared string           `json:"urgency_declared,omitempty"`
 	UrgencyNote     string           `json:"urgency_note,omitempty"`
 	Peer            submitPeerResult `json:"peer"`
+	// Session is the derived work session id (Docs/protocol/consult.md): the
+	// session does not exist until the peer accepts, but the caller can wait
+	// on it at once.
+	Session string `json:"session"`
 }
 
 // newRequestStore builds the Store that owns both sides of the requests
@@ -178,10 +191,18 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 		if urgency == "" {
 			urgency = request.UrgencyNormal
 		}
+		var contextFiles []request.ContextFile
+		for i := range p.Context {
+			p.Context[i].Text = strings.ReplaceAll(p.Context[i].Text, "\r\n", "\n")
+			contextFiles = append(contextFiles, request.ContextFile{Name: p.Context[i].Name, Text: p.Context[i].Text})
+		}
+		if p.Context != nil && contextFiles == nil {
+			contextFiles = []request.ContextFile{}
+		}
 		sp := request.SubmitParams{
 			From: ts.Self, To: peer.PublicKey, Team: t.ID, Type: p.Type, Title: p.Title, Brief: p.Brief,
 			Urgency: urgency, UrgencyReason: p.UrgencyReason, Artifacts: artifacts, RequestedGrant: grant,
-			Deadline: deadline, IdempotencyKey: p.IdempotencyKey,
+			Context: contextFiles, Deadline: deadline, IdempotencyKey: p.IdempotencyKey,
 		}
 		if p.IdempotencyKey != "" {
 			sp.ParamsHash = submitParamsHash(peer.PublicKey, t.ID, p)
@@ -195,6 +216,10 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 			if outcome.Request.UrgencyDeclared != "" {
 				detail["urgency_declared"] = outcome.Request.UrgencyDeclared
 			}
+			if n := len(outcome.Request.Context); n > 0 {
+				detail["context_files"] = n
+				detail["context_bytes"] = request.ContextBytes(outcome.Request.Context)
+			}
 			if aerr := log.Append(ctx, audit.ActorCLI, "request.submit", detail); aerr != nil {
 				return nil, aerr
 			}
@@ -204,7 +229,8 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 			ID: outcome.Request.ID, MailID: outcome.MailID, Status: outcome.Status, Duplicate: outcome.Duplicate,
 			Team: teamRefResult{ID: t.ID, Name: t.Name}, Urgency: outcome.Request.Urgency,
 			UrgencyDeclared: outcome.Request.UrgencyDeclared, UrgencyNote: outcome.UrgencyNote,
-			Peer: submitPeerResult{Name: peer.Name, PublicKey: peer.PublicKey, DaemonOnline: online, LastSeen: lastSeen},
+			Peer:    submitPeerResult{Name: peer.Name, PublicKey: peer.PublicKey, DaemonOnline: online, LastSeen: lastSeen},
+			Session: worksession.DeriveID(ts.Self, peer.PublicKey, outcome.Request.ID),
 		}, nil
 	})
 }
@@ -337,6 +363,13 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams) string {
 	}
 	if p.Deadline != "" {
 		m["deadline"] = p.Deadline
+	}
+	if len(p.Context) > 0 {
+		arr := make([]any, len(p.Context))
+		for i, c := range p.Context {
+			arr[i] = map[string]any{"name": c.Name, "text": c.Text}
+		}
+		m["context"] = arr
 	}
 	canon, err := agentcard.CanonicalValue(m)
 	if err != nil {

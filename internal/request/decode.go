@@ -11,7 +11,7 @@ var allowedMembers = map[string]bool{
 	"v": true, "id": true, "from": true, "to": true, "team": true, "type": true,
 	"title": true, "brief": true, "urgency": true, "urgency_declared": true,
 	"urgency_reason": true, "artifacts": true, "requested_grant": true,
-	"deadline": true, "created": true,
+	"deadline": true, "created": true, "context": true,
 }
 
 var requiredMembers = []string{
@@ -89,6 +89,13 @@ func Decode(body map[string]any) (*Request, error) {
 			return nil, err
 		}
 		r.Deadline = t
+	}
+	if raw, ok := body["context"]; ok {
+		files, err := decodeContext(raw)
+		if err != nil {
+			return nil, err
+		}
+		r.Context = files
 	}
 	created, err := decodeTime("created", body["created"])
 	if err != nil {
@@ -170,6 +177,35 @@ func decodeArtifacts(raw any) ([]Artifact, error) {
 			setArtifactField(&a, k, s)
 		}
 		out = append(out, a)
+	}
+	return out, nil
+}
+
+func decodeContext(raw any) ([]ContextFile, error) {
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, fieldErr("context", "must be an array")
+	}
+	out := make([]ContextFile, 0, len(list))
+	for i, el := range list {
+		obj, ok := el.(map[string]any)
+		if !ok {
+			return nil, fieldErr("context["+itoa(i)+"]", "must be an object")
+		}
+		for k := range obj {
+			if k != "name" && k != "text" {
+				return nil, fieldErr("context["+itoa(i)+"]", "has unknown member %q", k)
+			}
+		}
+		name, ok := obj["name"].(string)
+		if !ok {
+			return nil, fieldErr("context["+itoa(i)+"].name", "is required and must be a string")
+		}
+		text, ok := obj["text"].(string)
+		if !ok {
+			return nil, fieldErr("context["+itoa(i)+"].text", "is required and must be a string")
+		}
+		out = append(out, ContextFile{Name: name, Text: text})
 	}
 	return out, nil
 }

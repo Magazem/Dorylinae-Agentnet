@@ -109,6 +109,7 @@ type View struct {
 	UrgencyReason   string
 	Artifacts       []Artifact
 	RequestedGrant  *RequestedGrant
+	Context         []ContextFile
 	Deadline        time.Time
 	Created         time.Time
 	ReceivedAt      time.Time // in only
@@ -150,7 +151,7 @@ func toView(r storedRow) (View, error) {
 	v := View{
 		ID: r.id, Direction: r.direction, Peer: r.peer, TeamID: r.teamID, Type: r.typ,
 		Title: req.Title, Brief: req.Brief, Urgency: r.urgency, UrgencyDeclared: r.urgencyDeclared,
-		UrgencyReason: req.UrgencyReason, Artifacts: req.Artifacts, RequestedGrant: req.RequestedGrant,
+		UrgencyReason: req.UrgencyReason, Artifacts: req.Artifacts, RequestedGrant: req.RequestedGrant, Context: req.Context,
 		Deadline: req.Deadline, Created: parseWireTime(r.created), MailID: r.mailID,
 		State: r.state, StateAt: nullWireTime(r.stateAt), DeferredUntil: nullWireTime(r.deferredUntil),
 	}

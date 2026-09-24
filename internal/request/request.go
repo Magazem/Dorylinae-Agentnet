@@ -11,6 +11,16 @@ import "time"
 const (
 	// MaxRequestBody is the cap on len(canonical(request)) (65536 bytes).
 	MaxRequestBody = 65536
+	// MaxQuestionBody is the cap on len(canonical(request)) for a question
+	// with context files (Docs/protocol/consult.md §Size limits, 320 KiB).
+	MaxQuestionBody = 327680
+
+	minContextFiles     = 1
+	maxContextFiles     = 8
+	minContextNameBytes = 1
+	maxContextNameBytes = 255
+	minContextTextBytes = 1
+	maxContextTextBytes = 65536
 
 	minTitleCodePoints = 1
 	maxTitleCodePoints = 120
@@ -76,6 +86,23 @@ type RequestedGrant struct {
 	Note     string // "" means absent
 }
 
+// ContextFile is one context file of a question (Docs/protocol/consult.md
+// §Context files).
+type ContextFile struct {
+	Name string
+	Text string
+}
+
+// ContextBytes is the total size of the text of files, the "context_bytes"
+// of the audit and the inbox list view.
+func ContextBytes(files []ContextFile) int {
+	n := 0
+	for _, f := range files {
+		n += len(f.Text)
+	}
+	return n
+}
+
 // Request is the body of kind `request`: Docs/protocol/request.md §Request
 // object. Optional members absent on the wire are the zero value here
 // (empty string, nil slice/pointer, zero time.Time).
@@ -95,4 +122,5 @@ type Request struct {
 	RequestedGrant  *RequestedGrant // nil if absent
 	Deadline        time.Time       // zero if absent
 	Created         time.Time
+	Context         []ContextFile // nil if absent; question only
 }

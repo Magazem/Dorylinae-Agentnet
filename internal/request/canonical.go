@@ -45,6 +45,13 @@ func Canonical(r *Request) ([]byte, error) {
 	if !r.Deadline.IsZero() {
 		obj["deadline"] = r.Deadline.UTC().Truncate(0).Format(timeFmt)
 	}
+	if len(r.Context) > 0 {
+		files := make([]any, len(r.Context))
+		for i, f := range r.Context {
+			files[i] = map[string]any{"name": f.Name, "text": f.Text}
+		}
+		obj["context"] = files
+	}
 	return agentcard.CanonicalValue(obj)
 }
 
@@ -73,6 +80,20 @@ func artifactsToValue(artifacts []Artifact) []any {
 func BodyHash(canon []byte) string {
 	sum := sha256.Sum256(canon)
 	return hex.EncodeToString(sum[:])
+}
+
+// CheckSizeFor enforces the total body cap for r on canon, the output of
+// Canonical(r): MaxQuestionBody for a question with context files, else
+// MaxRequestBody (Docs/protocol/consult.md §Size limits).
+func CheckSizeFor(r *Request, canon []byte) error {
+	limit := MaxRequestBody
+	if r.Type == TypeQuestion && len(r.Context) > 0 {
+		limit = MaxQuestionBody
+	}
+	if len(canon) > limit {
+		return &TooLargeError{Size: len(canon), Limit: limit}
+	}
+	return nil
 }
 
 // CheckSize enforces MaxRequestBody on canon, the output of Canonical. This

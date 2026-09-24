@@ -130,7 +130,7 @@ Submits a work session's result (worker only): Docs/protocol/work-session.md
 §Result object (2.6), the D14 result extended by `verification` and `notes`.
 
 ```
-agentnet result <id> --status pass|fail|partial|n/a
+agentnet result <id> [--status pass|fail|partial|n/a]
                 [--summary T] [--file F | --output-from-file F]
                 [--exit-code N] [--artifact SPEC]...
                 [--verification none|tests_passed] [--notes T] [--json]
@@ -138,7 +138,7 @@ agentnet result <id> --status pass|fail|partial|n/a
 
 | Flag | Meaning |
 |------|---------|
-| `--status S` | Required: `pass`, `fail`, `partial` or `n/a` |
+| `--status S` | `pass`, `fail`, `partial` or `n/a`. Required, except when `<id>` is a `question` that is still `pending` or `deferred` (a [consult](consult.md#answering-a-consult)): then it defaults to `n/a` |
 | `--summary T` | One line, up to 280 characters |
 | `--file F` | Result output from file `F` (`-` = stdin), up to 32768 bytes. CRLF becomes LF, ANSI colour and cursor sequences are removed, other control characters are refused (same processing as `agentnet complete`). Same as `--output-from-file` |
 | `--output-from-file F` | Alias for `--file` |
@@ -147,6 +147,10 @@ agentnet result <id> --status pass|fail|partial|n/a
 | `--verification V` | `none` (default) or `tests_passed`: your own claim, not proof |
 | `--notes T` | Up to 2000 characters, sent to the requester |
 | `--json` | Machine-readable output on stdout |
+
+On a `question` that is still `pending` or `deferred`, `result` accepts the request, opens the
+session and submits the result in one transaction (Docs/protocol/consult.md §Answering); `<id>`
+may then be the request id or the derived session id.
 
 The result is capped at 65536 bytes of canonical JSON in total
 (`result_too_large`). `agentnet complete <id>` on a request whose session is

@@ -139,47 +139,9 @@ func (s *Store) transition(ctx context.Context, id, from string, allowed map[str
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	row, err := s.findInRow(ctx, tx, id, from)
+	row, seq, replyMailID, err := s.transitionTx(ctx, tx, id, from, allowed, build)
 	if err != nil {
 		return View{}, storedRow{}, 0, err
-	}
-	if !allowed[row.state] {
-		return View{}, storedRow{}, 0, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", id, row.state)}
-	}
-	now := s.now()
-	seq := row.stateSeq + 1
-	tb, err := build(row, now, seq)
-	if err != nil {
-		return View{}, storedRow{}, 0, err
-	}
-
-	lastReply, err := jsonObject(map[string]any{"kind": tb.kind, "body": tb.body})
-	if err != nil {
-		return View{}, storedRow{}, 0, fmt.Errorf("request: encode last_reply: %w", err)
-	}
-
-	setSQL := `state = ?, state_seq = ?, state_at = ?, last_reply = ?, last_reply_sent = ?, updated = ?`
-	args := []any{tb.newState, seq, wireTime(now), lastReply, storeTime(now), storeTime(now)}
-	if tb.extraSet != "" {
-		setSQL += ", " + tb.extraSet
-		args = append(args, tb.extraArgs...)
-	}
-	if tb.firstResponse != "" && !row.firstResponse.Valid {
-		setSQL += `, first_response = ?, first_response_at = ?`
-		args = append(args, tb.firstResponse, storeTime(now))
-	}
-	args = append(args, row.peer, row.id)
-	if _, err := tx.ExecContext(ctx, `UPDATE requests SET `+setSQL+` WHERE direction = 'in' AND peer = ? AND id = ?`, args...); err != nil {
-		return View{}, storedRow{}, 0, fmt.Errorf("request: update in row: %w", err)
-	}
-	sub, err := s.Outbox.SubmitTx(ctx, tx, row.peer, tb.kind, tb.body)
-	if err != nil {
-		return View{}, storedRow{}, 0, err
-	}
-	if tb.kind == KindAccept && s.Sessions != nil {
-		if err := s.Sessions.OpenSession(ctx, tx, "worker", row.peer, row.id, row.teamID, now); err != nil {
-			return View{}, storedRow{}, 0, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return View{}, storedRow{}, 0, fmt.Errorf("request: commit: %w", err)
@@ -194,8 +156,83 @@ func (s *Store) transition(ctx context.Context, id, from string, allowed map[str
 	if err != nil {
 		return View{}, storedRow{}, 0, err
 	}
-	v.ReplyMailID = sub.ID
+	v.ReplyMailID = replyMailID
 	return v, row, seq, nil
+}
+
+// transitionTx is transition inside the caller's transaction: it neither
+// commits nor wakes the outbox, and reads and writes only through tx. It
+// returns the row as it was before the change, the new seq and the id of the
+// lifecycle mail it submitted.
+func (s *Store) transitionTx(ctx context.Context, tx *sql.Tx, id, from string, allowed map[string]bool,
+	build func(_ storedRow, now time.Time, seq int) (transitionBuild, error),
+) (storedRow, int, string, error) {
+	row, err := s.findInRow(ctx, tx, id, from)
+	if err != nil {
+		return storedRow{}, 0, "", err
+	}
+	if !allowed[row.state] {
+		return storedRow{}, 0, "", &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", id, row.state)}
+	}
+	now := s.now()
+	seq := row.stateSeq + 1
+	tb, err := build(row, now, seq)
+	if err != nil {
+		return storedRow{}, 0, "", err
+	}
+
+	lastReply, err := jsonObject(map[string]any{"kind": tb.kind, "body": tb.body})
+	if err != nil {
+		return storedRow{}, 0, "", fmt.Errorf("request: encode last_reply: %w", err)
+	}
+
+	setSQL := `state = ?, state_seq = ?, state_at = ?, last_reply = ?, last_reply_sent = ?, updated = ?`
+	args := []any{tb.newState, seq, wireTime(now), lastReply, storeTime(now), storeTime(now)}
+	if tb.extraSet != "" {
+		setSQL += ", " + tb.extraSet
+		args = append(args, tb.extraArgs...)
+	}
+	if tb.firstResponse != "" && !row.firstResponse.Valid {
+		setSQL += `, first_response = ?, first_response_at = ?`
+		args = append(args, tb.firstResponse, storeTime(now))
+	}
+	args = append(args, row.peer, row.id)
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET `+setSQL+` WHERE direction = 'in' AND peer = ? AND id = ?`, args...); err != nil {
+		return storedRow{}, 0, "", fmt.Errorf("request: update in row: %w", err)
+	}
+	sub, err := s.Outbox.SubmitTx(ctx, tx, row.peer, tb.kind, tb.body)
+	if err != nil {
+		return storedRow{}, 0, "", err
+	}
+	if tb.kind == KindAccept && s.Sessions != nil {
+		if err := s.Sessions.OpenSession(ctx, tx, "worker", row.peer, row.id, row.teamID, now); err != nil {
+			return storedRow{}, 0, "", err
+		}
+	}
+	return row, seq, sub.ID, nil
+}
+
+// AcceptInTx is Accept inside the caller's transaction, for the one-step
+// answer of a question (Docs/protocol/consult.md §Answering): the request
+// moves to accepted, request.accept is queued and the worker-role session
+// opens, all in tx. onlyType, when set, refuses any other request type with a
+// *BadStateError. It returns the peer and the after-commit function that
+// audits request.accept (the audit log shares the daemon's one SQLite
+// connection, which tx holds); the caller wakes the outbox after commit.
+func (s *Store) AcceptInTx(ctx context.Context, tx *sql.Tx, id, from, onlyType string) (peer string, after func(context.Context), err error) {
+	row, seq, _, err := s.transitionTx(ctx, tx, id, from, allowedAcceptDeclineDefer, func(row storedRow, now time.Time, seq int) (transitionBuild, error) {
+		if onlyType != "" && row.typ != onlyType {
+			return transitionBuild{}, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is a %s request and %s: accept it first", id, row.typ, row.state)}
+		}
+		body := map[string]any{"at": wireTime(now), "request": id, "seq": seq}
+		return transitionBuild{kind: KindAccept, body: body, firstResponse: "accept", newState: StateAccepted}, nil
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return row.peer, func(ctx context.Context) {
+		s.auditLifecycle(ctx, "cli", "request.accept", row, seq, nil)
+	}, nil
 }
 
 // Accept runs request_accept (Docs/protocol/ipc.md §Requests).

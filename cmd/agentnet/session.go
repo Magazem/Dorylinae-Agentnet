@@ -287,15 +287,18 @@ const resultUsage = `Submits a work session's result (Docs/protocol/work-session
 worker side of a request. Worker only.
 
 Usage:
-  agentnet result <id> --status pass|fail|partial|n/a
+  agentnet result <id> [--status pass|fail|partial|n/a]
                   [--summary T] [--file F | --output-from-file F]
                   [--exit-code N] [--artifact SPEC]...
                   [--verification none|tests_passed] [--notes T] [--json]
 
-<id> is a session id (s-...) or the request id it belongs to (r-...).
+<id> is a session id (s-...) or the request id it belongs to (r-...). On a
+question that is still pending or deferred, it accepts the request, opens the
+session and submits the answer in one step (Docs/protocol/consult.md).
 
 Flags:
-  --status S              required: pass, fail, partial or n/a
+  --status S              pass, fail, partial or n/a. Required, except on a
+                          pending question, where it defaults to n/a
   --summary T              one line, up to 280 characters
   --file F                 result output from file F (- = stdin), up to
                            32768 bytes. CRLF becomes LF, ANSI colour and
@@ -340,16 +343,19 @@ func runResult(args []string, stdout, stderr io.Writer) int {
 	if len(pos) != 1 {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give exactly one <id> (see 'agentnet result --help')")
 	}
-	if *status == "" {
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--status is required")
-	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if set["file"] && set["output-from-file"] {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give at most one of --file or --output-from-file")
 	}
 
-	result := map[string]any{"status": *status}
+	// status is left out when not given: the daemon defaults it to n/a when
+	// the id is a pending question (a consult answer) and refuses a result
+	// without status otherwise.
+	result := map[string]any{}
+	if *status != "" {
+		result["status"] = *status
+	}
 	if set["summary"] {
 		result["summary"] = *summary
 	}

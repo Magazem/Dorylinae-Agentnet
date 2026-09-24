@@ -109,6 +109,12 @@ type RequestView struct {
 	// (Docs/protocol/work-session.md §IPC, "the request view gains
 	// session? {id, state, round}").
 	Session *SessionRef `json:"session,omitempty"`
+	// ContextFiles and ContextBytes describe a question's context in every
+	// view; Context (the files themselves) only in request_show
+	// (Docs/protocol/consult.md §Answering).
+	ContextFiles *int           `json:"context_files,omitempty"`
+	ContextBytes *int           `json:"context_bytes,omitempty"`
+	Context      []ContextParam `json:"context,omitempty"`
 }
 
 // SessionRef is the request view's "session" member.
@@ -193,6 +199,10 @@ func ViewResult(ctx context.Context, ps *peers.Store, ts *team.Store, ws *workse
 		r.Due = &due
 	}
 	r.UrgencyNote = v.UrgencyNote
+	if n := len(v.Context); n > 0 {
+		b := request.ContextBytes(v.Context)
+		r.ContextFiles, r.ContextBytes = &n, &b
+	}
 	if ws != nil {
 		role := worksession.RoleWorker
 		if v.Direction == "out" {
@@ -367,11 +377,23 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		v, err := rs.Show(ctx, p.ID, p.From)
+		id := p.ID
+		if worksession.ValidID(id) {
+			rid, err := requestIDForSession(ctx, rs, ts.Self, id)
+			if err != nil {
+				return nil, lifecycleError(err)
+			}
+			id = rid
+		}
+		v, err := rs.Show(ctx, id, p.From)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
-		return RequestShowResult{Request: ViewResult(ctx, ps, ts, ws, v, true)}, nil
+		rv := ViewResult(ctx, ps, ts, ws, v, true)
+		for _, c := range v.Context {
+			rv.Context = append(rv.Context, ContextParam{Name: c.Name, Text: c.Text})
+		}
+		return RequestShowResult{Request: rv}, nil
 	})
 
 	srv.Handle("request_list", func(ctx context.Context, params json.RawMessage) (any, error) {

@@ -72,6 +72,12 @@ func printRequestShow(stdout io.Writer, v daemon.RequestView) {
 	for _, a := range v.Artifacts {
 		_, _ = fmt.Fprintf(stdout, "  artifact: %s\n", formatArtifact(a))
 	}
+	if v.ContextFiles != nil && len(v.Context) == 0 {
+		_, _ = fmt.Fprintf(stdout, "  context: %d files, %d bytes\n", *v.ContextFiles, *v.ContextBytes)
+	}
+	for _, c := range v.Context {
+		_, _ = fmt.Fprintf(stdout, "  context file %s (%d bytes)\n", c.Name, len(c.Text))
+	}
 	if v.Result != nil {
 		r := v.Result
 		exit := ""

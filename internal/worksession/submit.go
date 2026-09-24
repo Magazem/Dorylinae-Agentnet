@@ -2,6 +2,7 @@ package worksession
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
@@ -25,28 +26,45 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	ok, mailID, after, err := s.submitResultTx(ctx, tx, peer, requestID, result)
+	if !ok || err != nil {
+		return ok, "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return true, "", fmt.Errorf("worksession: commit: %w", err)
+	}
+	s.Outbox.Wake()
+	after(ctx)
+	return true, mailID, nil
+}
+
+// submitResultTx is SubmitResult inside the caller's transaction (it neither
+// commits nor wakes the outbox). after audits ws.result and must be called
+// once, after the caller's commit: the audit log shares the daemon's one
+// SQLite connection, which tx holds.
+func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID string, result *Result) (ok bool, mailID string, after func(context.Context), err error) {
 	row, err := findRowTx(ctx, tx, RoleWorker, peer, requestID)
 	if errors.Is(err, ErrUnknownSession) {
-		return false, "", nil
+		return false, "", nil, nil
 	}
 	if err != nil {
-		return true, "", err
+		return true, "", nil, err
 	}
 	if row.state != StateOpen || (row.cancel.Valid && row.cancel.String == "requested") {
-		return true, "", &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
+		return true, "", nil, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
 	}
 
 	now := s.now()
 	canon, err := resultBodyCanonical(row.id, requestID, row.round, now, result)
 	if err != nil {
-		return true, "", err
+		return true, "", nil, err
 	}
 	if err := CheckResultSize(canon); err != nil {
-		return true, "", err
+		return true, "", nil, err
 	}
 	resultCanon, err := CanonicalResult(result)
 	if err != nil {
-		return true, "", err
+		return true, "", nil, err
 	}
 	body := map[string]any{
 		"at": wireTime(now), "request": requestID, "result": resultWire(result),
@@ -54,26 +72,59 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET result = ?, result_round = ?, updated = ? WHERE id = ?`,
 		string(resultCanon), row.round, storeTime(now), row.id); err != nil {
-		return true, "", fmt.Errorf("worksession: store result: %w", err)
+		return true, "", nil, fmt.Errorf("worksession: store result: %w", err)
 	}
 	sub, err := s.Outbox.SubmitTx(ctx, tx, peer, KindResult, body)
 	if err != nil {
-		return true, "", err
+		return true, "", nil, err
+	}
+	after = func(ctx context.Context) {
+		if s.Audit != nil {
+			_ = s.Audit.Append(ctx, "cli", "ws.result", map[string]any{
+				"session": row.id, "peer": peer, "round": row.round,
+				"result_bytes": ResultBytes(resultCanon), "output_bytes": OutputBytes(result.Output),
+				"artifacts": len(result.Artifacts), "verification": result.Verification,
+			})
+		}
+	}
+	return true, sub.ID, after, nil
+}
+
+// AnswerQuestion is the one-step answer of a consult
+// (Docs/protocol/consult.md §Answering): for a pending or deferred question
+// request it accepts the request, opens the session and submits the result
+// (round 1) in ONE transaction, so a failure of any step (a result over the
+// size cap, say) leaves the question exactly as it was. from narrows the
+// request lookup when the id is ambiguous. It returns the session id and the
+// ws.result mail id.
+func (s *Store) AnswerQuestion(ctx context.Context, requestID, from string, result *Result) (sid, mailID string, err error) {
+	if err := ValidateResult(result); err != nil {
+		return "", "", err
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("worksession: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	peer, afterAccept, err := s.Requests.AcceptInTx(ctx, tx, requestID, from, request.TypeQuestion)
+	if err != nil {
+		return "", "", err
+	}
+	ok, mailID, afterResult, err := s.submitResultTx(ctx, tx, peer, requestID, result)
+	if err != nil {
+		return "", "", err
+	}
+	if !ok {
+		return "", "", errors.New("worksession: session missing right after accept")
 	}
 	if err := tx.Commit(); err != nil {
-		return true, "", fmt.Errorf("worksession: commit: %w", err)
+		return "", "", fmt.Errorf("worksession: commit: %w", err)
 	}
 	s.Outbox.Wake()
-	if s.Audit != nil {
-		resultBytes := ResultBytes(resultCanon)
-		outputBytes := OutputBytes(result.Output)
-		_ = s.Audit.Append(ctx, "cli", "ws.result", map[string]any{
-			"session": row.id, "peer": peer, "round": row.round,
-			"result_bytes": resultBytes, "output_bytes": outputBytes,
-			"artifacts": len(result.Artifacts), "verification": result.Verification,
-		})
-	}
-	return true, sub.ID, nil
+	afterAccept(ctx)
+	afterResult(ctx)
+	return DeriveID(peer, s.Self, requestID), mailID, nil
 }
 
 // CompleteShorthand implements request.SessionCompleter: request_complete on

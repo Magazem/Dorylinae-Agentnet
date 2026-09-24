@@ -98,13 +98,14 @@ func TestSessionsHelpAndUsage(t *testing.T) {
 	}
 }
 
-func TestResultRequiresStatus(t *testing.T) {
+// The CLI leaves --status out when it is not given: the daemon defaults it to
+// n/a for a pending question and refuses a result without it otherwise
+// (TestResultStatusDefaultsForQuestionOnly in internal/daemon).
+func TestResultWithoutStatusIsNotAUsageError(t *testing.T) {
+	t.Setenv("DORYLINAE_HOME", t.TempDir())
 	var out, errb bytes.Buffer
-	if code := run([]string{"result", "s-00000000000000000000000000000001"}, &out, &errb); code != exitUsage {
-		t.Fatalf("code = %d, stderr = %q, want usage", code, errb.String())
-	}
-	if !strings.Contains(errb.String(), "--status") {
-		t.Fatalf("stderr = %q, want a mention of --status", errb.String())
+	if code := run([]string{"result", "s-00000000000000000000000000000001"}, &out, &errb); code == exitUsage {
+		t.Fatalf("code = %d, stderr = %q, want the request to reach the daemon", code, errb.String())
 	}
 }
 

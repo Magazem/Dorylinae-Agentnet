@@ -63,6 +63,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPing(args[1:], stdout, stderr)
 	case "request":
 		return runRequest(args[1:], stdout, stderr)
+	case "consult":
+		return runConsult(args[1:], stdout, stderr)
 	case "inbox":
 		return runInbox(args[1:], stdout, stderr)
 	case "accept":
@@ -119,6 +121,7 @@ Commands:
   team      Create and manage teams
   presence  Show or set who can see this machine's presence
   request   Send a teammate's agent a request
+  consult   Ask a teammate's agent a question, with context files
   inbox     List the requests addressed to you
   accept    Accept a request from your inbox
   decline   Decline a request from your inbox

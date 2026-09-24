@@ -300,6 +300,21 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if !ok {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "result must be an object"}
 		}
+		// A result on a pending or deferred question is the one-step answer
+		// of a consult (Docs/protocol/consult.md §Answering): its status
+		// defaults to n/a and its verification to none.
+		target, err := findAnswerable(ctx, ws, rs, ts.Self, p.ID)
+		if err != nil {
+			return nil, lifecycleError(err)
+		}
+		if target != nil {
+			if _, has := obj["status"]; !has {
+				obj["status"] = "n/a"
+			}
+			if _, has := obj["verification"]; !has {
+				obj["verification"] = worksession.VerificationNone
+			}
+		}
 		if p.Notes != "" {
 			if _, exists := obj["notes"]; exists {
 				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "notes must be given once, not in both result and notes"}
@@ -312,6 +327,17 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		}
 		if err := worksession.ValidateResult(result); err != nil {
 			return nil, sessionError(err)
+		}
+		if target != nil {
+			sid, mailID, err := ws.AnswerQuestion(ctx, target.requestID, target.from, result)
+			if err != nil {
+				return nil, answerError(err)
+			}
+			newV, err := ws.Get(ctx, sid)
+			if err != nil {
+				return nil, sessionError(err)
+			}
+			return SessionResult{Session: sessionView(ctx, ps, ts, rs, newV, false), MailID: mailID}, nil
 		}
 		sid, err := resolveSessionID(ctx, ws, p.ID)
 		if err != nil {

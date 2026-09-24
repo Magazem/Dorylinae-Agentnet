@@ -33,7 +33,8 @@ type SubmitParams struct {
 	Urgency, UrgencyReason string
 	Artifacts              []Artifact
 	RequestedGrant         *RequestedGrant
-	Deadline               time.Time // zero: absent
+	Context                []ContextFile // question only
+	Deadline               time.Time     // zero: absent
 	IdempotencyKey         string
 	// ParamsHash is the caller-computed hash of Docs/protocol/request.md
 	// §Submitting ("params_hash"), required when IdempotencyKey is set.
@@ -82,7 +83,7 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 		V: 1, ID: NewID(), From: p.From, To: p.To, Team: p.Team, Type: p.Type,
 		Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
 		Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
-		Created: now.UTC().Truncate(time.Second),
+		Created: now.UTC().Truncate(time.Second), Context: p.Context,
 	}
 	if err := Validate(req); err != nil {
 		return SubmitOutcome{}, err
@@ -91,7 +92,7 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 	if err != nil {
 		return SubmitOutcome{}, err
 	}
-	if err := CheckSize(canon); err != nil {
+	if err := CheckSizeFor(req, canon); err != nil {
 		return SubmitOutcome{}, err
 	}
 	hash := BodyHash(canon)

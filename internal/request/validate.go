@@ -91,11 +91,44 @@ func Validate(r *Request) error {
 			return err
 		}
 	}
+	if r.Context != nil {
+		if err := validateContext(r); err != nil {
+			return err
+		}
+	}
 	if r.Created.IsZero() {
 		return fieldErr("created", "is required")
 	}
 	if !r.Deadline.IsZero() && !r.Deadline.After(r.Created) {
 		return fieldErr("deadline", "must be later than created")
+	}
+	return nil
+}
+
+// validateContext checks the context files of Docs/protocol/consult.md
+// §Context files and §Size limits (the total body cap is CheckSizeFor).
+func validateContext(r *Request) error {
+	if r.Type != TypeQuestion {
+		return fieldErr("context", "is allowed only when type is question")
+	}
+	if len(r.Context) < minContextFiles || len(r.Context) > maxContextFiles {
+		return fieldErr("context", "must hold %d-%d files", minContextFiles, maxContextFiles)
+	}
+	for i, f := range r.Context {
+		nameField := "context[" + itoa(i) + "].name"
+		if err := checkBytes(nameField, f.Name, minContextNameBytes, maxContextNameBytes); err != nil {
+			return err
+		}
+		if f.Name == "." || f.Name == ".." || strings.ContainsAny(f.Name, `/\`) || hasControl(f.Name, "") {
+			return fieldErr(nameField, "must be a base name without / \\ or control characters, not . or ..")
+		}
+		textField := "context[" + itoa(i) + "].text"
+		if err := checkBytes(textField, f.Text, minContextTextBytes, maxContextTextBytes); err != nil {
+			return err
+		}
+		if hasControl(f.Text, "\n\t") {
+			return fieldErr(textField, "must not contain control characters other than \\n and \\t")
+		}
 	}
 	return nil
 }

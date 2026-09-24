@@ -100,6 +100,8 @@ type applyOutcome struct {
 	urgencyDeclared string // set only when downgradedBy is set
 	downgradedBy    string // "", "sender" or "receiver"
 	title           string
+	contextFiles    int // sizes only: context text is never audited
+	contextBytes    int
 }
 
 var pendingApply sync.Map // map[*mail.Opened]*applyOutcome
@@ -136,7 +138,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	if err != nil {
 		return badBody("%s", err.Error())
 	}
-	if err := CheckSize(canon); err != nil {
+	if err := CheckSizeFor(req, canon); err != nil {
 		return badBody("%s", err.Error())
 	}
 	hash := BodyHash(canon)
@@ -168,7 +170,8 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 		return badBody("request is older than 30 days and unknown here")
 	}
 
-	out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency, title: req.Title}
+	out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency, title: req.Title,
+		contextFiles: len(req.Context), contextBytes: ContextBytes(req.Context)}
 
 	// Policy auto-decline (Docs/protocol/request.md §Receiving step 3).
 	code, err := s.declineCode(ctx, tx, req)
@@ -397,6 +400,10 @@ func (s *Store) after(ctx context.Context, op *mail.Opened) {
 		if out.downgradedBy != "" {
 			detail["urgency_declared"] = out.urgencyDeclared
 			detail["downgraded_by"] = out.downgradedBy
+		}
+		if out.contextFiles > 0 {
+			detail["context_files"] = out.contextFiles
+			detail["context_bytes"] = out.contextBytes
 		}
 		_ = s.Audit.Append(ctx, "daemon", "request.in", detail)
 	}
