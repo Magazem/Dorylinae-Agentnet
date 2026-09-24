@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -33,6 +34,13 @@ func registerMail(srv *ipc.Server, ob *mail.Outbox, ps *peers.Store) {
 		var p MailSubmitParams
 		if err := json.Unmarshal(params, &p); err != nil || p.To == "" || p.Kind == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "to and kind are required"}
+		}
+		// The own-device link kinds carry no signature of their own: the mail
+		// signature is their only proof that this device's human confirmed, so
+		// only the device handlers send them, after the local approval
+		// (Docs/protocol/device.md §Kinds, review 36 M1).
+		if strings.HasPrefix(p.Kind, "device.") {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "device.* mail is sent only by 'agentnet device'"}
 		}
 		var body any
 		if len(p.Body) > 0 {

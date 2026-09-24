@@ -430,11 +430,13 @@ func TestDeviceUnlinkFromThirdPeerChangesNothing(t *testing.T) {
 	harnessPair(t, b.harnessNode, c.harnessNode)
 	id := activatePair(t, a, b)
 
-	body := fmt.Sprintf(`{"at":%q,"link":%q}`, time.Now().UTC().Format("2006-01-02T15:04:05Z"), id)
-	var sent daemon.MailSubmitResult
-	c.call("mail_submit", daemon.MailSubmitParams{To: b.key, Kind: "device.unlink", Body: []byte(body)}, &sent)
+	// C's real device.unlink to B (C holds no link). A device.unlink naming
+	// the link id cannot be forged through mail_submit any more (review 36
+	// M1); that case is TestDeviceUnlinkNamingAnotherPeersLink.
+	var res daemon.DeviceUnlinkResult
+	c.call("device_unlink", daemon.DeviceUnlinkParams{Peer: b.key}, &res)
 	harnessWait(t, "B to process C's mail", func() bool {
-		return b.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '`+sent.ID+`'`) == 1
+		return b.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '`+res.MailID+`'`) == 1
 	})
 	time.Sleep(200 * time.Millisecond)
 	if a.linkCount("active") != 1 || b.linkCount("active") != 1 || b.activeID() != id {
@@ -443,15 +445,41 @@ func TestDeviceUnlinkFromThirdPeerChangesNothing(t *testing.T) {
 	if c.count(`SELECT COUNT(*) FROM device_links`) != 0 {
 		t.Error("the third peer holds a link row")
 	}
-	// A device.link naming the wrong keys is a bad body: nothing is kept.
+	// A device.link naming the wrong keys cannot even be sent through
+	// mail_submit; at the receiver it is a bad body (TestParseOfferIsStrict).
 	bad := fmt.Sprintf(`{"at":%q,"controller":%q,"helper":%q,"nonce":"00112233445566778899aabbccddeeff","role":"controller"}`,
 		time.Now().UTC().Format("2006-01-02T15:04:05Z"), a.key, b.key)
-	c.call("mail_submit", daemon.MailSubmitParams{To: b.key, Kind: "device.link", Body: []byte(bad)}, &sent)
-	harnessWait(t, "B to process C's device.link", func() bool {
-		return b.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '`+sent.ID+`'`) == 1
-	})
+	var sent daemon.MailSubmitResult
+	if err := ipcCallErr(c.harnessNode, "mail_submit", daemon.MailSubmitParams{To: b.key, Kind: "device.link", Body: []byte(bad)}, &sent); errCode(err) != "bad_request" {
+		t.Errorf("mail_submit device.link from a third peer: %v, want bad_request", err)
+	}
 	if b.count(`SELECT COUNT(*) FROM device_offers`) != 0 {
 		t.Error("a device.link naming other keys was kept as an offer")
+	}
+}
+
+// Review 36 M1: a local agent on the controller cannot stand in for its human.
+// The helper's human confirms; an agent on the controller then tries to send
+// the controller's half itself through mail_submit. It is refused, and the
+// helper stays waiting.
+func TestDeviceLinkOfferCannotBeForgedThroughMailSubmit(t *testing.T) {
+	ctrl, help := newDevPair(t)
+	help.link(ctrl, "helper")
+	harnessWait(t, "the controller to keep the helper's offer", func() bool { return ctrl.count(`SELECT COUNT(*) FROM device_offers`) == 1 })
+	forged := fmt.Sprintf(`{"at":%q,"controller":%q,"helper":%q,"nonce":"00112233445566778899aabbccddeeff","role":"controller"}`,
+		time.Now().UTC().Format("2006-01-02T15:04:05Z"), ctrl.key, help.key)
+	for _, kind := range []string{"device.link", "device.unlink"} {
+		var sent daemon.MailSubmitResult
+		if err := ipcCallErr(ctrl.harnessNode, "mail_submit", daemon.MailSubmitParams{To: help.key, Kind: kind, Body: []byte(forged)}, &sent); errCode(err) != "bad_request" {
+			t.Errorf("mail_submit %s: %v, want bad_request", kind, err)
+		}
+	}
+	if n := ctrl.count(`SELECT COUNT(*) FROM outbox WHERE kind LIKE 'device.%'`); n != 0 {
+		t.Errorf("the controller queued %d device.* mails without its human", n)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if help.linkCount("active") != 0 || help.linkCount("waiting") != 1 {
+		t.Fatal("the helper activated without the controller's human")
 	}
 }
 
@@ -466,5 +494,23 @@ func TestDevicePeersRemoveRevokesLink(t *testing.T) {
 	}
 	if n := a.auditCount("device.unlink"); n != 1 {
 		t.Errorf("device.unlink audit rows = %d, want 1", n)
+	}
+}
+
+// Review 36 L3: device unlink during a link attempt that still waits for its
+// code rejects that approval too, so no dead code stays on screen.
+func TestDeviceUnlinkRejectsPendingApproval(t *testing.T) {
+	a, b := newDevPair(t)
+	res, err := a.requestLink(b, "controller", devFP(t, b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var un daemon.DeviceUnlinkResult
+	a.call("device_unlink", daemon.DeviceUnlinkParams{Peer: b.key}, &un)
+	harnessWait(t, "the approval to be rejected", func() bool {
+		return a.count(`SELECT COUNT(*) FROM approvals WHERE id = '`+res.Approval.ID+`' AND state = 'rejected'`) == 1
+	})
+	if a.linkCount("pending_approval") != 0 {
+		t.Error("the attempt is still pending")
 	}
 }

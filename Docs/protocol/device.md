@@ -187,7 +187,11 @@ drops queued runs the same way; a run that was executing is reported as `fail` w
 
 ## Kinds
 
-Sealed mail, outboxed, acked, `Inbox: true`, strict.
+Sealed mail, outboxed, acked, `Inbox: true`, strict. A `device.link` carries no signature
+of its own: the mail signature is its only proof that the sender's human confirmed. So only
+the `device_link` and `device_unlink` handlers send these kinds; `mail_submit` refuses any
+`device.*` kind (`bad_request`), so a local agent cannot send the other half of a link
+itself (review 36 M1).
 
 | Kind | Body |
 |---|---|

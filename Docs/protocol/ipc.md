@@ -196,8 +196,10 @@ daemon resends it until the peer acks it ([mail.md](mail.md#outbox)). A relay re
 is the debug command `agentnet mail send` ([../cli/mail.md](../cli/mail.md)).
 
 Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the peer was
-paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or
-kind `ack`.
+paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body,
+kind `ack`, or a `device.*` kind: those are sent only by the `device_*` methods after the
+local approval, because the mail signature is their only proof of that approval
+([device.md §Kinds](device.md#kinds)).
 
 ## Phase 1 methods
 

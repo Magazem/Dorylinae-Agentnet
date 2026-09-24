@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
@@ -88,24 +89,37 @@ func deviceHierarchyError(err error) error {
 }
 
 // stripLongDigits replaces runs of six or more digits with an ellipsis so that
-// peer-supplied text cannot show a decoy approval code (review 26 N4).
+// peer-supplied text cannot show a decoy approval code (review 26 N4). A run
+// counts any Unicode digit and may be split by single spaces or punctuation
+// ("482 913", "48-29-13", fullwidth digits), which a human reads as the same
+// code (review 36 L2).
 func stripLongDigits(s string) string {
+	rs := []rune(s)
 	var b strings.Builder
-	run := 0
-	for i := 0; i <= len(s); i++ {
-		if i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			run++
+	for i := 0; i < len(rs); {
+		if !unicode.IsDigit(rs[i]) {
+			b.WriteRune(rs[i])
+			i++
 			continue
 		}
-		if run >= 6 {
+		digits, end := 0, i
+		for j := i; j < len(rs); j++ {
+			if unicode.IsDigit(rs[j]) {
+				digits++
+				end = j + 1
+				continue
+			}
+			sep := unicode.IsSpace(rs[j]) || unicode.IsPunct(rs[j]) || unicode.IsSymbol(rs[j])
+			if !sep || j+1 >= len(rs) || !unicode.IsDigit(rs[j+1]) {
+				break
+			}
+		}
+		if digits >= 6 {
 			b.WriteString("…")
 		} else {
-			b.WriteString(s[i-run : i])
+			b.WriteString(string(rs[i:end]))
 		}
-		run = 0
-		if i < len(s) {
-			b.WriteByte(s[i])
-		}
+		i = end
 	}
 	return b.String()
 }
@@ -331,6 +345,12 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 			// row is still ours and pending, the peer is still paired and the
 			// hierarchy still allows the link.
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
+				// Lapse stale intents first, so that neither a lapsed attempt
+				// with another peer blocks this one nor a lapsed own row is
+				// approved (review 36 L1).
+				if err := ds.ExpireTx(ctx, tx, ds.Time()); err != nil {
+					return err
+				}
 				cur, err := ds.GetTx(ctx, tx, linkID)
 				if err != nil || cur.State != device.StatePendingApproval {
 					return &ipc.Error{Code: CodeBadState, Message: "the link attempt is no longer pending approval"}
@@ -466,6 +486,14 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		}
 		committed = true
 		ob.Wake()
+		// A link attempt still waiting for its code is dead now: close its
+		// approval window too (its Precondition would refuse it anyway),
+		// review 36 L3.
+		for _, r := range revoked {
+			if r.State == device.StatePendingApproval && r.Approval != "" {
+				_, _ = apprStore.Reject(ctx, r.Approval, "unlinked")
+			}
+		}
 		res := DeviceUnlinkResult{MailID: sub.ID}
 		if len(revoked) > 0 {
 			l := revoked[0]
