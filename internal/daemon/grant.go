@@ -254,8 +254,8 @@ func isGitTopLevel(gitPath, resolved string) bool {
 	defer cancel()
 	out, err := cmd.Output()
 	if err == nil {
-		top, terr := filepath.EvalSymlinks(strings.TrimSpace(string(out)))
-		return terr == nil && pathsEqual(top, resolved)
+		top, terr := filepath.EvalSymlinks(filepath.FromSlash(strings.TrimSpace(string(out))))
+		return terr == nil && sameDir(top, resolved)
 	}
 	// Bare: resolved must be the git directory itself, not a directory inside
 	// one (discovery from repo.git/objects finds repo.git; review 37 L1).
@@ -270,7 +270,22 @@ func isGitTopLevel(gitPath, resolved string) bool {
 		return false
 	}
 	gd, gerr := filepath.EvalSymlinks(filepath.FromSlash(strings.TrimSpace(dir)))
-	return gerr == nil && pathsEqual(gd, resolved)
+	return gerr == nil && sameDir(gd, resolved)
+}
+
+// sameDir reports whether a and b name the same directory. It compares file
+// identity, not spelling: git may report a path in another form than ours
+// (8.3 short names on Windows, /private/var vs /var on macOS).
+func sameDir(a, b string) bool {
+	if pathsEqual(a, b) {
+		return true
+	}
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && fa.IsDir() && os.SameFile(fa, fb)
 }
 
 // deriveLabel builds the label of Docs/protocol/grant.md §Grant object: the
