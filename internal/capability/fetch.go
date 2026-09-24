@@ -333,14 +333,20 @@ func (s *FetchServer) respondErr(ctx context.Context, peer, req, code string) {
 func (s *FetchServer) run(j fetchJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), opBudget)
 	defer cancel()
-	defer s.release(j)
+	// The slots are freed before the last response is sent, never after: a
+	// holder that waits for the answer and then sends its next request must
+	// find them free (review 39).
+	done := sync.OnceFunc(func() { s.release(j) })
+	defer done()
 	if j.reject != "" {
+		done()
 		s.respondErr(ctx, j.peer, j.req.Req, j.reject)
 		return
 	}
-	rec, bytes, err := s.serve(ctx, j)
+	rec, bytes, err := s.serve(ctx, j, done)
 	if err != nil {
 		code := FetchCode(err)
+		done()
 		s.respondErr(ctx, j.peer, j.req.Req, code)
 		s.auditOp(ctx, rec, j, bytes, code)
 		return
@@ -364,8 +370,10 @@ func (s *FetchServer) auditOp(ctx context.Context, rec *Record, j fetchJob, byte
 }
 
 // serve runs the checks and the operation. rec is non-nil once the grant row
-// was found and matched (so the audit row names a real grant).
-func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, error) {
+// was found and matched (so the audit row names a real grant). done frees the
+// job's peer and daemon slots; serve calls it, with the grant slot, right
+// before the last response.
+func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func()) (*Record, int64, error) {
 	r := j.req
 	// Shape: cheap, stateless.
 	ts, err := time.Parse(time.RFC3339, r.TS)
@@ -413,7 +421,8 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 	if err != nil {
 		return rec, 0, err
 	}
-	defer release()
+	finish := sync.OnceFunc(func() { release(); done() })
+	defer finish()
 
 	kind := KindFS
 	if g.Action == ActionGitRead {
@@ -441,6 +450,7 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 		if err != nil {
 			return rec, 0, err
 		}
+		finish()
 		return rec, 0, wrapSend(s.respond(ctx, j.peer, respStat{Type: TypeFetchResp, Req: r.Req, OK: true, Entry: e, Commit: commit}))
 	case OpList:
 		entries, next, commit, err := be.List(ctx, *rec, rel, r.Cursor)
@@ -450,6 +460,7 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 		if entries == nil {
 			entries = []Entry{}
 		}
+		finish()
 		return rec, 0, wrapSend(s.respond(ctx, j.peer, respList{Type: TypeFetchResp, Req: r.Req, OK: true, Entries: entries, Cursor: next, Commit: commit}))
 	}
 
@@ -459,6 +470,12 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 		if err := s.recheck(ctx, *rec, j.peer); err != nil {
 			return err
 		}
+		// Counted before the send, so the next request, which may arrive as soon
+		// as the last fragment does, sees these bytes.
+		s.addServed(rec.ID, int64(len(f.Data)), now)
+		if f.Index == f.Count-1 {
+			finish()
+		}
 		if err := s.respond(ctx, j.peer, respRead{
 			Type: TypeFetchResp, Req: r.Req, OK: true, Frag: f.Index, Frags: f.Count, Size: f.Size,
 			Commit: f.Commit, Data: base64.StdEncoding.EncodeToString(f.Data),
@@ -466,7 +483,6 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 			return fetchErr(CodeIO)
 		}
 		sent += int64(len(f.Data))
-		s.addServed(rec.ID, int64(len(f.Data)), now)
 		return nil
 	})
 	return rec, sent, err

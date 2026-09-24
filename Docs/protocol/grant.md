@@ -271,10 +271,13 @@ Invalid → `bad_path`.
 
 - The grantor opens the resolved directory with **`os.OpenRoot`** (Go ≥ 1.24) and resolves
   every path inside that root, so `..` and symlinks cannot escape it even under a race.
-- Before opening, each path component is checked with `Root.Lstat`: a symlink anywhere in
-  the path → `symlink`; an intermediate component that is not a plain directory (any
-  `ModeType` bit other than `ModeDir`, including `ModeIrregular`, which Go ≥ 1.23 reports
-  for Windows junctions and other reparse points) → `symlink`; a component named `.git`
+- Before opening, each path component is checked with `Root.Lstat`: a symlink or a
+  `ModeIrregular` component (which Go ≥ 1.23 reports for Windows junctions and other
+  reparse points) anywhere in the path, **the final component included** → `symlink`,
+  for `stat`, `list` and `read` alike. A link is never followed and nothing about it or
+  its target is served; only a `list` of its parent shows it, as an entry of type
+  `symlink` (a junction as `other`). An intermediate component that is any other
+  non-directory → `not_found`; a component named `.git`
   compared **case-insensitively** (`.GIT` reaches the same directory on NTFS, APFS and HFS+)
   → `out_of_scope`. On Windows a segment shaped like an 8.3 short name (`~` followed by a
   digit, for example `GIT~1`) → `bad_path`, because it can name `.git` or any other entry by
@@ -337,7 +340,10 @@ Per grant, on the grantor: at most 2 fetch operations in flight, 20 per second, 
 256 MiB served per 24 h (`rate_limited`). Per holder peer: at most 2 in flight across grants
 (so at most 16 fragments travel towards one holder, [Transport](#transport)).
 Per daemon: at most 32 in flight. These keep a holder from turning the grantor into a
-bandwidth or CPU sink.
+bandwidth or CPU sink. An operation stops being in flight when its last response (the
+error, the stat or list answer, or the last read fragment) is handed to the session, so a
+holder that waits for each answer before sending the next request is never refused for
+being in flight.
 
 ## Sensitive grants (2.4)
 

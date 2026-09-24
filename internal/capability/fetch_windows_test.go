@@ -13,7 +13,8 @@ func makeJunction(t *testing.T, target, link string) {
 	t.Helper()
 	//nolint:gosec // test helper: fixed command, paths are test temp dirs
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
-		t.Skipf("cannot create a junction: %v: %s", err, out)
+		t.Skipf("SKIP: Windows could create neither a directory symlink nor a junction "+
+			"(mklink /J); the link cases run on the Linux and macOS CI jobs: %v: %s", err, out)
 	}
 }
 

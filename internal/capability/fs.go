@@ -159,12 +159,24 @@ func rootName(segs []string) string {
 	return filepath.FromSlash(strings.Join(segs, "/"))
 }
 
+// componentErr classifies the Lstat mode of one path component. Nothing is
+// followed: a symlink or an irregular file (a Windows junction or other
+// reparse point) anywhere, the final component included, yields `symlink`
+// for every op; only list shows a link, as an entry (review 39). An
+// intermediate component that is not a directory yields `not_found`.
+func componentErr(m fs.FileMode, last bool) error {
+	if m&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
+		return fetchErr(CodeSymlink)
+	}
+	if !last && !m.IsDir() {
+		return fetchErr(CodeNotFound)
+	}
+	return nil
+}
+
 // walk checks every component of segs under root before anything is opened
-// and returns the final component's Lstat. Nothing is followed: a symlink or
-// an irregular file (a Windows junction or other reparse point) anywhere
-// yields `symlink`, except that the final component is returned as is when
-// finalLink is true (stat reports it).
-func walk(root *os.Root, segs []string, finalLink bool) (fs.FileInfo, error) {
+// and returns the final component's Lstat (see componentErr).
+func walk(root *os.Root, segs []string) (fs.FileInfo, error) {
 	for _, seg := range segs {
 		if isGitName(seg) {
 			return nil, fetchErr(CodeOutOfScope)
@@ -187,15 +199,8 @@ func walk(root *os.Root, segs []string, finalLink bool) (fs.FileInfo, error) {
 		if err != nil {
 			return nil, mapOSErr(err)
 		}
-		last := i == len(segs)-1
-		if info.Mode()&(fs.ModeSymlink|fs.ModeIrregular) != 0 {
-			if last && finalLink {
-				return info, nil
-			}
-			return nil, fetchErr(CodeSymlink)
-		}
-		if !last && !info.IsDir() {
-			return nil, fetchErr(CodeNotFound)
+		if err := componentErr(info.Mode(), i == len(segs)-1); err != nil {
+			return nil, err
 		}
 	}
 	return info, nil
@@ -238,7 +243,7 @@ func (FSBackend) Stat(_ context.Context, rec Record, rel string) (Entry, string,
 	}
 	defer func() { _ = root.Close() }()
 	segs := SplitEffective("", rel)
-	info, err := walk(root, segs, true)
+	info, err := walk(root, segs)
 	if err != nil {
 		return Entry{}, "", err
 	}
@@ -257,7 +262,7 @@ func (FSBackend) List(_ context.Context, rec Record, rel, cursor string) ([]Entr
 	}
 	defer func() { _ = root.Close() }()
 	segs := SplitEffective("", rel)
-	info, err := walk(root, segs, false)
+	info, err := walk(root, segs)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -330,7 +335,7 @@ func (FSBackend) Read(ctx context.Context, rec Record, rel string, offset int64,
 	}
 	defer func() { _ = root.Close() }()
 	segs := SplitEffective("", rel)
-	info, err := walk(root, segs, false)
+	info, err := walk(root, segs)
 	if err != nil {
 		return err
 	}

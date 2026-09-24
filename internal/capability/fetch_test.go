@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -521,35 +523,73 @@ func TestFetchSymlinkEscapes(t *testing.T) {
 	// Directory links are symlinks, or junctions where symlinks need a privilege.
 	linkDir(t, outside, filepath.Join(h.root, "out-dir"))
 	linkDir(t, filepath.Join(h.root, "inside"), filepath.Join(h.root, "in-dir"))
-	files := linkFile(t, filepath.Join(outside, "secret"), filepath.Join(h.root, "out-file")) &&
-		linkFile(t, filepath.Join(h.root, "inside", "real.txt"), filepath.Join(h.root, "in-file"))
 	_, tok := h.issue("")
-	paths := []string{"out-dir/secret", "in-dir/real.txt"}
-	if files {
-		paths = append(paths, "out-file", "in-file")
-	}
-	for _, p := range paths {
+	// Every op on a link, as the final or an intermediate component, is refused
+	// with `symlink`: nothing about the target is served, not even its type.
+	for _, p := range []string{"out-dir", "in-dir", "out-dir/secret", "in-dir/real.txt"} {
 		h.expectErr(tok, readOpts(p), CodeSymlink)
 		h.expectErr(tok, reqOpts{op: OpStat, path: p}, CodeSymlink)
+		h.expectErr(tok, reqOpts{op: OpList, path: p}, CodeSymlink)
 	}
-	h.expectErr(tok, reqOpts{op: OpList, path: "out-dir"}, CodeSymlink)
-	// list shows links as symlink (a junction is reported as other)
+	// only list shows a link, as an entry (a junction is reported as other)
+	types := listTypes(h, tok)
+	if (types["out-dir"] != "symlink" && types["out-dir"] != "other") || types["inside"] != "dir" {
+		t.Fatalf("list types = %v", types)
+	}
+
+	t.Run("file links", func(t *testing.T) {
+		linkFile(t, filepath.Join(outside, "secret"), filepath.Join(h.root, "out-file"))
+		linkFile(t, filepath.Join(h.root, "inside", "real.txt"), filepath.Join(h.root, "in-file"))
+		for _, p := range []string{"out-file", "in-file"} {
+			h.expectErr(tok, readOpts(p), CodeSymlink)
+			h.expectErr(tok, reqOpts{op: OpStat, path: p}, CodeSymlink)
+			h.expectErr(tok, reqOpts{op: OpList, path: p}, CodeSymlink)
+		}
+		if types := listTypes(h, tok); types["out-file"] != "symlink" || types["in-file"] != "symlink" {
+			t.Fatalf("list types = %v", types)
+		}
+	})
+}
+
+// listTypes lists the scope root and maps each name to its type.
+func listTypes(h *fetchHarness, tok json.RawMessage) map[string]string {
+	h.t.Helper()
 	types := map[string]string{}
 	for _, x := range h.call(tok, reqOpts{op: OpList, path: ""})[0]["entries"].([]any) {
 		m := x.(map[string]any)
 		types[m["name"].(string)] = m["type"].(string)
 	}
-	if (types["out-dir"] != "symlink" && types["out-dir"] != "other") || types["inside"] != "dir" {
-		t.Fatalf("list types = %v", types)
-	}
-	if files {
-		if types["out-file"] != "symlink" {
-			t.Fatalf("list types = %v", types)
+	return types
+}
+
+// TestComponentClassification checks the per-component decision of walk on
+// mode bits alone, so it runs where links cannot be made (Windows without
+// the symlink privilege).
+func TestComponentClassification(t *testing.T) {
+	for _, c := range []struct {
+		mode fs.FileMode
+		last bool
+		want string
+	}{
+		{0, true, ""},
+		{fs.ModeDir, true, ""},
+		{fs.ModeDir, false, ""},
+		{0, false, CodeNotFound},
+		{fs.ModeNamedPipe, true, ""}, // Read refuses it as not_regular
+		{fs.ModeNamedPipe, false, CodeNotFound},
+		{fs.ModeSymlink, true, CodeSymlink},
+		{fs.ModeSymlink, false, CodeSymlink},
+		{fs.ModeSymlink | fs.ModeDir, true, CodeSymlink},
+		{fs.ModeIrregular, true, CodeSymlink},
+		{fs.ModeIrregular, false, CodeSymlink},
+		{fs.ModeIrregular | fs.ModeDir, false, CodeSymlink},
+	} {
+		got := ""
+		if err := componentErr(c.mode, c.last); err != nil {
+			got = FetchCode(err)
 		}
-		// stat reports the link itself and never follows it
-		e := h.call(tok, reqOpts{op: OpStat, path: "out-file"})[0]["entry"].(map[string]any)
-		if e["type"] != "symlink" {
-			t.Fatalf("stat symlink = %v", e)
+		if got != c.want {
+			t.Errorf("componentErr(%v, last=%v) = %q, want %q", c.mode, c.last, got, c.want)
 		}
 	}
 }
@@ -790,6 +830,31 @@ func TestFetchRatePerSecond(t *testing.T) {
 	}
 }
 
+// A holder that waits for each answer is never over its in-flight limit, even
+// when the grantor is still busy after handing the answer to Send (slow audit,
+// the race detector): the slots are freed before the last response (review 39).
+func TestFetchSequentialHolderNotRateLimited(t *testing.T) {
+	h := newFetchHarness(t, nil, func(c *FetchConfig) {
+		inner := c.Send
+		c.Send = func(ctx context.Context, peer string, pt []byte) error {
+			err := inner(ctx, peer, pt)
+			time.Sleep(20 * time.Millisecond) // the holder already has the answer
+			return err
+		}
+	})
+	h.write("a.txt", "x")
+	_, tok := h.issue("")
+	for i := 0; i < 6; i++ {
+		o := reqOpts{op: OpStat, path: "a.txt"}
+		if i%2 == 1 {
+			o = readOpts("a.txt")
+		}
+		if e := errOf(h.call(tok, o)); e != "" {
+			t.Fatalf("op %d: %q", i+1, e)
+		}
+	}
+}
+
 func TestFetchBytesPer24h(t *testing.T) {
 	h := newFetchHarness(t, nil, func(c *FetchConfig) { c.BytesPer24h = 100 })
 	h.write("a.txt", strings.Repeat("x", 60))
@@ -1020,19 +1085,27 @@ func TestFetchUnsupportedKindAndStopped(t *testing.T) {
 // without the symlink privilege a junction.
 func linkDir(t *testing.T, target, link string) {
 	t.Helper()
-	if err := os.Symlink(target, link); err == nil {
-		return
+	err := os.Symlink(target, link)
+	switch {
+	case err == nil:
+	case runtime.GOOS == "windows":
+		makeJunction(t, target, link)
+	default:
+		t.Fatalf("dir symlink: %v", err)
 	}
-	makeJunction(t, target, link)
 }
 
-// linkFile makes link a file symlink to target and reports whether the OS
-// allowed it.
-func linkFile(t *testing.T, target, link string) bool {
+// linkFile makes link a file symlink to target. Only Windows may skip (the
+// link needs SeCreateSymbolicLinkPrivilege or Developer Mode); elsewhere a
+// failure fails the test, so CI cannot skip these cases silently.
+func linkFile(t *testing.T, target, link string) {
 	t.Helper()
 	if err := os.Symlink(target, link); err != nil {
-		t.Logf("file symlinks not available here: %v", err)
-		return false
+		if runtime.GOOS == "windows" {
+			t.Skipf("SKIP file-symlink cases: Windows refused to create a file symlink "+
+				"(needs SeCreateSymbolicLinkPrivilege or Developer Mode); they run on the "+
+				"Linux and macOS CI jobs, and TestComponentClassification covers the logic: %v", err)
+		}
+		t.Fatalf("file symlink: %v", err)
 	}
-	return true
 }
