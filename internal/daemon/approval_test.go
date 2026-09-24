@@ -11,6 +11,8 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,12 +24,17 @@ import (
 )
 
 // fakeApprovalNotifier is a test double that never touches the OS notifier
-// and records the title/body so the test can extract the code.
+// and records the title/body so the test can extract the code. Show is also
+// called from the store's window-watch goroutine (outcome notices), so the
+// fields are guarded by mu (review 31).
 type fakeApprovalNotifier struct {
+	mu                  sync.Mutex
 	lastTitle, lastBody string
 }
 
 func (f *fakeApprovalNotifier) Show(_ context.Context, _ string, _ time.Time, title, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastTitle, f.lastBody = title, body
 	return nil
 }
@@ -38,12 +45,15 @@ func (f *fakeApprovalNotifier) Remove(context.Context, string) {}
 // §Delivering the code).
 func (f *fakeApprovalNotifier) lastCode(t *testing.T) string {
 	t.Helper()
+	f.mu.Lock()
+	title := f.lastTitle
+	f.mu.Unlock()
 	const marker = "code "
-	i := strings.Index(strings.ToLower(f.lastTitle), marker)
-	if i < 0 || len(f.lastTitle) < i+len(marker)+6 {
-		t.Fatalf("no code in title: %q", f.lastTitle)
+	i := strings.Index(strings.ToLower(title), marker)
+	if i < 0 || len(title) < i+len(marker)+6 {
+		t.Fatalf("no code in title: %q", title)
 	}
-	return f.lastTitle[i+len(marker) : i+len(marker)+6]
+	return title[i+len(marker) : i+len(marker)+6]
 }
 
 func startApprovalDaemon(t *testing.T) (paths.Paths, *approval.Store, *fakeApprovalNotifier, *fakeWindowRunner) {
@@ -110,10 +120,11 @@ func TestApprovalIPCWindowApproveRunsAction(t *testing.T) {
 	p, apprStore, notifier, win := startApprovalDaemon(t)
 	ctx := context.Background()
 
-	var performed bool
+	// Perform runs on the window-watch goroutine; the test polls it (review 31).
+	var performed atomic.Bool
 	action := approval.Action{
 		Perform: func(_ context.Context, tx *sql.Tx) (any, error) {
-			performed = true
+			performed.Store(true)
 			if tx == nil {
 				t.Fatal("expected a non-nil tx")
 			}
@@ -143,7 +154,7 @@ func TestApprovalIPCWindowApproveRunsAction(t *testing.T) {
 	// dialog would deliver it; no IPC method or CLI form ever takes a code.
 	win.answer(view.ID, "approve", code)
 
-	pollUntil(t, 2*time.Second, func() bool { return performed })
+	pollUntil(t, 2*time.Second, performed.Load)
 
 	pollUntil(t, 2*time.Second, func() bool {
 		v, err := apprStore.Show(context.Background(), view.ID)

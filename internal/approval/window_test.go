@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -298,8 +299,9 @@ func TestWindowApproveKillsAndPerforms(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	s, n, _, win := newWindowTestStore(t, clock(&now))
-	var performed bool
-	action := Action{Perform: func(context.Context, *sql.Tx) (any, error) { performed = true; return nil, nil }}
+	// Perform runs on the window-watch goroutine; the test polls it (review 31).
+	var performed atomic.Bool
+	action := Action{Perform: func(context.Context, *sql.Tx) (any, error) { performed.Store(true); return nil, nil }}
 	view, err := s.Create(ctx, KindGrant, "g-1", "s", action)
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +309,7 @@ func TestWindowApproveKillsAndPerforms(t *testing.T) {
 	code := n.lastCode(t)
 	h := win.latest(view.ID)
 	h.answerCh <- fakeWinAnswer{kind: "approve", code: code}
-	pollUntilStore(t, func() bool { return performed })
+	pollUntilStore(t, performed.Load)
 	// The dialog already exited on its own after answering; Kill is still
 	// called for robustness (Docs/protocol/approval.md, "killed ... on
 	// decide").
@@ -422,17 +424,22 @@ func TestAfterCommitRunsOnceAfterCommitOutsideMu_Window(t *testing.T) {
 	var id string
 	action := Action{Perform: func(context.Context, *sql.Tx) (any, error) {
 		return fakeAfterCommit{fn: func(ctx context.Context) {
-			mu.Lock()
-			calls++
-			mu.Unlock()
+			// The hook runs on the window-watch goroutine: compute into
+			// locals, then publish everything under mu, which the test
+			// holds while it reads (review 31).
 			// Read the row directly: proves the transaction already
 			// committed before this hook runs.
-			_ = s.db.QueryRowContext(ctx, `SELECT state FROM approvals WHERE id = ?`, id).Scan(&stateAtHook)
+			var state string
+			_ = s.db.QueryRowContext(ctx, `SELECT state FROM approvals WHERE id = ?`, id).Scan(&state)
 			// Call back into the Store: must not deadlock if this runs
 			// outside Store.mu.
 			lctx, cancel := context.WithTimeout(ctx, time.Second)
 			defer cancel()
-			_, listErr = s.List(lctx)
+			_, err := s.List(lctx)
+			mu.Lock()
+			calls++
+			stateAtHook, listErr = state, err
+			mu.Unlock()
 		}}, nil
 	}}
 	view, err := s.Create(ctx, KindGrant, "g-1", "s", action)
