@@ -40,7 +40,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.3a **merged** (fetch server + fs; review 34: 0/0/3 fixed; open Lows L3–L6, L6 = COM0/LPT0 needs a vector change, owner call later).
 - 2.4 **merged** (quarantine + L8; review 35: H1 stale release approval now bound to seq, H2 D18 gaps closed). Noted Lows: pre-2.4 revoked rows have NULL approval; SQLite secure_delete off/WAL keeps discarded bytes (→ backlog); session.quarantined text vs work-session.md.
 - 2.D1 **merged** (device link, migration 17; review 36: M1 mail_submit could forge device.* kinds, fixed). Open from review 36: L4 (spec: offer freshness + ignore offers older than the last unlink), L5 (notify on activation: implement or amend the spec), L6 (link ids may differ per side, so 2.D2 must not key on it), L7 (mail_submit allowlist for all daemon-owned kinds), L8 (approval OnReject hook, needed by 2.D2).
-- 2.3b **merged** (git serving; review 37: M1 exact branch ref via for-each-ref, M2 real git.exe on Windows). Open: L2 minimum Git 2.32 documented but not enforced (owner call); L3 include/alternates can read local paths (the grantor's own config).
+- 2.3b **merged** (git serving; review 37: M1 exact branch ref via for-each-ref, M2 real git.exe on Windows). Open: L2 → D23 (enforce in 2.9); L3 include/alternates can read local paths (the grantor's own config).
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
 - 2.3c fetch client (Sonnet 5 control): done in ~17 min, gate clean; security review R-2.3c `01a0d300-08ef…` task `01a0d300-34a5…` → Docs/review/38, worktree `fetch-client`.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
@@ -152,6 +152,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D20 | OQ-2.2d-1: the Linux approval window (zenity/kdialog) gets the summary text via argv. Accept and document it: other local users can see the summary (never the code); hidepid=2 hides it. |
 | D21 | **Model trial (2026-09-24):** gradually move complex implementation and investigations to Opus 5.5 workers and measure against Sonnet (`Docs/orchestration/model-trial.md`: minutes, follow-ups, gate failures, review findings, CI after merge). Sonnet stays the default for well-specified tickets. Plan: INV-1 flake investigation (running), then 2.3b git serving and 2.D2 helper runner on Opus, with 2.3c on Sonnet as a control. |
 | D22 | Review-36 device link: **L4** tighten offer freshness (now < offer.at + 10 min; ignore offers older than the last unlink from that peer); **L5** content-free desktop notification when a device link becomes active. Both folded into 2.D2. |
+| D23 | Enforce **Git ≥ 2.32** at daemon start. If the git found is older, git.read grants are refused (`unsupported`) with a clear message; fs serving is unaffected. Folded into 2.9. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
