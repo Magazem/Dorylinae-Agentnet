@@ -118,10 +118,14 @@ func (n *node) open() {
 		n.t.Fatal(err)
 	}
 	n.db, n.store, n.audit = db, peers.NewStore(db.DB()), audit.New(db.DB())
+	// The issuer's ConfirmWait starts at pair_peer, when the redeemer's Argon2id
+	// (64 MiB, t=3) may still be running, so it must cover that derivation: about
+	// 0.2 s idle, but over 1.5 s on a loaded CI runner (Docs/review/33-pairtag-flake.md).
+	// Tests that expect a confirm timeout set a short ConfirmWait on the redeemer.
 	cfg := peers.Config{
 		Store: n.store, Audit: n.audit, Card: n.id.card, Self: n.id.key,
 		Mailbox: func() ([]byte, error) { return n.id.mbox, nil },
-		Sender:  n.sender, Wait: 3 * time.Second, ConfirmWait: 1500 * time.Millisecond,
+		Sender:  n.sender, Wait: 3 * time.Second, ConfirmWait: 10 * time.Second,
 		Logger: slog.New(slog.NewTextHandler(n.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	if n.cfg != nil {
@@ -198,14 +202,23 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+// waitState waits for pairing id to reach state. A pairing that ended in the
+// other state never changes again, so that fails at once, with its error.
 func waitState(t *testing.T, n *node, id, state string) peers.Status {
 	t.Helper()
-	var st peers.Status
-	waitFor(t, "pairing state "+state, func() bool {
-		st, _ = n.m.Get(id)
-		return st.State == state
-	})
-	return st
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		st, _ := n.m.Get(id)
+		switch {
+		case st.State == state:
+			return st
+		case st.State == peers.StateComplete || st.State == peers.StateFailed:
+			t.Fatalf("pairing %s ended %s, want %s (error: %+v)", id, st.State, state, st.Error)
+		case time.Now().After(deadline):
+			t.Fatalf("timed out waiting for pairing state %s (state %q)", state, st.State)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func bareCode(formatted string) string { return strings.ReplaceAll(formatted, "-", "") }
