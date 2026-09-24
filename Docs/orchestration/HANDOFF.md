@@ -43,7 +43,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.3b **merged** (git serving; review 37: M1 exact branch ref via for-each-ref, M2 real git.exe on Windows). Open: L2 → D23 (enforce in 2.9); L3 include/alternates can read local paths (the grantor's own config).
 - **CI RED on main since 2.3a:** TestFetchSymlinkEscapes (every OS) and TestFetchRatePerSecond (race). FIX-CI (Opus) P2-Opus-SymlinkFix slot `01a0d30a-c9bd…`, task `01a0d30b-18db…`, worktree `symlink-fix`. Merge it before anything else.
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
-- 2.3c fetch client (Sonnet 5 control): done in ~17 min, gate clean; security review R-2.3c `01a0d300-08ef…` task `01a0d300-34a5…` → Docs/review/38, worktree `fetch-client`.
+- 2.3c **merged locally** (fetch client + CLI; review 38: 0/0/4 fixed). Open: L3 fs `changed` can't detect same-size rewrites (protocol change → owner, Phase 3). **Push after FIX-CI.**
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.

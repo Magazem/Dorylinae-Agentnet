@@ -35,7 +35,7 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | 2.3a fetch server | L | ~60 (one restart when idle at start) | 0 | 1 (load-sensitive timing bound) | 0/0/3 | — |
 | 2.4 quarantine | S | ~60 | 0 | 0 | 0/2/0 | — |
 | 2.D1 device link | M | ~60 | 0 | 0 | 0/0/1 | — |
-| 2.3c fetch client (control, model claude-sonnet-5) | M | ~17 | 0 | 0 | pending | — |
+| 2.3c fetch client (control, model claude-sonnet-5) | M | ~17 | 0 | 0 | 0/0/4 | — |
 
 ## Opus 5.5 tickets
 
@@ -46,7 +46,7 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 
 ## Findings
 
-- **Measurement caveat (important):** the earlier Sonnet "minutes" were measured from task creation to **my commit**, which includes my own processing delay and other waits. From 2.3b/2.3c on, the time is dispatch to the **worker's report** (the worker states it). On that fairer measure, **Sonnet 5 (2.3c) took ~17 min, the same as Opus 5.5 (2.3b, ~16 min)**, both with a clean first gate. So far speed is a tie; the comparison must come from review findings and follow-ups.
+- **Measurement caveat (important):** the earlier Sonnet "minutes" were measured from task creation to **my commit**, which includes my own processing delay and other waits. From 2.3b/2.3c on, the time is dispatch to the **worker's report** (the worker states it). On that fairer measure, **Sonnet 5 (2.3c) took ~17 min, the same as Opus 5.5 (2.3b, ~16 min)**, both with a clean first gate. So far speed is a tie; the comparison must come from review findings and follow-ups. Reviews: 2.3b (Opus) 0/0/2 vs 2.3c (Sonnet 5) 0/0/4. Sonnet's Mediums were robustness/UX (IPC wait, a limit counting finished fetches, terminal escapes, file mode); Opus's were subtle git semantics. One pair is not enough to call it.
 
 - **2.3b (Opus 5.5):** ~16 min from dispatch to report for an M security ticket (Sonnet M tickets: 44–95 min). My gate passed on the first run. Tests cover every acceptance item plus a positive control (a porcelain commit must trigger the hostile hook, which proves the fixture is really hostile). It flagged its own residual risks. Review 37: 0/0/2, both subtle (git rev-parse resolving a missing branch to a same-named tag; the Windows git.exe launcher surviving the timeout kill).
 
