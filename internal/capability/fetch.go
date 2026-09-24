@@ -35,7 +35,8 @@ const (
 	tsPast               = 30 * time.Second
 	tsFuture             = 10 * time.Minute
 	reqRemember          = 11 * time.Minute
-	maxSeenReqs          = 8192
+	maxSeenPerPeer       = 16384
+	maxRejectsPerPeer    = 2
 	auditRowsPerMinute   = 60
 	defaultWorkers       = 8
 	queueSize            = 256
@@ -85,9 +86,10 @@ type FetchServer struct {
 	inflightPeer  map[string]int
 	inflightGrant map[string]int
 	inflightTotal int
+	rejects       map[string]int // queued rate_limited answers per peer
 	rate          map[string]*opWindow
 	served        map[string]*byteWindow
-	seen          map[string]time.Time
+	seen          map[string]map[string]time.Time // peer -> req -> first seen
 
 	aud *fetchAudit
 }
@@ -169,8 +171,8 @@ func NewFetchServer(cfg FetchConfig) *FetchServer {
 	}
 	s := &FetchServer{
 		cfg: cfg, queue: make(chan fetchJob, queueSize), stop: make(chan struct{}),
-		inflightPeer: map[string]int{}, inflightGrant: map[string]int{},
-		rate: map[string]*opWindow{}, served: map[string]*byteWindow{}, seen: map[string]time.Time{},
+		inflightPeer: map[string]int{}, inflightGrant: map[string]int{}, rejects: map[string]int{},
+		rate: map[string]*opWindow{}, served: map[string]*byteWindow{}, seen: map[string]map[string]time.Time{},
 	}
 	s.aud = newFetchAudit(cfg.Audit)
 	s.wg.Add(cfg.Workers + 1)
@@ -216,6 +218,13 @@ func (s *FetchServer) Handle(peer string, pt []byte) {
 		return
 	}
 	if s.inflightPeer[peer] >= maxInflightPerPeer || s.inflightTotal >= maxInflightTotal {
+		// A flooding peer gets a bounded number of queued answers, so it cannot
+		// fill the shared queue and crowd out other peers' requests.
+		if s.rejects[peer] >= maxRejectsPerPeer {
+			s.mu.Unlock()
+			return
+		}
+		s.rejects[peer]++
 		j.reject = CodeRateLimited
 	} else {
 		s.inflightPeer[peer]++
@@ -226,9 +235,21 @@ func (s *FetchServer) Handle(peer string, pt []byte) {
 	select {
 	case s.queue <- j:
 	default:
-		if j.counted {
-			s.releasePeer(peer)
+		s.release(j)
+	}
+}
+
+// release frees what Handle reserved for j.
+func (s *FetchServer) release(j fetchJob) {
+	switch {
+	case j.counted:
+		s.releasePeer(j.peer)
+	case j.reject != "":
+		s.mu.Lock()
+		if s.rejects[j.peer]--; s.rejects[j.peer] <= 0 {
+			delete(s.rejects, j.peer)
 		}
+		s.mu.Unlock()
 	}
 }
 
@@ -273,9 +294,14 @@ func (s *FetchServer) Flush(ctx context.Context) {
 	s.aud.flush(ctx, now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, t := range s.seen {
-		if now.Sub(t) > reqRemember {
-			delete(s.seen, id)
+	for peer, reqs := range s.seen {
+		for id, t := range reqs {
+			if now.Sub(t) > reqRemember {
+				delete(reqs, id)
+			}
+		}
+		if len(reqs) == 0 {
+			delete(s.seen, peer)
 		}
 	}
 	for id, w := range s.rate {
@@ -307,9 +333,7 @@ func (s *FetchServer) respondErr(ctx context.Context, peer, req, code string) {
 func (s *FetchServer) run(j fetchJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), opBudget)
 	defer cancel()
-	if j.counted {
-		defer s.releasePeer(j.peer)
-	}
+	defer s.release(j)
 	if j.reject != "" {
 		s.respondErr(ctx, j.peer, j.req.Req, j.reject)
 		return
@@ -329,7 +353,14 @@ func (s *FetchServer) auditOp(ctx context.Context, rec *Record, j fetchJob, byte
 	if rec != nil {
 		grant = rec.ID
 	}
-	s.aud.record(ctx, s.now(), grant, j.peer, j.req.Op, bytes, result)
+	// op is peer-supplied: only the enum reaches the audit log (review 34 M2).
+	op := j.req.Op
+	switch op {
+	case OpStat, OpList, OpRead:
+	default:
+		op = "unknown"
+	}
+	s.aud.record(ctx, s.now(), grant, j.peer, op, bytes, result)
 }
 
 // serve runs the checks and the operation. rec is non-nil once the grant row
@@ -362,12 +393,9 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 		return nil, 0, fetchErr(ReasonMalformed)
 	}
 
-	// ts window and req dedupe.
+	// ts window.
 	now := s.now()
 	if ts.Before(now.Add(-tsPast)) || ts.After(now.Add(tsFuture)) {
-		return nil, 0, fetchErr(CodeStale)
-	}
-	if !s.markSeen(j.peer, r.Req, now) {
 		return nil, 0, fetchErr(CodeStale)
 	}
 
@@ -375,6 +403,11 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob) (*Record, int64, er
 	rec, g, err := s.authorize(ctx, j.peer, r.Token, now)
 	if err != nil {
 		return rec, 0, err
+	}
+	// req dedupe, only once the peer is known to hold a valid grant, so a peer
+	// without one cannot fill the store (review 34 M1).
+	if !s.markSeen(j.peer, r.Req, now) {
+		return rec, 0, fetchErr(CodeStale)
 	}
 	release, err := s.admit(rec.ID, now)
 	if err != nil {
@@ -456,25 +489,31 @@ func joinScope(scope, path string) string {
 	return scope + "/" + path
 }
 
-// markSeen records req and reports false if it was seen inside the window.
+// markSeen records peer's req and reports false if it was seen inside the
+// window. Each peer has its own bounded store, so a flood refuses only the
+// flooding peer's requests.
 func (s *FetchServer) markSeen(peer, req string, now time.Time) bool {
-	key := peer + "\n" + req
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, ok := s.seen[key]; ok && now.Sub(t) <= reqRemember {
+	reqs := s.seen[peer]
+	if reqs == nil {
+		reqs = map[string]time.Time{}
+		s.seen[peer] = reqs
+	}
+	if t, ok := reqs[req]; ok && now.Sub(t) <= reqRemember {
 		return false
 	}
-	if len(s.seen) >= maxSeenReqs {
-		for k, t := range s.seen {
+	if len(reqs) >= maxSeenPerPeer {
+		for k, t := range reqs {
 			if now.Sub(t) > reqRemember {
-				delete(s.seen, k)
+				delete(reqs, k)
 			}
 		}
-		if len(s.seen) >= maxSeenReqs {
+		if len(reqs) >= maxSeenPerPeer {
 			return false // flooded: refuse rather than forget a request
 		}
 	}
-	s.seen[key] = now
+	reqs[req] = now
 	return true
 }
 

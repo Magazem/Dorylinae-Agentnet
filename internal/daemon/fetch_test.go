@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,7 +121,7 @@ func TestFetchServedOverNoiseSession(t *testing.T) {
 	fetch := func(op, path string, extra map[string]any) []map[string]any {
 		t.Helper()
 		n++
-		req := "f-" + strings.Repeat("0", 31) + string(rune('0'+n))
+		req := fmt.Sprintf("f-%032x", n)
 		m := map[string]any{"type": "fetch.req", "req": req, "ts": time.Now().UTC().Format(time.RFC3339), "token": json.RawMessage(wire), "op": op, "path": path}
 		for k, v := range extra {
 			m[k] = v

@@ -209,8 +209,11 @@ a caller that needs one snapshot compares `commit` across calls).
 Each `fetch.req` carries the **full token** and is verified from scratch (steps 1–10); the
 grantor keeps no per-holder cache that could outlive a revocation. `ts` must be within
 `now − 30 s … now + 10 min` and `req` must not have been seen in the last 11 min (the whole
-`ts` window; a delayed or relay-queued fetch is refused: `stale`). Unknown `op` →
-`malformed`.
+`ts` window; a delayed or relay-queued fetch is refused: `stale`). The `req` store is kept
+per holder and filled only after steps 1–9 pass, so a peer without a valid grant cannot fill
+it and one holder's flood refuses only its own requests. Unknown `op` → `malformed` (audited
+as `op: "unknown"`, never as sent). A holder over its in-flight limit gets at most 2 queued
+`rate_limited` answers; further requests are dropped unanswered.
 
 The grantor serves fetches on its own bounded worker pool, never on the session manager's
 receive goroutine or under its lock (`internal/session`), so a slow `git` call (up to 10 s)

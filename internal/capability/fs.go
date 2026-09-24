@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
@@ -117,6 +118,9 @@ func SplitEffective(scope, path string) []string {
 
 // isGitName reports whether seg names a .git entry as NTFS, APFS or HFS+
 // would resolve it: case-insensitively, ignoring invisible format characters.
+// Upper-casing rune by rune also catches letters whose upper case is ASCII
+// without being a Unicode case fold of it (U+0131 "ı" upper-cases to "I", and
+// NTFS compares names through an upcase table; review 34 L2).
 func isGitName(seg string) bool {
 	clean := strings.Map(func(r rune) rune {
 		if unicode.Is(unicode.Cf, r) {
@@ -124,7 +128,7 @@ func isGitName(seg string) bool {
 		}
 		return r
 	}, seg)
-	return strings.EqualFold(clean, ".git")
+	return strings.EqualFold(clean, ".git") || strings.Map(unicode.ToUpper, clean) == ".GIT"
 }
 
 // isShortNameShape reports whether seg looks like a Windows 8.3 alias: a "~"
@@ -302,7 +306,13 @@ func (FSBackend) List(_ context.Context, rec Record, rel, cursor string) ([]Entr
 			continue // vanished since the listing
 		}
 		e := entryOf(n, ei)
-		est := len(n)*2 + 48
+		// The encoded size, not an estimate: JSON escapes a byte of a name into
+		// up to 6 (review 34 L1).
+		b, err := json.Marshal(e)
+		if err != nil {
+			return nil, "", "", fetchErr(CodeIO)
+		}
+		est := len(b) + 1
 		if len(out) >= MaxListEntries || (len(out) > 0 && size+est > maxListBytes) {
 			return out, out[len(out)-1].Name, "", nil
 		}

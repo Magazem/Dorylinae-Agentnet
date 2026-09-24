@@ -68,6 +68,9 @@ func newFetchHarness(t *testing.T, be Backend, tweak func(*FetchConfig)) *fetchH
 			return true, h.open.Load()
 		},
 		Send: func(_ context.Context, _ string, pt []byte) error {
+			if len(pt) > 65535 {
+				t.Errorf("fetch.resp of %d bytes is over the Noise plaintext limit", len(pt))
+			}
 			h.out <- bytes.Clone(pt)
 			return nil
 		},
@@ -303,7 +306,7 @@ func TestPathGrammar(t *testing.T) {
 }
 
 func TestGitNameAndShortName(t *testing.T) {
-	for _, s := range []string{".git", ".GIT", ".Git", ".gIt", ".g\u200bit", ".\u200dgit"} {
+	for _, s := range []string{".git", ".GIT", ".Git", ".gIt", ".g\u200bit", ".\u200dgit", ".g\u0131t", ".G\u0131T"} {
 		if !isGitName(s) {
 			t.Errorf("isGitName(%q) = false", s)
 		}
@@ -887,6 +890,118 @@ func TestFetchAuditRateLimitAndSummary(t *testing.T) {
 		if strings.Contains(string(b), "a.txt") {
 			t.Fatalf("audit leaks a path: %s", b)
 		}
+	}
+}
+
+// Review 34 M1: a peer without a valid grant leaves nothing in the dedupe
+// store, and one peer's full store does not refuse another peer's requests.
+func TestFetchDedupeOnlyAfterAuthAndPerPeer(t *testing.T) {
+	h := newFetchHarness(t, nil, nil)
+	h.write("a.txt", "x")
+	_, tok := h.issue("")
+	req := newReqID()
+	h.expectErr(tok, reqOpts{op: OpStat, path: "a.txt", req: req, peer: h.other}, ReasonWrongAudience)
+	if e := errOf(h.call(tok, reqOpts{op: OpStat, path: "a.txt", req: req})); e != "" {
+		t.Fatalf("req first used by an unauthorised peer: %q", e)
+	}
+	now := time.Unix(0, h.clock.Load()).UTC()
+	for i := 0; i < maxSeenPerPeer; i++ {
+		if !h.srv.markSeen(h.other, fmt.Sprintf("f-%032x", i), now) {
+			t.Fatalf("markSeen %d refused", i)
+		}
+	}
+	if h.srv.markSeen(h.other, newReqID(), now) {
+		t.Fatal("a full per-peer store accepted another req")
+	}
+	if e := errOf(h.call(tok, reqOpts{op: OpStat, path: "a.txt"})); e != "" {
+		t.Fatalf("another peer's flood refused the holder: %q", e)
+	}
+}
+
+// Review 34 M3: a peer over its in-flight limit gets at most
+// maxRejectsPerPeer queued rate_limited answers; the rest are dropped.
+func TestFetchRejectFloodBounded(t *testing.T) {
+	be := &blockBackend{started: make(chan struct{}, 8), release: make(chan struct{})}
+	h := newFetchHarness(t, be, func(c *FetchConfig) { c.Workers = 2 })
+	h.write("a.txt", "x")
+	_, tok := h.issue("")
+	h.send(tok, readOpts("a.txt"))
+	h.send(tok, readOpts("a.txt"))
+	for i := 0; i < 2; i++ {
+		select {
+		case <-be.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("reads did not start")
+		}
+	}
+	// both workers are busy: rejects queue up, but only maxRejectsPerPeer of them
+	for i := 0; i < 50; i++ {
+		h.send(tok, readOpts("a.txt"))
+	}
+	pending := func() int {
+		h.srv.mu.Lock()
+		defer h.srv.mu.Unlock()
+		return h.srv.rejects[h.holder]
+	}
+	if n := pending(); n != maxRejectsPerPeer {
+		t.Fatalf("queued rejects = %d, want %d", n, maxRejectsPerPeer)
+	}
+	close(be.release)
+	limited, ok := 0, 0
+	for limited+ok < 2+maxRejectsPerPeer {
+		m := h.next()
+		switch {
+		case m["error"] == CodeRateLimited:
+			limited++
+		case m["ok"] == true:
+			ok++
+		default:
+			t.Fatalf("unexpected %v", m)
+		}
+	}
+	select {
+	case pt := <-h.out:
+		t.Fatalf("more answers than queued: %s", pt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if limited != maxRejectsPerPeer || pending() != 0 {
+		t.Fatalf("rate_limited = %d, pending = %d", limited, pending())
+	}
+}
+
+// Review 34 M2: the peer-supplied op never reaches the audit log as sent.
+func TestFetchAuditOpIsEnum(t *testing.T) {
+	h := newFetchHarness(t, nil, nil)
+	h.write("a.txt", "x")
+	_, tok := h.issue("")
+	h.expectErr(tok, reqOpts{op: "customer-acme-secret-plan", path: "a.txt"}, ReasonMalformed)
+	rows := h.auditsOf("grant.fetch")
+	if len(rows) != 1 || rows[0].Detail["op"] != "unknown" {
+		t.Fatalf("audit = %v", rows)
+	}
+}
+
+// Review 34 L1: names that JSON escapes heavily still fit one response.
+func TestFetchListEscapedNamesFit(t *testing.T) {
+	h := newFetchHarness(t, nil, nil)
+	for i := 0; i < 120; i++ {
+		h.write(fmt.Sprintf("%s%03d", strings.Repeat("&", 200), i), "")
+	}
+	_, tok := h.issue("")
+	seen, cursor := 0, ""
+	for page := 0; page < 10; page++ {
+		resp := h.call(tok, reqOpts{op: OpList, path: "", cursor: cursor})
+		if e := errOf(resp); e != "" {
+			t.Fatalf("list: %q", e)
+		}
+		seen += len(resp[0]["entries"].([]any))
+		cursor, _ = resp[0]["cursor"].(string)
+		if cursor == "" {
+			break
+		}
+	}
+	if seen != 120 {
+		t.Fatalf("listed %d, want 120", seen)
 	}
 }
 
