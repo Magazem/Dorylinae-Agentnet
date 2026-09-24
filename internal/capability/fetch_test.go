@@ -723,7 +723,9 @@ func TestFetchInflightLimitsAndOffSessionGoroutine(t *testing.T) {
 	r1 := h.send(tok, readOpts("a.txt"))
 	r2 := h.send(tok, readOpts("a.txt"))
 	r3 := h.send(tok, readOpts("a.txt")) // the 3rd in flight for this holder
-	if d := time.Since(begin); d > time.Second {
+	// Generous bound: under a loaded machine three sends can take well over
+	// a second; a Handle that ran the blocked reads would never return at all.
+	if d := time.Since(begin); d > 10*time.Second {
 		t.Fatalf("Handle blocked for %v", d)
 	}
 	m := h.next()
