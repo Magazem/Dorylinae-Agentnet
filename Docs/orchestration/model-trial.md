@@ -34,7 +34,7 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | 2.5 consult | M | overnight usage limit, not comparable | 0 | 0 | 0/0/1 | — |
 | 2.3a fetch server | L | ~60 (one restart when idle at start) | 0 | 1 (load-sensitive timing bound) | 0/0/3 | — |
 | 2.4 quarantine | S | ~60 | 0 | 0 | 0/2/0 | — |
-| 2.D1 device link | M | ~60 | 0 | load flakes only | pending | — |
+| 2.D1 device link | M | ~60 | 0 | 0 | 0/0/1 | — |
 
 ## Opus 5.5 tickets
 
