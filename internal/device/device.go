@@ -488,8 +488,11 @@ func (s *Store) OfferDeleteTx(ctx context.Context, tx *sql.Tx, peer string) erro
 // clock: now < offer.at + IntentTTL (owner decision D22, review 36 L4). A
 // relay that delays an offer cannot stretch the window past the sender's own
 // intent expiry.
+// An offer dated more than IntentTTL ahead of this device's clock is not
+// fresh either: it would otherwise stay alive, and pass the unlink
+// watermark, for as long as its sender chose (review 40 L7).
 func OfferFresh(offer Offer, now time.Time) bool {
-	return now.Before(offer.At.Add(IntentTTL))
+	return now.Before(offer.At.Add(IntentTTL)) && !offer.At.After(now.Add(IntentTTL))
 }
 
 // unlinkedKey is the settings row holding, per peer, the "at" of the last

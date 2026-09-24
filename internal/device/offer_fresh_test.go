@@ -24,6 +24,25 @@ func TestActivateNeedsFreshOffer(t *testing.T) {
 	}
 }
 
+// Review 40 L7: an offer dated far ahead of this clock is not fresh (it would
+// otherwise live, and pass the unlink watermark, as long as its sender chose);
+// ordinary skew within IntentTTL still is.
+func TestOfferFreshBoundsFuture(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	for d, want := range map[time.Duration]bool{
+		0:                        true,
+		IntentTTL:                true,
+		IntentTTL + time.Second:  false,
+		24 * time.Hour:           false,
+		-IntentTTL + time.Second: true,
+		-IntentTTL:               false,
+	} {
+		if got := OfferFresh(Offer{At: now.Add(d)}, now); got != want {
+			t.Errorf("offer at now%+v: fresh = %v, want %v", d, got, want)
+		}
+	}
+}
+
 // D22 (review 36 L4): an offer older than the last device.unlink received
 // from that peer is ignored; the latest unlink wins.
 func TestOfferBeforeUnlink(t *testing.T) {

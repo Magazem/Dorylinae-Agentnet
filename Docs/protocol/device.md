@@ -64,7 +64,8 @@ agentnet device link @laptop --as helper \                agentnet device link @
    still confirm; after that it is dropped. An offer never creates a link on its own.
    **Freshness (D22, review 36 L4):** an offer counts, and is kept, only while
    `now < offer.at + 10 min`, so it is alive by its sender's own clock too: a relay that
-   delays it cannot stretch the window past the sender's intent. An offer whose `at` is
+   delays it cannot stretch the window past the sender's intent. An offer whose `at` is more
+   than 10 min ahead of the receiver's clock does not count either (review 40 L7). An offer whose `at` is
    older than the `at` of the last `device.unlink` received from that peer is ignored, so
    a delayed offer reordered after an unlink cannot revive the link. The receiver keeps,
    per peer, the latest `device.unlink` `at` it applied (the `settings` row
@@ -88,8 +89,10 @@ full argv, so the human approves exactly what will run. The scope replaces any p
 atomically. `agentnet device scope @controller --clear` removes it (no approval needed:
 narrowing is always allowed); queued runs are then dropped like on unlink, and a scope still
 waiting for its code is rejected. A newer `device_scope_set` rejects an older one still
-waiting for its code. The summary quotes every repo path and argv as JSON strings, so no
-quote or control character can change how it reads; a scope whose summary would exceed
+waiting for its code. The summary (and the CLI's printout) quotes every repo path and argv as
+JSON strings, and also escapes as `\uXXXX` every character that is invisible or not graphic
+(bidi controls such as U+202E, zero-width characters), so no quote, control or bidi character
+can change how it reads (review 40 M1); a scope whose summary would exceed
 16384 bytes is refused (`bad_scope`, field `scope`), because the approval window must show
 all of it. The scope is keyed on the controller's **key**, never on the link id: the two
 devices can hold different link ids after an asymmetric retry (review 36 L6).
@@ -110,7 +113,7 @@ devices can hold different link ids after an asymmetric retry (review 36 L6).
 |---|---|
 | `types` | 1–3 of `review`, `task`, `question` |
 | `repos` | 1–16. `label` 1–64 `[a-z0-9._-]`, unique. `path` absolute, an existing directory, resolved with `EvalSymlinks` at set time; not the config dir (nor inside it or containing it), the home dir or a filesystem root: the same rule as a grant's `fs` resource ([grant.md](grant.md)). A refused path is `forbidden_resource`, any other rule `bad_scope` |
-| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `argv[0]` is a program name or an absolute path (a relative path with a directory part is refused). On Windows a `.bat` or `.cmd` file is refused: `CreateProcess` would run it through `cmd.exe`, and the runner never uses a shell. `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 characters, unique, never `DORYLINAE_*`) passed through (values are the helper daemon's own) |
+| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `argv[0]` is a program name or an absolute path (a relative path with a directory part is refused). On Windows a `.bat` or `.cmd` file is refused: `CreateProcess` would run it through `cmd.exe`, and the runner never uses a shell; the program must be an `.exe` or `.com`, judged after dropping trailing dots and spaces as Windows does (review 40 L3). `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 characters, unique, never `DORYLINAE_*`) passed through (values are the helper daemon's own) |
 | `expires` | `now < expires ≤ now + 30 d`. Required: every scope expires |
 
 The scope is stored only on the helper and is never sent anywhere. The controller learns only
@@ -155,7 +158,14 @@ above, and `check` names the first that failed.
   (Windows; without `LOCALAPPDATA` the example's `go test` fails with "GOCACHE is not
   defined") and the scope's `env` names, taken from the helper daemon's environment;
   everything else (tokens, `DORYLINAE_*`) is dropped;
+- first re-checks what the scope resolved: the repo path must still resolve to itself (a
+  directory replaced since by a symlink or junction is refused) and `argv[0]` must still be
+  a regular file; otherwise the run is `"<name>: could not start"` (review 40 L5);
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
+  if the helper daemon dies mid-run, Windows ends the tree with the job; on Linux the program
+  itself gets `SIGKILL` (parent-death signal) but what it started may outlive it, and on
+  macOS nothing is killed (review 40 M2). A process that leaves its group (`setsid`) or is
+  started by another service (Windows WMI or Task Scheduler) is outside the tree;
 - keeps the **last** 32768 bytes of combined stdout/stderr, turns CRLF into LF, strips ANSI
   CSI sequences (`ESC [` and U+009B) and replaces other control characters (except `\n`,
   `\t`), invalid UTF-8 and U+FFFD itself with `?`, and cuts at a UTF-8 boundary. (Not U+FFFD:

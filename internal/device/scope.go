@@ -12,6 +12,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 // Scope limits (Docs/protocol/device.md §Scope).
@@ -316,9 +319,15 @@ func resolveProgram(name string, lookPath func(string) (string, error)) (string,
 		return "", errors.New("program does not resolve to an absolute path; give an absolute path")
 	}
 	if runtime.GOOS == "windows" {
-		switch strings.ToLower(filepath.Ext(p)) {
+		// Windows drops trailing dots and spaces from a file name, so
+		// "x.bat." opens x.bat: judge the name as Windows will open it, and
+		// allow only real executables (review 40 L3).
+		switch strings.ToLower(filepath.Ext(strings.TrimRight(p, ". "))) {
 		case ".bat", ".cmd":
 			return "", errors.New("a batch file runs through cmd.exe; name the program itself")
+		case ".exe", ".com":
+		default:
+			return "", errors.New("on Windows the program must be an .exe or .com file")
 		}
 	}
 	return filepath.Clean(p), nil
@@ -330,6 +339,40 @@ func envKey(name string) string {
 		return strings.ToUpper(name)
 	}
 	return name
+}
+
+// DisplayQuote quotes s as a JSON string for a human to read (the approval
+// summary, the CLI), and also escapes, as \uXXXX, every rune that is not
+// graphic or is a format character: bidi controls (U+202E …), zero-width
+// characters and the like, which json.Marshal leaves as they are and which
+// could make a path or argv read differently from what runs (review 40 M1).
+func DisplayQuote(s string) string {
+	raw, _ := json.Marshal(s)
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range string(raw) {
+		switch {
+		case r == utf8.RuneError || (r > 0x7e && (!unicode.IsGraphic(r) || unicode.Is(unicode.Cf, r))):
+			if r > 0xffff {
+				hi, lo := utf16.EncodeRune(r)
+				fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+			} else {
+				fmt.Fprintf(&b, `\u%04x`, r)
+			}
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// DisplayArgv is DisplayQuote for an argv: a JSON array of quoted strings.
+func DisplayArgv(argv []string) string {
+	parts := make([]string, len(argv))
+	for i, a := range argv {
+		parts[i] = DisplayQuote(a)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 // CanonicalScope is the stored form of a validated scope.

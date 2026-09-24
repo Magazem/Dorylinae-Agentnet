@@ -180,3 +180,22 @@ func TestRunResultShapes(t *testing.T) {
 }
 
 func ptr(v int64) *int64 { return &v }
+
+// Review 40 M1: a bidi override or zero-width character in a repo path or an
+// argv reaches the approval summary escaped, never raw, so the human reads
+// what will run.
+func TestScopeSummaryEscapesInvisibleCharacters(t *testing.T) {
+	sc := device.Scope{
+		Types:    []string{"task"},
+		Repos:    []device.Repo{{Label: "r", Path: "/srv/re" + string(rune(0x200b)) + "po"}},
+		Commands: []device.Command{{Name: "t", Repo: "r", Argv: []string{"/bin/tool", "--x" + string(rune(0x202e)) + "-- fr- mr"}, TimeoutS: 5}},
+		Expires:  "2026-10-01T00:00:00Z",
+	}
+	s := scopeSummary("laptop", sc)
+	if strings.ContainsRune(s, 0x200b) || strings.ContainsRune(s, 0x202e) {
+		t.Fatalf("summary holds a raw invisible character: %q", s)
+	}
+	if !strings.Contains(s, "\"/srv/re\\u200bpo\"") || !strings.Contains(s, "[\"/bin/tool\",\"--x\\u202e-- fr- mr\"]") {
+		t.Fatalf("summary does not show the escaped path and argv: %s", s)
+	}
+}

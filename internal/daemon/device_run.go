@@ -387,7 +387,15 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	if run == nil {
 		run = device.Run
 	}
-	res := run(ctx, spec)
+	var res device.RunResult
+	if err := device.CheckTarget(spec.Path, spec.Dir); err != nil {
+		// Changed on disk since the human approved it: "could not start".
+		if r.logger != nil {
+			r.logger.Warn("device: run target changed", "session", j.Session, "error", err)
+		}
+	} else {
+		res = run(ctx, spec)
+	}
 	if ctx.Err() != nil {
 		return
 	}

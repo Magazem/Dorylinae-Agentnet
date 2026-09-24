@@ -19,6 +19,7 @@ type processTree struct {
 // startTree starts cmd as the leader of a new process group.
 func startTree(cmd *exec.Cmd) (*processTree, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setParentDeathSignal(cmd.SysProcAttr)
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}

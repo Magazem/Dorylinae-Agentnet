@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -151,6 +153,13 @@ func Run(ctx context.Context, spec RunSpec) RunResult {
 	switch {
 	case werr == nil:
 		res.ExitCode = 0
+	case errors.Is(werr, exec.ErrWaitDelay) && cmd.ProcessState != nil:
+		// The program ended, but something it left behind held the output
+		// open past waitDelay: its own exit code still counts (review 40 L4).
+		res.ExitCode = cmd.ProcessState.ExitCode()
+		if res.ExitCode < 0 {
+			res.ExitCode = 1
+		}
 	case errors.As(werr, &ee):
 		res.ExitCode = ee.ExitCode()
 		if res.ExitCode < 0 {
@@ -161,6 +170,31 @@ func Run(ctx context.Context, spec RunSpec) RunResult {
 	}
 	res.Output = SanitizeOutput(tail.bytes())
 	return res
+}
+
+// CheckTarget re-checks, when a run starts, what the scope resolved at set
+// time (review 40 L5): the working directory still resolves to itself, so a
+// repo replaced since by a symlink or junction to somewhere else is refused,
+// and the program is still a regular file.
+func CheckTarget(path, dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	same := resolved == dir
+	if runtime.GOOS == "windows" {
+		same = strings.EqualFold(resolved, dir)
+	}
+	if !same {
+		return errors.New("device: the working directory no longer resolves to the path in the scope")
+	}
+	if fi, err := os.Stat(resolved); err != nil || !fi.IsDir() {
+		return errors.New("device: the working directory is not a directory")
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		return errors.New("device: the program is not a regular file")
+	}
+	return nil
 }
 
 // replacement stands in for a control character or an invalid byte. It is

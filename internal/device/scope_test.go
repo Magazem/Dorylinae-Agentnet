@@ -198,6 +198,39 @@ func TestValidateScopeRefusesBatchFiles(t *testing.T) {
 			t.Fatalf("%s: err = %v, want refused", name, err)
 		}
 	}
+	// Review 40 L3: Windows opens "run.bat." and "run.bat " as run.bat, and
+	// anything that is not an .exe or .com is refused.
+	for _, p := range []string{`C:\x\run.bat.`, `C:\x\run.cmd .`, `C:\x\script.ps1`, `C:\x\noext`} {
+		sc := baseScope()
+		sc.Commands[0].Argv = []string{p}
+		var se *ScopeError
+		lp := func(string) (string, error) { return p, nil }
+		if _, err := ValidateScope(sc, scopeNow, Resolver{RepoPath: func(raw string) (string, error) { return raw, nil }, LookPath: lp}); !errors.As(err, &se) || se.Field != "commands[0].argv[0]" {
+			t.Fatalf("%s: err = %v, want refused", p, err)
+		}
+	}
+}
+
+// Review 40 M1: the display form escapes bidi controls, zero-width and other
+// invisible characters, so a path or argv reads as what runs.
+func TestDisplayQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":                `"plain"`,
+		"caf\u00e9":            `"café"`,
+		"a\u202eb":             `"a\u202eb"`,
+		"x\u200by":             `"x\u200by"`,
+		"q\"\\\n\x1b":          `"q\"\\\n\u001b"`,
+		"\U000E0041tag":        `"\udb40\udc41tag"`,
+		"bad\xffbyte\ufffd":    `"bad\ufffdbyte\ufffd"`,
+		"line\u2028sep\u00a0x": `"line\u2028sep` + "\u00a0" + `x"`,
+	} {
+		if got := DisplayQuote(in); got != want {
+			t.Errorf("DisplayQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+	if got := DisplayArgv([]string{"/bin/rm", "-f\u202e"}); got != `["/bin/rm","-f\u202e"]` {
+		t.Errorf("DisplayArgv = %s", got)
+	}
 }
 
 // A repo path refused by the resolver keeps its forbidden flag and gets the

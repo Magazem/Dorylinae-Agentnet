@@ -177,8 +177,10 @@ func printScope(w io.Writer, sc device.Scope) {
 	_, _ = fmt.Fprintf(w, "Types: %s\nExpires: %s\n", strings.Join(sc.Types, ", "), sc.Expires)
 	for _, c := range sc.Commands {
 		dir, _ := sc.RepoPath(c.Repo)
-		argv, _ := json.Marshal(c.Argv)
-		_, _ = fmt.Fprintf(w, "  %s  in %s (%s)\n      runs %s, timeout %d s", c.Name, c.Repo, dir, argv, c.TimeoutS)
+		// Quoted and escaped: a path or argv holding a control or bidi
+		// character cannot drive the terminal or change how the line reads
+		// (review 40 L6).
+		_, _ = fmt.Fprintf(w, "  %s  in %s (%s)\n      runs %s, timeout %d s", c.Name, c.Repo, device.DisplayQuote(dir), device.DisplayArgv(c.Argv), c.TimeoutS)
 		if len(c.Env) > 0 {
 			_, _ = fmt.Fprintf(w, ", env %s", strings.Join(c.Env, " "))
 		}

@@ -143,15 +143,15 @@ func scopeResolver(configDir string) device.Resolver {
 
 // scopeSummary is what the human approves: every command's name, repo path
 // and full argv with argv[0] resolved (Docs/protocol/device.md §Scope). The
-// argv strings are JSON-quoted so that no control character or quote can
-// change how the line reads.
+// argv strings are JSON-quoted, with bidi controls and other invisible
+// characters escaped too (review 40 M1), so that nothing in them can change
+// how the line reads.
 func scopeSummary(peerName string, sc device.Scope) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "let %s run commands on this device until %s, for %s requests:", peerName, sc.Expires, strings.Join(sc.Types, ", "))
 	for _, c := range sc.Commands {
 		dir, _ := sc.RepoPath(c.Repo)
-		argv, _ := json.Marshal(c.Argv)
-		fmt.Fprintf(&b, " [%s] in %s runs %s (timeout %d s", c.Name, quoteForSummary(dir), argv, c.TimeoutS)
+		fmt.Fprintf(&b, " [%s] in %s runs %s (timeout %d s", c.Name, device.DisplayQuote(dir), device.DisplayArgv(c.Argv), c.TimeoutS)
 		if len(c.Env) > 0 {
 			fmt.Fprintf(&b, ", env %s", strings.Join(c.Env, " "))
 		}
@@ -159,11 +159,6 @@ func scopeSummary(peerName string, sc device.Scope) string {
 	}
 	b.WriteString(" Confirm only if you set this scope yourself.")
 	return b.String()
-}
-
-func quoteForSummary(s string) string {
-	q, _ := json.Marshal(s)
-	return string(q)
 }
 
 // helperLinkFor resolves peer and returns this device's active helper link

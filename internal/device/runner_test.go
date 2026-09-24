@@ -174,6 +174,68 @@ func TestRunTimeoutKillsProcessTree(t *testing.T) {
 	}
 }
 
+// Review 40 L4: a program that exits 0 but leaves a child holding its output
+// open is still exit 0 (not a WaitDelay error reported as exit 1), and the
+// child is killed with the tree.
+func TestRunOrphanHoldingOutput(t *testing.T) {
+	dir := testutil.TempDir(t)
+	beat := filepath.Join(dir, "beat.txt")
+	res := runHelper(t, dir, nil, 60*time.Second, "orphan", beat)
+	if !res.Started || res.TimedOut || res.ExitCode != 0 {
+		t.Fatalf("orphan: %+v", res)
+	}
+	size := func() int64 {
+		fi, err := os.Stat(beat)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	time.Sleep(300 * time.Millisecond)
+	before := size()
+	time.Sleep(time.Second)
+	if after := size(); after != before {
+		t.Fatalf("the orphan still runs after the program ended (%d -> %d bytes)", before, after)
+	}
+}
+
+// Review 40 L5: at start, the repo must still resolve to the path the human
+// approved, and the program must still be a regular file.
+func TestCheckTarget(t *testing.T) {
+	prog := runnerHelper(t)
+	dir, err := filepath.EvalSymlinks(testutil.TempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckTarget(prog, dir); err != nil {
+		t.Fatalf("unchanged target: %v", err)
+	}
+	if CheckTarget(filepath.Join(dir, "missing"), dir) == nil || CheckTarget(dir, dir) == nil {
+		t.Fatal("a missing program or a directory as the program passed")
+	}
+	if CheckTarget(prog, filepath.Join(dir, "gone")) == nil {
+		t.Fatal("a missing directory passed")
+	}
+	// The repo replaced by a link to another directory.
+	other := testutil.TempDir(t)
+	repo := filepath.Join(dir, "repo")
+	if err := os.Mkdir(repo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckTarget(prog, repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(repo); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, repo); err != nil {
+		t.Skipf("cannot create a symlink here: %v", err)
+	}
+	if CheckTarget(prog, repo) == nil {
+		t.Fatal("a repo swapped for a symlink passed")
+	}
+}
+
 // On Windows `go env GOCACHE` needs LOCALAPPDATA: it must succeed with the
 // minimal environment (ticket 2.D2 acceptance).
 func TestRunGoEnvWithMinimalEnvironment(t *testing.T) {
