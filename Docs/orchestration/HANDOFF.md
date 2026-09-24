@@ -45,6 +45,13 @@ specs merged to main. Self-hosted relays: D17.
 - 2.D2 helper runner (+ review-36 L7 mail_submit allowlist, L8 OnReject, D22): **Opus trial** P2-Opus-HelperRunner slot `01a0d2ee-b28c…`, task `01a0d2ee-ea1d…`, worktree `helper-runner`.
 - 2.3c **merged** (fetch client + CLI; review 38: 0/0/4 fixed). Open: L3 fs `changed` can't detect same-size rewrites (protocol change → owner, Phase 3). 
 - 2.D2 **merged** (helper runner + mail_submit allowlist + OnReject + D22; review 40: M1 bidi/zero-width in approval text, M2 Linux Pdeathsig (macOS gap documented)). Runner output control chars become "?" (not U+FFFD). L1/L11 → D24 (2.D3).
+**Final wave (P2-4):**
+| Ticket | Model | Slot | Task | Worktree |
+|---|---|---|---|---|
+| 2.D3 (D24 kill-on-revoke, writable-by-others) | Opus | `01a0d32e-12d2…` | `01a0d32e-40f6…` | `device-harden` |
+| 2.9 e2e + audit + docs + D23 | Sonnet | `01a0d32e-131f…` | `01a0d32e-670e…` | `e2e-audit` |
+| 2.H harness (Claude Code + agy) + stand-in CI | Sonnet | `01a0d32e-1359…` | `01a0d32e-9031…` | `harness-p2` |
+Then 2.D3 security review, 2.P push (a `phase-2` tag only with the owner's OK).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
