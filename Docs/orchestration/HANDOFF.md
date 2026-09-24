@@ -37,7 +37,7 @@ specs merged to main. Self-hosted relays: D17.
 - 2.1b **merged** (f566c83 + D18 rework 543bc2e: `mail.Opened.Withhold` → the receiver stores signed='' at receipt). Not security-reviewed (not required by 23); **the 2.4 security review must also cover the D18/withhold path** in internal/mail/receiver.go and worksession receive/cancel.
 - 2.2c: rebased onto main (0471f70, 5e7b2c9); conflicts resolved textually but it doesn't compile against 2.1b/2.2d. **2.2c-i** integration: P2-GrantsIntegrate slot `01a0ce42-b2ea…`, task `01a0ce42-e4f8…`. Then gate + merge (no new review unless security behaviour changed). Review-28 leftovers: L8 (→ 2.4), L9 (grant.orphan audit lacks `grant`), L6/L7 notes.
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
-- **CI red on main since the 2.2d merge: data races** in internal/approval (store.go + test fakes), seen only by CI's -race job (no cgo locally). Fix: P2-RaceFix (Opus) slot `01a0d2b7-7c26…`, task `01a0d2b7-a1b3…`, worktree `race-fix`, CI log in `.race-log.txt` (don't commit it). Merge it before anything else.
+- CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
 - 2.5 consult: P2-Consult slot `01a0ce43-22be…`, task `01a0ce43-450c…`, worktree `consult`.
 `tests/phase2-manual.md` exists (created by 2.2d; includes the 2.2a toast-history check).
 Review-26 caller rules for 2.2c/2.4/2.D1 (N1–N5 in Docs/review/26): all state checks in Precondition (a Perform error leaves the approval pending); Perform writes only through tx; hooks return *ipc.Error; hooks run under Store.mu and must never call back into the Store; drop the pending row if Create fails; peer text can still show a decoy code. Review-26 L7 is resolved by D19 (2.2d).
@@ -180,6 +180,7 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
   `taskkill /T /F`. `$Home` is reserved. Wrap `Where-Object` results in `@()` before `.Count`.
 - **Headless agents on Windows:** Claude Code's shell tool is **PowerShell**, not Bash; isolate
   connectors (`--strict-mcp-config`, empty `--mcp-config`, `--setting-sources project`).
+- **-race runs only in CI** (no cgo here). Every implementation task must say: guard test variables written by goroutines (Perform/AfterCommit hooks, window/notifier fakes) with a mutex or an atomic (review 31). After merging concurrency code, watch the CI `race` job.
 - **Test flakiness patterns:** never read async state/audit once; poll with a deadline. Tests
   that write files use `internal/testutil.TempDir(t)` (Windows AV holds deleted files).
 - **CLI:** base64url keys can start with `-`; `parseInterspersed` handles it (don't regress).
