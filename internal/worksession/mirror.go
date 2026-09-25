@@ -28,6 +28,8 @@ type stateOutcome struct {
 	// auditComplete appends the request.complete audit row of a close,
 	// after commit (request.Store.CompleteInTx).
 	auditComplete func(context.Context)
+	expBytes      int
+	expTruncated  bool
 }
 
 var pendingState sync.Map // map[*mail.Opened]*stateOutcome
@@ -177,6 +179,27 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		}
 	}
 
+	// The experience record joins the same transaction that closes B's
+	// mirror (Docs/protocol/experience.md §When and where).
+	var expBytes int
+	var expTruncated bool
+	if state == StateClosed && row.state != StateClosed {
+		verificationBy := verificationActor(verification)
+		cancelledBy := ""
+		if outcome == OutcomeCancelled {
+			cancelledBy = RoleRequester
+			if row.cancel.Valid && row.cancel.String == "requested" {
+				cancelledBy = RoleWorker
+			}
+		}
+		finalRow := row
+		finalRow.round = round
+		var werr error
+		if expBytes, expTruncated, werr = s.writeExperienceTx(ctx, tx, finalRow, outcome, verification, verificationBy, cancelledBy, now); werr != nil {
+			return werr
+		}
+	}
+
 	// Complete B's request only on the step into closed. A later ws.state
 	// (a higher seq from a misbehaving A, "closed" again or after a reopen)
 	// must not fail the mail transaction: a non-bad-body error is never
@@ -209,7 +232,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		}
 	}
 
-	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete})
+	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete, expBytes: expBytes, expTruncated: expTruncated})
 	return nil
 }
 
@@ -228,6 +251,7 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	}
 	if out.applied && out.state == StateClosed {
 		s.closedAfterCommit(ctx, out.sessionID)
+		s.auditExperience(ctx, out.sessionID, RoleWorker, out.expBytes, out.expTruncated)
 	}
 	if out.applied && out.newRound && s.OnChanges != nil {
 		s.OnChanges(ctx, out.sessionID, out.peer, out.requestID)

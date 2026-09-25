@@ -70,6 +70,10 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 			return err
 		}
 	}
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, row, OutcomeCancelled, "", "", "timeout", now)
+	if err != nil {
+		return err
+	}
 
 	note := "session cancelled"
 	var res *request.Result
@@ -99,6 +103,7 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 		auditComplete(ctx)
 	}
 	s.auditClose(ctx, row, OutcomeCancelled, now)
+	s.auditExperience(ctx, row.id, row.role, expBytes, expTruncated)
 	return nil
 }
 

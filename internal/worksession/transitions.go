@@ -51,23 +51,23 @@ func (s *Store) sendState(ctx context.Context, tx *sql.Tx, row storedRow, seq in
 // stored result (Discard, RequestChanges from quarantined) do so themselves.
 // If RevokeGrants is set, every grant of this session ends in the same
 // transaction (Docs/protocol/grant.md §Session end).
-func (s *Store) closeSessionTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome, verification string, now time.Time) error {
+func (s *Store) closeSessionTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome, verification, verificationBy, cancelledBy string, now time.Time) (expBytes int, expTruncated bool, err error) {
 	seq := row.seq + 1
 	if _, err := s.sendState(ctx, tx, row, seq, StateClosed, outcome, verification, "", now); err != nil {
-		return err
+		return 0, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, verification = ?, state_at = ?, closed = ?, updated = ?
 WHERE id = ?`,
 		StateClosed, outcome, seq, nullIfEmpty(verification), wireTime(now), wireTime(now), storeTime(now), row.id); err != nil {
-		return fmt.Errorf("worksession: close row: %w", err)
+		return 0, false, fmt.Errorf("worksession: close row: %w", err)
 	}
 	if s.RevokeGrants != nil {
 		if err := s.RevokeGrants(ctx, tx, row.id, now); err != nil {
-			return err
+			return 0, false, err
 		}
 	}
-	return nil
+	return s.writeExperienceTx(ctx, tx, row, outcome, verification, verificationBy, cancelledBy, now)
 }
 
 func nullIfEmpty(s string) any {
@@ -106,7 +106,8 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 	if r.verification.Valid {
 		verification = r.verification.String
 	}
-	if err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, verification, now); err != nil {
+	expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, verification, verificationActor(verification), "", now)
+	if err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -117,6 +118,7 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 		_ = s.Audit.Append(ctx, "cli", "ws.accept_result", map[string]any{"session": id, "peer": r.peer, "round": r.round, "verification": verification})
 	}
 	s.auditClose(ctx, r, OutcomeAccepted, now)
+	s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -232,6 +234,13 @@ WHERE id = ?`,
 			return View{}, err
 		}
 	}
+	// The quarantined result was already deleted from row above; writing the
+	// experience record from r (read before the delete) never reads
+	// r.result for a cancelled outcome, so it never resurrects it.
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, OutcomeCancelled, "", "", RoleRequester, now)
+	if err != nil {
+		return View{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return View{}, fmt.Errorf("worksession: commit: %w", err)
 	}
@@ -240,6 +249,7 @@ WHERE id = ?`,
 		_ = s.Audit.Append(ctx, "cli", "ws.discard", map[string]any{"session": id, "peer": r.peer, "round": r.round})
 	}
 	s.auditClose(ctx, r, OutcomeCancelled, now)
+	s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -275,6 +285,8 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	}
 	now := s.now()
 	var afterDebate func(context.Context)
+	var expBytes int
+	var expTruncated bool
 	if r.kind == SessionKindDebate {
 		// Docs/protocol/debate.md §Cancel and abandon: close cancelled, no
 		// Decision; B learns it from debate.close, never from ws.state.
@@ -286,7 +298,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 			return View{}, err
 		}
 		afterDebate = fn
-	} else if err := s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", now); err != nil {
+	} else if expBytes, expTruncated, err = s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", "", RoleRequester, now); err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -300,6 +312,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 		afterDebate(ctx)
 	} else {
 		s.auditClose(ctx, r, OutcomeCancelled, now)
+		s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
 	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
@@ -376,37 +389,40 @@ func (s *Store) ReleaseApproved(ctx context.Context, id, approvalID string) (Vie
 // tx with verification forced to human_accepted (Docs/protocol/work-session.md
 // §Accept-result, "--human"), for use as an approval.Action's Perform (kind
 // "accept_result", 2.1b). It writes no audit; call AuditAfterHumanAccept with
-// the returned peer/round/opened after the caller's transaction commits.
-func (s *Store) AcceptResultInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (peer string, round int, opened time.Time, err error) {
+// the returned values after the caller's transaction commits.
+func (s *Store) AcceptResultInTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) (peer string, round int, opened time.Time, expBytes int, expTruncated bool, err error) {
 	r, err := scanByID(ctx, tx, id)
 	if err != nil {
-		return "", 0, time.Time{}, err
+		return "", 0, time.Time{}, 0, false, err
 	}
 	if r.role != RoleRequester {
-		return "", 0, time.Time{}, ErrNotRequester
+		return "", 0, time.Time{}, 0, false, ErrNotRequester
 	}
 	if r.kind == SessionKindDebate {
-		return "", 0, time.Time{}, debateBadState(r, "debates have no result to accept")
+		return "", 0, time.Time{}, 0, false, debateBadState(r, "debates have no result to accept")
 	}
 	if r.state != StateAwaitingResult {
-		return "", 0, time.Time{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
+		return "", 0, time.Time{}, 0, false, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
-	if err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, VerificationHumanAccepted, now); err != nil {
-		return "", 0, time.Time{}, err
+	expBytes, expTruncated, err = s.closeSessionTx(ctx, tx, r, OutcomeAccepted, VerificationHumanAccepted, RoleRequester, "", now)
+	if err != nil {
+		return "", 0, time.Time{}, 0, false, err
 	}
-	return r.peer, r.round, parseWireTime(r.opened), nil
+	return r.peer, r.round, parseWireTime(r.opened), expBytes, expTruncated, nil
 }
 
-// AuditAfterHumanAccept audits ws.accept_result and ws.close for the
-// --human ws_accept_result path (2.1b), and wakes the outbox. Call it once,
-// after the approval's transaction (which ran AcceptResultInTx) has
-// committed: the audit log shares the daemon's single SQLite connection, so
-// this must never run inside a transaction (review 27, C1).
-func (s *Store) AuditAfterHumanAccept(ctx context.Context, id, peer string, round int, opened, now time.Time) {
+// AuditAfterHumanAccept audits ws.accept_result, ws.close and
+// experience.write for the --human ws_accept_result path (2.1b), and wakes
+// the outbox. Call it once, after the approval's transaction (which ran
+// AcceptResultInTx) has committed: the audit log shares the daemon's single
+// SQLite connection, so this must never run inside a transaction (review 27,
+// C1).
+func (s *Store) AuditAfterHumanAccept(ctx context.Context, id, peer string, round int, opened, now time.Time, expBytes int, expTruncated bool) {
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
 	s.closedAfterCommit(ctx, id)
+	s.auditExperience(ctx, id, RoleRequester, expBytes, expTruncated)
 	if s.Audit == nil {
 		return
 	}

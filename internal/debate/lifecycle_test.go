@@ -383,7 +383,7 @@ func TestDebateSessionRefusesWorkTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err = a.ws.AcceptResultInTx(ctx, tx, sid, a.clock)
+	_, _, _, _, _, err = a.ws.AcceptResultInTx(ctx, tx, sid, a.clock)
 	_ = tx.Rollback()
 	wantBS("ws_accept_result --human", err)
 

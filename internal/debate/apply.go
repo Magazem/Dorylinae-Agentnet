@@ -12,6 +12,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/experience"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -212,7 +213,7 @@ func (s *Store) applyEntryOnA(ctx context.Context, tx *sql.Tx, op *mail.Opened, 
 		if r, err = getRow(ctx, tx, r.session); err != nil {
 			return err
 		}
-		closing, err := s.closeTx(ctx, tx, r, outcome, reason, "daemon", now)
+		closing, err := s.closeTx(ctx, tx, r, outcome, reason, "daemon", "", now)
 		if err != nil {
 			return err
 		}
@@ -435,13 +436,19 @@ func (s *Store) brokenTx(ctx context.Context, tx *sql.Tx, r row, now time.Time, 
 	}
 	out.add(s.audit("daemon", "debate.reveal_in", map[string]any{"session": r.session, "peer": r.peer, "ok": false}))
 	out.add(s.audit("daemon", "debate.reveal_bad", map[string]any{"session": r.session, "peer": r.peer}))
-	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, now, out)
+	tr, err := loadTranscript(ctx, tx, r.session)
+	if err != nil {
+		return err
+	}
+	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr, RoleInitiator, nil, now, out)
 }
 
 // closeMirrorTx closes B's work-session mirror and completes B's request
 // through the Phase 1 path with note and no result (§Kinds: "B then completes
-// the request").
-func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome, note, event string, now time.Time, out *afters) error {
+// the request"). outcome, tr, cancelledBy and dec are the experience record's
+// inputs (Docs/protocol/experience.md §When and where: "B's mirror applying
+// closed" is one of B's own closing transactions).
+func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome, note, event string, outcome string, tr transcript, cancelledBy string, dec *experience.Decision, now time.Time, out *afters) error {
 	afterWS, err := s.Sessions.CloseDebateTx(ctx, tx, r.session, wsOutcome, now)
 	if err != nil {
 		return err
@@ -460,6 +467,11 @@ func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome,
 	if event != "" {
 		out.add(s.event(event, r.session, r.peer, r.requestID))
 	}
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, outcome, cancelledBy, dec, now)
+	if err != nil {
+		return err
+	}
+	out.add(s.auditExperience(r.session, r.role, expBytes, expTruncated))
 	return nil
 }
 
@@ -656,13 +668,22 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 		"session": r.session, "peer": r.peer, "outcome": outcome, "reason": reason, "entries": entries,
 	}))
 	wsOutcome, note, event := worksession.OutcomeAccepted, "debate agreed", EventAgreed
+	cancelledBy := ""
+	var dec *experience.Decision
 	switch outcome {
 	case OutcomeEscalated:
 		note, event = "debate escalated", EventEscalated
 	case OutcomeCancelled:
 		wsOutcome, note, event = worksession.OutcomeCancelled, "session cancelled", ""
+		cancelledBy = RoleInitiator
+		if reason == ReasonTimeout {
+			cancelledBy = "timeout"
+		}
 	}
-	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, now, out)
+	if outcome != OutcomeCancelled {
+		dec = &experience.Decision{ID: decision.ID(r.session), Hash: decision.Hash(canon)}
+	}
+	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, outcome, tr, cancelledBy, dec, now, out)
 }
 
 // closeMatches checks A's close against B's own transcript: agreed needs B's

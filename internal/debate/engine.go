@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/experience"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
@@ -94,7 +96,7 @@ func (s *Store) revealTx(ctx context.Context, tx *sql.Tx, r row, tr transcript, 
 // goes to B. entries counts the slots A applied; constraints lists the ids A
 // holds as active. The closing phase keeps outcome NULL (the table's CHECK):
 // the decided outcome is in the stored close body (last_state) and reason.
-func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason, actor string, now time.Time) (afters, error) {
+func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason, actor, cancelledBy string, now time.Time) (afters, error) {
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM debate_entries WHERE session = ? AND state = ?`, r.session, stateApplied).Scan(&n); err != nil {
 		return nil, fmt.Errorf("debate: count entries: %w", err)
@@ -112,18 +114,29 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 		"request": r.requestID, "session": r.session,
 	}
 	var out afters
+	var tr transcript
+	var dec *experience.Decision
 	if outcome == OutcomeCancelled {
 		if err := setClosed(ctx, tx, r.session, outcome, reason, now); err != nil {
 			return nil, err
+		}
+		var lerr error
+		tr, lerr = loadTranscript(ctx, tx, r.session)
+		if lerr != nil {
+			return nil, lerr
 		}
 	} else {
 		if _, err := tx.ExecContext(ctx, `UPDATE debates SET phase = ?, reason = ?, turn_deadline = NULL, updated = ? WHERE session = ?`,
 			PhaseClosing, reason, storeTime(now), r.session); err != nil {
 			return nil, fmt.Errorf("debate: closing: %w", err)
 		}
-		if err := s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out); err != nil {
-			return nil, err
+		var hash string
+		var derr error
+		tr, hash, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out)
+		if derr != nil {
+			return nil, derr
 		}
+		dec = &experience.Decision{ID: decision.ID(r.session), Hash: hash}
 	}
 	if _, err := s.sendLastState(ctx, tx, r, MailClose, body, now); err != nil {
 		return nil, err
@@ -151,6 +164,11 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 	case OutcomeEscalated:
 		out.add(s.event(EventEscalated, r.session, r.peer, r.requestID))
 	}
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, outcome, cancelledBy, dec, now)
+	if err != nil {
+		return nil, err
+	}
+	out.add(s.auditExperience(r.session, r.role, expBytes, expTruncated))
 	return out, nil
 }
 
@@ -164,7 +182,7 @@ func (s *Store) CancelTx(ctx context.Context, tx *sql.Tx, sid string, now time.T
 	if r.role != RoleInitiator || !r.open() {
 		return nil, &BadStateError{Phase: r.phase, Msg: fmt.Sprintf("%s is %s", sid, r.phase)}
 	}
-	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "cli", now)
+	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "cli", RoleInitiator, now)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +200,7 @@ func (s *Store) PeerCancelTx(ctx context.Context, tx *sql.Tx, sid string, now ti
 	if r.role != RoleInitiator || !r.open() {
 		return false, nil, nil
 	}
-	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "daemon", now)
+	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "daemon", RoleRespondent, now)
 	if err != nil {
 		return false, nil, err
 	}
@@ -210,8 +228,12 @@ func (s *Store) AbandonTx(ctx context.Context, tx *sql.Tx, sid string, now time.
 	if err := setClosed(ctx, tx, sid, OutcomeCancelled, ReasonAbandoned, now); err != nil {
 		return nil, err
 	}
+	tr, err := loadTranscript(ctx, tx, sid)
+	if err != nil {
+		return nil, err
+	}
 	var out afters
-	if err := s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", "", now, &out); err != nil {
+	if err := s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", "", OutcomeCancelled, tr, RoleRespondent, nil, now, &out); err != nil {
 		return nil, err
 	}
 	out.add(s.audit("cli", "debate.abandon", map[string]any{"session": sid, "peer": r.peer}))
@@ -230,7 +252,7 @@ func (s *Store) EarlyCompleteTx(ctx context.Context, tx *sql.Tx, sid string, now
 	if r.role != RoleInitiator || !r.open() {
 		return nil, nil
 	}
-	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "daemon", now)
+	out, err := s.closeTx(ctx, tx, r, OutcomeCancelled, ReasonCancelled, "daemon", RoleRespondent, now)
 	if err != nil {
 		return nil, err
 	}

@@ -87,6 +87,7 @@ func TestMigration8PreservesPeers(t *testing.T) {
 		`DROP TABLE debate_entries`,
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
+		`DROP TABLE experience_records`,
 		`DELETE FROM migrations WHERE version > 7`,
 		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
 		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
@@ -167,6 +168,7 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 		`DROP TABLE debate_entries`,
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
+		`DROP TABLE experience_records`,
 		`DROP TABLE peers`,
 		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
@@ -218,7 +220,9 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, q := range []string{
-			// Back to schema 17: undo migrations 20 (decisions) and 19 (debates, which alters work_sessions).
+			// Back to schema 17: undo migrations 21 (experience_records), 20 (decisions)
+			// and 19 (debates, which alters work_sessions).
+			`DROP TABLE experience_records`,
 			`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
 			`ALTER TABLE work_sessions DROP COLUMN kind`,
 			`DROP TABLE audit_events`, migrations[0].sql, `DELETE FROM migrations WHERE version > 17`,

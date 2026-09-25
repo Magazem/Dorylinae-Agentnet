@@ -117,11 +117,15 @@ func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID s
 	var afterClose func(context.Context)
 	if row.state == StateOpen {
 		now := s.now()
-		if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", now); err != nil {
+		expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", "", RoleWorker, now)
+		if err != nil {
 			return keepContent, nil, err
 		}
 		closedRow := row
-		afterClose = func(ctx context.Context) { s.auditClose(ctx, closedRow, OutcomeCancelled, now) }
+		afterClose = func(ctx context.Context) {
+			s.auditClose(ctx, closedRow, OutcomeCancelled, now)
+			s.auditExperience(ctx, closedRow.id, closedRow.role, expBytes, expTruncated)
+		}
 	}
 	// awaiting_result or quarantined: only a misbehaving Phase 2 worker can
 	// cause this; the session is left to A (Docs/protocol/work-session.md).

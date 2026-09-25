@@ -516,6 +516,18 @@ CREATE TABLE decisions (
     updated   TEXT NOT NULL
 );
 `},
+	// Private experience records (Docs/protocol/experience.md, ticket 3.7): one
+	// snapshot per (session, role), written in the closing transaction, kept
+	// indefinitely, read by nothing in Phase 3.
+	{21, "experience_records", `
+CREATE TABLE experience_records (
+    session TEXT NOT NULL,
+    role    TEXT NOT NULL,
+    record  TEXT NOT NULL CHECK (json_valid(record)),   -- canonical record (content)
+    created TEXT NOT NULL,
+    PRIMARY KEY (session, role)
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

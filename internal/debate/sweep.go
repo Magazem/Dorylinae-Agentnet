@@ -77,7 +77,7 @@ func (s *Store) SweepOne(ctx context.Context, id string) (closed bool, err error
 	if t.Slot == 1 && !t.Done {
 		outcome = OutcomeCancelled
 	}
-	out, err := s.closeTx(ctx, tx, r, outcome, ReasonTimeout, "daemon", now)
+	out, err := s.closeTx(ctx, tx, r, outcome, ReasonTimeout, "daemon", "timeout", now)
 	if err != nil {
 		return false, err
 	}

@@ -141,11 +141,13 @@ func (s *Store) createAudit(r row, outcome, hash string, bytes int, signedBy ...
 
 // decideTx is A's part of decision.md §Signing step 1, inside closeTx: derive
 // the Decision, sign it, store it awaiting_peer and add the hash and the
-// signature to the close body.
-func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time, out *afters) error {
+// signature to the close body. It returns the loaded transcript and the
+// Decision hash so closeTx can reuse them for the experience record (written
+// before B signs, Docs/protocol/experience.md "acceptance").
+func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time, out *afters) (transcript, string, error) {
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	at, _ := body["at"].(string)
 	// closed is never before opened (review 47 M1): if this clock went back
@@ -153,7 +155,7 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 	// created instead, so B does not refuse and verify step 5 holds.
 	var opened string
 	if err := tx.QueryRowContext(ctx, `SELECT created FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, r.peer, r.requestID).Scan(&opened); err != nil {
-		return fmt.Errorf("debate: read request for the Decision: %w", err)
+		return nil, "", fmt.Errorf("debate: read request for the Decision: %w", err)
 	}
 	if at < opened { // both whole-second UTC wire times: string order is time order
 		at = opened
@@ -161,19 +163,19 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 	}
 	canon, err := s.deriveTx(ctx, tx, r, tr, entries, listed, outcome, reason, at)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	sig, err := s.sign(canon)
 	if err != nil {
-		return err
+		return nil, "", err
 	}
 	hash := decision.Hash(canon)
 	if err := insertDecision(ctx, tx, r, canon, hash, sig, "", "", DecisionAwaitingPeer, now); err != nil {
-		return err
+		return nil, "", err
 	}
 	body["decision"], body["sig"] = hash, sig
 	out.add(s.createAudit(r, outcome, hash, len(canon), RoleInitiator))
-	return nil
+	return tr, hash, nil
 }
 
 // closeGap compares A's entries count with B's transcript (decision.md
@@ -278,7 +280,7 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 	out.add(s.audit("daemon", "decision.refuse", map[string]any{
 		"id": decision.ID(r.session), "session": r.session, "peer": r.peer, "reason": why,
 	}))
-	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, now, out)
+	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr, RoleInitiator, nil, now, out)
 }
 
 // decisionOutcome reads the outcome member of a canonical Decision.

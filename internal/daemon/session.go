@@ -415,13 +415,13 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 				return nil
 			},
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
-				peer, round, opened, err := ws.AcceptResultInTx(ctx, tx, sid, time.Now())
+				peer, round, opened, expBytes, expTruncated, err := ws.AcceptResultInTx(ctx, tx, sid, time.Now())
 				if err != nil {
 					return nil, err
 				}
 				now := time.Now()
 				return afterCommitResult{after: func(ctx context.Context) {
-					ws.AuditAfterHumanAccept(ctx, sid, peer, round, opened, now)
+					ws.AuditAfterHumanAccept(ctx, sid, peer, round, opened, now, expBytes, expTruncated)
 				}}, nil
 			},
 		})

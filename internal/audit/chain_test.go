@@ -60,9 +60,10 @@ func legacyStore(t *testing.T, rows ...string) (*store.Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Back to schema 17: undo migrations 20 (decisions) and 19 (debates) too; 19 alters
-	// work_sessions and would fail when replayed.
-	exec(t, s.DB(), `DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
+	// Back to schema 17: undo migrations 21 (experience_records), 20 (decisions)
+	// and 19 (debates) too; 19 alters work_sessions and would fail when replayed.
+	exec(t, s.DB(), `DROP TABLE experience_records`,
+		`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
 		`ALTER TABLE work_sessions DROP COLUMN kind`,
 		`DROP TABLE audit_events`, migration1, `DELETE FROM migrations WHERE version > 17`)
 	for _, r := range rows {

@@ -101,8 +101,10 @@ type cancelOutcome struct {
 	closed    *storedRow // the row before a close, for ws.close
 	// debate is set for a debate session: its close (and ws.close) is
 	// audited by debateAfter, and a refusal is not echoed with ws.state.
-	debate      bool
-	debateAfter func(context.Context)
+	debate       bool
+	debateAfter  func(context.Context)
+	expBytes     int
+	expTruncated bool
 }
 
 var pendingCancel sync.Map // map[*mail.Opened]*cancelOutcome
@@ -189,10 +191,11 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		pendingCancel.Store(op, &cancelOutcome{result: result, sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: true, debateAfter: after})
 		return nil
 	}
-	if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", s.now()); err != nil {
+	expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", "", RoleWorker, s.now())
+	if err != nil {
 		return err
 	}
-	pendingCancel.Store(op, &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From, closed: &row})
+	pendingCancel.Store(op, &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From, closed: &row, expBytes: expBytes, expTruncated: expTruncated})
 	return nil
 }
 
@@ -220,6 +223,7 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 	_ = s.Audit.Append(ctx, "daemon", "ws.cancel_in", map[string]any{"session": out.sessionID, "peer": out.peer, "result": out.result})
 	if out.closed != nil {
 		s.auditClose(ctx, *out.closed, OutcomeCancelled, s.now())
+		s.auditExperience(ctx, out.closed.id, out.closed.role, out.expBytes, out.expTruncated)
 	}
 	if out.debateAfter != nil {
 		out.debateAfter(ctx)
