@@ -96,7 +96,7 @@ func TestStatusRunning(t *testing.T) {
 
 	out.Reset()
 	if code := run([]string{"status"}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "running") ||
-		!strings.Contains(out.String(), "outbox:  0 queued, 0 relayed, 0 expired") {
+		!strings.Contains(out.String(), "outbox:  0 pending (0 queued, 0 relayed), 0 delivered, 0 failed, 0 expired") {
 		t.Fatalf("human status: code=%d out=%q", code, out.String())
 	}
 }

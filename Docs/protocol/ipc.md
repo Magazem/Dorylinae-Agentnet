@@ -74,7 +74,7 @@ Result:
 | `started_at` | string | RFC 3339 UTC start time |
 | `uptime_seconds` | number | Seconds since start |
 | `version` | string | Daemon version |
-| `outbox` | object | `{queued, relayed, expired}`: sender outbox rows in each state ([mail.md](mail.md#outbox)) |
+| `outbox` | object | `{queued, relayed, expired, pending, delivered, failed}`: sender outbox rows in each state (`pending` = `queued` + `relayed`) ([mail.md](mail.md#outbox)) |
 | `presence` | object | Phase 1 (1.2c): `{"mode": "visible"\|"invisible"\|"only_team", "team"?: {"id","name"}, "relay": "connected"\|"disconnected"\|"unsupported"\|"none", "agent_active": bool, "human_present": bool\|null}`. The last two are this machine's own values, detected locally, even when not shared |
 | `team` | object | Only with the param `team` (Phase 1, 1.2c), see below |
 

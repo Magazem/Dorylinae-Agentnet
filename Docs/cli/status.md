@@ -29,7 +29,7 @@ agentnetd running
   pid:     4242
   uptime:  1m2s
   version: 0.0.0-dev
-  outbox:  0 queued, 0 relayed, 0 expired
+  outbox:  0 pending (0 queued, 0 relayed), 0 delivered, 0 failed, 0 expired
   presence: visible, relay connected
 ```
 
@@ -53,9 +53,10 @@ carol  online   idle    unknown  2026-10-01T09:40:31Z
 you shows `offline` with the last time it was seen.
 
 `outbox` counts the sender's mail by state ([../protocol/mail.md](../protocol/mail.md#outbox)):
-`queued` (not yet handed to the relay), `relayed` (handed over, no ack yet) and `expired`
-(no ack within 7 days: delivery unknown). Delivered and failed mail is not counted.
-
+`queued` (not yet handed to the relay), `relayed` (handed over, no ack yet), `pending`
+(`queued` + `relayed`: not yet final), `delivered` (acked), `failed` (refused, or the
+recipient does not support the kind) and `expired` (no ack within 7 days: delivery
+unknown).
 Not running (stderr, exit 3):
 
 ```
@@ -67,8 +68,11 @@ agentnet: agentnetd is not running (endpoint: <path or pipe name>)
 Running (exit 0):
 
 ```json
-{"ok": true, "pid": 4242, "started_at": "2026-09-21T10:00:00Z", "uptime_seconds": 62.4, "version": "0.0.0-dev", "outbox": {"queued": 0, "relayed": 0, "expired": 0}}
+{"ok": true, "pid": 4242, "started_at": "2026-09-21T10:00:00Z", "uptime_seconds": 62.4, "version": "0.0.0-dev", "outbox": {"queued": 0, "relayed": 0, "expired": 0, "pending": 0, "delivered": 0, "failed": 0}}
 ```
+
+`queued`, `relayed` and `expired` are the original fields and are unchanged; `pending`,
+`delivered` and `failed` were added later.
 
 From Phase 1 the object also has `presence` (own mode, relay state, own agent and human
 flags), and with `--team` a `team` object whose `members[]` each carry `name`,

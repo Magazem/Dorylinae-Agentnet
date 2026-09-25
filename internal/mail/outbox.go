@@ -98,6 +98,10 @@ type OutboxCounts struct {
 	Queued  int `json:"queued"`
 	Relayed int `json:"relayed"`
 	Expired int `json:"expired"`
+	// Pending is Queued + Relayed: rows not yet in a final state.
+	Pending   int `json:"pending"`
+	Delivered int `json:"delivered"`
+	Failed    int `json:"failed"`
 }
 
 type outboxRow struct {
@@ -302,7 +306,7 @@ func (o *Outbox) OnPeerOnline(peer string) {
 	o.Wake()
 }
 
-// Counts reports the rows in each non-final state and the expired ones.
+// Counts reports the rows in each state, plus Pending (queued + relayed).
 func (o *Outbox) Counts(ctx context.Context) (OutboxCounts, error) {
 	rows, err := o.DB.QueryContext(ctx, `SELECT state, COUNT(*) FROM outbox GROUP BY state`)
 	if err != nil {
@@ -323,8 +327,13 @@ func (o *Outbox) Counts(ctx context.Context) (OutboxCounts, error) {
 			c.Relayed = n
 		case StateExpired:
 			c.Expired = n
+		case StateDelivered:
+			c.Delivered = n
+		case StateFailed:
+			c.Failed = n
 		}
 	}
+	c.Pending = c.Queued + c.Relayed
 	return c, rows.Err()
 }
 

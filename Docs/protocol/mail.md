@@ -401,7 +401,7 @@ queued ──send ok──▶ relayed ──ack──▶ delivered
   (reconnect); all non-final rows to a peer on that peer's presence-online edge (1.2; a
   no-op hook until then); re-sealed rows (key-miss recovery).
 - Expiry is checked by the worker every minute: `created + 7 d ≤ now` → `expired`.
-- `agentnet status` reports `outbox: {queued, relayed, expired}`: the `outbox` member of
+- `agentnet status` reports `outbox: {queued, relayed, expired, pending, delivered, failed}` (`pending` = `queued` + `relayed`): the `outbox` member of
   `--json`, and an `outbox:` line in the human output ([status.md](../cli/status.md)) (1.0f).
 
 ## Tables

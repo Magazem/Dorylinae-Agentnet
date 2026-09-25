@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -221,6 +222,73 @@ func TestOutboxUnsupportedKindFails(t *testing.T) {
 	}
 	if s, e, left := rowState(t, a, res.ID); s != "failed" || e != "unsupported_kind" || left {
 		t.Fatalf("state %s %q plaintext %v", s, e, left)
+	}
+}
+
+// TestOutboxCountsSplitFinalStates checks Counts after a mix of expired,
+// delivered, failed and still-pending mail, and that the JSON keeps the
+// original queued/relayed/expired keys next to the new ones.
+func TestOutboxCountsSplitFinalStates(t *testing.T) {
+	ctx := context.Background()
+	clk := &testClock{t: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
+	a, b := newMNode(t, clk), newMNode(t, clk)
+	pair(t, a, b)
+	ob := withOutbox(t, a, clk)
+	withOutbox(t, b, clk)
+
+	// Expired: sent, never acked, then the clock passes the 7 d window.
+	exp, _ := ob.Submit(ctx, b.key, "note", nil)
+	a.waitSent(t, 1)
+	clk.add(mail.OutboxExpiry)
+	waitFor(t, "expired", func() bool { s, _, _ := rowState(t, a, exp.ID); return s == "expired" })
+
+	// Delivered: B handles the mail and A gets the ack.
+	del, _ := ob.Submit(ctx, b.key, "note", nil)
+	if err := b.rcv.Handle(ctx, a.waitSent(t, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rcv.Handle(ctx, b.waitSent(t, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, _ := rowState(t, a, del.ID); s != "delivered" {
+		t.Fatalf("delivered row state %s", s)
+	}
+
+	// Failed: B does not know the kind and acks it unsupported.
+	fail, _ := ob.Submit(ctx, b.key, "mystery", nil)
+	if err := b.rcv.Handle(ctx, a.waitSent(t, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rcv.Handle(ctx, b.waitSent(t, 1)[0]); err != nil {
+		t.Fatal(err)
+	}
+	if s, _, _ := rowState(t, a, fail.ID); s != "failed" {
+		t.Fatalf("failed row state %s", s)
+	}
+
+	// Pending: handed to the relay, no ack.
+	pend, _ := ob.Submit(ctx, b.key, "note", nil)
+	a.waitSent(t, 1)
+	waitFor(t, "relayed", func() bool { s, _, _ := rowState(t, a, pend.ID); return s == "relayed" })
+
+	c, err := ob.Counts(ctx)
+	want := mail.OutboxCounts{Queued: 0, Relayed: 1, Expired: 1, Pending: 1, Delivered: 1, Failed: 1}
+	if err != nil || c != want {
+		t.Fatalf("Counts = %+v, %v; want %+v", c, err, want)
+	}
+
+	raw, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]int
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range map[string]int{"queued": 0, "relayed": 1, "expired": 1, "pending": 1, "delivered": 1, "failed": 1} {
+		if got, ok := m[k]; !ok || got != v {
+			t.Errorf("json %q = %d (present %v), want %d; body %s", k, got, ok, v, raw)
+		}
 	}
 }
 

@@ -216,8 +216,9 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 		return exitOK
 	}
 	up := time.Duration(res.UptimeSeconds * float64(time.Second)).Round(time.Second)
-	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n  outbox:  %d queued, %d relayed, %d expired\n",
-		res.PID, up, res.Version, res.Outbox.Queued, res.Outbox.Relayed, res.Outbox.Expired)
+	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n  outbox:  %d pending (%d queued, %d relayed), %d delivered, %d failed, %d expired\n",
+		res.PID, up, res.Version, res.Outbox.Pending, res.Outbox.Queued, res.Outbox.Relayed,
+		res.Outbox.Delivered, res.Outbox.Failed, res.Outbox.Expired)
 	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, res.Presence.Relay)
 	if res.Team != nil {
 		printStatusTeam(stdout, res.Team)
