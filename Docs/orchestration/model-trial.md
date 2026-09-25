@@ -72,3 +72,15 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 
 **Trial 2 result (3 tickets):** thinking-off Sonnet was as fast or faster (6–8 min vs ~10 for the control), needed no rework, passed the gate first time, and its reports were as careful as the control's (both flagged their own gaps). On routine, well-scoped tickets with our current specs and tests, thinking adds no visible value. Caveat: three small tickets; nothing ambiguous or cross-cutting was tried.
 | DX-1 owner rough edges (6 items) | Sonnet 5, thinking off | ~27 | 0 | 1 (missed the new audit-inventory entry for `shutdown`; 3.6b landed on main meanwhile) | Reproduced each item against real binaries before fixing; found the real Windows cause (ERROR_ACCESS_DENIED on the first pipe instance) |
+
+## Phase 3 log (D26/D28 policy in force)
+
+| Ticket | Model | Minutes | Gate at merge | Review C/H/M |
+|---|---|---|---|---|
+| 3.2 debate schemas | Opus 5.5 | ~16 | clean | (joint with 3.1a) |
+| 3.6a audit chain | Opus 5.5 | ~16 | clean | 0/0/1 |
+| 3.1a debate core | Opus 5.5 | ~40 | integration with 3.6a needed a test-helper fix (my merge) | 0/1/1 (joint with 3.2) |
+| 3.6b agentnet log | Sonnet 5 | ~27 | clean | not required |
+| 3.4 constraints | Opus 5.5 | ~18 | clean | pending |
+| 3.1b debate IPC/CLI | Sonnet 5 | **~130** (outlier) | gofmt after conflict resolution | not required |
+| DX-1 owner rough edges | Sonnet 5, thinking off | ~27 | missed a new audit-inventory entry (3.6b landed meanwhile) | not required |
