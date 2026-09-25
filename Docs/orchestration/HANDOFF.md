@@ -48,7 +48,7 @@ specs merged to main. Self-hosted relays: D17.
 **Final wave (P2-4):**
 | Ticket | Model | Slot | Task | Worktree |
 |---|---|---|---|---|
-| 2.D3 (D24) | Opus | done ~15 min | review R-2.D3 `01a0d722-f0c3…` task `01a0d723-2447…` → Docs/review/41 | `device-harden` |
+| 2.D3 (D24) | Opus | **merged** (review 41: link-hop walk, Linux POSIX ACLs, watch expiry). Open: L5 UNC/NFS paths trust the file server admins (owner call later); L4 macOS ACLs not read. | | |
 | 2.9 | Sonnet | **merged** (whole-loop e2e, TestPhase2AuditHasNoContent, D23 git version check, status `git` field, docs fixes) | | |
 | 2.N (D25) | Sonnet | **merged** (session.result on A, session.changes on B; content-free, after commit) | | |
 | 2.H harness (Claude Code + agy) + stand-in CI | Sonnet | `01a0d32e-1359…` | `01a0d32e-9031…` | `harness-p2` |
