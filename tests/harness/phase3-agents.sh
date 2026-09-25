@@ -361,7 +361,7 @@ run_round() { # run_round <round-num> <initiator> <respondent> <scenario> <relay
     "$STANDIN" -mode debate -agentnet "$AGENTNET" -home "$b_home" -role b \
       -claim "Use design B (a generation counter)." \
       -argument "It never blocks on a shared timer, which matters under heavy call rates." \
-      -timeout "$AGENT_TIMEOUT_SECONDS" "${disagree_flag[@]}" \
+      -timeout "$AGENT_TIMEOUT_SECONDS" ${disagree_flag[@]+"${disagree_flag[@]}"} \
       >"$run_dir/standin-b.stdout.log" 2>"$run_dir/standin-b.stderr.log" &
     local b_standin_pid=$!
 
