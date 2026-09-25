@@ -26,6 +26,11 @@ func Listen(endpoint string) (net.Listener, error) {
 	sd := "D:P(A;;GA;;;" + user.User.Sid.String() + ")"
 	ln, err := winio.ListenPipe(endpoint, &winio.PipeConfig{SecurityDescriptor: sd})
 	if err != nil {
+		// A second daemon on the same pipe name fails the exclusive
+		// first-instance create with access denied, not a name collision.
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			return nil, fmt.Errorf("%w: pipe %s is already in use", ErrAlreadyRunning, endpoint)
+		}
 		return nil, fmt.Errorf("listen on %s: %w", endpoint, err)
 	}
 	return ln, nil

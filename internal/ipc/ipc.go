@@ -265,3 +265,7 @@ func Call(ctx context.Context, endpoint, method string, params, result any) erro
 
 // ErrNotRunning means nothing is listening on the endpoint.
 var ErrNotRunning = errors.New("ipc: no daemon listening")
+
+// ErrAlreadyRunning means Listen found another process already listening on
+// the endpoint (a second agentnetd for the same home).
+var ErrAlreadyRunning = errors.New("ipc: endpoint already in use")

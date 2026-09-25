@@ -19,7 +19,7 @@ const dialTimeout = 1 * time.Second
 func Listen(endpoint string) (net.Listener, error) {
 	if c, err := net.DialTimeout("unix", endpoint, dialTimeout); err == nil {
 		_ = c.Close()
-		return nil, fmt.Errorf("daemon already running on %s", endpoint)
+		return nil, fmt.Errorf("%w: socket %s is already in use", ErrAlreadyRunning, endpoint)
 	}
 	if err := os.Remove(endpoint); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("remove stale socket: %w", err)

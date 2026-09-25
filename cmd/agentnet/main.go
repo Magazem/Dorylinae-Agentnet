@@ -37,8 +37,8 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		usage(stdout)
-		return exitOK
+		usage(stderr)
+		return exitUsage
 	}
 	switch args[0] {
 	case "-h", "--help", "help":
@@ -47,6 +47,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "--version", "-version":
 		_, _ = fmt.Fprintln(stdout, version.String("agentnet"))
 		return exitOK
+	case "version":
+		return version.Command("agentnet", args[1:], stdout, stderr)
+	case "stop":
+		return runStop(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
 	case "identity":
@@ -126,6 +130,8 @@ Usage:
 
 Commands:
   status    Show whether the daemon is running, its PID, uptime and outbox
+  stop      Ask agentnetd to shut down cleanly and wait for it to exit
+  version   Print version information (same as --version)
   identity  Print this agent's signed Agent Card
   pair      Pair with another machine using a one-time code
   peers     List paired agents

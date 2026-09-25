@@ -101,8 +101,12 @@ func TestDialWhenNotRunning(t *testing.T) {
 func TestSecondListenerRefused(t *testing.T) {
 	p := shortHome(t)
 	startEcho(t, p)
-	if ln, err := ipc.Listen(p.Endpoint); err == nil {
+	ln, err := ipc.Listen(p.Endpoint)
+	if err == nil {
 		_ = ln.Close()
 		t.Fatal("second Listen on a live endpoint should fail")
+	}
+	if !errors.Is(err, ipc.ErrAlreadyRunning) {
+		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
 	}
 }

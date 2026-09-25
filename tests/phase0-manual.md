@@ -58,8 +58,8 @@ bin/relay --listen 0.0.0.0:8787 --allow-non-loopback --queue-db "$HOME/relay-que
 ```powershell
 .\bin\relay.exe --listen 0.0.0.0:8787 --allow-non-loopback --queue-db "$env:USERPROFILE\relay-queue.db" --verbose
 ```
-Expected stdout: `relay listening on [::]:8787` (or `0.0.0.0:8787`). Leave it running in its own terminal;
-its stderr is the relay log. Because the listen address is non-loopback, **v1 pairing is off**
+Expected stderr: `relay listening on [::]:8787; Ctrl+C to stop` (or `0.0.0.0:8787`). Leave it running in its own
+terminal; further stderr lines are the relay log. Because the listen address is non-loopback, **v1 pairing is off**
 (`--allow-pairing-v1` defaults to off). From B, check reachability:
 
 ```bash

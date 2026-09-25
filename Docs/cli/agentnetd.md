@@ -7,6 +7,8 @@ registers itself as a per-user service ([agentnetd-install.md](agentnetd-install
 agentnetd [run] [--home DIR] [--relay URL] [--log-file PATH] [--version]
 agentnetd install   [--home DIR] [--relay URL] [--dry-run]
 agentnetd uninstall [--home DIR] [--dry-run]
+agentnetd stop      [--home DIR]
+agentnetd version   [--json]
 ```
 
 `run` is the default; `agentnetd --relay URL` and `agentnetd run --relay URL` are the same.
@@ -22,6 +24,24 @@ agentnetd uninstall [--home DIR] [--dry-run]
 On start, one line on stdout: `agentnetd listening on <endpoint> (db: <path>)`. Logs are `slog`
 text lines and never contain message payloads, bodies or key material.
 
+`stop` and `version` are also available as `agentnet stop` / `agentnet version`
+([stop.md](stop.md)); `agentnetd stop`/`agentnetd version` are the same, for when only
+`agentnetd` is on `PATH`.
+
+## Two daemons, one home
+
+Starting a second `agentnetd` for a home directory already in use (another `agentnetd`, or
+a stuck listener) does not silently fail: it detects the endpoint is taken (the named pipe
+on Windows, the Unix socket elsewhere) and prints
+
+```
+agentnetd: agentnetd is already running for <home> (pid <pid>)
+```
+
+exiting 3. The pid comes from asking the running daemon's own `status` method, not from a
+separate pid file. If that call does not answer in time the pid is omitted but the message
+and exit code are unchanged.
+
 ## Environment
 
 | Variable | Effect |
@@ -36,5 +56,9 @@ text lines and never contain message payloads, bodies or key material.
 | Code | Meaning |
 |------|---------|
 | 0 | Stopped cleanly (SIGINT/SIGTERM), or `--help` / `--version` |
-| 1 | Could not start or serve (for example another daemon owns the endpoint, or `--log-file` cannot be opened) |
+| 1 | Could not start or serve (for example `--log-file` cannot be opened) |
 | 2 | Usage error |
+| 3 | Another `agentnetd` is already running for this home (see above) |
+
+`agentnetd stop`'s own exit codes (0 stopped, 1 error, 2 usage, 3 not running) are in
+[stop.md](stop.md).

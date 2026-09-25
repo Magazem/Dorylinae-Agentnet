@@ -37,6 +37,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "version" {
+		return version.Command(name, args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -47,7 +50,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	queueTTL := fs.Duration("queue-ttl", defaultQueueTTL, "how long a queued envelope waits for its recipient")
 	allowV1 := fs.Bool("allow-pairing-v1", false, "accept v1 pairing frames (relay-generated 10-character codes); default on when listening on loopback, off otherwise")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, envelope.ConnectPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]\n  %s version [--json]\n\nDaemons connect to ws://HOST:PORT%s.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, envelope.ConnectPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -117,7 +120,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Handler:           rs,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	_, _ = fmt.Fprintf(stdout, "%s listening on %s\n", name, ln.Addr())
+	_, _ = fmt.Fprintf(stderr, "%s listening on %s; Ctrl+C to stop\n", name, ln.Addr())
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()

@@ -12,6 +12,7 @@ queued and is acked later). Tickets 0.4, 0.7.
 
 ```
 relay [--listen HOST:PORT] [--allow-non-loopback] [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--verbose] [--version]
+relay version [--json]
 ```
 
 | Flag | Default | Meaning |
@@ -29,14 +30,18 @@ Daemons connect to `ws://HOST:PORT/v1/connect`.
 
 ## Output
 
-On start, one line on stdout:
+With no flags, `relay` listens on `127.0.0.1:8787` and runs in the foreground until
+interrupted (Ctrl+C or SIGTERM); it does not exit on its own and prints nothing further
+unless `--verbose` is set or something goes wrong.
+
+On start, one line on stderr:
 
 ```
-relay listening on 127.0.0.1:8787
+relay listening on 127.0.0.1:8787; Ctrl+C to stop
 ```
 
-Logs go to stderr as `slog` text lines. By default only warnings (for example
-rejected authentication) appear. Logs never contain payloads or raw frames.
+Further logs also go to stderr, as `slog` text lines. By default only warnings (for
+example rejected authentication) appear. Logs never contain payloads or raw frames.
 
 ## Exit codes
 

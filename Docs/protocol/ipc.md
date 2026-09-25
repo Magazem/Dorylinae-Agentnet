@@ -117,6 +117,21 @@ seconds, or `null`. `trust` is the peer's trust value. For `self`, `trust` is `n
 the local values. A member that is not a peer (for example, not yet introduced) has
 `daemon_online: false` and every time `null`. Errors: `unknown_team`, `ambiguous_team`.
 
+### `shutdown`
+
+Status: ticket DX-1. Params: none. Result: `{"ok": true}`.
+
+Asks the daemon to stop the same way its own ctx cancellation does (SIGTERM or Ctrl+C):
+outbox flushed, database closed, `daemon.stop` audit row written. The daemon also writes
+`daemon.stop_requested` (actor `cli`, no detail) before it starts stopping, so the audit log
+shows the shutdown was asked for rather than signalled. The response is sent before the
+daemon starts tearing down its listener, so the call itself always succeeds if it reaches a
+running daemon; `agentnet stop` then polls the endpoint until it stops answering (up to
+10 s) before reporting success. Like every IPC method this is reachable only by the same
+user (the endpoint's own permissions, above) and is never exposed over the relay: the relay
+carries encrypted envelopes between daemons, not local IPC calls. See
+[../cli/stop.md](../cli/stop.md).
+
 ### `identity`
 
 Params: none (any params are ignored).
@@ -379,7 +394,9 @@ an entry here first.
 ## Audit events written by the daemon lifecycle
 
 The `audit_events` table (`internal/audit`) records `daemon.start` and
-`daemon.stop` with `actor = "daemon"`. Detail JSON: `{"pid": N, "version": "..."}`.
+`daemon.stop` with `actor = "daemon"`. Detail JSON: `{"pid": N, "version": "..."}`. The
+`shutdown` method (above) additionally writes `daemon.stop_requested` with `actor = "cli"`
+and no detail, before the `daemon.stop` row that every exit path writes.
 The table is append-only (triggers reject UPDATE and DELETE). Since migration 18
 (ticket 3.6a) every row carries a `hash` chaining it to the previous row, and a trigger
 refuses unchained inserts, so every writer goes through `internal/audit` (`Append`,

@@ -235,6 +235,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if stdin == nil {
 		stdin = os.Stdin
 	}
+	// cancelSelf lets the "shutdown" IPC method (below) stop the daemon the
+	// same way ctx's own cancellation (SIGTERM/Ctrl+C) does, without needing
+	// the caller's cancel func (Docs/protocol/ipc.md §shutdown).
+	ctx, cancelSelf := context.WithCancel(ctx)
+	defer cancelSelf()
 	approvalMode, err := resolveApprovalMode(os.Getenv(ApprovalEnv), os.Getenv(DebugEnv) == "1", isTerminal(stderr), isTerminal(stdin))
 	if err != nil {
 		return err
@@ -567,6 +572,19 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerFetch(srv, fetchClient)
 	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay, helper, scopeApprovalsPending, devHooks)
 	registerDeviceScope(srv, devStore, apprStore, peerStore, helper, p.Dir, scopeApprovalsPending)
+	// shutdown asks the daemon to stop the same way Ctrl+C/SIGTERM does. It is
+	// local-only by construction (registered on the IPC server, never
+	// forwarded over the relay) and reachable only by the same user, like
+	// every other IPC method (Docs/protocol/ipc.md §shutdown). The actual
+	// cancellation is deferred briefly so this call's response reaches the
+	// client before Serve tears down the connection.
+	srv.Handle("shutdown", func(ctx context.Context, _ json.RawMessage) (any, error) {
+		if err := log.Append(ctx, audit.ActorCLI, audit.ActionDaemonStopRequested, nil); err != nil {
+			return nil, err
+		}
+		time.AfterFunc(50*time.Millisecond, cancelSelf)
+		return ShutdownResult{OK: true}, nil
+	})
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

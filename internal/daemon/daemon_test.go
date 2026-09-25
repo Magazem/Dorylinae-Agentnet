@@ -112,6 +112,77 @@ func TestLifecycle(t *testing.T) {
 	}
 }
 
+// TestShutdownIPC exercises `agentnet stop`'s underlying path: StopWait asks
+// the daemon to shut down over IPC (Docs/protocol/ipc.md §shutdown) without
+// any help from the caller's own context, and the daemon exits the same way
+// it would for Ctrl+C/SIGTERM (audit rows and all).
+func TestShutdownIPC(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
+	dir, err := os.MkdirTemp("", "dn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	p, err := paths.In(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(context.Background(), p, ready) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited early: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	if err := daemon.StopWait(context.Background(), p.Endpoint, 10*time.Second); err != nil {
+		t.Fatalf("StopWait: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+
+	if err := daemon.StopWait(context.Background(), p.Endpoint, time.Second); !errors.Is(err, ipc.ErrNotRunning) {
+		t.Fatalf("StopWait after stop: %v, want ErrNotRunning", err)
+	}
+
+	st, err := store.Open(context.Background(), p.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	evs, err := audit.New(st.DB()).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRequested, sawStop bool
+	var requestedActor string
+	for _, e := range evs {
+		switch e.Action {
+		case audit.ActionDaemonStopRequested:
+			sawRequested = true
+			requestedActor = e.Actor
+			if string(e.Detail) != "{}" {
+				t.Errorf("stop_requested detail = %s, want {}", e.Detail)
+			}
+		case audit.ActionDaemonStop:
+			sawStop = true
+		}
+	}
+	if !sawRequested || requestedActor != audit.ActorCLI || !sawStop {
+		t.Fatalf("audit events = %+v", evs)
+	}
+}
+
 // TestIdentityIPCNeverExposesPrivateKey starts the daemon twice on one home
 // and checks the "identity" method: the card verifies, the second start
 // reuses the key, and no raw IPC response (for any request shape) or audit

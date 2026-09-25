@@ -117,3 +117,86 @@ func TestUsage(t *testing.T) {
 		t.Fatalf("version: %q", out.String())
 	}
 }
+
+func TestNoArgsIsUsageError(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(nil, &out, &errb); code != exitUsage {
+		t.Fatalf("code = %d, want %d", code, exitUsage)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout should be empty, got %q", out.String())
+	}
+	if !strings.Contains(errb.String(), "Usage:") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+
+	for _, args := range [][]string{{"-h"}, {"--help"}, {"help"}} {
+		out.Reset()
+		errb.Reset()
+		if code := run(args, &out, &errb); code != exitOK || !strings.Contains(out.String(), "Usage:") {
+			t.Fatalf("%v: code=%d out=%q", args, code, out.String())
+		}
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"version"}, &out, &errb); code != exitOK || !strings.HasPrefix(out.String(), "agentnet ") {
+		t.Fatalf("version: code=%d out=%q", code, out.String())
+	}
+	out.Reset()
+	if code := run([]string{"version", "--json"}, &out, &errb); code != exitOK ||
+		!strings.Contains(out.String(), `"ok":true`) || !strings.Contains(out.String(), `"name":"agentnet"`) {
+		t.Fatalf("version --json: code=%d out=%q", code, out.String())
+	}
+}
+
+func TestStopNotRunning(t *testing.T) {
+	shortHome(t)
+	var out, errb bytes.Buffer
+	if code := run([]string{"stop"}, &out, &errb); code != exitDaemonNotFound {
+		t.Fatalf("code = %d, want %d; stderr %q", code, exitDaemonNotFound, errb.String())
+	}
+	if !strings.Contains(errb.String(), "not running") {
+		t.Fatalf("stderr = %q", errb.String())
+	}
+}
+
+func TestStopStopsDaemon(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
+	p := shortHome(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // no-op once the daemon has already stopped below
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(ctx, p, ready) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	var out, errb bytes.Buffer
+	start := time.Now()
+	if code := run([]string{"stop"}, &out, &errb); code != exitOK || !strings.Contains(out.String(), "stopped") {
+		t.Fatalf("stop: code=%d out=%q stderr=%q", code, out.String(), errb.String())
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("stop took %v", elapsed)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("daemon exited with error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not stop")
+	}
+
+	out.Reset()
+	if code := run([]string{"status"}, &out, &errb); code != exitDaemonNotFound {
+		t.Fatalf("status after stop: code = %d", code)
+	}
+}

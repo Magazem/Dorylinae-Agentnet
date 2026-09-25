@@ -54,6 +54,44 @@ func TestHelpAndVersion(t *testing.T) {
 	}
 }
 
+func TestVersionCommand(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"version"}, &out, &errb); code != 0 || !strings.HasPrefix(out.String(), "relay ") {
+		t.Fatalf("version: code %d, out %q", code, out.String())
+	}
+	out.Reset()
+	if code := run(context.Background(), []string{"version", "--json"}, &out, &errb); code != 0 || !strings.Contains(out.String(), `"ok":true`) || !strings.Contains(out.String(), `"name":"relay"`) {
+		t.Fatalf("version --json: code %d, out %q", code, out.String())
+	}
+}
+
+// TestStartupLineOnStderr guards against the relay looking like it silently
+// exited (owner report: "doesn't do anything yet"): it keeps serving in the
+// foreground and its one startup line, naming Ctrl+C, goes to stderr, not
+// stdout.
+func TestStartupLineOnStderr(t *testing.T) {
+	var out, errb syncBuffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() { done <- run(ctx, []string{"--listen", "127.0.0.1:0"}, &out, &errb) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(errb.String(), "Ctrl+C to stop") {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("relay never reported its address on stderr: %q", errb.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Contains(out.String(), "listening on") {
+		t.Fatalf("startup line leaked onto stdout: %q", out.String())
+	}
+	cancel()
+	if code := <-done; code != 0 {
+		t.Fatalf("exit code = %d; stderr %s", code, errb.String())
+	}
+}
+
 func TestUsageErrors(t *testing.T) {
 	for _, args := range [][]string{{"--bogus"}, {"extra"}, {"--listen", "0.0.0.0:0"}, {"--listen", "example.com:80"}, {"--listen", "nocolon"}} {
 		var out, errb bytes.Buffer
@@ -74,7 +112,7 @@ func startRelay(t *testing.T, args ...string) (url string, stop func()) {
 	re := regexp.MustCompile(`listening on (127\.0\.0\.1:\d+)`)
 	deadline := time.Now().Add(5 * time.Second)
 	for url == "" {
-		if m := re.FindStringSubmatch(out.String()); m != nil {
+		if m := re.FindStringSubmatch(errb.String()); m != nil {
 			url = "ws://" + m[1] + envelope.ConnectPath
 		} else if time.Now().After(deadline) {
 			cancel()
@@ -260,7 +298,7 @@ func TestServesUntilCancelled(t *testing.T) {
 	var addr string
 	deadline := time.Now().Add(5 * time.Second)
 	for addr == "" {
-		if m := re.FindStringSubmatch(out.String()); m != nil {
+		if m := re.FindStringSubmatch(errb.String()); m != nil {
 			addr = m[1]
 		} else if time.Now().After(deadline) {
 			t.Fatalf("relay never reported its address; stderr: %s", errb.String())

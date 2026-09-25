@@ -21,14 +21,15 @@ const (
 	ActorDaemon = "daemon"
 	ActorCLI    = "cli"
 
-	ActionDaemonStart      = "daemon.start"
-	ActionDaemonStop       = "daemon.stop"
-	ActionServiceInstall   = "service.install"
-	ActionServiceUninstall = "service.uninstall"
-	ActionPeerVerify       = "peer.verify"
-	ActionPeerRemove       = "peer.remove"
-	ActionPeerVerifyFail   = "peer.verify_fail"
-	ActionChainStart       = "audit.chain_start"
+	ActionDaemonStart         = "daemon.start"
+	ActionDaemonStop          = "daemon.stop"
+	ActionDaemonStopRequested = "daemon.stop_requested"
+	ActionServiceInstall      = "service.install"
+	ActionServiceUninstall    = "service.uninstall"
+	ActionPeerVerify          = "peer.verify"
+	ActionPeerRemove          = "peer.remove"
+	ActionPeerVerifyFail      = "peer.verify_fail"
+	ActionChainStart          = "audit.chain_start"
 )
 
 // Event is one row of the audit log.
