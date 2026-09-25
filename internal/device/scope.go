@@ -140,6 +140,9 @@ type Resolver struct {
 	RepoPath func(raw string) (string, error)
 	// LookPath finds a program; nil uses exec.LookPath.
 	LookPath func(file string) (string, error)
+	// CheckProgram refuses a resolved argv[0] that others can change; nil
+	// uses CheckProgramOwner (review 40 L11).
+	CheckProgram func(path string) error
 }
 
 // ValidName reports whether s is 1-64 characters from [a-z0-9._-], the rule
@@ -178,11 +181,16 @@ var validTypes = map[string]bool{"review": true, "task": true, "question": true}
 // it resolved: repo paths through r.RepoPath and argv[0] through LookPath,
 // stored as an absolute path so a later PATH change cannot swap the program.
 // On Windows, a batch file is refused: CreateProcess would run it through
-// cmd.exe, and the runner never uses a shell.
+// cmd.exe, and the runner never uses a shell. A program that users other than
+// this one (or an administrator) can change is refused too (CheckProgram).
 func ValidateScope(in Scope, now time.Time, r Resolver) (Scope, error) {
 	lookPath := r.LookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
+	}
+	checkProgram := r.CheckProgram
+	if checkProgram == nil {
+		checkProgram = CheckProgramOwner
 	}
 	out := Scope{}
 	if len(in.Types) < 1 || len(in.Types) > MaxScopeTypes {
@@ -259,6 +267,9 @@ func ValidateScope(in Scope, now time.Time, r Resolver) (Scope, error) {
 		}
 		prog, err := resolveProgram(c.Argv[0], lookPath)
 		if err != nil {
+			return Scope{}, scopeErr(field+".argv[0]", "%s", err.Error())
+		}
+		if err := checkProgram(prog); err != nil {
 			return Scope{}, scopeErr(field+".argv[0]", "%s", err.Error())
 		}
 		if c.TimeoutS < 1 || c.TimeoutS > MaxTimeoutS {
@@ -463,6 +474,8 @@ type RunPlan struct {
 	Link    Link
 	Command Command
 	Dir     string
+	// Expires is when the scope ends: a run still going then is stopped.
+	Expires time.Time
 }
 
 // CheckRunTx applies the in-scope checks 1-5 of Docs/protocol/device.md
@@ -504,5 +517,5 @@ func (s *Store) CheckRunTx(ctx context.Context, q querier, peer, typ, run string
 	if created.Before(link.ActivatedAt.Truncate(time.Second)) {
 		return RunPlan{}, CheckCreated, nil
 	}
-	return RunPlan{Link: link, Command: cmd, Dir: dir}, "", nil
+	return RunPlan{Link: link, Command: cmd, Dir: dir, Expires: exp}, "", nil
 }

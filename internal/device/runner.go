@@ -175,7 +175,8 @@ func Run(ctx context.Context, spec RunSpec) RunResult {
 // CheckTarget re-checks, when a run starts, what the scope resolved at set
 // time (review 40 L5): the working directory still resolves to itself, so a
 // repo replaced since by a symlink or junction to somewhere else is refused,
-// and the program is still a regular file.
+// and the program is still a regular file that only this user or an
+// administrator can change (CheckProgramOwner, review 40 L11).
 func CheckTarget(path, dir string) error {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -194,7 +195,7 @@ func CheckTarget(path, dir string) error {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
 		return errors.New("device: the program is not a regular file")
 	}
-	return nil
+	return CheckProgramOwner(path)
 }
 
 // replacement stands in for a control character or an invalid byte. It is

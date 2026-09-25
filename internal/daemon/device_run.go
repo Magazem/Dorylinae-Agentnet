@@ -30,6 +30,21 @@ const (
 	runWindow     = 24 * time.Hour
 )
 
+// runWatchEvery bounds the time between two re-checks of the running
+// command's scope, besides the one at its expiry, so that a changed clock is
+// noticed too (review 40 L1).
+const runWatchEvery = time.Minute
+
+// errRunRevoked is the cause of a running command's context when its link
+// ended or its scope was cleared, replaced without it, or expired.
+var errRunRevoked = errors.New("device: the run is no longer allowed")
+
+// activeRun is the command being run: its session and what stops it.
+type activeRun struct {
+	session string
+	stop    context.CancelCauseFunc
+}
+
 // deviceRunsKey is the settings row holding the run queue, so that a restart
 // can drop queued runs and report an executing one as interrupted.
 const deviceRunsKey = "device.runs"
@@ -123,8 +138,13 @@ type helperRunner struct {
 	logger    *slog.Logger
 
 	wake chan struct{}
-	// sweepMu serialises sweeps started by kick.
+	// sweepMu serialises sweeps.
 	sweepMu sync.Mutex
+	// watchEvery overrides runWatchEvery (tests).
+	watchEvery time.Duration
+	// curMu guards cur, the command running now (nil when none).
+	curMu sync.Mutex
+	cur   *activeRun
 }
 
 func newHelperRunner(db *sql.DB, ds *device.Store, ws *worksession.Store, log *audit.Log, self string, logger *slog.Logger) *helperRunner {
@@ -139,20 +159,33 @@ func (r *helperRunner) signal() {
 	}
 }
 
-// kick drops queued runs that are no longer allowed (their link ended, their
-// scope was cleared or expired) at once, in the background, then wakes the
-// runner. It never blocks, so it may be called inside a transaction: the
-// sweep's own transaction waits for that one to end.
+// kick sweeps at once, in the background: queued runs that are no longer
+// allowed (their link ended, their scope was cleared or expired) are dropped
+// and a running one is stopped. It never blocks, so it may be called inside
+// a transaction: the sweep's own transaction waits for that one to end.
 func (r *helperRunner) kick() {
-	go func() {
-		r.sweepMu.Lock()
-		defer r.sweepMu.Unlock()
-		ctx := context.Background()
-		if _, _, err := r.take(ctx, false); err != nil && r.logger != nil {
-			r.logger.Warn("device: sweep run queue", "error", err)
-		}
-		r.signal()
-	}()
+	go r.sweep(context.Background())
+}
+
+// sweep drops the queued runs that are no longer allowed, stops the running
+// one if it is no longer allowed, and wakes the runner.
+func (r *helperRunner) sweep(ctx context.Context) {
+	r.sweepMu.Lock()
+	defer r.sweepMu.Unlock()
+	if _, _, err := r.take(ctx, false); err != nil && r.logger != nil {
+		r.logger.Warn("device: sweep run queue", "error", err)
+	}
+	r.signal()
+}
+
+// stopRunning stops the running command if it is still the one of session:
+// its context ends with errRunRevoked, and device.Run kills its process tree.
+func (r *helperRunner) stopRunning(session string) {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	if r.cur != nil && r.cur.session == session {
+		r.cur.stop(errRunRevoked)
+	}
 }
 
 // RouteTx implements request.HelperRouter (Docs/protocol/device.md §Running):
@@ -231,7 +264,8 @@ func (r *helperRunner) valid(ctx context.Context, tx *sql.Tx, j runJob, now time
 // take drops every queued job that is no longer allowed and, if start is set
 // and nothing is running, moves the first allowed one to running. Dropped
 // jobs whose session is still open get a ws.cancel with no reason
-// (Docs/protocol/device.md §Limits).
+// (Docs/protocol/device.md §Limits). A running job that is no longer allowed
+// is stopped (stopRunning); execute then reports it the same way.
 func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.RunPlan, error) {
 	now := r.ds.Time()
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -242,6 +276,16 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 	st, err := loadRunState(ctx, tx)
 	if err != nil {
 		return nil, device.RunPlan{}, err
+	}
+	stop := ""
+	if st.Running != nil {
+		_, ok, err := r.valid(ctx, tx, *st.Running, now)
+		if err != nil {
+			return nil, device.RunPlan{}, err
+		}
+		if !ok {
+			stop = st.Running.Session
+		}
 	}
 	var keep, dropped []runJob
 	var next *runJob
@@ -261,18 +305,22 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 			keep = append(keep, j)
 		}
 	}
-	if len(dropped) == 0 && next == nil {
-		return nil, device.RunPlan{}, nil
+	if len(dropped) > 0 || next != nil {
+		st.Queued = keep
+		if next != nil {
+			st.Running = next
+		}
+		if err := saveRunState(ctx, tx, st, now); err != nil {
+			return nil, device.RunPlan{}, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, device.RunPlan{}, fmt.Errorf("device: commit run queue: %w", err)
+		}
+	} else {
+		_ = tx.Rollback()
 	}
-	st.Queued = keep
-	if next != nil {
-		st.Running = next
-	}
-	if err := saveRunState(ctx, tx, st, now); err != nil {
-		return nil, device.RunPlan{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, device.RunPlan{}, fmt.Errorf("device: commit run queue: %w", err)
+	if stop != "" {
+		r.stopRunning(stop)
 	}
 	for _, j := range dropped {
 		r.cancel(ctx, j)
@@ -372,12 +420,28 @@ func (r *helperRunner) loop(ctx context.Context) {
 
 // execute runs one job and submits its result. A run cut short by the daemon
 // stopping is left marked running, so the next start reports it interrupted.
+// A run stopped because it is no longer allowed (review 40 L1) is reported
+// like a dropped queued run: ws.cancel with no reason, and no result.
 func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPlan) {
 	if v, err := r.ws.Get(ctx, j.Session); err != nil || v.State != worksession.StateOpen {
 		// The controller cancelled meanwhile: nothing to run or report.
 		_ = r.finish(ctx)
 		return
 	}
+	runCtx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	r.curMu.Lock()
+	r.cur = &activeRun{session: j.Session, stop: stop}
+	r.curMu.Unlock()
+	watched := make(chan struct{})
+	go func() { defer close(watched); r.watch(ctx, runCtx, plan.Expires) }()
+	defer func() {
+		stop(nil)
+		<-watched
+		r.curMu.Lock()
+		r.cur = nil
+		r.curMu.Unlock()
+	}()
 	cmd := plan.Command
 	spec := device.RunSpec{
 		Path: cmd.Argv[0], Args: append([]string(nil), cmd.Argv...), Dir: plan.Dir,
@@ -389,14 +453,26 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	}
 	var res device.RunResult
 	if err := device.CheckTarget(spec.Path, spec.Dir); err != nil {
-		// Changed on disk since the human approved it: "could not start".
+		// Changed on disk since the human approved it, or others can now
+		// change the program: "could not start".
 		if r.logger != nil {
 			r.logger.Warn("device: run target changed", "session", j.Session, "error", err)
 		}
-	} else {
-		res = run(ctx, spec)
+	} else if runCtx.Err() == nil {
+		res = run(runCtx, spec)
 	}
 	if ctx.Err() != nil {
+		return
+	}
+	if errors.Is(context.Cause(runCtx), errRunRevoked) {
+		if err := r.finish(ctx); err != nil && r.logger != nil {
+			r.logger.Warn("device: finish run", "error", err)
+		}
+		r.cancel(ctx, j)
+		r.audit(ctx, "device.run", map[string]any{
+			"link": plan.Link.ID, "request": j.Request, "session": j.Session,
+			"duration_ms": res.Duration.Milliseconds(), "output_bytes": 0, "timed_out": false, "cancelled": true,
+		})
 		return
 	}
 	result := runResult(cmd, res)
@@ -417,8 +493,34 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	}
 	r.audit(ctx, "device.run", map[string]any{
 		"link": plan.Link.ID, "request": j.Request, "session": j.Session,
-		"duration_ms": res.Duration.Milliseconds(), "output_bytes": len(result.Output), "timed_out": res.TimedOut,
+		"duration_ms": res.Duration.Milliseconds(), "output_bytes": len(result.Output), "timed_out": res.TimedOut, "cancelled": false,
 	})
+}
+
+// watch re-checks the running command's scope until runCtx ends: at once
+// (a revocation that committed just before the run was registered in cur),
+// when the scope expires, and at least every watchEvery. A check that fails
+// stops the run (sweep → take → stopRunning).
+func (r *helperRunner) watch(ctx, runCtx context.Context, expires time.Time) {
+	every := r.watchEvery
+	if every <= 0 {
+		every = runWatchEvery
+	}
+	for {
+		r.sweep(ctx)
+		wait := every
+		if d := expires.Sub(r.ds.Time()); d < wait {
+			// Just past the expiry, so the check sees it expired.
+			wait = max(d+time.Millisecond, 10*time.Millisecond)
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-runCtx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // runResult builds the D14 result of a run (Docs/protocol/device.md

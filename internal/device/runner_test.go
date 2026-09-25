@@ -29,7 +29,7 @@ var (
 func runnerHelper(t *testing.T) string {
 	t.Helper()
 	helperOnce.Do(func() {
-		helperDir, helperErr = os.MkdirTemp("", "dn-runner-")
+		helperDir, helperErr = testutil.MkdirPrivate("dn-runner-")
 		if helperErr != nil {
 			return
 		}

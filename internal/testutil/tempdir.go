@@ -24,6 +24,12 @@ func TempDir(t testing.TB) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	removeOnCleanup(t, dir, "TempDir")
+	return dir
+}
+
+// removeOnCleanup removes dir when t ends, retrying on Windows (TempDir).
+func removeOnCleanup(t testing.TB, dir, name string) {
 	t.Cleanup(func() {
 		err := os.RemoveAll(dir)
 		if runtime.GOOS == "windows" {
@@ -34,8 +40,7 @@ func TempDir(t testing.TB) string {
 			}
 		}
 		if err != nil {
-			t.Errorf("TempDir RemoveAll cleanup: %v", err)
+			t.Errorf("%s RemoveAll cleanup: %v", name, err)
 		}
 	})
-	return dir
 }

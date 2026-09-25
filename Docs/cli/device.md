@@ -101,7 +101,8 @@ mail, which ends its side too. The mail is sent **even if this device holds no a
 link** with the peer, because each side activates on its own: one side can be `active`
 while the other's attempt lapsed before the peer's confirmation arrived. A peer can only
 ever end its own links; a `device.unlink` from anyone else changes nothing. A run that
-is already executing on a helper finishes; queued runs are dropped (2.D2).
+is already executing on the helper is killed at once with its whole process tree and
+reported to the controller as cancelled; queued runs are dropped (D24).
 `agentnet peers remove` of the other device also ends the link on this device.
 
 Human output:
@@ -132,16 +133,24 @@ stored only on this device and is never sent anywhere.
 | `--env NAME=VAR` | Repeatable: pass the daemon's `VAR` to command `NAME` too (up to 32 per command, never `DORYLINAE_*`) |
 | `--expires D` | Required: an RFC 3339 time or a duration from now (`90m`, `12h`, `7d`), at most 30 days |
 | `--from-file F` | The whole scope as JSON (the object of device.md §Scope) instead of the flags |
-| `--clear` | Remove the scope. No approval; queued runs are dropped, a running one finishes |
+| `--clear` | Remove the scope. No approval; queued runs are dropped, a running one is killed with its process tree (reported as cancelled) |
 | `--show` | Print the stored scope |
 | `--json` | Machine-readable output |
 
 Setting a scope creates an approval (kind `device_scope`). The program (`argv[0]`) is looked
 up **now**, on this device's `PATH`, and stored as an absolute path, so a later `PATH`
 change cannot swap it; a `.bat` or `.cmd` file is refused on Windows (it would run through
-`cmd.exe`). The CLI prints the scope as it will be stored, and the approval window shows
-every command with its repo path and full resolved argv: approve only what you set yourself.
-A new scope replaces the old one and rejects an older one still waiting for its code.
+`cmd.exe`). A program that **other users can change** is refused: on Unix a file or any
+directory above it that is not owned by you or root, or is writable by everyone (`/tmp`
+included) or by a group other than root's, an admin group or your own; on Windows one whose
+owner is not you or an administrator, or whose access list lets another account or group
+(Users, Authenticated Users, Everyone…) change the file, add files beside it, or delete or
+replace it or a directory above it. The check runs again before every run; move or reinstall
+such a tool under a folder only you (or an administrator) can write. Upgrading a toolchain in
+place keeps working (the file's content is not pinned). The CLI prints the scope as it will
+be stored, and the approval window shows every command with its repo path and full resolved
+argv: approve only what you set yourself. A new scope replaces the old one and rejects an
+older one still waiting for its code.
 
 A request from the controller runs only if it names one of the commands
 (`agentnet request <helper> task --run NAME ...`, see [request.md](request.md)), its type is
@@ -150,7 +159,9 @@ limits allow it (one run at a time, 8 queued, 60 per day). It is accepted by the
 command runs with no shell, in its repo, stdin empty, with only `PATH`, `HOME`/`USERPROFILE`,
 `TMP`/`TEMP`/`TMPDIR`, `LANG`, `LC_ALL`, the Windows system variables (`SystemRoot`,
 `SystemDrive`, `windir`, `ComSpec`, `PATHEXT`, `LOCALAPPDATA`, `APPDATA`) and the `--env`
-names, and is killed with its whole process tree at its timeout. The controller gets a
+names, and is killed with its whole process tree at its timeout, or at once when the scope is
+cleared, replaced without it or expires, or the link ends (the controller then sees the
+session cancelled, with no result). Otherwise the controller gets a
 [result](../protocol/work-session.md#result-object-26) with `pass` (exit 0) or `fail`, the
 exit code and the last 32 KiB of output (ANSI sequences removed, other control characters
 shown as `?`); it reads it with `agentnet wait` and closes it with `accept-result`. Anything
@@ -175,7 +186,7 @@ stored); clear `{"ok": true, "link": {...}}`; show `{"ok": true, "scope": {...}}
 
 Failures: `unknown_link` (no active link with that device), `not_helper` (this device is
 the controller), `bad_scope` (the message names the field, e.g.
-`commands[0].argv[0]: program not found`), `forbidden_resource` (a repo path that may not
+`commands[0].argv[0]: program not found` or `commands[0].argv[0]: writable_by_others: "/opt/shared/bin" can be changed by every user`), `forbidden_resource` (a repo path that may not
 be used), `bad_state` (`--show` with no scope), `unknown_peer`, `approval_limit`,
 `approval_locked`, `approval_unavailable`, `daemon_not_running`, `timeout`, `usage`.
 
@@ -187,7 +198,7 @@ to an active link that has a scope.
 `device.link_intent`, `device.link_active`, `device.unlink` (with `side` `local` or
 `remote`), and `peer.verify` on confirmation; `device.scope_set` (counts, types, expiry
 in seconds, approval id), `device.scope_clear`, `device.run` (ids, duration, output size,
-timed out) and `device.out_of_scope` (request, peer, check). Only ids, enums, counts and
+timed out, cancelled) and `device.out_of_scope` (request, peer, check). Only ids, enums, counts and
 sizes are recorded, never names, command names, argv, paths, environment or output.
 
 ## Exit codes

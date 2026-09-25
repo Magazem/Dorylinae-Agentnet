@@ -206,6 +206,11 @@ type Options struct {
 	// and offers expire after 10 minutes, Docs/protocol/device.md §Link flow).
 	// Nil uses time.Now.
 	DeviceNow func() time.Time
+	// DeviceRunWatch bounds how long a running helper command goes between
+	// two re-checks of its scope (a test option: with DeviceNow, a scope
+	// that expires on the fake clock stops the run within this time). Zero
+	// uses one minute, besides the check at the scope's expiry.
+	DeviceRunWatch time.Duration
 }
 
 // Run starts the daemon with default options; see RunWithOptions.
@@ -460,6 +465,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// new pending request passes through the router, and in-scope ones run
 	// one at a time on the runner's goroutine.
 	helper := newHelperRunner(st.DB(), devStore, wsStore, log, id.Card().Card.PublicKey, opts.Logger)
+	helper.watchEvery = opts.DeviceRunWatch
 	reqStore.Helper = helper
 	scopeApprovalsPending := newScopeApprovals()
 	onUnlinked := func(peer string) {

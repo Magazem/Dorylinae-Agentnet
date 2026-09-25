@@ -87,8 +87,8 @@ at most one is kept per peer.
 summary states, each command's name, repo path and **resolved** absolute `argv[0]` with its
 full argv, so the human approves exactly what will run. The scope replaces any previous one
 atomically. `agentnet device scope @controller --clear` removes it (no approval needed:
-narrowing is always allowed); queued runs are then dropped like on unlink, and a scope still
-waiting for its code is rejected. A newer `device_scope_set` rejects an older one still
+narrowing is always allowed); queued runs are then dropped and a running one is killed, like
+on unlink ([§Limits](#limits)), and a scope still waiting for its code is rejected. A newer `device_scope_set` rejects an older one still
 waiting for its code. The summary (and the CLI's printout) quotes every repo path and argv as
 JSON strings, and also escapes as `\uXXXX` every character that is invisible or not graphic
 (bidi controls such as U+202E, zero-width characters), so no quote, control or bidi character
@@ -113,11 +113,39 @@ devices can hold different link ids after an asymmetric retry (review 36 L6).
 |---|---|
 | `types` | 1–3 of `review`, `task`, `question` |
 | `repos` | 1–16. `label` 1–64 `[a-z0-9._-]`, unique. `path` absolute, an existing directory, resolved with `EvalSymlinks` at set time; not the config dir (nor inside it or containing it), the home dir or a filesystem root: the same rule as a grant's `fs` resource ([grant.md](grant.md)). A refused path is `forbidden_resource`, any other rule `bad_scope` |
-| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `argv[0]` is a program name or an absolute path (a relative path with a directory part is refused). On Windows a `.bat` or `.cmd` file is refused: `CreateProcess` would run it through `cmd.exe`, and the runner never uses a shell; the program must be an `.exe` or `.com`, judged after dropping trailing dots and spaces as Windows does (review 40 L3). `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 characters, unique, never `DORYLINAE_*`) passed through (values are the helper daemon's own) |
+| `commands` | 1–32. `name` 1–64 `[a-z0-9._-]`, unique. `repo` one of the labels (the working directory). `argv` 1–64 strings, each 1–4096 bytes, no NUL; `argv[0]` is resolved with `exec.LookPath` **at set time** and the absolute path is stored, so a later `PATH` change cannot swap the program. `argv[0]` is a program name or an absolute path (a relative path with a directory part is refused). On Windows a `.bat` or `.cmd` file is refused: `CreateProcess` would run it through `cmd.exe`, and the runner never uses a shell; the program must be an `.exe` or `.com`, judged after dropping trailing dots and spaces as Windows does (review 40 L3). `argv[0]` is refused (`bad_scope`, field `commands[i].argv[0]`, reason starting `writable_by_others:` and naming the path and who) when **users other than this device's user or an administrator can change it** ([§Program ownership](#program-ownership), review 40 L11). `timeout_s` 1–3600. `env` 0–32 extra environment variable **names** (`[A-Za-z_][A-Za-z0-9_]*`, at most 128 characters, unique, never `DORYLINAE_*`) passed through (values are the helper daemon's own) |
 | `expires` | `now < expires ≤ now + 30 d`. Required: every scope expires |
 
 The scope is stored only on the helper and is never sent anywhere. The controller learns only
 what a result tells it.
+
+### Program ownership
+
+The stored `argv[0]` protects against a `PATH` change, not against the file being replaced.
+So a program is accepted only when nobody but this device's user or an administrator can
+change it, checked at `device_scope_set` **and again when each run starts** (a failed
+start-time check is `"<name>: could not start"`). Checked: the file, the directory holding
+it and every directory above it, both along the stored path and along the path with
+symbolic links resolved. The content is not pinned (no hash), so an upgrade of the
+toolchain by the same user or an administrator keeps working.
+
+- **Unix:** each file or directory must be owned by root or this user, must not be
+  writable by every user (so a sticky world-writable directory such as `/tmp` is refused
+  too), and may be group-writable only when the group is root's (gid 0), an admin group
+  (`root`, `wheel`, `admin`, `sudo`) or this user's private group (this user's primary
+  gid, named after the user). A symbolic link's own mode is not used.
+- **Windows:** the owner (from the security descriptor) must be this user, SYSTEM,
+  BUILTIN\Administrators or NT SERVICE\TrustedInstaller, the DACL must exist, and no
+  allow ACE may give another SID (Users, Authenticated Users, Everyone, another account…)
+  a right that can swap the program: on the file, write/append data, delete, write DAC,
+  write owner, generic write or generic all; on the directory holding it, also add file
+  (a DLL beside the `.exe` is loaded first) or add subdirectory (a `.local` redirect) and
+  delete child; on the directories above, delete child, delete, write DAC, write owner or
+  generic all (creating new entries there, like Authenticated Users on `C:\`, cannot
+  replace an existing one). Inherit-only ACEs do not apply to the object; deny ACEs are
+  ignored (a stricter reading); CREATOR OWNER and OWNER RIGHTS stand for the owner; app
+  package and capability SIDs (`S-1-15-…`) never grant access on their own and are
+  ignored; an object ACE that grants such a right is refused.
 
 ## Running (in-scope requests)
 
@@ -160,7 +188,8 @@ above, and `check` names the first that failed.
   everything else (tokens, `DORYLINAE_*`) is dropped;
 - first re-checks what the scope resolved: the repo path must still resolve to itself (a
   directory replaced since by a symlink or junction is refused) and `argv[0]` must still be
-  a regular file; otherwise the run is `"<name>: could not start"` (review 40 L5);
+  a regular file that others cannot change ([§Program ownership](#program-ownership));
+  otherwise the run is `"<name>: could not start"` (review 40 L5, L11);
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
   if the helper daemon dies mid-run, Windows ends the tree with the job; on Linux the program
   itself gets `SIGKILL` (parent-death signal) but what it started may outlive it, and on
@@ -180,6 +209,11 @@ above, and `check` names the first that failed.
   `exit_code`), and `verification = none`.
 - The command runs as looked up in the scope **when it starts**: a scope replaced, cleared or
   expired while the run was queued is re-checked, and a run no longer allowed is dropped.
+- While it runs, the checks 1–4 are re-applied whenever the link or scope changes (unlink on
+  either side, `peers remove`, scope cleared or replaced), when the scope expires, and at
+  least once a minute (a changed clock). When they fail, the whole process tree is killed at
+  once and the run is reported like a dropped queued run ([§Limits](#limits)): `ws.cancel`
+  with no reason and no result (review 40 L1).
 
 The controller's agent reads it with `agentnet wait <session>` and closes it with
 `accept-result` (or requests changes, which re-opens the session; a re-run needs a new
@@ -192,7 +226,10 @@ One run at a time per helper; at most 8 queued (beyond that: out of scope, `chec
 count is of runs accepted in the last 24 h). The queue is kept in the `settings` row
 `device.runs` (no migration), so a restart knows what was queued or running. A run still queued when the scope expires
 or the link ends is dropped; the helper (the worker) then sends `ws.cancel` with no reason,
-which the controller's daemon applies because the session is still `open`. A daemon restart
+which the controller's daemon applies because the session is still `open`. A run that is
+**executing** then is killed with its process tree and reported the same way (`ws.cancel`,
+no result): the controller's session closes as `cancelled`, as for a queued run, and no
+partial output is sent. A daemon restart
 drops queued runs the same way; a run that was executing is reported as `fail` with summary
 `"<name>: interrupted"`.
 
@@ -220,10 +257,13 @@ drops queued runs the same way; a run that was executing is reported as `fail` w
 - `device.unlink` on arrival: revoke every link, intent and offer **with `msg.from`**
   (the `link` member is informational; a peer can only ever end its own links), delete the
   scope. Idempotent: nothing to revoke changes nothing.
-- A run already executing when the link is revoked is allowed to finish (killing it could
-  leave the repository in a half-written state); queued runs are dropped.
-- `peers remove` of the other device revokes the link locally.
-- Scope expiry needs no message: after `expires`, requests are out of scope.
+- A run already executing when the link is revoked is **killed at once** with its whole
+  process tree and reported as cancelled (`ws.cancel`, no result); queued runs are dropped
+  (owner decision D24, review 40 L1). Removing authority wins over finishing the work: the
+  repository may be left half-written, as after a timeout.
+- `peers remove` of the other device revokes the link locally (and stops a run the same way).
+- Scope expiry needs no message: after `expires`, requests are out of scope, and a run still
+  executing is killed and reported the same way (the helper re-checks at the expiry time).
 
 ## Kinds
 
@@ -289,7 +329,7 @@ counts, durations and sizes.
 | `device.unlink` | `{link, peer, side: "local"\|"remote"}` |
 | `device.scope_set` | `{link, types, commands: <count>, repos: <count>, expires_s, approval}` |
 | `device.scope_clear` | `{link}` |
-| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out}` |
+| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out, cancelled}` (`cancelled`: killed because it was no longer allowed; then `output_bytes` is 0) |
 | `device.out_of_scope` | `{request, peer, check}` (`check`: `link`, `scope`, `expired`, `type`, `command`, `created`, `queue`) |
 
 ## Tables

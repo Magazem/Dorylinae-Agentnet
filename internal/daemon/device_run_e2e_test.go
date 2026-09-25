@@ -32,7 +32,7 @@ var (
 func buildRunHelper(t *testing.T) string {
 	t.Helper()
 	runHelperOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "dn-runhelper-")
+		dir, err := testutil.MkdirPrivate("dn-runhelper-")
 		if err != nil {
 			runHelperErr = err
 			return
@@ -317,28 +317,101 @@ func TestHelperUnlinkStopsRuns(t *testing.T) {
 	}
 }
 
+// startTree sets a scope whose "mk-tree" command starts a grandchild that
+// appends to a file every 50 ms, submits it and waits until the grandchild
+// runs. It returns the request id and the file.
+func (e *helperEnv) startTree(t *testing.T) (string, string) {
+	t.Helper()
+	beat := filepath.Join(e.repo, "beat.txt")
+	e.setScope(t, []string{"task"}, e.cmd("mk-tree", 600, nil, "tree", beat))
+	id := e.submit(t, "task", "mk-tree")
+	harnessWait(t, "the command's grandchild to run", func() bool {
+		fi, err := os.Stat(beat)
+		return err == nil && fi.Size() > 2
+	})
+	return id, beat
+}
+
+// cancelled waits for the controller to close reqID's session as cancelled.
+func (e *helperEnv) cancelled(t *testing.T, reqID string) {
+	t.Helper()
+	harnessWait(t, "the controller to close "+reqID+" as cancelled", func() bool {
+		return e.ctrl.count(`SELECT COUNT(*) FROM work_sessions WHERE request_id = '`+reqID+`' AND state = 'closed' AND outcome = 'cancelled'`) == 1
+	})
+}
+
+// treeKilled checks that the running command of startTree was stopped with
+// its whole process tree (review 40 L1): the controller's session is closed
+// as cancelled with no result, the grandchild no longer writes, the helper's
+// queue holds no running job and device.run records it as cancelled.
+func (e *helperEnv) treeKilled(t *testing.T, reqID, beat string) {
+	t.Helper()
+	e.cancelled(t, reqID)
+	if n := e.ctrl.count(`SELECT COUNT(*) FROM work_sessions WHERE request_id = '` + reqID + `' AND result IS NOT NULL`); n != 0 {
+		t.Fatal("a cancelled run also sent a result")
+	}
+	harnessWait(t, "device.run cancelled", func() bool {
+		return e.help.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'device.run' AND detail LIKE '%"`+reqID+`"%' AND detail LIKE '%"cancelled":true%'`) == 1
+	})
+	fi1, err := os.Stat(beat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Second)
+	if fi2, _ := os.Stat(beat); fi2.Size() != fi1.Size() {
+		t.Fatal("the grandchild still runs after the run was stopped")
+	}
+	if n := e.help.count(`SELECT COUNT(*) FROM settings WHERE key = 'device.runs' AND value LIKE '%"running":%'`); n != 0 {
+		t.Fatal("the helper's queue still holds the stopped run")
+	}
+}
+
+// Review 40 L1: unlinking on the helper kills a running command's process
+// tree at once and reports it as cancelled.
+func TestHelperUnlinkKillsRunningCommand(t *testing.T) {
+	e := newHelperEnv(t, true)
+	id, beat := e.startTree(t)
+	var un daemon.DeviceUnlinkResult
+	e.help.call("device_unlink", daemon.DeviceUnlinkParams{Peer: e.ctrl.key}, &un)
+	e.treeKilled(t, id, beat)
+}
+
+// Review 40 L1: an unlink from the controller stops the running command when
+// its device.unlink arrives.
+func TestHelperRemoteUnlinkKillsRunningCommand(t *testing.T) {
+	e := newHelperEnv(t, true)
+	id, beat := e.startTree(t)
+	var un daemon.DeviceUnlinkResult
+	e.ctrl.call("device_unlink", daemon.DeviceUnlinkParams{Peer: e.help.key}, &un)
+	e.treeKilled(t, id, beat)
+}
+
+// Review 40 L1: a scope that expires while its command runs stops it, with
+// no message and no request: the runner re-checks the scope during the run.
+func TestHelperScopeExpiryKillsRunningCommand(t *testing.T) {
+	e := newHelperEnv(t, true)
+	id, beat := e.startTree(t)
+	e.help.clk.Advance(8 * 24 * time.Hour)
+	e.treeKilled(t, id, beat)
+}
+
 // Limits: one run at a time and at most 8 queued (the 9th is out of scope,
-// "queue"); clearing the scope drops the queued runs with ws.cancel while the
-// running one finishes; a restart reports an executing run as interrupted and
-// drops the queued ones.
+// "queue"); clearing the scope drops the queued runs with ws.cancel and
+// kills the running one (review 40 L1); a restart reports an executing run
+// as interrupted and drops the queued ones.
 func TestHelperQueueClearAndRestart(t *testing.T) {
 	e := newHelperEnv(t, true)
-	e.setScope(t, []string{"task"}, e.cmd("mk-sleep", 60, nil, "sleep", "3"))
-	first := e.submit(t, "task", "mk-sleep")
+	first, beat := e.startTree(t)
 	var queued []string
 	for i := 0; i < 2; i++ {
-		queued = append(queued, e.submit(t, "task", "mk-sleep"))
+		queued = append(queued, e.submit(t, "task", "mk-tree"))
 	}
 	var cleared daemon.DeviceScopeClearResult
 	e.help.call("device_scope_clear", daemon.DevicePeerParams{Peer: e.ctrl.key}, &cleared)
 	for _, id := range queued {
-		harnessWait(t, "the controller to close the dropped run "+id, func() bool {
-			return e.ctrl.count(`SELECT COUNT(*) FROM work_sessions WHERE request_id = '`+id+`' AND state = 'closed' AND outcome = 'cancelled'`) == 1
-		})
+		e.cancelled(t, id)
 	}
-	if r := e.result(t, first); r.Status != "pass" {
-		t.Fatalf("the running command did not finish: %+v", r)
-	}
+	e.treeKilled(t, first, beat)
 
 	// Fill the queue behind a long run: 1 running + 8 queued, the 10th is refused.
 	e.setScope(t, []string{"task"}, e.cmd("mk-long", 120, nil, "sleep", "60"))

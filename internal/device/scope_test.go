@@ -30,6 +30,9 @@ func fakeResolver() Resolver {
 	return Resolver{
 		RepoPath: func(raw string) (string, error) { return raw, nil },
 		LookPath: func(string) (string, error) { return fakeProgram(), nil },
+		// The fake program does not exist; the ownership rule has its own
+		// tests (perm_test.go).
+		CheckProgram: func(string) error { return nil },
 	}
 }
 
@@ -151,7 +154,7 @@ func TestValidateScopeLimits(t *testing.T) {
 // argv[0] is resolved once, at set time, to an absolute path: a later PATH
 // change cannot swap the program (ticket 2.D2 acceptance).
 func TestValidateScopeResolvesArgv0(t *testing.T) {
-	dir := testutil.TempDir(t)
+	dir := testutil.PrivateDir(t)
 	prog := filepath.Join(dir, "tool")
 	if runtime.GOOS == "windows" {
 		prog += ".exe"

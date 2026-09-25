@@ -58,7 +58,10 @@ Flags:
                          e.g. 'test=agentnet:["go","test","./..."]'. The program
                          (argv[0]) is looked up now, on this device's PATH, and
                          stored as an absolute path; a .bat or .cmd file is
-                         refused (it would run through cmd.exe)
+                         refused (it would run through cmd.exe), and so is a
+                         program that other users can change, it or a folder
+                         above it (writable_by_others; checked again at every
+                         run)
   --timeout NAME=SECONDS repeatable: the command's timeout, 1-3600 (default 900)
   --env NAME=VAR         repeatable: pass the daemon's VAR to command NAME too
                          (up to 32 per command; never DORYLINAE_*)
@@ -67,7 +70,8 @@ Flags:
   --from-file F          read the whole scope as JSON: {"types", "repos":
                          [{"label","path"}], "commands": [{"name","repo","argv",
                          "timeout_s","env"}], "expires"}
-  --clear                remove the scope (queued runs are dropped)
+  --clear                remove the scope (queued runs are dropped, a running
+                         one is killed and reported as cancelled)
   --show                 print the stored scope
   --json                 print {"ok":true,...} (or {"ok":false,"error":{...}})
 

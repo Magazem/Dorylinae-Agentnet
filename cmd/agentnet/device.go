@@ -208,8 +208,9 @@ Usage:
 kept offer with that peer ends, its scope is deleted, and the peer is told. The
 peer is told even if this device holds no active link with it (one side can be
 active while the other's attempt lapsed). No approval is needed: removing
-authority is always allowed. A run that is already executing on a helper
-finishes; queued runs are dropped.
+authority is always allowed. A run that is already executing on a helper is
+killed with its process tree and reported as cancelled; queued runs are
+dropped.
 
 Flags:
   --json    print {"ok":true,"link":{...},"mail_id":"..."}; "link" is absent

@@ -75,6 +75,7 @@ func (d *devNode) start() {
 			ApprovalNotify: d.notifier,
 			ApprovalWindow: d.win,
 			DeviceNow:      d.clk.Now,
+			DeviceRunWatch: 100 * time.Millisecond,
 			NotifyShow:     d.shown.show,
 		})
 	}()
