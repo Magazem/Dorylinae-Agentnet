@@ -228,6 +228,7 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
     a NEW worktree (the board is visible to all workers; a "stopped" worker once picked up
     its successor's task).
   - Mark a worker's tasks completed before retiring it, or it declines shutdown.
+  - A worker can approve its shutdown and still stay on the team (seen with P3-Review-3.4). After a shutdown, wait for "Teammate X was removed"; if it doesn't come, check team_members and re-issue team_shutdown_agent.
   - Spec/docs workers read for a long time and write files late. `idle` notifications
     while the task is `in_progress` are not proof of being stuck: the P2 spec writer was
     retired as "stuck" yet delivered everything. Wait for its report (or a long silence)

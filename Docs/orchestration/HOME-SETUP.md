@@ -196,6 +196,8 @@ migration placeholders (never merge a NO-OP placeholder migration).
   Spec and review workers read for a long time before writing; don't retire them early.
 - "Could not process queued messages … paused" = usage limit or delivery failure: interrupt
   the worker with "resume task <id> from your worktree" once the limit resets.
+- After `team_shutdown_agent`, wait for "Teammate X was removed". A worker once approved its
+  shutdown but stayed on the team idle; check `team_members` and re-issue the shutdown.
 - Worker reports are leads: re-run the gate yourself; they sometimes miss per-OS lint or a new
   test that landed on main meanwhile.
 
