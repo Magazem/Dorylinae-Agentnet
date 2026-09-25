@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -90,6 +91,11 @@ type Store struct {
 	// notification event (EventAgreed, EventEscalated, EventBroken) and ids.
 	OnEvent func(ctx context.Context, event, sid, peer, requestID string)
 
+	// Log receives errors from Sweep that do not stop it (review 45 L2): one
+	// bad debate is logged and skipped, never lost silently. Nil discards
+	// them.
+	Log *slog.Logger
+
 	Now func() time.Time
 }
 
@@ -172,19 +178,39 @@ func getRowByRequest(ctx context.Context, q queryer, role, peer, requestID strin
 }
 
 // resolve finds a debate by its session id (s-) or its request id (r-).
+// Request ids are unique per sender, so a peer can send a debate request that
+// reuses the id of one this daemon sent it (review 45 L1): two rows matching
+// an r- id is an ambiguity, reported the same way request_* does, not
+// silently resolved to the older row.
 func resolve(ctx context.Context, q queryer, id string) (row, error) {
 	switch {
 	case worksession.ValidID(id):
 		return getRow(ctx, q, id)
 	case request.ValidID(id):
-		r, err := scanRow(q.QueryRowContext(ctx, `SELECT `+debateColumns+` FROM debates WHERE request_id = ? ORDER BY created LIMIT 1`, id))
-		if errors.Is(err, sql.ErrNoRows) {
-			return row{}, ErrUnknownDebate
-		}
+		rows, err := q.QueryContext(ctx, `SELECT `+debateColumns+` FROM debates WHERE request_id = ? ORDER BY created`, id)
 		if err != nil {
 			return row{}, fmt.Errorf("debate: read row: %w", err)
 		}
-		return r, nil
+		defer func() { _ = rows.Close() }()
+		var matches []row
+		for rows.Next() {
+			r, err := scanRow(rows)
+			if err != nil {
+				return row{}, fmt.Errorf("debate: scan row: %w", err)
+			}
+			matches = append(matches, r)
+		}
+		if err := rows.Err(); err != nil {
+			return row{}, fmt.Errorf("debate: read row: %w", err)
+		}
+		switch len(matches) {
+		case 0:
+			return row{}, ErrUnknownDebate
+		case 1:
+			return matches[0], nil
+		default:
+			return row{}, request.ErrAmbiguousRequest
+		}
 	}
 	return row{}, ErrUnknownDebate
 }

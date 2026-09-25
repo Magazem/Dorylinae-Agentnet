@@ -42,6 +42,12 @@ const (
 	// device (D22, review 36 L5). Content-free: the peer's name and its role.
 	// Desktop only: it is not sent to the webhook.
 	EventDeviceLinked = "device.linked"
+	// Debate events (Docs/protocol/debate.md §Notifications), content-free:
+	// never the topic, entries or constraint text.
+	EventDebateConstraint = "debate.constraint"
+	EventDebateAgreed     = "debate.agreed"
+	EventDebateEscalated  = "debate.escalated"
+	EventDebateBroken     = "debate.broken"
 )
 
 // DefaultEvents is the default on/off state of each event
@@ -61,6 +67,12 @@ var DefaultEvents = map[string]bool{
 	EventSessionChanges: true,
 
 	EventDeviceLinked: true,
+
+	// On by default (Docs/protocol/debate.md §Notifications: "all on by default").
+	EventDebateConstraint: true,
+	EventDebateAgreed:     true,
+	EventDebateEscalated:  true,
+	EventDebateBroken:     true,
 }
 
 // ValidEvent reports whether event is one of the known events.

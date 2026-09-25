@@ -39,6 +39,7 @@ type Event struct {
 	ResultStatus string    // EventCompleted only, with a result: pass, fail, partial or n/a
 	HasResult    bool      // EventCompleted only
 	RequestID    string    // webhook payload only
+	Session      string    // webhook payload only (debate events: Docs/protocol/debate.md §Notifications)
 	State        string    // the request's state after this event; webhook payload only
 	TeamID       string    // webhook payload only; empty when not a team request
 	TeamName     string    // webhook payload only
@@ -219,6 +220,14 @@ func titleLine(ev Event) string {
 	case EventDeviceLinked:
 		// Type holds the peer's role in the link: helper or controller.
 		return fmt.Sprintf("%s is now linked as your %s", name, ev.Type)
+	case EventDebateConstraint:
+		return fmt.Sprintf("%s added a constraint to your debate", name)
+	case EventDebateAgreed:
+		return fmt.Sprintf("Debate with %s ended in agreement", name)
+	case EventDebateEscalated:
+		return fmt.Sprintf("Debate with %s needs your decision: no agreement", name)
+	case EventDebateBroken:
+		return fmt.Sprintf("Debate with %s stopped: the opening position did not match its commitment", name)
 	default:
 		return ""
 	}

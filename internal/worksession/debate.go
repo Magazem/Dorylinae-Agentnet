@@ -30,6 +30,11 @@ type DebateHooks interface {
 	// EarlyCompleteTx applies a request.complete from B on A while A's
 	// session is not closed (review 43 M4): an open debate closes cancelled.
 	EarlyCompleteTx(ctx context.Context, tx *sql.Tx, sid string, now time.Time) (after func(context.Context), err error)
+	// AbandonTx is B's own ws_cancel on an open debate session (Docs/protocol/debate.md
+	// §Cancel and abandon, "B abandon"): closes B's mirror locally, in the same
+	// transaction as the ws.cancel mail SubmitCancel sends. A no-op (nil, nil)
+	// when the debate is not open.
+	AbandonTx(ctx context.Context, tx *sql.Tx, sid string, now time.Time) (after func(context.Context), err error)
 }
 
 // debateBadState is the refusal of a work-session transition on a debate

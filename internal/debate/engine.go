@@ -183,6 +183,35 @@ func (s *Store) PeerCancelTx(ctx context.Context, tx *sql.Tx, sid string, now ti
 	return true, out.run, nil
 }
 
+// AbandonTx implements worksession.DebateHooks: B's own ws_cancel on an open
+// debate closes B's mirror locally, right away, in addition to the ws.cancel
+// mail SubmitCancel already sends (Docs/protocol/debate.md §Cancel and
+// abandon, "B abandon"). Unlike an ordinary session, B has no ws.state to
+// learn A's answer from (debate.close is the only signal, and only when A's
+// daemon is responsive), so this is B's only protection against a stalled or
+// modified A: reason abandoned, audited debate.abandon. A later debate.close
+// from A is then stored for the record and changes nothing (it is applied
+// nowhere: the debate is no longer open). Idempotent: a debate that is
+// already closed, broken or still invited does nothing (nil, nil).
+func (s *Store) AbandonTx(ctx context.Context, tx *sql.Tx, sid string, now time.Time) (func(context.Context), error) {
+	r, err := getRow(ctx, tx, sid)
+	if err != nil {
+		return nil, err
+	}
+	if r.role != RoleRespondent || !r.open() {
+		return nil, nil
+	}
+	if err := setClosed(ctx, tx, sid, OutcomeCancelled, ReasonAbandoned, now); err != nil {
+		return nil, err
+	}
+	var out afters
+	if err := s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", "", now, &out); err != nil {
+		return nil, err
+	}
+	out.add(s.audit("cli", "debate.abandon", map[string]any{"session": sid, "peer": r.peer}))
+	return out.run, nil
+}
+
 // EarlyCompleteTx implements worksession.DebateHooks: a request.complete from
 // B while the debate is in positions, rounds or converge closes it cancelled,
 // reason cancelled, no Decision (review 43 M4, how B's abandon reaches A). In

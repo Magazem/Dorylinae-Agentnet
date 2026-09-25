@@ -38,7 +38,12 @@ func (s *Store) Sweep(ctx context.Context) (int, error) {
 	for _, id := range ids {
 		closed, err := s.SweepOne(ctx, id)
 		if err != nil {
-			return n, err
+			// review 45 L2: one bad debate (a stored entry that no longer
+			// parses) must not stop the sweep for every debate after it.
+			if s.Log != nil {
+				s.Log.Error("debate: sweep one failed, continuing", "session", id, "error", err)
+			}
+			continue
 		}
 		if closed {
 			n++

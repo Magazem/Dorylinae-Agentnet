@@ -30,6 +30,7 @@ type payload struct {
 
 type payloadRequest struct {
 	ID           string `json:"id"`
+	Session      string `json:"session,omitempty"`
 	Type         string `json:"type"`
 	Urgency      string `json:"urgency,omitempty"`
 	State        string `json:"state"`
@@ -75,6 +76,7 @@ func buildPayload(id string, ev Event, title bool) payload {
 	}
 	req := &payloadRequest{
 		ID:      ev.RequestID,
+		Session: ev.Session,
 		Type:    ev.Type,
 		Urgency: ev.Urgency,
 		State:   ev.State,

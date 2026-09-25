@@ -18,6 +18,9 @@ agentnet request cancel <id> [--reason R] [--json]
 
 `<peer>` is a peer name or public key, with an optional `@`. A peer literally named `show`,
 `list`, `resend` or `cancel` must be written with `@`. `<type>` is `review`, `task` or `question`.
+A fourth type, `debate`, exists (Phase 3) but is not submitted through this command: use
+[`agentnet debate`](debate.md), which needs the extra `--position-file` a debate commits to.
+`--grant` and `--run` are refused on a `debate` (`bad_request`).
 
 | Flag | Meaning |
 |---|---|

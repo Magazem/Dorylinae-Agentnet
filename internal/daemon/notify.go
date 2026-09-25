@@ -99,6 +99,44 @@ func notifyAdapter(t *notify.Trigger, ps *peers.Store, ts teamNamer) request.Not
 	}
 }
 
+// debateNotifyAdapter turns a debate.Store.OnEvent call into a
+// notify.Trigger.Fire call (Docs/protocol/debate.md §Notifications):
+// content-free, never the topic, entries or constraint text. The request
+// title is looked up for the webhook payload's "request.title"
+// (notify.Trigger only includes it when the caller sets --webhook-title);
+// the role is unknown here (the event fires the same way on either side), so
+// both directions are tried.
+func debateNotifyAdapter(t *notify.Trigger, ps *peers.Store, rs *request.Store) func(ctx context.Context, event, sid, peer, requestID string) {
+	if t == nil {
+		return nil
+	}
+	return func(ctx context.Context, event, sid, peer, requestID string) {
+		name, fp := peer, ""
+		if ps != nil {
+			if list, err := ps.List(ctx); err == nil {
+				for _, p := range list {
+					if p.PublicKey == peer {
+						name, fp = p.Name, p.Fingerprint
+						break
+					}
+				}
+			}
+		}
+		title := ""
+		if rs != nil {
+			if v, err := rs.ShowKey(ctx, request.Key{Direction: "out", Peer: peer, ID: requestID}); err == nil {
+				title = v.Title
+			} else if v, err := rs.ShowKey(ctx, request.Key{Direction: "in", Peer: peer, ID: requestID}); err == nil {
+				title = v.Title
+			}
+		}
+		t.Fire(ctx, notify.Event{
+			Kind: event, PeerName: name, PeerFP: fp, Title: title,
+			RequestID: requestID, Session: sid, CreatedAt: time.Now(),
+		})
+	}
+}
+
 // registerNotify wires "notify_get", "notify_set" and "notify_test"
 // (Docs/protocol/ipc.md §Notifications, Docs/cli/notify.md).
 func registerNotify(srv *ipc.Server, settings *notify.Settings, desktop notify.Desktop, wh *notify.Webhook, log notify.AuditSink) {

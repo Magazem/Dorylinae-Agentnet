@@ -69,6 +69,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRequest(args[1:], stdout, stderr)
 	case "consult":
 		return runConsult(args[1:], stdout, stderr)
+	case "debate":
+		return runDebate(args[1:], stdout, stderr)
+	case "debates":
+		return runDebates(args[1:], stdout, stderr)
 	case "inbox":
 		return runInbox(args[1:], stdout, stderr)
 	case "accept":
@@ -140,6 +144,8 @@ Commands:
   presence  Show or set who can see this machine's presence
   request   Send a teammate's agent a request
   consult   Ask a teammate's agent a question, with context files
+  debate    Argue a question with a teammate's agent, ending in a Decision
+  debates   List your debates
   inbox     List the requests addressed to you
   accept    Accept a request from your inbox
   decline   Decline a request from your inbox

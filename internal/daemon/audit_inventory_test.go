@@ -51,6 +51,7 @@ var methodInventory = map[string]invEntry{
 	// shutdown audits daemon.stop_requested, but calling it would stop the shared
 	// scenario's daemons; TestShutdownIPC (daemon_test.go) asserts that row.
 	"shutdown": exempt(),
+	"debate_list": exempt(), "debate_show": exempt(),
 
 	// Approvals.
 	"approval_open":   acts("A", "approval.open"),
@@ -100,6 +101,10 @@ var methodInventory = map[string]invEntry{
 	"grant_policy_add":    acts("A", "grant.policy_add"),
 	"grant_policy_remove": acts("A", "grant.policy_remove"),
 	"fetch_start":         acts("A", "grant.fetch"),
+
+	// Debates (3.1b): B's debate_submit audits debate.entry, whether it is an
+	// ordinary entry or the one-step accept + position.
+	"debate_submit": acts("B", "debate.entry"),
 
 	// Own devices.
 	"device_link":        acts("A", "device.link_intent"),

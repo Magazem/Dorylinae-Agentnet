@@ -532,6 +532,21 @@ func runWait(args []string, stdout, stderr io.Writer) int {
 		return failJSON(*asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
 	}
 
+	// A debate uses a different wait rule (Docs/protocol/debate.md §CLI,
+	// "wait"): "turn" when it becomes the caller's turn, "closed" at the end.
+	// debate_show on a non-debate id (or one this daemon has no debate row
+	// for) answers unknown_session, and the loop below falls through to the
+	// ordinary session/request wait.
+	var firstShown daemon.DebateShowResult
+	derr := waitCall(p, "debate_show", map[string]any{"id": id}, &firstShown)
+	if derr == nil {
+		return runDebateWait(*asJSON, stdout, stderr, p, id, deadline)
+	}
+	var ie *ipc.Error
+	if errors.As(derr, &ie) && ie.Code != "unknown_session" {
+		return failJSON(*asJSON, stdout, stderr, exitError, ie.Code, ie.Message)
+	}
+
 	var startState string
 	haveStart := false
 	for {
@@ -617,6 +632,66 @@ func printWaitResult(asJSON bool, stdout io.Writer, reason string, sv *daemon.Se
 	}
 	if sv != nil {
 		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", reason, sv.ID, sv.State)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "%s\n", reason)
+	}
+	return code
+}
+
+// debateWaitBody is the machine-readable output of `wait --json` on a debate.
+type debateWaitBody struct {
+	OK     bool               `json:"ok"`
+	Wait   string             `json:"wait"`
+	Debate *daemon.DebateView `json:"debate,omitempty"`
+}
+
+// runDebateWait polls debate_show (Docs/protocol/debate.md §CLI, "wait"):
+// "turn" once it is the caller's turn, "closed" once the debate closed (or
+// broke), "timeout" at deadline.
+func runDebateWait(asJSON bool, stdout, stderr io.Writer, p paths.Paths, id string, deadline time.Time) int {
+	for {
+		var shown daemon.DebateShowResult
+		derr := waitCall(p, "debate_show", map[string]any{"id": id}, &shown)
+		if derr == nil {
+			d := shown.Debate
+			switch {
+			case d.Phase == "closed" || d.Phase == "broken":
+				return printDebateWaitResult(asJSON, stdout, "closed", &d)
+			case d.Turn == "you":
+				return printDebateWaitResult(asJSON, stdout, "turn", &d)
+			}
+		} else {
+			var ie *ipc.Error
+			if errors.As(derr, &ie) {
+				return failJSON(asJSON, stdout, stderr, exitError, ie.Code, ie.Message)
+			}
+			if errors.Is(derr, ipc.ErrNotRunning) {
+				return failJSON(asJSON, stdout, stderr, exitDaemonNotFound, "daemon_not_running", "agentnetd is not running")
+			}
+		}
+		if time.Now().After(deadline) {
+			var sv *daemon.DebateView
+			var last daemon.DebateShowResult
+			if lerr := waitCall(p, "debate_show", map[string]any{"id": id}, &last); lerr == nil {
+				sv = &last.Debate
+			}
+			return printDebateWaitResult(asJSON, stdout, "timeout", sv)
+		}
+		time.Sleep(waitPollInterval)
+	}
+}
+
+func printDebateWaitResult(asJSON bool, stdout io.Writer, reason string, dv *daemon.DebateView) int {
+	code := exitOK
+	if reason == "timeout" {
+		code = exitWaitTimeout
+	}
+	if asJSON {
+		_ = json.NewEncoder(stdout).Encode(debateWaitBody{OK: true, Wait: reason, Debate: dv})
+		return code
+	}
+	if dv != nil {
+		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", reason, dv.Session, dv.Phase)
 	} else {
 		_, _ = fmt.Fprintf(stdout, "%s\n", reason)
 	}

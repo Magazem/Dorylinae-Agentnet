@@ -38,9 +38,9 @@ func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View,
 	if r.state == StateClosed {
 		return View{}, "", false, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
+	now := s.now()
 	duplicate = r.cancel.Valid && r.cancel.String == "requested"
 	if !duplicate {
-		now := s.now()
 		body := map[string]any{"at": wireTime(now), "request": r.requestID, "session": id}
 		if reason != "" {
 			body["reason"] = reason
@@ -54,12 +54,28 @@ func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View,
 			return View{}, "", false, fmt.Errorf("worksession: mark cancel requested: %w", err)
 		}
 	}
+	var afterDebate func(context.Context)
+	if r.kind == SessionKindDebate {
+		// §Cancel and abandon, "B abandon": B has no ws.state to learn A's
+		// answer from, so its own --cancel also closes its mirror at once.
+		if s.Debate == nil {
+			return View{}, "", false, fmt.Errorf("worksession: debate sessions are not wired")
+		}
+		fn, err := s.Debate.AbandonTx(ctx, tx, id, now)
+		if err != nil {
+			return View{}, "", false, err
+		}
+		afterDebate = fn
+	}
 	if err := tx.Commit(); err != nil {
 		return View{}, "", false, fmt.Errorf("worksession: commit: %w", err)
 	}
 	s.Outbox.Wake()
 	if s.Audit != nil && !duplicate {
 		_ = s.Audit.Append(ctx, "cli", "ws.cancel", map[string]any{"session": id, "peer": r.peer, "role": RoleWorker})
+	}
+	if afterDebate != nil {
+		afterDebate(ctx)
 	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {

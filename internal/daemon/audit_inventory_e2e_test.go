@@ -97,6 +97,22 @@ func TestAuditInventory(t *testing.T) {
 	}
 	run.call(a, "request_resend", map[string]any{"id": toResend}, raw())
 
+	// Debate (3.1b): request_submit's debate member, and B's one-step accept +
+	// position through debate_submit. Before any sensitive grant to b.key
+	// exists (the peer-wide quarantine clause would refuse it).
+	var dsub daemon.RequestSubmitResult
+	run.call(a, "request_submit", daemon.RequestSubmitParams{
+		To: b.key, Type: "debate", Team: e.teamID, Title: "Retries", Brief: "How should the outbox retry?",
+		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1},
+	}, &dsub)
+	harnessWait(t, "B to see the debate", func() bool {
+		return b.count(`SELECT COUNT(*) FROM debates WHERE session = '`+dsub.Session+`'`) == 1
+	})
+	run.call(b, "debate_submit", map[string]any{"id": dsub.Session, "kind": "position", "entry": e2ePosition("Fixed retry")}, &daemon.DebateSubmitResult{})
+	// Closed at once (A's own cancel): later sensitive grants must not trip
+	// the debate_open refusal (§Quarantine interplay).
+	a.call("ws_cancel", map[string]any{"id": dsub.Session}, &daemon.SessionResult{})
+
 	// Session 1: grant, approvals, fetch, result, quarantine, release, changes, accept.
 	sid1 := accept(submit("session one"))
 	dir := qDir(t)

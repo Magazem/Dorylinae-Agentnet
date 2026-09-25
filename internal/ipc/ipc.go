@@ -6,6 +6,7 @@ package ipc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -180,11 +181,27 @@ func (s *Server) dispatch(ctx context.Context, line []byte) Response {
 		}
 		return Response{ID: req.ID, Error: &Error{Code: CodeInternal, Message: "internal error"}}
 	}
-	raw, err := json.Marshal(res)
+	raw, err := marshalResult(res)
 	if err != nil {
 		return Response{ID: req.ID, Error: &Error{Code: CodeInternal, Message: "internal error"}}
 	}
 	return Response{ID: req.ID, OK: true, Result: raw}
+}
+
+// marshalResult encodes a handler's result with HTML escaping off (review 43
+// M7, Docs/protocol/debate.md §IPC "Size"): json.Marshal writes '<', '>' and
+// '&' as six-byte \u00XX escapes, which would let a peer's debate transcript
+// (a large amount of untrusted text one side controls) inflate a result past
+// the 1 MiB line limit. Debate text additionally refuses U+2028/U+2029, which
+// Go always escapes regardless of this setting.
+func marshalResult(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 var errLineTooLong = errors.New("ipc: line too long")

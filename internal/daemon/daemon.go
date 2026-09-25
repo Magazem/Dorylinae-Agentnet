@@ -511,12 +511,21 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	debates := &debate.Store{
 		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
 		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
+		Log: opts.Logger,
 	}
+	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates
 	wsStore.Debate = debates
 	if opts.OnDebateReady != nil {
 		opts.OnDebateReady(debates)
 	}
+	// The timeout sweep (Docs/protocol/debate.md §Timeouts, "at least once a
+	// minute"); the rule itself is internal/debate.Store.Sweep, which logs and
+	// continues past one bad debate (review 45 L2).
+	dctx, stopDebateSweep := context.WithCancel(ctx)
+	debateSweepDone := make(chan struct{})
+	go func() { defer close(debateSweepDone); startDebateSweep(dctx, debates, opts.Logger) }()
+	defer func() { stopDebateSweep(); <-debateSweepDone }()
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}
@@ -585,6 +594,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		time.AfterFunc(50*time.Millisecond, cancelSelf)
 		return ShutdownResult{OK: true}, nil
 	})
+	registerDebate(srv, debates, peerStore, teamStore, reqStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)
