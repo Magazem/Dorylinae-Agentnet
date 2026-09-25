@@ -12,9 +12,7 @@ Last updated: 2026-09-25, Phase 3 spec work started.
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is
 free.
 
-**Phase 3 started 2026-09-25** (owner: "start now"). Step 1: P3-SpecWriter (Opus) slot `01a0d76b-a2b3…`, task `01a0d76b-ea81…`, worktree `p3-specs` / `p3/specs`: Docs/protocol/{debate,decision,audit,experience}.md + Docs/review/42-phase3-tickets.md (migrations from 18, suggested model per ticket, OD-P3-n). Then an Opus adversarial spec review, then owner approval, then tickets.
-
-**Open items (all owner-side, none blocks Phase 2 spec work):**
+**Phase 3 started 2026-09-25** (owner: "start now"). Step 1 done (~17 min, Opus): specs committed on `p3/specs` (bc3c45f): Docs/protocol/{debate,decision,audit,experience}.md + Docs/review/42-phase3-tickets.md (migrations 18–21, OD-P3-1..13). Step 2: adversarial review P3-SpecReviewer slot `01a0d77b-9431…`, task `01a0d77b-c72a…` → Docs/review/43. Then owner approval, then tickets.
 1. **Owner's two-machine run.** The top of `tests/phase1-manual.md` lists the only checks
    that need two real machines (reboot survival, cross-OS, a relay on a real network, idle
    detection, a visible desktop toast). Everything else is automated in
