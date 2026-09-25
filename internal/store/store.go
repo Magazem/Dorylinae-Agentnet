@@ -375,6 +375,129 @@ CREATE TRIGGER audit_events_chained BEFORE INSERT ON audit_events
 WHEN NEW.hash IS NULL OR NEW.id IS NOT (SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events)
 BEGIN SELECT RAISE(ABORT, 'audit_events rows must be chained'); END;
 `},
+	// Debates (Docs/protocol/debate.md §Persistence, ticket 3.1a). requests and
+	// approvals are rebuilt because SQLite cannot alter a CHECK. Both copies
+	// name every column on both sides (review 43 M10): migration 12 appended
+	// requests.result as the last physical column, so a positional copy into
+	// a table declared in another order would shift data silently. No table
+	// references requests or approvals by FOREIGN KEY and neither has a
+	// trigger (migrations 1-17), so DROP + RENAME is safe with foreign_keys=1.
+	{19, "debates", `
+CREATE TABLE requests_new (
+	direction         TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+	peer              TEXT NOT NULL,
+	id                TEXT NOT NULL,
+	team_id           TEXT NOT NULL,
+	type              TEXT NOT NULL CHECK (type IN ('review', 'task', 'question', 'debate')),
+	urgency           TEXT NOT NULL CHECK (urgency IN ('low', 'normal', 'high', 'blocking')),
+	urgency_declared  TEXT NOT NULL CHECK (urgency_declared IN ('low', 'normal', 'high', 'blocking')),
+	downgraded_by     TEXT CHECK (downgraded_by IN ('sender', 'receiver')),
+	body              TEXT NOT NULL CHECK (json_valid(body)),
+	body_hash         TEXT NOT NULL,
+	state             TEXT NOT NULL CHECK (state IN ('pending', 'accepted', 'declined', 'deferred', 'completed', 'cancelled')),
+	state_seq         INTEGER NOT NULL DEFAULT 0,
+	state_at          TEXT,
+	deferred_until    TEXT,
+	decline_code      TEXT,
+	reason            TEXT,
+	note              TEXT,
+	first_response    TEXT CHECK (first_response IN ('accept', 'decline', 'defer')),
+	first_response_at TEXT,
+	created           TEXT NOT NULL,
+	received_at       TEXT,
+	mail_id           TEXT NOT NULL,
+	last_reply        TEXT CHECK (last_reply IS NULL OR json_valid(last_reply)),
+	last_reply_sent   TEXT,
+	idem_key          TEXT,
+	params_hash       TEXT,
+	cancel            TEXT CHECK (cancel IN ('requested', 'refused')),
+	cancel_at         TEXT,
+	cancel_mail_id    TEXT,
+	updated           TEXT NOT NULL,
+	result            TEXT CHECK (result IS NULL OR json_valid(result)),
+	PRIMARY KEY (direction, peer, id)
+);
+INSERT INTO requests_new (direction, peer, id, team_id, type, urgency, urgency_declared,
+	downgraded_by, body, body_hash, state, state_seq, state_at, deferred_until, decline_code,
+	reason, note, first_response, first_response_at, created, received_at, mail_id,
+	last_reply, last_reply_sent, idem_key, params_hash, cancel, cancel_at, cancel_mail_id,
+	updated, result)
+SELECT direction, peer, id, team_id, type, urgency, urgency_declared,
+	downgraded_by, body, body_hash, state, state_seq, state_at, deferred_until, decline_code,
+	reason, note, first_response, first_response_at, created, received_at, mail_id,
+	last_reply, last_reply_sent, idem_key, params_hash, cancel, cancel_at, cancel_mail_id,
+	updated, result FROM requests;
+DROP TABLE requests;
+ALTER TABLE requests_new RENAME TO requests;
+CREATE UNIQUE INDEX requests_idem ON requests (peer, idem_key)
+	WHERE direction = 'out' AND idem_key IS NOT NULL;
+CREATE INDEX requests_state ON requests (direction, state);
+CREATE INDEX requests_peer_time ON requests (direction, peer, received_at);
+
+CREATE TABLE approvals_new (
+    id        TEXT PRIMARY KEY,
+    kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope','debate_constraint')),
+    subject   TEXT NOT NULL,
+    summary   TEXT NOT NULL,
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    state     TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','expired')),
+    decided   TEXT
+);
+INSERT INTO approvals_new (id, kind, subject, summary, created, expires, attempts, state, decided)
+SELECT id, kind, subject, summary, created, expires, attempts, state, decided FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_state ON approvals (state, expires);
+
+ALTER TABLE work_sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'work'
+    CHECK (kind IN ('work', 'debate'));
+
+CREATE TABLE debates (
+    session         TEXT PRIMARY KEY,               -- s-<32 hex>, derived
+    role            TEXT NOT NULL CHECK (role IN ('initiator', 'respondent')),
+    peer            TEXT NOT NULL,
+    request_id      TEXT NOT NULL,
+    rounds_max      INTEGER NOT NULL CHECK (rounds_max BETWEEN 1 AND 5),
+    turn_timeout_s  INTEGER NOT NULL CHECK (turn_timeout_s BETWEEN 300 AND 86400),
+    commitment      TEXT NOT NULL,
+    nonce           TEXT,                           -- initiator only; kept after the reveal (re-send)
+    phase           TEXT NOT NULL CHECK (phase IN ('invited','positions','rounds','converge','closing','closed','broken')),
+    next_slot       INTEGER NOT NULL DEFAULT 1,
+    turn_deadline   TEXT,
+    outcome         TEXT CHECK (outcome IN ('agreed', 'escalated', 'cancelled')),
+    reason          TEXT CHECK (reason IN ('accepted', 'rejected', 'timeout', 'cancelled', 'abandoned')),
+    last_state      TEXT CHECK (last_state IS NULL OR json_valid(last_state)),  -- initiator: {"kind","body"}
+    last_state_sent TEXT,
+    close_body      TEXT CHECK (close_body IS NULL OR json_valid(close_body)),  -- respondent: a close held or stored for the record
+    created         TEXT NOT NULL,
+    updated         TEXT NOT NULL,
+    CHECK ((phase = 'closed') = (outcome IS NOT NULL))
+);
+CREATE UNIQUE INDEX debates_request ON debates (role, peer, request_id);
+CREATE INDEX debates_peer_phase ON debates (peer, phase);
+CREATE TABLE debate_entries (
+    session  TEXT NOT NULL,
+    slot     INTEGER NOT NULL CHECK (slot BETWEEN 0 AND 13),
+    author   TEXT NOT NULL CHECK (author IN ('initiator', 'respondent')),
+    kind     TEXT NOT NULL CHECK (kind IN ('position', 'move', 'proposal', 'answer')),
+    entry    TEXT NOT NULL CHECK (json_valid(entry)),  -- canonical entry (content)
+    at       TEXT NOT NULL,                            -- the carrying body's "at" (wire form)
+    state    TEXT NOT NULL CHECK (state IN ('committed', 'applied', 'sent', 'early')),
+    PRIMARY KEY (session, slot)
+);
+CREATE TABLE debate_constraints (
+    session  TEXT NOT NULL,
+    id       TEXT NOT NULL,                            -- c-<32 hex>
+    author   TEXT NOT NULL CHECK (author IN ('initiator', 'respondent')),
+    text     TEXT NOT NULL,                            -- content
+    at       TEXT NOT NULL,
+    state    TEXT NOT NULL CHECK (state IN ('pending_approval', 'active', 'late', 'excess')),
+    approval TEXT,
+    PRIMARY KEY (session, id)
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

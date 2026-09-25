@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // ws.result: B -> A (Docs/protocol/work-session.md §Kinds, "ws.result
@@ -85,7 +86,7 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	}
 
 	// Step 2: find the out request row (peer = msg.from, id = request).
-	teamID, requestState, terr := requestOutState(ctx, tx, op.Msg.From, reqID)
+	teamID, requestState, requestType, terr := requestOutState(ctx, tx, op.Msg.From, reqID)
 	if errors.Is(terr, sql.ErrNoRows) {
 		// An orphan result is applied nowhere either, like an ignored one
 		// (#inbox-copy-d18 (2)); keeping its plaintext would let B park
@@ -96,6 +97,13 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	}
 	if terr != nil {
 		return fmt.Errorf("worksession: read out request: %w", terr)
+	}
+	if requestType == request.TypeDebate {
+		// Docs/protocol/debate.md §What a debate session does not do: a
+		// ws.result for a debate is ignored, its inbox copy stored blank.
+		op.Withhold = true
+		pendingResult.Store(op, &resultOutcome{ignored: "kind", sessionID: sid, requestID: reqID, peer: op.Msg.From})
+		return nil
 	}
 	switch requestState {
 	case "declined", "cancelled", "completed":
@@ -180,10 +188,10 @@ WHERE id = ?`,
 // (direction = 'out', peer, id) directly: internal/request owns that table
 // but exposes no tx-scoped lookup, and this runs inside the caller's mail
 // dedupe transaction (Docs/protocol/work-session.md "Find the out request row").
-func requestOutState(ctx context.Context, tx *sql.Tx, peer, id string) (teamID, state string, err error) {
-	err = tx.QueryRowContext(ctx, `SELECT team_id, state FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, peer, id).
-		Scan(&teamID, &state)
-	return teamID, state, err
+func requestOutState(ctx context.Context, tx *sql.Tx, peer, id string) (teamID, state, typ string, err error) {
+	err = tx.QueryRowContext(ctx, `SELECT team_id, state, type FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, peer, id).
+		Scan(&teamID, &state, &typ)
+	return teamID, state, typ, err
 }
 
 // afterResult audits the outcome and re-sends last_state for an ignored
@@ -198,7 +206,7 @@ func (s *Store) afterResult(ctx context.Context, op *mail.Opened) {
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
-	if out.ignored != "" {
+	if out.ignored != "" && out.ignored != "kind" {
 		s.resendLastState(ctx, out.sessionID, s.now())
 	}
 	if out.quarantined && out.ignored == "" && !out.orphan && s.OnQuarantined != nil {

@@ -405,6 +405,9 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 		if sess.Role != worksession.RoleRequester || sess.Peer != peer.PublicKey {
 			return nil, &ipc.Error{Code: CodeNotRequester, Message: "only the requester of the session may create a grant"}
 		}
+		if sess.Kind == worksession.SessionKindDebate {
+			return nil, &ipc.Error{Code: CodeBadState, Message: "debates carry no grants"}
+		}
 		if sess.State != worksession.StateOpen {
 			return nil, &ipc.Error{Code: CodeBadState, Message: "the session is not open"}
 		}
@@ -438,6 +441,16 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 		// fs.read is always sensitive; git.read is sensitive unless --public
 		// (Docs/protocol/grant.md §Issuance step 5, OD-P2-13).
 		sensitive := p.Action != capability.ActionGitRead || !p.Public
+		// Docs/protocol/debate.md §Quarantine interplay (review 43 M5): no
+		// sensitive grant to a peer with an open debate, on every path.
+		if err := capability.CheckSensitiveGrant(ctx, capStore.DB, peer.PublicKey, sensitive); err != nil {
+			if errors.Is(err, capability.ErrDebateOpen) && log != nil {
+				_ = log.Append(ctx, audit.ActorCLI, "grant.refused", map[string]any{
+					"session": p.Session, "peer": peer.PublicKey, "action": p.Action, "reason": CodeDebateOpen,
+				})
+			}
+			return nil, debateOpenError(err)
+		}
 
 		now := time.Now()
 		label := deriveLabel(resolved)
@@ -498,6 +511,18 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			if err := recheckIssuanceTx(ctx, tx, wsStore, p.Session, peer.PublicKey, nonLoopbackRelay); err != nil {
 				return nil, err
 			}
+			// The policy path never activates a sensitive grant to a peer
+			// with an open debate (review 43 M5).
+			if err := capability.CheckSensitiveGrant(ctx, tx, peer.PublicKey, sensitive); err != nil {
+				_ = tx.Rollback()
+				committed = true
+				if log != nil {
+					_ = log.Append(ctx, audit.ActorDaemon, "grant.refused", map[string]any{
+						"session": p.Session, "peer": peer.PublicKey, "action": p.Action, "policy": match.ID, "reason": CodeDebateOpen,
+					})
+				}
+				return nil, debateOpenError(err)
+			}
 			if err := capStore.InsertActiveTx(ctx, tx, rec); err != nil {
 				return nil, err
 			}
@@ -538,6 +563,11 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
 				if err := recheckIssuanceTx(ctx, tx, wsStore, sessionID, peerKey, nonLoopbackRelay); err != nil {
 					return err
+				}
+				// A sensitive grant that was pending when a debate with the
+				// peer started is refused at confirm (review 43 M5).
+				if err := capability.CheckSensitiveGrant(ctx, tx, peerKey, sensitive); err != nil {
+					return debateOpenError(err)
 				}
 				gr, err := capStore.GetTx(ctx, tx, grantID)
 				if err != nil || gr.State != capability.StatePendingApproval {
@@ -770,6 +800,18 @@ func revokeForRemovedPeer(capStore *capability.Store) func(ctx context.Context, 
 		}
 		return capStore.PolicyDeleteForPeerTx(ctx, tx, key)
 	}
+}
+
+// CodeDebateOpen refuses a sensitive grant to a peer with an open debate
+// (Docs/protocol/debate.md §Quarantine interplay).
+const CodeDebateOpen = "debate_open"
+
+// debateOpenError maps capability.ErrDebateOpen to its IPC error.
+func debateOpenError(err error) error {
+	if errors.Is(err, capability.ErrDebateOpen) {
+		return &ipc.Error{Code: CodeDebateOpen, Message: "a debate with this peer is open: no sensitive grant until it closes"}
+	}
+	return err
 }
 
 func grantError(err error) error {

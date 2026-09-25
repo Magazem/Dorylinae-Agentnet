@@ -291,6 +291,30 @@ func main() {
 
 	fmt.Println("== audit chain (3.6a, audit.md §Vector)")
 	printAuditVector()
+	fmt.Println("== debate commitment (3.1a, debate.md §Commit-reveal)")
+	printDebateVector(keyI, keyR)
+}
+
+// printDebateVector prints the session id and the commitment of
+// Docs/protocol/debate.md §Commit-reveal, re-implemented from the text.
+func printDebateVector(keyI, keyR string) {
+	const reqID = "r-0123456789abcdef0123456789abcdef"
+	h := sha256.Sum256([]byte("dorylinae-ws-id-v1\n" + keyI + "\n" + keyR + "\n" + reqID))
+	sid := "s-" + hex.EncodeToString(h[:16])
+	nonce := hex.EncodeToString(seq(0x40))
+	position := canonical(map[string]any{
+		"claim":                 "Use capped exponential backoff for outbox retries",
+		"assumptions":           []any{"Clock skew between peers is under 5 s"},
+		"evidence":              []any{map[string]any{"kind": "file", "ref": "internal/mail/outbox.go"}},
+		"rejected_alternatives": []any{map[string]any{"option": "Fixed 30 s retry", "reason": "Floods the relay after an outage"}},
+		"argument":              "Retries should back off exponentially, capped at 10 minutes.",
+	})
+	sum := sha256.Sum256(append([]byte("dorylinae-debate-commit-v1\n"+sid+"\n"+keyI+"\n"+nonce+"\n"), position...))
+	fmt.Println("request_id  ", reqID)
+	fmt.Println("session     ", sid)
+	fmt.Println("nonce       ", nonce)
+	fmt.Printf("position    %s\n", position)
+	fmt.Printf("commitment  %x\n", sum)
 }
 
 // grantDomain and grantSession are Docs/protocol/grant.md's signing domain

@@ -18,6 +18,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
@@ -202,6 +203,11 @@ type Options struct {
 	// lets a test seed a work session directly, without a relay peer to run
 	// the accept flow).
 	OnStoresReady func(*capability.Store, *worksession.Store)
+	// OnDebateReady, if set, is called once with the daemon's debate.Store
+	// right after it is built, before any mail is handled (a test option:
+	// until 3.1b adds debate_submit, tests drive entries through the store,
+	// and may set its Now for the timeout rule).
+	OnDebateReady func(*debate.Store)
 	// DeviceNow overrides the own-device link's clock (a test option: intents
 	// and offers expire after 10 minutes, Docs/protocol/device.md §Link flow).
 	// Nil uses time.Now.
@@ -494,6 +500,18 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	go func() { defer close(hDone); helper.loop(hctx) }()
 	defer func() { stopHelper(); <-hDone }()
 	wireQuarantine(wsStore, capStore, apprStore, reqStore, opts.Quarantine)
+	// Debates (Docs/protocol/debate.md, 3.1a): the request type debate, its
+	// session kind and the debate.* kinds. The peer-wide quarantine clause
+	// is checked at a debate's edges (§Quarantine interplay).
+	debates := &debate.Store{
+		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
+		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
+	}
+	reqStore.Debates = debates
+	wsStore.Debate = debates
+	if opts.OnDebateReady != nil {
+		opts.OnDebateReady(debates)
+	}
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}

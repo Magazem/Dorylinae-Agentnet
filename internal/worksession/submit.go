@@ -50,6 +50,11 @@ func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID 
 	if err != nil {
 		return true, "", nil, err
 	}
+	if row.kind == SessionKindDebate {
+		// Also request_complete's shorthand on a debate (review 43 M4): B's
+		// daemon completes a debate request itself when the mirror closes.
+		return true, "", nil, debateBadState(row, "debates have no result")
+	}
 	if row.state != StateOpen || (row.cancel.Valid && row.cancel.String == "requested") {
 		return true, "", nil, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
 	}

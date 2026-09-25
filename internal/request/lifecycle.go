@@ -204,6 +204,11 @@ func (s *Store) transitionTx(ctx context.Context, tx *sql.Tx, id, from string, a
 	if err != nil {
 		return storedRow{}, 0, "", err
 	}
+	if tb.newState == StateDeclined && row.typ == TypeDebate && s.Debates != nil {
+		if err := s.Debates.EndedTx(ctx, tx, "in", row.peer, row.id, now); err != nil {
+			return storedRow{}, 0, "", err
+		}
+	}
 	if tb.kind == KindAccept && s.Sessions != nil {
 		if err := s.Sessions.OpenSession(ctx, tx, "worker", row.peer, row.id, row.teamID, now); err != nil {
 			return storedRow{}, 0, "", err

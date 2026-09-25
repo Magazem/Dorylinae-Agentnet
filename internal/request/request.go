@@ -64,7 +64,27 @@ const (
 	TypeReview   = "review"
 	TypeTask     = "task"
 	TypeQuestion = "question"
+	// TypeDebate is a debate invitation (Docs/protocol/debate.md §Request
+	// type debate): it carries the "debate" member.
+	TypeDebate = "debate"
 )
+
+// Debate member limits (Docs/protocol/debate.md §Request type debate).
+const (
+	MinDebateRounds      = 1
+	MaxDebateRounds      = 5
+	MinDebateTurnTimeout = 300
+	MaxDebateTurnTimeout = 86400
+)
+
+// DebateMember is the request's "debate" member, present iff Type is
+// TypeDebate: the initiator's commitment to its opening position and the
+// turn parameters.
+type DebateMember struct {
+	Commitment   string // 64 lowercase hex
+	Rounds       int
+	TurnTimeoutS int
+}
 
 // timeFmt is the wire time format: RFC 3339 UTC, "Z", whole seconds.
 const timeFmt = "2006-01-02T15:04:05Z"
@@ -122,8 +142,9 @@ type Request struct {
 	RequestedGrant  *RequestedGrant // nil if absent
 	Deadline        time.Time       // zero if absent
 	Created         time.Time
-	Context         []ContextFile // nil if absent; question only
+	Context         []ContextFile // nil if absent; question or debate only
 	Run             *Run          // nil if absent; own-device helper (Docs/protocol/device.md)
+	Debate          *DebateMember // nil if absent; iff Type is TypeDebate
 }
 
 // Run is the request's "run" member (Docs/protocol/device.md §Running): the

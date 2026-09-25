@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -234,6 +235,8 @@ func lifecycleError(err error) error {
 	var bse *request.BadStateError
 	var tl *request.TooLargeCompleteError
 	switch {
+	case errors.Is(err, debate.ErrQuarantineActive):
+		return &ipc.Error{Code: CodeQuarantineActive, Message: err.Error()}
 	case errors.Is(err, request.ErrUnknownRequest):
 		return &ipc.Error{Code: CodeUnknownRequest, Message: "no such request"}
 	case errors.Is(err, request.ErrAmbiguousRequest):

@@ -40,6 +40,17 @@ type SubmitParams struct {
 	// ParamsHash is the caller-computed hash of Docs/protocol/request.md
 	// §Submitting ("params_hash"), required when IdempotencyKey is set.
 	ParamsHash string
+
+	// Prepare, if set, is called once on a fresh submit, after the request
+	// id is drawn and before validation, to complete the request (a debate
+	// sets its "debate" member here: the commitment needs the id,
+	// Docs/protocol/debate.md §Commit-reveal). It is never called for an
+	// idempotent duplicate.
+	Prepare func(req *Request) error
+	// InTx, if set, is called inside the transaction that stores the out row
+	// and queues the request mail, after both; it must touch only tx (a
+	// debate stores its initiator row and committed position here).
+	InTx func(ctx context.Context, tx *sql.Tx, req *Request, now time.Time) error
 }
 
 // SubmitOutcome is enough to build the IPC "submit result"
@@ -85,6 +96,11 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 		Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
 		Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
 		Created: now.UTC().Truncate(time.Second), Context: p.Context, Run: p.Run,
+	}
+	if p.Prepare != nil {
+		if err := p.Prepare(req); err != nil {
+			return SubmitOutcome{}, err
+		}
 	}
 	if err := Validate(req); err != nil {
 		return SubmitOutcome{}, err
@@ -150,6 +166,11 @@ INSERT INTO requests (
 			return SubmitOutcome{}, true, nil
 		}
 		return SubmitOutcome{}, false, fmt.Errorf("request: insert out row: %w", err)
+	}
+	if p.InTx != nil {
+		if err := p.InTx(ctx, tx, req, now); err != nil {
+			return SubmitOutcome{}, false, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return SubmitOutcome{}, false, fmt.Errorf("request: commit: %w", err)

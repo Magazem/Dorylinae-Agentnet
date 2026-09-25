@@ -83,6 +83,10 @@ type cancelOutcome struct {
 	peer      string
 	requestID string
 	closed    *storedRow // the row before a close, for ws.close
+	// debate is set for a debate session: its close (and ws.close) is
+	// audited by debateAfter, and a refusal is not echoed with ws.state.
+	debate      bool
+	debateAfter func(context.Context)
 }
 
 var pendingCancel sync.Map // map[*mail.Opened]*cancelOutcome
@@ -151,7 +155,22 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		return nil
 	}
 	if row.state != StateOpen {
-		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: row.kind == SessionKindDebate})
+		return nil
+	}
+	if row.kind == SessionKindDebate {
+		if s.Debate == nil {
+			return fmt.Errorf("worksession: debate sessions are not wired")
+		}
+		applied, after, err := s.Debate.PeerCancelTx(ctx, tx, row.id, s.now())
+		if err != nil {
+			return err
+		}
+		result := "refused"
+		if applied {
+			result = "cancelled"
+		}
+		pendingCancel.Store(op, &cancelOutcome{result: result, sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: true, debateAfter: after})
 		return nil
 	}
 	if err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", s.now()); err != nil {
@@ -172,7 +191,7 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
-	if out.result == "refused" {
+	if out.result == "refused" && !out.debate {
 		s.resendLastState(ctx, out.sessionID, s.now())
 	}
 	if s.Audit == nil {
@@ -185,5 +204,8 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 	_ = s.Audit.Append(ctx, "daemon", "ws.cancel_in", map[string]any{"session": out.sessionID, "peer": out.peer, "result": out.result})
 	if out.closed != nil {
 		s.auditClose(ctx, *out.closed, OutcomeCancelled, s.now())
+	}
+	if out.debateAfter != nil {
+		out.debateAfter(ctx)
 	}
 }

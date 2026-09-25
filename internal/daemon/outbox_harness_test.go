@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -172,6 +173,9 @@ type harnessNode struct {
 	ApprovalNow     func() time.Time
 	OnApprovalReady func(*approval.Store)
 	OnStoresReady   func(*capability.Store, *worksession.Store)
+	// OnDebateReady mirrors daemon.Options OnDebateReady (3.1a: entries are
+	// driven through the store until 3.1b adds debate_submit).
+	OnDebateReady func(*debate.Store)
 }
 
 func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
@@ -216,6 +220,7 @@ func (n *harnessNode) start() {
 			ApprovalNow:      n.ApprovalNow,
 			OnApprovalReady:  n.OnApprovalReady,
 			OnStoresReady:    n.OnStoresReady,
+			OnDebateReady:    n.OnDebateReady,
 		})
 	}()
 	select {

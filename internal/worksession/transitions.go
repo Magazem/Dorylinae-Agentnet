@@ -95,6 +95,9 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 	if r.role != RoleRequester {
 		return View{}, ErrNotRequester
 	}
+	if r.kind == SessionKindDebate {
+		return View{}, debateBadState(r, "debates have no result to accept")
+	}
 	if r.state != StateAwaitingResult {
 		return View{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
@@ -142,6 +145,9 @@ func (s *Store) RequestChanges(ctx context.Context, id, changes string) (View, e
 	}
 	if r.role != RoleRequester {
 		return View{}, ErrNotRequester
+	}
+	if r.kind == SessionKindDebate {
+		return View{}, debateBadState(r, "debates take no change requests")
 	}
 	fromQuarantine := r.state == StateQuarantined
 	if r.state != StateAwaitingResult && !fromQuarantine {
@@ -200,6 +206,9 @@ func (s *Store) Discard(ctx context.Context, id string) (View, error) {
 	}
 	if r.role != RoleRequester {
 		return View{}, ErrNotRequester
+	}
+	if r.kind == SessionKindDebate {
+		return View{}, debateBadState(r, "debates are never quarantined")
 	}
 	if r.state != StateQuarantined {
 		return View{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
@@ -265,7 +274,19 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 		return View{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
 	now := s.now()
-	if err := s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", now); err != nil {
+	var afterDebate func(context.Context)
+	if r.kind == SessionKindDebate {
+		// Docs/protocol/debate.md §Cancel and abandon: close cancelled, no
+		// Decision; B learns it from debate.close, never from ws.state.
+		if s.Debate == nil {
+			return View{}, debateBadState(r, "debates are not wired")
+		}
+		fn, err := s.Debate.CancelTx(ctx, tx, id, now)
+		if err != nil {
+			return View{}, err
+		}
+		afterDebate = fn
+	} else if err := s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", now); err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -275,7 +296,11 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	if s.Audit != nil {
 		_ = s.Audit.Append(ctx, "cli", "ws.cancel", map[string]any{"session": id, "peer": r.peer, "role": RoleRequester})
 	}
-	s.auditClose(ctx, r, OutcomeCancelled, now)
+	if afterDebate != nil {
+		afterDebate(ctx)
+	} else {
+		s.auditClose(ctx, r, OutcomeCancelled, now)
+	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
@@ -296,6 +321,9 @@ func (s *Store) ReleaseInTx(ctx context.Context, tx *sql.Tx, id string, now time
 	}
 	if r.role != RoleRequester {
 		return "", 0, ErrNotRequester
+	}
+	if r.kind == SessionKindDebate {
+		return "", 0, debateBadState(r, "debates are never quarantined")
 	}
 	if r.state != StateQuarantined {
 		return "", 0, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
@@ -356,6 +384,9 @@ func (s *Store) AcceptResultInTx(ctx context.Context, tx *sql.Tx, id string, now
 	}
 	if r.role != RoleRequester {
 		return "", 0, time.Time{}, ErrNotRequester
+	}
+	if r.kind == SessionKindDebate {
+		return "", 0, time.Time{}, debateBadState(r, "debates have no result to accept")
 	}
 	if r.state != StateAwaitingResult {
 		return "", 0, time.Time{}, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}

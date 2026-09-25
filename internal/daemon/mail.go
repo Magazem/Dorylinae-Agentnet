@@ -12,6 +12,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -225,6 +226,15 @@ func identityPriv(ks *keystore.Store) func() (ed25519.PrivateKey, error) {
 	}
 }
 
+// debateStore returns the debate store wired into rs, if any.
+func debateStore(rs *request.Store) (*debate.Store, bool) {
+	if rs == nil || rs.Debates == nil {
+		return nil, false
+	}
+	ds, ok := rs.Debates.(*debate.Store)
+	return ds, ok && ds != nil
+}
+
 // daemonKinds are the application kinds the daemon itself owns: each has a
 // handler here and is sent only by the daemon's own methods. mail_submit
 // refuses all of them (review 36 L7): a local IPC client must never be able
@@ -254,6 +264,14 @@ func daemonKinds(ts *team.Store, rs *request.Store, ws *worksession.Store, caps 
 		kinds[worksession.KindResult] = ws.ResultKind()
 		kinds[worksession.KindCancel] = ws.CancelKind()
 		kinds[worksession.KindState] = ws.StateKind()
+	}
+	// debate.* (Docs/protocol/debate.md §Kinds) needs sessions too: a debate
+	// is argued inside a work session of kind debate. debate.constraint
+	// (3.4) and debate.sign (3.3a) join here with their tickets.
+	if ds, ok := debateStore(rs); ok && ws != nil && rs.Sessions != nil {
+		kinds[debate.MailEntry] = ds.EntryKind()
+		kinds[debate.MailReveal] = ds.RevealKind()
+		kinds[debate.MailClose] = ds.CloseKind()
 	}
 	// grant/grant.revoke are safe to register even before sessions ever open
 	// here (2.1b): a grant mail's step 7 (session known and open) fails

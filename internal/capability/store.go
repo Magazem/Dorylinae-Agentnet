@@ -312,6 +312,52 @@ func (s *Store) QuarantineHolds(ctx context.Context, tx *sql.Tx, sid, peer strin
 	return n > 0, nil
 }
 
+// PeerQuarantineHoldsTx is clause (2) of QuarantineHolds alone, the
+// peer-wide rule that debates check at their edges (Docs/protocol/debate.md
+// §Quarantine interplay, OD-P3-4): this daemon issued a sensitive grant to
+// peer, ever active, whose exp is later than now - 7 d. Read-only.
+func (s *Store) PeerQuarantineHoldsTx(ctx context.Context, tx *sql.Tx, peer string) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE direction = 'issued' AND sensitive = 1 AND
+		(state = 'active' OR (state = 'revoked' AND (COALESCE(approval, '') <> '' OR COALESCE(policy, '') <> '')))
+		AND peer = ? AND exp > ?`, peer, fmtTime(s.now().Add(-7*24*time.Hour))).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("capability: peer quarantine rule: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ErrDebateOpen refuses a sensitive grant to a peer with whom this daemon has
+// a debate in invited, positions, rounds or converge (IPC debate_open,
+// Docs/protocol/debate.md §Quarantine interplay, review 43 M5).
+var ErrDebateOpen = errors.New("capability: a debate with this peer is open")
+
+// DebateOpenQ is the query side of CheckSensitiveGrant: *sql.DB or *sql.Tx.
+type DebateOpenQ interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// CheckSensitiveGrant returns ErrDebateOpen when a grant that is sensitive
+// may not be issued to peer because a debate with it is open, in either
+// role (Docs/protocol/debate.md §Quarantine interplay). Non-sensitive grants
+// always pass. Callers check it at grant_create, at the approval's
+// Precondition and on the policy path, through the transaction that issues
+// the grant where there is one.
+func CheckSensitiveGrant(ctx context.Context, q DebateOpenQ, peer string, sensitive bool) error {
+	if !sensitive {
+		return nil
+	}
+	var one int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM debates WHERE peer = ? AND phase IN ('invited', 'positions', 'rounds', 'converge') LIMIT 1`, peer).Scan(&one)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("capability: open debates: %w", err)
+	}
+	return ErrDebateOpen
+}
+
 // RevokeTx marks one grant revoked inside tx, idempotent (a second revoke of
 // an already-revoked row is a no-op, not an error). Returns whether the
 // state actually changed here.

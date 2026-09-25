@@ -11,6 +11,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -48,6 +49,7 @@ func TestMailSubmitRefusesEveryDaemonKind(t *testing.T) {
 	ts := team.NewStore(db, ps, self)
 	ws := &worksession.Store{DB: db, Self: self}
 	rs := &request.Store{DB: db, Self: self, Sessions: ws}
+	rs.Debates = &debate.Store{DB: db, Self: self, Requests: rs, Sessions: ws}
 	caps := &capability.Store{DB: db}
 	rcv, _ := newMailReceiver(db, log, nil, pub, nil, nil, ts, rs, ws, caps)
 	kinds := withDeviceKinds(rcv.Kinds, &device.Store{DB: db, Self: self}, self, deviceHooks{})
@@ -88,6 +90,11 @@ func TestMailSubmitRefusesEveryDaemonKind(t *testing.T) {
 		return ""
 	}
 
+	for _, k := range []string{debate.MailEntry, debate.MailReveal, debate.MailClose} {
+		if _, ok := kinds[k]; !ok {
+			t.Errorf("the receiver does not register %s", k)
+		}
+	}
 	for kind := range kinds {
 		if kind == mail.DebugKind {
 			continue
@@ -100,7 +107,8 @@ func TestMailSubmitRefusesEveryDaemonKind(t *testing.T) {
 		}
 	}
 	// Reserved namespaces are refused even for a kind no build registers yet.
-	for _, kind := range []string{"device.scope", "ws.future", "grant.extend", "request.nudge", "team.kick"} {
+	for _, kind := range []string{"device.scope", "ws.future", "grant.extend", "request.nudge", "team.kick",
+		"debate.x", "debate.constraint", "debate.sign", "decision.x"} {
 		if err := submit(kind); code(err) != ipc.CodeBadRequest {
 			t.Errorf("mail_submit %q: err = %v, want bad_request", kind, err)
 		}

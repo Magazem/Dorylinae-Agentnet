@@ -54,6 +54,14 @@ what to change first. The decisions behind them are in
   quarantine (a Phase 1 requester never issues grants). A Phase 1 daemon also refuses a
   Phase 2 request's `context` or `run` members as invalid. Upgrade both sides to get sessions,
   grants, quarantine and the own-device helper.
+- **Phase 2 teammates cannot debate.** A debate is a request of the new type `debate`. A
+  daemon that has not been upgraded to Phase 3 refuses it as invalid, so the invitation shows
+  as failed (`bad_body`) in your request view and nothing is started. Both sides must run
+  Phase 3 to debate; there is no fallback to a plain request.
+- **No grants during a debate.** A debate's session carries no grants, and while you have a
+  debate open with a teammate (invited or running), a sensitive grant to that teammate is
+  refused (`debate_open`). Likewise a debate cannot be started or accepted for seven days
+  after a sensitive grant to that teammate ended (`quarantine_active`).
 
 ## Presence
 

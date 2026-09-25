@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -21,7 +22,7 @@ import (
 // reservedKindPrefixes are the namespaces of daemon protocols. A kind in one
 // of them is refused by mail_submit even if this build registers no handler
 // for it, so a future daemon kind is never sendable by accident.
-var reservedKindPrefixes = []string{"device.", "ws.", "request", "team.", "grant", "presence", "fetch", "consult", "approval", "pair", "keys", "ack"}
+var reservedKindPrefixes = []string{"device.", "ws.", "request", "team.", "grant", "presence", "fetch", "consult", "approval", "pair", "keys", "ack", "debate.", "decision."}
 
 // ownedKinds is the set of kinds the daemon registers a handler for, derived
 // from the same functions that build the mail receiver (daemonKinds and
@@ -29,7 +30,7 @@ var reservedKindPrefixes = []string{"device.", "ws.", "request", "team.", "grant
 // zero values: only the kind names are used.
 var ownedKinds = sync.OnceValue(func() map[string]bool {
 	ws := &worksession.Store{}
-	rs := &request.Store{Sessions: ws}
+	rs := &request.Store{Sessions: ws, Debates: &debate.Store{}}
 	kinds := daemonKinds(&team.Store{}, rs, ws, &capability.Store{}, "", nil)
 	kinds = withDeviceKinds(kinds, &device.Store{}, "", deviceHooks{})
 	out := map[string]bool{"keys": true, "ack": true}

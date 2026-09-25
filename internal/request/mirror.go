@@ -316,6 +316,11 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 		out.state = newState
 		out.seq = seq
 		finalState = newState
+		if (newState == StateDeclined || newState == StateCancelled) && row.typ == TypeDebate && s.Debates != nil {
+			if err := s.Debates.EndedTx(ctx, tx, "out", row.peer, row.id, s.now()); err != nil {
+				return err
+			}
+		}
 		if ra != nil {
 			out.hasResult, out.resultBytes, out.outputBytes, out.artifacts = ra.hasResult, ra.resultBytes, ra.outputBytes, ra.artifacts
 			out.resultStatus = ra.status

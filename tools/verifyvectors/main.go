@@ -1,7 +1,7 @@
 // Command verifyvectors independently recomputes the pairing v2, sealed-mail,
-// capability-grant and audit-chain test vectors published in
-// Docs/protocol/pairing.md, Docs/protocol/mail.md, Docs/protocol/grant.md and
-// Docs/protocol/audit.md, and compares them with
+// capability-grant, audit-chain and debate-commitment test vectors published in
+// Docs/protocol/pairing.md, Docs/protocol/mail.md, Docs/protocol/grant.md,
+// Docs/protocol/audit.md and Docs/protocol/debate.md, and compares them with
 // the values in vectors.json (transcribed from those docs).
 //
 // It is deliberately self-contained: it uses only the Go standard library and
@@ -97,6 +97,13 @@ type vectors struct {
 			HashHex string `json:"hash_hex"`
 		} `json:"rows"`
 	} `json:"audit"`
+	Debate struct {
+		RequestID  string `json:"request_id"`
+		Session    string `json:"session"`
+		Nonce      string `json:"nonce"`
+		Position   string `json:"position"`
+		Commitment string `json:"commitment"`
+	} `json:"debate"`
 }
 
 // --- canonical JSON (agent-card.md §Canonical serialisation) ---
@@ -415,7 +422,40 @@ func run(w io.Writer, raw []byte) int {
 	mail(c, &v)
 	capability(c, &v)
 	auditChain(c, &v)
+	debateCommitment(c, &v)
 	return c.fail
+}
+
+// debateCommitment recomputes Docs/protocol/debate.md §Commit-reveal:
+//
+//	sid        = "s-" ++ hex(SHA-256("dorylinae-ws-id-v1\n" ++ A ++ "\n" ++ B ++ "\n" ++ request_id)[0:16])
+//	commitment = hex(SHA-256("dorylinae-debate-commit-v1\n" ++ sid ++ "\n" ++ A ++ "\n" ++ nonce ++ "\n" ++ canonical(position)))
+//
+// with A = key_I and B = key_R of pairing.md.
+func debateCommitment(c *checker, v *vectors) {
+	d := &v.Debate
+	h := sha256.Sum256([]byte("dorylinae-ws-id-v1\n" + v.Pairing.KeyI + "\n" + v.Pairing.KeyR + "\n" + d.RequestID))
+	sid := "s-" + hex.EncodeToString(h[:16])
+	c.eqs("debate session id", sid, d.Session)
+	canon, err := canonical([]byte(d.Position))
+	if err != nil {
+		c.ok("debate position canonicalises", false, err.Error())
+		return
+	}
+	c.eqs("debate position is canonical", string(canon), d.Position)
+	nonce := mustHex(c, "debate nonce", d.Nonce)
+	c.ok("debate nonce is 32 bytes as 64 lowercase hex", len(nonce) == 32 && strings.ToLower(d.Nonce) == d.Nonce, d.Nonce)
+	commit := func(sid, author, nonce string, pos []byte) string {
+		sum := sha256.Sum256(append([]byte("dorylinae-debate-commit-v1\n"+sid+"\n"+author+"\n"+nonce+"\n"), pos...))
+		return hex.EncodeToString(sum[:])
+	}
+	c.eqs("debate commitment", commit(sid, v.Pairing.KeyI, d.Nonce, canon), d.Commitment)
+	// Negatives: the commitment binds the author, the session and the nonce.
+	c.ok("negative: the respondent's key gives another commitment", commit(sid, v.Pairing.KeyR, d.Nonce, canon) != d.Commitment, "same")
+	c.ok("negative: another request gives another commitment",
+		commit("s-00000000000000000000000000000000", v.Pairing.KeyI, d.Nonce, canon) != d.Commitment, "same")
+	c.ok("negative: another nonce gives another commitment",
+		commit(sid, v.Pairing.KeyI, strings.Repeat("0", 64), canon) != d.Commitment, "same")
 }
 
 func pairing(c *checker, v *vectors) {

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // OpenSession implements request.SessionOpener: called inside the same
@@ -14,13 +16,31 @@ import (
 // is never observable without Open"). Idempotent: a session may already
 // exist (a ws.result that overtook the accept created it first, or the
 // accept mail is seen twice).
+//
+// A debate request opens a session of kind debate, and the debate learns of
+// it in the same transaction (DebateHooks.OpenedTx, Docs/protocol/debate.md
+// §Model).
 func (s *Store) OpenSession(ctx context.Context, tx *sql.Tx, role, peer, requestID, teamID string, now time.Time) error {
 	sid := DeriveID(idA(role, s.Self, peer), idB(role, s.Self, peer), requestID)
+	typ, _, err := requestType(ctx, tx, role, peer, requestID)
+	if err != nil {
+		return err
+	}
+	kind := SessionKindWork
+	if typ == request.TypeDebate {
+		if s.Debate == nil {
+			return fmt.Errorf("worksession: debate sessions are not wired")
+		}
+		kind = SessionKindDebate
+	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT OR IGNORE INTO work_sessions (id, role, peer, request_id, team_id, state, seq, round, opened, state_at, updated)
-VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
-		sid, role, peer, requestID, teamID, StateOpen, wireTime(now), wireTime(now), storeTime(now)); err != nil {
+INSERT OR IGNORE INTO work_sessions (id, role, peer, request_id, team_id, state, seq, round, opened, state_at, updated, kind)
+VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)`,
+		sid, role, peer, requestID, teamID, StateOpen, wireTime(now), wireTime(now), storeTime(now), kind); err != nil {
 		return fmt.Errorf("worksession: open session: %w", err)
+	}
+	if kind == SessionKindDebate {
+		return s.Debate.OpenedTx(ctx, tx, role, peer, requestID, sid, now)
 	}
 	return nil
 }
@@ -53,6 +73,17 @@ func idB(role, self, peer string) string {
 func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID string, hadResult bool) (keepContent bool, after func(context.Context), err error) {
 	row, err := findRowTx(ctx, tx, RoleRequester, peer, requestID)
 	if errors.Is(err, ErrUnknownSession) {
+		// A debate has no result: an early complete for a debate request
+		// always drops its result and note (Docs/protocol/debate.md §Cancel
+		// and abandon, review 43 M4).
+		if typ, _, terr := requestType(ctx, tx, RoleRequester, peer, requestID); terr != nil {
+			return true, nil, terr
+		} else if typ == request.TypeDebate {
+			if hadResult {
+				return false, s.auditEarlyCompleteDropped(DeriveID(s.Self, peer, requestID), peer), nil
+			}
+			return false, nil, nil
+		}
 		// No session (yet): B skipped or overtook the accept. The session is
 		// "not closed", so this is still an early complete, and the rule's
 		// peer-wide clause (a sensitive grant to this peer in another
@@ -71,6 +102,9 @@ func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID s
 	}
 	if err != nil {
 		return true, nil, err
+	}
+	if row.kind == SessionKindDebate && row.state != StateClosed {
+		return s.earlyCompleteDebate(ctx, tx, row, hadResult)
 	}
 	keepContent = true
 	if hadResult && s.Quarantine != nil {
@@ -99,6 +133,37 @@ func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID s
 		return keepContent, nil, nil
 	}
 	return keepContent, func(ctx context.Context) {
+		if afterClose != nil {
+			afterClose(ctx)
+		}
+		if afterDrop != nil {
+			afterDrop(ctx)
+		}
+	}, nil
+}
+
+// earlyCompleteDebate is EarlyComplete on a debate session that is not
+// closed (review 43 M4): the result and note are always dropped unread, and a
+// debate still in positions, rounds or converge closes cancelled on A (how
+// B's abandon reaches A). Once the session is closed (the debate reached
+// closing or closed), B's request.complete is the normal end and is kept.
+func (s *Store) earlyCompleteDebate(ctx context.Context, tx *sql.Tx, row storedRow, hadResult bool) (bool, func(context.Context), error) {
+	if s.Debate == nil {
+		return false, nil, fmt.Errorf("worksession: debate sessions are not wired")
+	}
+	var afterClose, afterDrop func(context.Context)
+	fn, err := s.Debate.EarlyCompleteTx(ctx, tx, row.id, s.now())
+	if err != nil {
+		return false, nil, err
+	}
+	afterClose = fn
+	if hadResult {
+		afterDrop = s.auditEarlyCompleteDropped(row.id, row.peer)
+	}
+	if afterClose == nil && afterDrop == nil {
+		return false, nil, nil
+	}
+	return false, func(ctx context.Context) {
 		if afterClose != nil {
 			afterClose(ctx)
 		}

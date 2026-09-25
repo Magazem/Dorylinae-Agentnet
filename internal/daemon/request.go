@@ -16,6 +16,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
@@ -37,6 +38,12 @@ const (
 	CodeUnverifiedPeer       = "unverified_peer"
 	CodeRequestTooLarge      = "request_too_large"
 	CodeIdempotencyConflict  = "idempotency_conflict"
+	// CodeQuarantineActive refuses starting or accepting a debate while the
+	// peer-wide quarantine clause holds (Docs/protocol/debate.md
+	// §Quarantine interplay).
+	CodeQuarantineActive = "quarantine_active"
+	// CodeEntryTooLarge is a debate entry over MaxDebateEntry.
+	CodeEntryTooLarge = "entry_too_large"
 )
 
 // ArtifactParam is one entry of request_submit's "artifacts".
@@ -78,6 +85,18 @@ type RequestSubmitParams struct {
 	// Run names a command an own-device helper may have configured
 	// (Docs/protocol/device.md §Running): a name only.
 	Run *RunParam `json:"run,omitempty"`
+	// Debate is required iff type is debate (Docs/protocol/debate.md §IPC):
+	// the initiator's opening position (committed, never sent before the
+	// reveal) and the turn parameters.
+	Debate *DebateParam `json:"debate,omitempty"`
+}
+
+// DebateParam is request_submit's "debate" member. Rounds and TurnTimeoutS
+// are optional (0: the defaults 2 and 3600).
+type DebateParam struct {
+	Position     json.RawMessage `json:"position"`
+	Rounds       int             `json:"rounds,omitempty"`
+	TurnTimeoutS int             `json:"turn_timeout_s,omitempty"`
 }
 
 // teamRefResult is the "team": {"id","name"} member of the submit result.
@@ -210,10 +229,32 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 		if p.Run != nil {
 			sp.Run = &request.Run{Command: p.Run.Command}
 		}
-		if p.IdempotencyKey != "" {
-			sp.ParamsHash = submitParamsHash(peer.PublicKey, t.ID, p)
+		var position any
+		if p.Type == request.TypeDebate || p.Debate != nil {
+			if _, ok := debateStore(rs); !ok || p.Type != request.TypeDebate {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "debate: is allowed only when type is debate"}
+			}
+			if p.Debate == nil || len(p.Debate.Position) == 0 {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "debate.position: is required when type is debate"}
+			}
+			v, perr := agentcard.ParseStrict(p.Debate.Position)
+			if perr != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "debate.position: " + perr.Error()}
+			}
+			position = v
 		}
-		outcome, err := rs.Submit(ctx, sp)
+		if p.IdempotencyKey != "" {
+			sp.ParamsHash = submitParamsHash(peer.PublicKey, t.ID, p, position)
+		}
+		var outcome request.SubmitOutcome
+		if position != nil {
+			ds, _ := debateStore(rs)
+			var dout debate.StartOutcome
+			dout, err = ds.Start(ctx, debate.StartParams{Submit: sp, Position: position, Rounds: p.Debate.Rounds, TurnTimeoutS: p.Debate.TurnTimeoutS})
+			outcome = dout.SubmitOutcome
+		} else {
+			outcome, err = rs.Submit(ctx, sp)
+		}
 		if err != nil {
 			return nil, submitError(err)
 		}
@@ -303,7 +344,12 @@ func hasKey(members []team.Member, key string) bool {
 func submitError(err error) error {
 	var fe *request.FieldError
 	var tl *request.TooLargeError
+	var etl *debate.TooLargeError
 	switch {
+	case errors.Is(err, debate.ErrQuarantineActive):
+		return &ipc.Error{Code: CodeQuarantineActive, Message: err.Error()}
+	case errors.As(err, &etl):
+		return &ipc.Error{Code: CodeEntryTooLarge, Message: "debate.position: " + etl.Error()}
 	case errors.As(err, &fe):
 		return &ipc.Error{Code: ipc.CodeBadRequest, Message: fe.Error()}
 	case errors.As(err, &tl):
@@ -348,8 +394,10 @@ func parseDeadline(s string, now time.Time) (time.Time, error) {
 
 // submitParamsHash is Docs/protocol/request.md §Submitting's params_hash:
 // canonical JSON of the IPC params as given, with "to" and "team" resolved
-// and without idempotency_key.
-func submitParamsHash(to, teamID string, p RequestSubmitParams) string {
+// and without idempotency_key. For a debate it also covers the canonical
+// position, rounds and turn timeout (review 43 L11): a retry with another
+// position is idempotency_conflict, not the first request's commitment.
+func submitParamsHash(to, teamID string, p RequestSubmitParams, position any) string {
 	m := map[string]any{"to": to, "type": p.Type, "team": teamID, "title": p.Title, "brief": p.Brief}
 	if p.Urgency != "" {
 		m["urgency"] = p.Urgency
@@ -379,6 +427,16 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams) string {
 	}
 	if p.Run != nil {
 		m["run"] = map[string]any{"command": p.Run.Command}
+	}
+	if p.Debate != nil {
+		d := map[string]any{"position": position}
+		if p.Debate.Rounds != 0 {
+			d["rounds"] = json.Number(strconv.Itoa(p.Debate.Rounds))
+		}
+		if p.Debate.TurnTimeoutS != 0 {
+			d["turn_timeout_s"] = json.Number(strconv.Itoa(p.Debate.TurnTimeoutS))
+		}
+		m["debate"] = d
 	}
 	canon, err := agentcard.CanonicalValue(m)
 	if err != nil {

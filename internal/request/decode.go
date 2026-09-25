@@ -11,7 +11,7 @@ var allowedMembers = map[string]bool{
 	"v": true, "id": true, "from": true, "to": true, "team": true, "type": true,
 	"title": true, "brief": true, "urgency": true, "urgency_declared": true,
 	"urgency_reason": true, "artifacts": true, "requested_grant": true,
-	"deadline": true, "created": true, "context": true, "run": true,
+	"deadline": true, "created": true, "context": true, "run": true, "debate": true,
 }
 
 var requiredMembers = []string{
@@ -103,6 +103,13 @@ func Decode(body map[string]any) (*Request, error) {
 			return nil, err
 		}
 		r.Run = run
+	}
+	if raw, ok := body["debate"]; ok {
+		d, err := decodeDebate(raw)
+		if err != nil {
+			return nil, err
+		}
+		r.Debate = d
 	}
 	created, err := decodeTime("created", body["created"])
 	if err != nil {
@@ -235,6 +242,37 @@ func decodeRun(raw any) (*Run, error) {
 		return nil, fieldErr("run.command", "is required and must be a string")
 	}
 	return &Run{Command: cmd}, nil
+}
+
+// decodeDebate strictly decodes the "debate" member: exactly commitment,
+// rounds and turn_timeout_s (Docs/protocol/debate.md §Request type debate).
+// Validate checks the values.
+func decodeDebate(raw any) (*DebateMember, error) {
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fieldErr("debate", "must be an object")
+	}
+	for k := range obj {
+		switch k {
+		case "commitment", "rounds", "turn_timeout_s":
+		default:
+			return nil, fieldErr("debate", "has unknown member %q", k)
+		}
+	}
+	d := &DebateMember{}
+	c, ok := obj["commitment"].(string)
+	if !ok {
+		return nil, fieldErr("debate.commitment", "is required and must be a string")
+	}
+	d.Commitment = c
+	var err error
+	if d.Rounds, err = decodeInt(obj, "rounds"); err != nil {
+		return nil, fieldErr("debate.rounds", "is required and must be an integer")
+	}
+	if d.TurnTimeoutS, err = decodeInt(obj, "turn_timeout_s"); err != nil {
+		return nil, fieldErr("debate.turn_timeout_s", "is required and must be an integer")
+	}
+	return d, nil
 }
 
 func decodeGrant(raw any) (*RequestedGrant, error) {

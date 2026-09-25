@@ -15,15 +15,16 @@ import (
 // not check the transition; A is authoritative and the higher seq wins.
 
 type stateOutcome struct {
-	orphan     bool
-	duplicate  bool
-	applied    bool
-	sessionID  string
-	peer       string
-	requestID  string
-	state      string
-	seq, round int
-	newRound   bool // state open with a changes text (a change request)
+	orphan      bool
+	duplicate   bool
+	ignoredKind bool
+	applied     bool
+	sessionID   string
+	peer        string
+	requestID   string
+	state       string
+	seq, round  int
+	newRound    bool // state open with a changes text (a change request)
 	// auditComplete appends the request.complete audit row of a close,
 	// after commit (request.Store.CompleteInTx).
 	auditComplete func(context.Context)
@@ -123,6 +124,13 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	}
 	if err != nil {
 		return err
+	}
+	if row.kind == SessionKindDebate {
+		// ws.state is never sent for a debate (Docs/protocol/debate.md
+		// §Kinds): debate.close closes B's mirror. One from a misbehaving A
+		// changes nothing.
+		pendingState.Store(op, &stateOutcome{ignoredKind: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		return nil
 	}
 	if seq <= row.seq {
 		pendingState.Store(op, &stateOutcome{duplicate: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From})
@@ -232,6 +240,12 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	if out.duplicate {
+		return
+	}
+	if out.ignoredKind {
+		_ = s.Audit.Append(ctx, "daemon", "ws.ignored", map[string]any{
+			"session": out.sessionID, "peer": out.peer, "kind": KindState, "reason": "kind",
+		})
 		return
 	}
 	_ = s.Audit.Append(ctx, "daemon", "ws.state", map[string]any{

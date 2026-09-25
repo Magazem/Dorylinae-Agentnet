@@ -67,6 +67,11 @@ func WireBody(r *Request) map[string]any {
 	if r.Run != nil {
 		obj["run"] = map[string]string{"command": r.Run.Command}
 	}
+	if r.Debate != nil {
+		obj["debate"] = map[string]any{
+			"commitment": r.Debate.Commitment, "rounds": r.Debate.Rounds, "turn_timeout_s": r.Debate.TurnTimeoutS,
+		}
+	}
 	return map[string]any{"request": obj}
 }
 

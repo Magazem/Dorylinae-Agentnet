@@ -62,7 +62,9 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 				if r != requester || w != worker {
 					return false, false
 				}
-				return true, v.State == worksession.StateOpen
+				// Debates carry no grants (Docs/protocol/debate.md §What a
+				// debate session does not do): never open for a grant.
+				return true, v.State == worksession.StateOpen && v.Kind != worksession.SessionKindDebate
 			}
 			g, verr := capability.Verify(raw, capability.VerifyParams{
 				Role: capability.RoleHolder, Self: self, Counterparty: op.Msg.From, Now: now, SessionOpen: sessionOpen,

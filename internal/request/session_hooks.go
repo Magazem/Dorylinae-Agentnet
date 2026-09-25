@@ -47,6 +47,21 @@ type SessionCompleter interface {
 	CompleteShorthand(ctx context.Context, peer, requestID, note string, result *Result) (ok bool, err error)
 }
 
+// DebateHooks wires debates (Docs/protocol/debate.md, ticket 3.1a) into the
+// request lifecycle from internal/debate, which depends on this package. Both
+// methods run inside the caller's transaction and must touch only tx.
+type DebateHooks interface {
+	// ReceivedTx stores the respondent's debate row (phase invited, with the
+	// commitment) for a new pending debate request, in the transaction that
+	// stores the request (Docs/protocol/debate.md §Request type debate).
+	ReceivedTx(ctx context.Context, tx *sql.Tx, req *Request, now time.Time) error
+	// EndedTx closes the debate row of a debate request that ended before it
+	// was accepted (declined or cancelled, either side): "a decline, a
+	// request.cancel or an auto-decline closes both rows cancelled".
+	// direction is the request row's ("in" or "out").
+	EndedTx(ctx context.Context, tx *sql.Tx, direction, peer, id string, now time.Time) error
+}
+
 // SessionHooks is the combination *worksession.Store implements.
 type SessionHooks interface {
 	SessionOpener

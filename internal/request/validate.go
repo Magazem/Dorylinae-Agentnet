@@ -44,14 +44,17 @@ func Validate(r *Request) error {
 		return fieldErr("team", "must be \"t-\" followed by 32 hex characters")
 	}
 	switch r.Type {
-	case TypeReview, TypeTask, TypeQuestion:
+	case TypeReview, TypeTask, TypeQuestion, TypeDebate:
 	default:
-		return fieldErr("type", "must be review, task or question")
+		return fieldErr("type", "must be review, task, question or debate")
 	}
 	if err := checkCodePoints("title", r.Title, minTitleCodePoints, maxTitleCodePoints, ""); err != nil {
 		return err
 	}
 	if err := checkBriefBytes(r.Brief); err != nil {
+		return err
+	}
+	if err := validateDebate(r); err != nil {
 		return err
 	}
 	switch r.Urgency {
@@ -108,11 +111,50 @@ func Validate(r *Request) error {
 	return nil
 }
 
+var commitmentPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// validateDebate checks the rules of Docs/protocol/debate.md §Request type
+// debate: the debate member is present iff type is debate, with its value
+// ranges; a debate carries no requested_grant or run; and its topic (the
+// brief) also refuses C1 and U+2028/U+2029 (the debate text rule, review 43
+// L1).
+func validateDebate(r *Request) error {
+	if r.Type != TypeDebate {
+		if r.Debate != nil {
+			return fieldErr("debate", "is allowed only when type is debate")
+		}
+		return nil
+	}
+	d := r.Debate
+	if d == nil {
+		return fieldErr("debate", "is required when type is debate")
+	}
+	if !commitmentPattern.MatchString(d.Commitment) {
+		return fieldErr("debate.commitment", "must be 64 lowercase hex characters")
+	}
+	if d.Rounds < MinDebateRounds || d.Rounds > MaxDebateRounds {
+		return fieldErr("debate.rounds", "must be %d-%d", MinDebateRounds, MaxDebateRounds)
+	}
+	if d.TurnTimeoutS < MinDebateTurnTimeout || d.TurnTimeoutS > MaxDebateTurnTimeout {
+		return fieldErr("debate.turn_timeout_s", "must be %d-%d", MinDebateTurnTimeout, MaxDebateTurnTimeout)
+	}
+	if r.RequestedGrant != nil {
+		return fieldErr("requested_grant", "is not allowed on a debate (debates carry no grants)")
+	}
+	if r.Run != nil {
+		return fieldErr("run", "is not allowed on a debate")
+	}
+	if hasC1(r.Brief) || strings.ContainsRune(r.Brief, 0x2028) || strings.ContainsRune(r.Brief, 0x2029) {
+		return fieldErr("brief", "must not contain control characters other than \\n and \\t")
+	}
+	return nil
+}
+
 // validateContext checks the context files of Docs/protocol/consult.md
 // §Context files and §Size limits (the total body cap is CheckSizeFor).
 func validateContext(r *Request) error {
-	if r.Type != TypeQuestion {
-		return fieldErr("context", "is allowed only when type is question")
+	if r.Type != TypeQuestion && r.Type != TypeDebate {
+		return fieldErr("context", "is allowed only when type is question or debate")
 	}
 	if len(r.Context) < minContextFiles || len(r.Context) > maxContextFiles {
 		return fieldErr("context", "must hold %d-%d files", minContextFiles, maxContextFiles)

@@ -33,6 +33,13 @@ const (
 	OutcomeCancelled = "cancelled"
 )
 
+// Session kinds (migration 19, Docs/protocol/debate.md §Model): a debate's
+// session carries no result, grant or change request.
+const (
+	SessionKindWork   = "work"
+	SessionKindDebate = "debate"
+)
+
 // Roles: which side of the session this daemon plays.
 const (
 	RoleRequester = "requester"

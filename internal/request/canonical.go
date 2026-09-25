@@ -55,6 +55,13 @@ func Canonical(r *Request) ([]byte, error) {
 	if r.Run != nil {
 		obj["run"] = map[string]any{"command": r.Run.Command}
 	}
+	if r.Debate != nil {
+		obj["debate"] = map[string]any{
+			"commitment":     r.Debate.Commitment,
+			"rounds":         json.Number(itoa(r.Debate.Rounds)),
+			"turn_timeout_s": json.Number(itoa(r.Debate.TurnTimeoutS)),
+		}
+	}
 	return agentcard.CanonicalValue(obj)
 }
 
@@ -87,10 +94,12 @@ func BodyHash(canon []byte) string {
 
 // CheckSizeFor enforces the total body cap for r on canon, the output of
 // Canonical(r): MaxQuestionBody for a question with context files, else
-// MaxRequestBody (Docs/protocol/consult.md §Size limits).
+// MaxRequestBody (Docs/protocol/consult.md §Size limits). A debate with
+// context files has the question cap (Docs/protocol/debate.md §Request type
+// debate).
 func CheckSizeFor(r *Request, canon []byte) error {
 	limit := MaxRequestBody
-	if r.Type == TypeQuestion && len(r.Context) > 0 {
+	if (r.Type == TypeQuestion || r.Type == TypeDebate) && len(r.Context) > 0 {
 		limit = MaxQuestionBody
 	}
 	if len(canon) > limit {

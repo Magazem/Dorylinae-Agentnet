@@ -278,6 +278,11 @@ WHERE direction = 'in' AND peer = ? AND id = ?`,
 	if _, err := s.Outbox.SubmitTx(ctx, tx, row.peer, KindCancelled, replyBody); err != nil {
 		return err
 	}
+	if row.typ == TypeDebate && s.Debates != nil {
+		if err := s.Debates.EndedTx(ctx, tx, "in", row.peer, row.id, now); err != nil {
+			return err
+		}
+	}
 	out.result = "cancelled"
 	out.seq = seq
 	pendingCancel.Store(op, out)

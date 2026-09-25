@@ -69,6 +69,11 @@ type Store struct {
 	// shorthand. nil is Phase 1 behaviour unchanged.
 	Sessions SessionHooks
 
+	// Debates, when set, wires debates into the request lifecycle
+	// (Docs/protocol/debate.md). nil refuses a received debate request as
+	// bad_body, which is what a Phase 2 daemon answers.
+	Debates DebateHooks
+
 	// Helper, when set, routes every new request that passed the receive
 	// steps and was stored pending to the own-device helper
 	// (Docs/protocol/device.md §Running (in-scope requests)). nil is the
@@ -144,6 +149,9 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	req, err := Decode(raw)
 	if err != nil {
 		return badBody("%s", err.Error())
+	}
+	if req.Type == TypeDebate && s.Debates == nil {
+		return badBody("type must be review, task or question")
 	}
 	if req.From != op.Msg.From {
 		return badBody("request.from does not match the mail sender")
@@ -231,7 +239,12 @@ INSERT INTO requests (
 		out.urgencyDeclared = declared
 		out.downgradedBy = downgradedBy
 	}
-	if s.Helper != nil {
+	if req.Type == TypeDebate {
+		// A debate is argued by an agent, never run by an own-device helper.
+		if err := s.Debates.ReceivedTx(ctx, tx, req, now); err != nil {
+			return err
+		}
+	} else if s.Helper != nil {
 		accept, after, err := s.Helper.RouteTx(ctx, tx, req, now)
 		if err != nil {
 			return err

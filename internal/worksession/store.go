@@ -77,6 +77,12 @@ type Store struct {
 	// only: the changes text is never passed.
 	OnChanges func(ctx context.Context, sid, peer, requestID string)
 
+	// Debate, when set, is told about the transitions of debate-kind
+	// sessions (Docs/protocol/debate.md): opening one, and A closing one on
+	// its own cancel, a ws.cancel from B or an early request.complete. nil
+	// refuses those transitions on a debate session.
+	Debate DebateHooks
+
 	Now func() time.Time
 }
 
@@ -99,7 +105,7 @@ func (s *Store) now() time.Time {
 // work_sessions, in scanRow's order.
 const workSessionColumns = `id, role, peer, request_id, team_id, state, outcome, seq, round,
 	result, result_round, verification, changes, cancel, released, last_state, last_state_sent,
-	opened, state_at, closed, updated`
+	opened, state_at, closed, updated, kind`
 
 // storedRow is one work_sessions row.
 type storedRow struct {
@@ -119,6 +125,7 @@ type storedRow struct {
 	stateAt                           string
 	closed                            sql.NullString
 	updated                           string
+	kind                              string
 }
 
 type scanner interface{ Scan(dest ...any) error }
@@ -127,7 +134,7 @@ func scanRow(sc scanner) (storedRow, error) {
 	var r storedRow
 	err := sc.Scan(&r.id, &r.role, &r.peer, &r.requestID, &r.teamID, &r.state, &r.outcome, &r.seq, &r.round,
 		&r.result, &r.resultRound, &r.verification, &r.changes, &r.cancel, &r.released, &r.lastState, &r.lastStateSent,
-		&r.opened, &r.stateAt, &r.closed, &r.updated)
+		&r.opened, &r.stateAt, &r.closed, &r.updated, &r.kind)
 	return r, err
 }
 
@@ -164,6 +171,7 @@ func findByID(ctx context.Context, q *sql.DB, id string) (storedRow, error) {
 // View is a fully decoded work_sessions row, for future IPC (2.1b).
 type View struct {
 	ID           string
+	Kind         string // SessionKindWork or SessionKindDebate
 	Role         string
 	Peer         string
 	RequestID    string
@@ -190,7 +198,7 @@ type View struct {
 
 func toView(r storedRow) (View, error) {
 	v := View{
-		ID: r.id, Role: r.role, Peer: r.peer, RequestID: r.requestID, TeamID: r.teamID,
+		ID: r.id, Kind: r.kind, Role: r.role, Peer: r.peer, RequestID: r.requestID, TeamID: r.teamID,
 		State: r.state, Seq: r.seq, Round: r.round, Released: r.released != 0,
 		Opened: parseWireTime(r.opened), StateAt: parseWireTime(r.stateAt), Updated: parseStoreTime(r.updated),
 	}
