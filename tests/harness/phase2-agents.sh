@@ -83,7 +83,10 @@ STANDIN="$REPO_ROOT/bin/standin"
 [ -x "$AGENTNET" ] || { fail "agentnet binary not found under $REPO_ROOT/bin"; exit 1; }
 if [ "$HARNESS" = "standin" ] && [ ! -x "$STANDIN" ]; then fail "standin binary not found under $REPO_ROOT/bin"; exit 1; fi
 
-ROOT_RUN="$(mktemp -d -t phase2-agents-XXXXXX)"
+# A short path under /tmp: macOS $TMPDIR (/var/folders/...) is long enough that
+# <run>/<round>/<home>/agentnetd.sock passes the 104-byte Unix socket limit,
+# and the workflow uploads /tmp/phase2-agents-* on failure.
+ROOT_RUN="$(mktemp -d /tmp/phase2-agents-XXXXXX)"
 step "run directory: $ROOT_RUN"
 
 cli_json() { # cli_json <home> <args...>  -> prints JSON on stdout, sets CLI_EXIT
