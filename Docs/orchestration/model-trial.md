@@ -45,6 +45,7 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | 2.3b git serving | M, security-heavy | ~16 | 0 | 0 | 0/0/2 | — | claude-opus-5-5 |
 | FIX-CI symlink + rate | investigation + fix | 14 | 0 | 0 | n/a (found a real slot-release bug) | — | claude-opus-5-5 |
 | 2.D2 helper runner (+L7, L8, D22) | L + 3 extras | ~45 | 0 | 0 | 0/0/2 | — | claude-opus-5-5 |
+| 2.D3 kill-on-revoke + program owner (D24) | M, OS-specific security | ~15 | 0 | 0 | pending | — | claude-opus-5-5 |
 
 ## Findings
 

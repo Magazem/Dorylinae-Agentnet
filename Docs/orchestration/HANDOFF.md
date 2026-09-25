@@ -48,7 +48,7 @@ specs merged to main. Self-hosted relays: D17.
 **Final wave (P2-4):**
 | Ticket | Model | Slot | Task | Worktree |
 |---|---|---|---|---|
-| 2.D3 (D24 kill-on-revoke, writable-by-others) | Opus | `01a0d32e-12d2…` | `01a0d32e-40f6…` | `device-harden` |
+| 2.D3 (D24) | Opus | done ~15 min | review R-2.D3 `01a0d722-f0c3…` task `01a0d723-2447…` → Docs/review/41 | `device-harden` |
 | 2.9 e2e + audit + docs + D23 | Sonnet | `01a0d32e-131f…` | `01a0d32e-670e…` | `e2e-audit` |
 | 2.H harness (Claude Code + agy) + stand-in CI | Sonnet | `01a0d32e-1359…` | `01a0d32e-9031…` | `harness-p2` |
 Then 2.D3 security review, 2.P push (a `phase-2` tag only with the owner's OK).
