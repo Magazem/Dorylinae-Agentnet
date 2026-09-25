@@ -182,6 +182,30 @@ func TestRenderUnconfirmedBanner(t *testing.T) {
 	}
 }
 
+// TestRenderUnsignedBanner: review 47 L7, B's own peer_refused row has no
+// signatures at all (B never signs on a mismatch); the Markdown must not
+// claim "signed by the initiator only" or print an empty signature member,
+// but must still carry the UNCONFIRMED banner.
+func TestRenderUnsignedBanner(t *testing.T) {
+	out, err := decision.Render(agreedDecision(), "6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede", "", "", true, testNames, testFPs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "UNCONFIRMED: unsigned") {
+		t.Errorf("missing the unsigned UNCONFIRMED banner:\n%s", s)
+	}
+	if strings.Contains(s, "signed by the initiator only") {
+		t.Error("must not claim the initiator signed when neither side did")
+	}
+	if strings.Contains(s, "Signature (initiator):") || strings.Contains(s, "Signature (respondent):") {
+		t.Errorf("must not print an empty signature line:\n%s", s)
+	}
+	if !strings.Contains(s, "Signed by: none (unsigned)") {
+		t.Errorf("missing \"Signed by: none (unsigned)\":\n%s", s)
+	}
+}
+
 func TestRenderPeerRefusedBanner(t *testing.T) {
 	sigI, _ := mdSignaturesFor(false)
 	out, err := decision.Render(agreedDecision(), "6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede", sigI, "", true, testNames, testFPs)

@@ -20,23 +20,38 @@ import (
 func Render(d map[string]any, hash string, sigInitiator, sigRespondent string, refused bool, names map[string]string, fingerprints map[string]string) ([]byte, error) {
 	var b strings.Builder
 	complete := sigInitiator != "" && sigRespondent != ""
+	// Review 47 L7: B's own peer_refused row has NO signatures (B never
+	// signs on a mismatch), so a single-signed export is not always the
+	// initiator's: it may be neither side's, this side's own unsigned
+	// derivation that it refused to sign as A's claim.
+	anySigned := sigInitiator != "" || sigRespondent != ""
 
 	id, _ := d["id"].(string)
 	title, _ := strPath(d, "problem", "title")
 
-	writeBanner(&b, complete, refused)
+	writeBanner(&b, complete, anySigned, refused)
 	fmt.Fprintf(&b, "# Decision %s : %s\n", id, codeSpan(title))
 	b.WriteString("\n")
 
 	signedBy := "initiator and respondent"
-	if !complete {
+	switch {
+	case complete:
+	case sigInitiator != "":
 		signedBy = "initiator only"
+	case sigRespondent != "":
+		signedBy = "respondent only"
+	default:
+		signedBy = "none (unsigned)"
 	}
 	outcome, _ := d["outcome"].(string)
 	reason, _ := d["reason"].(string)
 	outcomeLabel := fmt.Sprintf("%s (%s)", outcome, reason)
-	if !complete {
+	switch {
+	case complete:
+	case anySigned:
 		outcomeLabel = "claimed by the initiator: " + outcomeLabel
+	default:
+		outcomeLabel = "this side's own unsigned record, not proven: " + outcomeLabel
 	}
 	fmt.Fprintf(&b, "- Outcome: %s ; Signed by: %s\n", outcomeLabel, signedBy)
 
@@ -67,14 +82,21 @@ func Render(d map[string]any, hash string, sigInitiator, sigRespondent string, r
 	return []byte(out), nil
 }
 
-// Banner is decision.md §Markdown's UNCONFIRMED banner: for a Decision with
-// only one signature (awaiting_peer, peer_refused, or a verified file with
-// complete: false, review 43 H1). refused adds the peer_refused sentence.
-func writeBanner(b *strings.Builder, complete, refused bool) {
+// Banner is decision.md §Markdown's UNCONFIRMED banner: for a Decision that
+// is not signed by both sides (awaiting_peer, peer_refused, or a verified
+// file with complete: false, review 43 H1). anySigned distinguishes the
+// ordinary single-signed (initiator-only) case from review 47 L7's B-side
+// peer_refused row, which has no signature at all. refused adds the
+// peer_refused sentence.
+func writeBanner(b *strings.Builder, complete, anySigned, refused bool) {
 	if complete {
 		return
 	}
-	b.WriteString("> UNCONFIRMED: signed by the initiator only. The respondent's entries and the outcome below are the initiator's claim and are not proven.")
+	if anySigned {
+		b.WriteString("> UNCONFIRMED: signed by the initiator only. The respondent's entries and the outcome below are the initiator's claim and are not proven.")
+	} else {
+		b.WriteString("> UNCONFIRMED: unsigned. This is this side's own record, not signed by either party, and is not proven.")
+	}
 	if refused {
 		b.WriteString(" The respondent refused to sign: its record differs.")
 	}

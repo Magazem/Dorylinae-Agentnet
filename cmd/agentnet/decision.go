@@ -139,9 +139,14 @@ func printDecisionHuman(w io.Writer, res daemon.DecisionShowResult) {
 		Reason  string `json:"reason"`
 	}
 	_ = json.Unmarshal(res.Decision, &d)
-	signedBy := "initiator only (unconfirmed)"
-	if res.Signatures.Initiator != "" && res.Signatures.Respondent != "" {
+	signedBy := "none (unsigned, unconfirmed)"
+	switch {
+	case res.Signatures.Initiator != "" && res.Signatures.Respondent != "":
 		signedBy = "initiator and respondent"
+	case res.Signatures.Initiator != "":
+		signedBy = "initiator only (unconfirmed)"
+	case res.Signatures.Respondent != "":
+		signedBy = "respondent only (unconfirmed)"
 	}
 	_, _ = fmt.Fprintf(w, "%s  outcome %s (%s)  state %s  signed by %s\n", d.ID, d.Outcome, d.Reason, res.State, signedBy)
 	_, _ = fmt.Fprintf(w, "  initiator: %s (fingerprint %s)\n", res.PeerNames[debate.RoleInitiator], res.PeerFPs[debate.RoleInitiator])
