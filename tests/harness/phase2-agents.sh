@@ -211,9 +211,10 @@ run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port
   mkfifo "$a_err_fifo" "$a_in_fifo" "$b_err_fifo" "$b_in_fifo"
   # Read-write opens of the stdin fifos never block and keep a writer open, so
   # a daemon never sees EOF on its stdin between codes.
-  local a_in_fd b_in_fd
-  exec {a_in_fd}<>"$a_in_fifo"
-  exec {b_in_fd}<>"$b_in_fifo"
+  # Fixed fd numbers: bash 3.2 (macOS) has no `exec {var}<>file`.
+  local a_in_fd=7 b_in_fd=8
+  exec 7<>"$a_in_fifo"
+  exec 8<>"$b_in_fifo"
 
   cleanup() {
     [ -n "$a_pump_pid" ] && kill "$a_pump_pid" >/dev/null 2>&1
@@ -221,7 +222,7 @@ run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port
     [ -n "$a_pid" ] && kill "$a_pid" >/dev/null 2>&1
     [ -n "$b_pid" ] && kill "$b_pid" >/dev/null 2>&1
     [ -n "$relay_pid" ] && kill "$relay_pid" >/dev/null 2>&1
-    exec {a_in_fd}>&- {b_in_fd}>&- 2>/dev/null || true
+    exec 7>&- 8>&- || true
   }
   trap cleanup RETURN
 

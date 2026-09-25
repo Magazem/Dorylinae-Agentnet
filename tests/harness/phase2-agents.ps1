@@ -50,8 +50,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path,
-    [string]$Branch = "p2/harness-p2",
+    [string]$RepoRoot = "",
+    [string]$Branch = "p2/example-branch",
     [switch]$SkipBuild,
     [ValidateSet(1, 2)]
     [int]$OnlyRound = 0,
@@ -69,6 +69,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptStart = Get-Date
+
+# $PSScriptRoot can be empty under Windows PowerShell 5.1 (e.g. `powershell -File`
+# on CI), so resolve the repo root here rather than in the param() default.
+if (-not $RepoRoot) {
+    $scriptDir = $PSScriptRoot
+    if (-not $scriptDir -and $MyInvocation.MyCommand.Path) {
+        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    }
+    if ($scriptDir) {
+        $RepoRoot = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
+    } else {
+        $RepoRoot = (& git rev-parse --show-toplevel).Trim()
+    }
+}
 
 function Write-Step($msg) { Write-Host "[2.H] $msg" -ForegroundColor Cyan }
 function Write-Fail($msg) { Write-Host "[2.H] FAIL: $msg" -ForegroundColor Red }
