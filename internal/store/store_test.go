@@ -267,8 +267,29 @@ func TestMigration18RefusesUnchainedRows(t *testing.T) {
 		!strings.Contains(err.Error(), "must be chained") {
 		t.Fatalf("unchained insert: %v", err)
 	}
-	if _, err := s.DB().ExecContext(ctx, `INSERT INTO audit_events (ts, actor, action, detail, hash) VALUES ('t', 'a', 'x', '{}', ?)`,
-		strings.Repeat("A", 64)); err == nil {
-		t.Fatal("uppercase hash accepted")
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO audit_events (id, ts, actor, action, detail, hash) VALUES (1, 't', 'a', 'x', '{}', ?)`,
+		strings.Repeat("A", 64)); err == nil || !strings.Contains(err.Error(), "CHECK") {
+		t.Fatalf("uppercase hash: %v", err)
+	}
+
+	// Review 44 L1: only the new head may be inserted. INSERT OR REPLACE on
+	// an existing id would delete the old row without the delete trigger.
+	h := strings.Repeat("a", 64)
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO audit_events (id, ts, actor, action, detail, hash) VALUES (1, 't', 'a', 'x', '{}', ?)`, h); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT OR REPLACE INTO audit_events (id, ts, actor, action, detail, hash) VALUES (1, 't', 'a', 'forged', '{}', ?)`,
+		`REPLACE INTO audit_events (id, ts, actor, action, detail, hash) VALUES (1, 't', 'a', 'forged', '{}', ?)`,
+		`INSERT INTO audit_events (id, ts, actor, action, detail, hash) VALUES (3, 't', 'a', 'gap', '{}', ?)`,
+		`INSERT INTO audit_events (ts, actor, action, detail, hash) VALUES ('t', 'a', 'no_id', '{}', ?)`,
+	} {
+		if _, err := s.DB().ExecContext(ctx, q, h); err == nil || !strings.Contains(err.Error(), "must be chained") {
+			t.Errorf("%s: %v", q, err)
+		}
+	}
+	var action string
+	if err := s.DB().QueryRowContext(ctx, `SELECT group_concat(action) FROM audit_events`).Scan(&action); err != nil || action != "x" {
+		t.Fatalf("rows = %q (%v), want only the original", action, err)
 	}
 }

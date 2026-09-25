@@ -79,12 +79,14 @@ applied it. A test runs two `store.Open` calls on one file concurrently and both
 ALTER TABLE audit_events ADD COLUMN hash TEXT
     CHECK (hash IS NULL OR (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'));
 CREATE TRIGGER audit_events_chained BEFORE INSERT ON audit_events
-WHEN NEW.hash IS NULL
+WHEN NEW.hash IS NULL OR NEW.id IS NOT (SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events)
 BEGIN SELECT RAISE(ABORT, 'audit_events rows must be chained'); END;
 ```
 
 The update and delete triggers of migration 1 stay. After migration 18 no writer can add an
-unchained row, so any code that bypasses `internal/audit` fails loudly. The migration does
+unchained row, or a row other than the new head (`INSERT OR REPLACE` on an existing `id`
+would otherwise delete the old row without firing the delete trigger; review 44 L1), so any
+code that bypasses `internal/audit` fails loudly. The migration does
 not compute hashes (migrations are plain SQL); the first append does ([Appending](#appending)
 step 2).
 
@@ -194,7 +196,10 @@ somewhere the attacker cannot rewrite. Phase 3 provides the cheap form (OD-P3-6)
 - `agentnet log --head [--json]` prints `{"id", "hash", "ts"}` of the newest row.
 - `agentnet log --verify --anchor ID:HASH` checks that a head recorded earlier is still in
   the chain unchanged. `ID` must be a row with a stored hash (from `audit.chain_start` on);
-  an anchor on a legacy row is `bad_request`. The owner can paste a head into a commit message, a ticket or a
+  an anchor on a legacy row is `bad_request`. That is decided after the walk: if the walk
+  fails first, the failure is reported, and an anchored row with a NULL hash after
+  `audit.chain_start` is `unchained`, or `anchor_mismatch` if the log has no chain start at all
+  (review 44 M1: nulling hashes must not turn tampering into a caller error). The owner can paste a head into a commit message, a ticket or a
   message to a teammate; any later rewrite of the rows up to it is then detected.
 
 Deferred options (not needed for the acceptance test): a periodic `audit.checkpoint` signed

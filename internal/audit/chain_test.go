@@ -224,6 +224,31 @@ func TestLegacyRowsMigrate(t *testing.T) {
 	}
 }
 
+// Review 44 M1: nulling the hash of an anchored row must be reported as
+// tampering, not as the caller's bad anchor.
+func TestAnchorOnNulledHashIsBroken(t *testing.T) {
+	setup := func(t *testing.T) (*store.Store, *Log, Anchor) {
+		s := openStore(t, filepath.Join(testutil.TempDir(t), "t.db"))
+		l := New(s.DB())
+		appendN(t, l, 5)
+		a := Anchor{ID: 4, Hash: storedHash(t, s.DB(), 4)}
+		wantOK(t, mustVerify(t, l, a))
+		dropTriggers(t, s.DB())
+		return s, l, a
+	}
+	t.Run("one row after the chain start", func(t *testing.T) {
+		s, l, a := setup(t)
+		exec(t, s.DB(), `UPDATE audit_events SET hash = NULL WHERE id = 4`)
+		wantBroken(t, mustVerify(t, l, a), 4, ReasonUnchained)
+	})
+	t.Run("every row, no chain start left", func(t *testing.T) {
+		s, l, a := setup(t)
+		exec(t, s.DB(), `UPDATE audit_events SET hash = NULL`)
+		wantOK(t, mustVerify(t, l)) // documented limit: a rewrite verifies on its own
+		wantBroken(t, mustVerify(t, l, a), 4, ReasonAnchorMismatch)
+	})
+}
+
 // Plan 3.6: tampering with one field of one row breaks the chain at that row.
 func TestVerifyDetectsChangedField(t *testing.T) {
 	for _, set := range []string{

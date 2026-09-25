@@ -143,6 +143,10 @@ type verifyState struct {
 	started bool  // audit.chain_start seen
 	anchors map[int64][]string
 	seen    map[int64]bool
+	// legacyAnchor is the first anchored row the walk found without a
+	// stored hash; Verify decides at the end whether that is the caller's
+	// mistake or tampering.
+	legacyAnchor int64
 }
 
 func (s *verifyState) fail(id int64, reason string) {
@@ -160,19 +164,16 @@ var afterPage func()
 // Rows appended during the walk are after Head and not checked in this run.
 //
 // An error is returned only for a failed read or a bad anchor (ErrBadAnchor);
-// tampering is a result with Status "broken".
+// tampering is a result with Status "broken". An anchor on a row without a
+// stored hash is ErrBadAnchor only when the walk is otherwise clean and the
+// row lies before audit.chain_start: a NULL hash after the chain start is
+// "unchained", and one in a log with no chain start at all is
+// "anchor_mismatch" (an anchor's hash only ever comes from a stored row), so
+// nulling hashes cannot turn tampering into a caller error (review 44 M1).
 func (l *Log) Verify(ctx context.Context, anchors ...Anchor) (*VerifyResult, error) {
 	st := &verifyState{prev: genesis(), anchors: map[int64][]string{}, seen: map[int64]bool{}}
 	st.res.Status = StatusOK
 	for _, a := range anchors {
-		var h *string
-		err := l.db.QueryRowContext(ctx, `SELECT hash FROM audit_events WHERE id = ?`, a.ID).Scan(&h)
-		switch {
-		case err == nil && h == nil:
-			return nil, fmt.Errorf("%w: row %d is a legacy row without a stored hash", ErrBadAnchor, a.ID)
-		case err != nil && !errors.Is(err, sql.ErrNoRows):
-			return nil, fmt.Errorf("audit: verify: %w", err)
-		}
 		st.anchors[a.ID] = append(st.anchors[a.ID], a.Hash)
 	}
 
@@ -212,6 +213,12 @@ func (l *Log) Verify(ctx context.Context, anchors ...Anchor) (*VerifyResult, err
 		after = page[len(page)-1].id
 	}
 	st.checkAnchorsMissing()
+	if st.res.Status == StatusOK && st.legacyAnchor != 0 {
+		if st.started {
+			return nil, fmt.Errorf("%w: row %d is a legacy row without a stored hash", ErrBadAnchor, st.legacyAnchor)
+		}
+		st.fail(st.legacyAnchor, ReasonAnchorMismatch)
+	}
 	return &st.res, nil
 }
 
@@ -257,6 +264,12 @@ func (s *verifyState) check(r row) bool {
 			}
 			s.prev = h
 			s.res.LegacyRows++
+			if _, ok := s.anchors[r.id]; ok {
+				s.seen[r.id] = true
+				if s.legacyAnchor == 0 {
+					s.legacyAnchor = r.id
+				}
+			}
 			return true
 		}
 		if !s.isChainStart(r) {

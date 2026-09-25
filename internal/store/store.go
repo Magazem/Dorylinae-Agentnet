@@ -365,12 +365,14 @@ CREATE TABLE device_offers (                     -- received offers waiting for 
 	// Hash chain (Docs/protocol/audit.md §Migration 18, 3.6a). Rows before it
 	// keep hash NULL and are chained virtually; internal/audit writes the
 	// audit.chain_start row on the first append. The trigger refuses any
-	// unchained insert from here on.
+	// unchained insert from here on, and any insert that is not the new
+	// head (INSERT OR REPLACE of an existing row skips the delete trigger;
+	// review 44 L1).
 	{18, "audit_chain", `
 ALTER TABLE audit_events ADD COLUMN hash TEXT
     CHECK (hash IS NULL OR (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'));
 CREATE TRIGGER audit_events_chained BEFORE INSERT ON audit_events
-WHEN NEW.hash IS NULL
+WHEN NEW.hash IS NULL OR NEW.id IS NOT (SELECT COALESCE(MAX(id), 0) + 1 FROM audit_events)
 BEGIN SELECT RAISE(ABORT, 'audit_events rows must be chained'); END;
 `},
 }
