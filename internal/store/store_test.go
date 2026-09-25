@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
@@ -78,6 +81,8 @@ func TestMigration8PreservesPeers(t *testing.T) {
 		`DROP TABLE device_links`,
 		`DROP TABLE device_scopes`,
 		`DROP TABLE device_offers`,
+		`DROP TABLE audit_events`, // migration 18 alters it: recreate the migration-1 form
+		migrations[0].sql,
 		`DELETE FROM migrations WHERE version > 7`,
 		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
 		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
@@ -165,6 +170,8 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 		`DROP TABLE team_pending_joins`,
 		`DROP TABLE presence_peers`,
 		`DROP TABLE settings`,
+		`DROP TABLE audit_events`, // migration 18 alters it: recreate the migration-1 form
+		migrations[0].sql,
 		`DELETE FROM migrations WHERE version > 2`,
 		`INSERT INTO peers VALUES ('k1', 'old', 'h', '[]', '{}', '2026-01-02T03:04:05Z')`,
 	} {
@@ -188,5 +195,80 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 	}
 	if _, err := s.DB().ExecContext(ctx, `UPDATE peers SET trust = 'bogus'`); err == nil {
 		t.Error("CHECK constraint accepted an unknown trust value")
+	}
+}
+
+// Review 43 M9: agentnetd install and the daemon both open the store right
+// after an upgrade. Two concurrent Opens at schema 17 must both succeed and
+// apply migration 18 once.
+func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		path := filepath.Join(testutil.TempDir(t), fmt.Sprintf("c%d.db", i))
+		s, err := Open(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, q := range []string{`DROP TABLE audit_events`, migrations[0].sql, `DELETE FROM migrations WHERE version > 17`} {
+			if _, err := s.DB().ExecContext(ctx, q); err != nil {
+				t.Fatalf("%s: %v", q, err)
+			}
+		}
+		_ = s.Close()
+
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		stores := make([]*Store, 2)
+		for j := range errs {
+			wg.Add(1)
+			go func(j int) {
+				defer wg.Done()
+				stores[j], errs[j] = Open(ctx, path)
+			}(j)
+		}
+		wg.Wait()
+		for _, st := range stores {
+			if st != nil {
+				t.Cleanup(func() { _ = st.Close() })
+			}
+		}
+		for j, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: open #%d: %v", i, j, err)
+			}
+		}
+		db := stores[0].DB()
+		var n, v18, hashCols, triggers int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*), COUNT(*) FILTER (WHERE version = 18) FROM migrations`).Scan(&n, &v18); err != nil {
+			t.Fatal(err)
+		}
+		if n != len(migrations) || v18 != 1 {
+			t.Fatalf("round %d: migrations rows = %d (v18: %d), want %d (1)", i, n, v18, len(migrations))
+		}
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('audit_events') WHERE name = 'hash'`).Scan(&hashCols); err != nil || hashCols != 1 {
+			t.Fatalf("round %d: hash columns = %d (%v)", i, hashCols, err)
+		}
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'audit_events_chained'`).Scan(&triggers); err != nil || triggers != 1 {
+			t.Fatalf("round %d: chained triggers = %d (%v)", i, triggers, err)
+		}
+	}
+}
+
+// Migration 18: the trigger refuses an unchained row and the CHECK a
+// malformed hash.
+func TestMigration18RefusesUnchainedRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(testutil.TempDir(t), "m18.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO audit_events (ts, actor, action, detail) VALUES ('t', 'a', 'x', '{}')`); err == nil ||
+		!strings.Contains(err.Error(), "must be chained") {
+		t.Fatalf("unchained insert: %v", err)
+	}
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO audit_events (ts, actor, action, detail, hash) VALUES ('t', 'a', 'x', '{}', ?)`,
+		strings.Repeat("A", 64)); err == nil {
+		t.Fatal("uppercase hash accepted")
 	}
 }

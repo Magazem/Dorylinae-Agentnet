@@ -362,6 +362,17 @@ CREATE TABLE device_offers (                     -- received offers waiting for 
     received_at TEXT NOT NULL                    -- dropped after 10 min
 );
 `},
+	// Hash chain (Docs/protocol/audit.md §Migration 18, 3.6a). Rows before it
+	// keep hash NULL and are chained virtually; internal/audit writes the
+	// audit.chain_start row on the first append. The trigger refuses any
+	// unchained insert from here on.
+	{18, "audit_chain", `
+ALTER TABLE audit_events ADD COLUMN hash TEXT
+    CHECK (hash IS NULL OR (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'));
+CREATE TRIGGER audit_events_chained BEFORE INSERT ON audit_events
+WHEN NEW.hash IS NULL
+BEGIN SELECT RAISE(ABORT, 'audit_events rows must be chained'); END;
+`},
 }
 
 // Store is an open SQLite database with migrations applied.
@@ -415,19 +426,42 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) apply(ctx context.Context, m migration) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+// apply runs one migration in a BEGIN IMMEDIATE transaction that re-reads the
+// schema version under the write lock and skips the migration if another
+// process (agentnetd install next to the daemon, review 43 M9) applied it
+// first. database/sql's BeginTx issues a deferred BEGIN, hence the dedicated
+// connection with explicit statements.
+func (s *Store) apply(ctx context.Context, m migration) (err error) {
+	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO migrations (version, name, applied_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		m.version, m.name); err != nil {
+	defer func() {
+		if err != nil {
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+		}
+	}()
+	var current int
+	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM migrations`).Scan(&current); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if current < m.version {
+		if current != m.version-1 {
+			return fmt.Errorf("schema version %d, expected %d", current, m.version-1)
+		}
+		if _, err = conn.ExecContext(ctx, m.sql); err != nil {
+			return err
+		}
+		if _, err = conn.ExecContext(ctx,
+			`INSERT INTO migrations (version, name, applied_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+			m.version, m.name); err != nil {
+			return err
+		}
+	}
+	_, err = conn.ExecContext(ctx, `COMMIT`)
+	return err
 }

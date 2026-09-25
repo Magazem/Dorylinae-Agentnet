@@ -1,6 +1,7 @@
-// Command verifyvectors independently recomputes the pairing v2, sealed-mail
-// and capability-grant test vectors published in Docs/protocol/pairing.md,
-// Docs/protocol/mail.md and Docs/protocol/grant.md, and compares them with
+// Command verifyvectors independently recomputes the pairing v2, sealed-mail,
+// capability-grant and audit-chain test vectors published in
+// Docs/protocol/pairing.md, Docs/protocol/mail.md, Docs/protocol/grant.md and
+// Docs/protocol/audit.md, and compares them with
 // the values in vectors.json (transcribed from those docs).
 //
 // It is deliberately self-contained: it uses only the Go standard library and
@@ -83,6 +84,19 @@ type vectors struct {
 		Sig       string `json:"sig"`
 		Token     string `json:"token"`
 	} `json:"capability"`
+	Audit struct {
+		GenesisHex string `json:"genesis_hex"`
+		Rows       []struct {
+			ID      int64  `json:"id"`
+			TS      string `json:"ts"`
+			Actor   string `json:"actor"`
+			Action  string `json:"action"`
+			Detail  string `json:"detail"`
+			Legacy  bool   `json:"legacy"`
+			RowC    string `json:"row_c"`
+			HashHex string `json:"hash_hex"`
+		} `json:"rows"`
+	} `json:"audit"`
 }
 
 // --- canonical JSON (agent-card.md §Canonical serialisation) ---
@@ -400,6 +414,7 @@ func run(w io.Writer, raw []byte) int {
 	pairing(c, &v)
 	mail(c, &v)
 	capability(c, &v)
+	auditChain(c, &v)
 	return c.fail
 }
 
@@ -746,6 +761,48 @@ func capability(c *checker, v *vectors) {
 		c.ok("negative: scope removed fails signature",
 			!ed25519.Verify(issPub, append([]byte("dorylinae-grant-v1\n"), noScopeCanon...), sig),
 			"signature verified after removing scope")
+	}
+}
+
+// --- audit chain (Docs/protocol/audit.md §Vector) ---
+
+// auditChain recomputes genesis, row_c and every row hash of the audit chain
+// vector with this file's own canonicaliser (not internal/audit), including
+// the virtual hash of the legacy row, and checks that the audit.chain_start
+// row's counts match the legacy rows before it.
+func auditChain(c *checker, v *vectors) {
+	a := &v.Audit
+	g := sha256.Sum256([]byte("dorylinae-audit-genesis-v1"))
+	c.eq("audit genesis", g[:], mustHex(c, "audit genesis_hex", a.GenesisHex))
+	if len(a.Rows) == 0 {
+		c.ok("audit rows", false, "no rows in vectors.json")
+		return
+	}
+	prev := g[:]
+	var legacyRows, legacyLast int64
+	for _, r := range a.Rows {
+		name := fmt.Sprintf("audit row %d", r.ID)
+		rowC, err := canonicalOf(c, name+" row_c", map[string]any{
+			"action": r.Action, "actor": r.Actor, "detail": r.Detail, "id": r.ID, "ts": r.TS,
+		})
+		if err != nil {
+			return
+		}
+		c.eqs(name+" row_c", string(rowC), r.RowC)
+		h := sha256.New()
+		h.Write([]byte("dorylinae-audit-v1\n"))
+		h.Write(prev)
+		h.Write(rowC)
+		prev = h.Sum(nil)
+		c.eq(name+" hash", prev, mustHex(c, name+" hash_hex", r.HashHex))
+		switch {
+		case r.Legacy:
+			legacyRows++
+			legacyLast = r.ID
+		case r.Action == "audit.chain_start":
+			want := fmt.Sprintf(`{"legacy_last_id":%d,"legacy_rows":%d}`, legacyLast, legacyRows)
+			c.eqs(name+" chain_start counts", r.Detail, want)
+		}
 	}
 }
 

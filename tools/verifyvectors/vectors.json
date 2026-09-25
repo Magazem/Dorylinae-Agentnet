@@ -42,5 +42,19 @@
   "hash_hex": "78da9339e8a1500ec1781d5d4be3b9b52149eac7e7f815a77b0b6dab0abe239d",
   "sig": "l3c5wKLJPH0BGLjAXQk0Z1cjYlQ0aWb0ueo1ZnI4ooCBLXMqbMH8r6n1ox3Wem0q1jXl-MQEpGcGgewtCa_CCg",
   "token": "{\"grant\":{\"action\":\"git.read\",\"aud\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"exp\":\"2026-01-02T05:00:00Z\",\"id\":\"g-00112233445566778899aabbccddeeff\",\"iss\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"nbf\":\"2026-01-02T03:00:00Z\",\"resource\":{\"branch\":\"feat-x\",\"kind\":\"git\",\"label\":\"agentnet-3f2a\"},\"scope\":\"internal/mail\",\"sensitive\":true,\"session\":\"s-36375782ceb6baea9cee4d4273dfb035\",\"v\":1},\"sig\":\"l3c5wKLJPH0BGLjAXQk0Z1cjYlQ0aWb0ueo1ZnI4ooCBLXMqbMH8r6n1ox3Wem0q1jXl-MQEpGcGgewtCa_CCg\"}"
+ },
+ "audit": {
+  "genesis_hex": "fa4302605d936ae73c80ffaba49180f3676a0c659a72f4c06d88fb64c6a979dd",
+  "rows": [
+   {"id": 1, "ts": "2026-10-01T09:00:00.123456789Z", "actor": "daemon", "action": "daemon.start", "detail": "{\"pid\":4242,\"version\":\"0.3.0\"}", "legacy": true,
+    "row_c": "{\"action\":\"daemon.start\",\"actor\":\"daemon\",\"detail\":\"{\\\"pid\\\":4242,\\\"version\\\":\\\"0.3.0\\\"}\",\"id\":1,\"ts\":\"2026-10-01T09:00:00.123456789Z\"}",
+    "hash_hex": "554876a662aa875734c153e722b7b6acd327058b14b02a3af13bd798d0d03f48"},
+   {"id": 2, "ts": "2026-10-01T09:00:05.5Z", "actor": "daemon", "action": "audit.chain_start", "detail": "{\"legacy_last_id\":1,\"legacy_rows\":1}", "legacy": false,
+    "row_c": "{\"action\":\"audit.chain_start\",\"actor\":\"daemon\",\"detail\":\"{\\\"legacy_last_id\\\":1,\\\"legacy_rows\\\":1}\",\"id\":2,\"ts\":\"2026-10-01T09:00:05.5Z\"}",
+    "hash_hex": "c2878d547c6df62488566622d96d9c70e5891cffc849a5dc462a5aa56df24d85"},
+   {"id": 3, "ts": "2026-10-01T09:00:06Z", "actor": "cli", "action": "peer.verify", "detail": "{\"fingerprint\":\"abcd\",\"peer\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\"}", "legacy": false,
+    "row_c": "{\"action\":\"peer.verify\",\"actor\":\"cli\",\"detail\":\"{\\\"fingerprint\\\":\\\"abcd\\\",\\\"peer\\\":\\\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\\\"}\",\"id\":3,\"ts\":\"2026-10-01T09:00:06Z\"}",
+    "hash_hex": "3daa4dae406cb5ab73902738474b6386b3112dd17eec7344978c9a665d88b6a2"}
+  ]
  }
 }

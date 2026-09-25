@@ -1,6 +1,8 @@
 // Command specvectors prints the test vectors published in
 // Docs/protocol/pairing.md (pairing v2, fingerprints) and
-// Docs/protocol/mail.md (mailbox announcements, sealed mail).
+// Docs/protocol/mail.md (mailbox announcements, sealed mail), the grant
+// vector of Docs/protocol/grant.md and the audit chain of
+// Docs/protocol/audit.md.
 //
 // Pairing values are deterministic. HPKE sealing draws its ephemeral key from
 // crypto/rand, so every run prints a new mail payload; the published payload
@@ -286,6 +288,9 @@ func main() {
 
 	fmt.Println("== capability grant (2.2b, grant.md §Test vectors)")
 	printGrantVector(privI, keyI, keyR)
+
+	fmt.Println("== audit chain (3.6a, audit.md §Vector)")
+	printAuditVector()
 }
 
 // grantDomain and grantSession are Docs/protocol/grant.md's signing domain
@@ -374,4 +379,35 @@ func openMail(p64 string, privI ed25519.PrivateKey, keyI, keyR string, mbR mbox)
 	}
 	fmt.Printf("open OK: %s\n", got)
 	os.Exit(0)
+}
+
+// printAuditVector prints genesis and, for each row of Docs/protocol/audit.md
+// §Vector, row_c and its hash (the legacy row's hash is virtual: computed,
+// never stored). detail enters row_c as the stored JSON text, a string.
+func printAuditVector() {
+	genesis := sha256.Sum256([]byte("dorylinae-audit-genesis-v1"))
+	fmt.Printf("genesis  %x\n", genesis)
+	rows := []struct {
+		id                        int
+		ts, actor, action, detail string
+		legacy                    bool
+	}{
+		{1, "2026-10-01T09:00:00.123456789Z", "daemon", "daemon.start", `{"pid":4242,"version":"0.3.0"}`, true},
+		{2, "2026-10-01T09:00:05.5Z", "daemon", "audit.chain_start", `{"legacy_last_id":1,"legacy_rows":1}`, false},
+		{3, "2026-10-01T09:00:06Z", "cli", "peer.verify", `{"fingerprint":"abcd","peer":"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"}`, false},
+	}
+	prev := genesis[:]
+	for _, r := range rows {
+		rowC := canonical(map[string]any{"action": r.action, "actor": r.actor, "detail": r.detail, "id": r.id, "ts": r.ts})
+		h := sha256.New()
+		h.Write([]byte("dorylinae-audit-v1\n"))
+		h.Write(prev)
+		h.Write(rowC)
+		prev = h.Sum(nil)
+		label := "hash"
+		if r.legacy {
+			label = "virtual hash"
+		}
+		fmt.Printf("row %d\n  %s\n  %s %x\n", r.id, rowC, label, prev)
+	}
 }
