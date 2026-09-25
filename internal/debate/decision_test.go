@@ -321,6 +321,9 @@ func TestDecisionRefusals(t *testing.T) {
 		}, "outcome"},
 		{"counts a B slot B never sent", movedClose, func(_ *dnode, cl sentMail) { cl.body["entries"] = json.Number("4") }, "unsent"},
 		{"fewer than two entries", movedClose, func(_ *dnode, cl sentMail) { cl.body["entries"] = json.Number("1") }, "entries"},
+		// Review 47 M1: a Decision closed before it opened fails verify
+		// step 5, so B never signs one.
+		{"closed before opened", agreedClose, func(_ *dnode, cl sentMail) { cl.body["at"] = "2000-01-01T00:00:00Z" }, "time"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -337,9 +340,10 @@ func TestDecisionRefusals(t *testing.T) {
 				t.Fatalf("B session %s/%s", st, o)
 			}
 			var db DecisionRecord
-			if c.reason == "entries" {
-				// One entry holds one position: B has no Decision of its
-				// own, and refuses with the hash of the empty message.
+			if c.reason == "entries" || c.reason == "time" {
+				// One entry holds one position (or the close is before the
+				// request): B has no Decision of its own, and refuses with
+				// the hash of the empty message.
 				noRecord(t, b, sid)
 				db.Hash = decision.Hash(nil)
 			} else {
@@ -447,4 +451,40 @@ func TestDecisionHeldForConstraint(t *testing.T) {
 	if strings.Contains(a.audit.all()+b.audit.all(), "wire format") {
 		t.Fatal("constraint text in audit")
 	}
+}
+
+// Review 47 M1: A's clock went back after the request was created. The
+// close carries the request's created as its at, so B signs and the
+// Decision verifies (opened <= closed).
+func TestDecisionClockWentBack(t *testing.T) {
+	a, b, reqID, sid := openPositions(t, 1)
+	var created string
+	if err := a.db.QueryRow(`SELECT created FROM requests WHERE direction = 'out' AND id = ?`, reqID).Scan(&created); err != nil {
+		t.Fatal(err)
+	}
+	toConverge(t, a, b, sid)
+	a.advance(-72 * time.Hour)
+	cl := closeTo(t, a, b, sid)
+	if cl.body["at"] != created {
+		t.Fatalf("close at %v, want the request's created %s", cl.body["at"], created)
+	}
+	mustDeliver(t, b, a.self, cl)
+	pass(t, b, a, MailSign)
+	d := bothSigned(t, a, b, sid, OutcomeAgreed, ReasonAccepted)
+	if !strings.Contains(string(d.Decision), `"closed":"`+created+`"`) {
+		t.Fatalf("closed is not the request's created: %s", d.Decision)
+	}
+}
+
+// Review 47 L3: a stored identity key that does not match the card signs
+// nothing: the close fails instead of carrying a signature B would refuse.
+func TestDecisionKeyMismatchSignsNothing(t *testing.T) {
+	a, b, _, sid := openPositions(t, 1)
+	a.ds.Priv = seedPriv(keyB)
+	toConverge(t, a, b, sid)
+	submit(t, b, sid, KindAnswer, answer(true))
+	if err := deliver(t, a, b.self, b.ob.take(t, MailEntry)); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("close with a mismatched key: %v", err)
+	}
+	noRecord(t, a, sid)
 }

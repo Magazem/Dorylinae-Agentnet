@@ -619,6 +619,10 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 		if errors.Is(err, decision.ErrInconsistent) {
 			return s.refuseOnB(ctx, tx, r, tr, b, raw, "outcome", out)
 		}
+		if errors.Is(err, decision.ErrClosedBeforeOpened) {
+			// Review 47 M1: both would sign a record verify step 5 rejects.
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, "time", out)
+		}
 		if err != nil {
 			return err
 		}

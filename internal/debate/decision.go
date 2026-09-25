@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -102,6 +103,13 @@ func (s *Store) sign(canon []byte) (string, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return "", errors.New("debate: identity key has the wrong size")
 	}
+	// The key must be the one the Decision names (participants): a keystore
+	// that no longer matches the card would sign something the peer refuses
+	// as "signature" (review 47 L3; relayclient's keystoreSigner checks the
+	// same).
+	if base64.RawURLEncoding.EncodeToString(priv.Public().(ed25519.PublicKey)) != s.Self {
+		return "", errors.New("debate: stored identity key does not match the agent card")
+	}
 	return decision.Sign(priv, canon), nil
 }
 
@@ -140,6 +148,17 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 		return err
 	}
 	at, _ := body["at"].(string)
+	// closed is never before opened (review 47 M1): if this clock went back
+	// since the request was created, the close carries the request's
+	// created instead, so B does not refuse and verify step 5 holds.
+	var opened string
+	if err := tx.QueryRowContext(ctx, `SELECT created FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, r.peer, r.requestID).Scan(&opened); err != nil {
+		return fmt.Errorf("debate: read request for the Decision: %w", err)
+	}
+	if at < opened { // both whole-second UTC wire times: string order is time order
+		at = opened
+		body["at"] = at
+	}
 	canon, err := s.deriveTx(ctx, tx, r, tr, entries, listed, outcome, reason, at)
 	if err != nil {
 		return err
@@ -239,9 +258,10 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 		if err := insertDecision(ctx, tx, r, canon, own, "", "", claimed, DecisionPeerRefused, now); err != nil {
 			return err
 		}
-	case errors.Is(err, decision.ErrIncomplete):
-		// B holds no record: the refusal carries the hash of the empty
-		// message, which no Decision has.
+	case errors.Is(err, decision.ErrIncomplete), errors.Is(err, decision.ErrClosedBeforeOpened):
+		// B holds no record (no position, or a close before the request
+		// was created): the refusal carries the hash of the empty message,
+		// which no Decision has.
 		own = decision.Hash(nil)
 	default:
 		return err

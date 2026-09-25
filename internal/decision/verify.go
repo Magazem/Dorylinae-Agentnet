@@ -1,7 +1,6 @@
 package decision
 
 import (
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -98,6 +97,12 @@ func Verify(data []byte, schema Schema) Result {
 	canon, err := agentcard.CanonicalValue(d)
 	if err != nil {
 		return fail(res, 1, "decision: %v", err)
+	}
+	// No daemon derives a Decision over MaxDecision (review 47 L2): the
+	// schema bounds each member, not how many context files or human
+	// decisions a hand-made file lists.
+	if len(canon) > MaxDecision {
+		return fail(res, 1, "decision is %d bytes, over MaxDecision (%d)", len(canon), MaxDecision)
 	}
 	res.Decision = canon
 
@@ -270,7 +275,7 @@ func checkSchema(d map[string]any, schema Schema) error {
 	}
 	for _, role := range []string{RoleInitiator, RoleRespondent} {
 		k, _ := parts[role].(string)
-		raw, derr := base64.RawURLEncoding.DecodeString(k)
+		raw, derr := b64.DecodeString(k)
 		if !keyPattern.MatchString(k) || derr != nil || len(raw) != 32 {
 			return fmt.Errorf("participants.%s must be an identity key", role)
 		}

@@ -341,3 +341,62 @@ func TestWorstCaseDecisionSize(t *testing.T) {
 	}
 	t.Logf("worst-case Decision: %d bytes", len(canon))
 }
+
+// Review 47 M1: a close earlier than the request's created derives nothing;
+// the same instant is allowed.
+func TestDeriveRefusesClosedBeforeOpened(t *testing.T) {
+	in := vectorInput(t)
+	in.Closed = "2026-10-01T08:59:59Z"
+	if _, err := decision.Derive(in); !errors.Is(err, decision.ErrClosedBeforeOpened) {
+		t.Fatalf("closed before opened: %v", err)
+	}
+	in.Closed = "2026-10-01T09:00:00Z"
+	if _, err := decision.Derive(in); err != nil {
+		t.Fatalf("closed at opened: %v", err)
+	}
+}
+
+// Review 47 L1: a signature or key whose last character carries non-zero
+// unused bits decodes to the same bytes non-strictly; it is refused, so each
+// signature has one text form.
+func TestVerifyRefusesNonCanonicalBase64(t *testing.T) {
+	v := readVector(t)
+	const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	alt := func(s string) string {
+		i := strings.IndexByte(alpha, s[len(s)-1])
+		return s[:len(s)-1] + string(alpha[i^1])
+	}
+	if !decision.VerifySignature(vecKeyR, v.canon, v.sigR) {
+		t.Fatal("vector signature does not verify")
+	}
+	if decision.VerifySignature(vecKeyR, v.canon, alt(v.sigR)) {
+		t.Fatal("signature with non-zero padding bits verifies")
+	}
+	if decision.VerifySignature(alt(vecKeyR), v.canon, v.sigR) {
+		t.Fatal("key with non-zero padding bits verifies")
+	}
+	res := decision.Verify(signedFile(t, vectorObject(t, v), map[string]string{"initiator": v.sigI, "respondent": alt(v.sigR)}, v.hash), debate.DecisionSchema())
+	if res.Valid || res.Step != 3 {
+		t.Fatalf("file with a non-canonical signature: %+v", res)
+	}
+}
+
+// Review 47 L2: a hand-made file over MaxDecision fails step 1 even when each
+// member is valid (here: thousands of context references).
+func TestVerifyRefusesOversize(t *testing.T) {
+	v := readVector(t)
+	d := vectorObject(t, v)
+	refs := make([]any, 9000)
+	for i := range refs {
+		refs[i] = map[string]any{"name": "notes.md", "bytes": json.Number("1"), "sha256": strings.Repeat("a", 64)}
+	}
+	d["problem"].(map[string]any)["context"] = refs
+	c, h, s := resign(t, d)
+	if len(c) <= decision.MaxDecision {
+		t.Fatalf("test file is only %d bytes", len(c))
+	}
+	res := decision.Verify(signedFile(t, d, s, h), debate.DecisionSchema())
+	if res.Valid || res.Step != 1 || !strings.Contains(res.Reason, "MaxDecision") {
+		t.Fatalf("oversize file: %+v", res)
+	}
+}

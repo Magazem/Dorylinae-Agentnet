@@ -89,7 +89,10 @@ else (no local names, no local clock, no config):
    the set); B uses it as given, whatever state its own rows have (`active`, `late` or
    `excess` do not matter, only the id, author, `at` and text).
 10. `affected_artifacts` = the proposal's, absent if none.
-11. `opened` = the request's `created`; `closed` = the `at` of A's `debate.close`.
+11. `opened` = the request's `created`; `closed` = the `at` of A's `debate.close`. A's close
+    `at` is never earlier than the request's `created`: if A's clock went back since, A sends
+    `created` as `at`. B refuses a close whose `at` is earlier (reason `time`; review 47 M1),
+    because verify step 5 would reject a Decision with `closed` before `opened`.
 12. Only entries with slot `< entries` (from the close) are used; see [Signing](#signing).
 
 Optional members are absent, never empty arrays or `null`.
@@ -131,12 +134,17 @@ automatically; no human step (OD-P3-5).
 2. **B** applies it after its transcript has all `entries` slots **and** every constraint id
    listed in `constraints` (a close that overtakes an A entry or an A constraint is held in
    `close_body` until it arrives; review 43 H2). B does **not** wait for what only B could
-   have sent: if a **B-authored** slot `< entries` or a listed **B-authored** constraint id is
-   missing on B, A's close claims something B never sent, and B refuses at once as a
-   mismatch (below). A held close is re-checked on every arrival; B's abandon is the way out
+   have sent: if a **B-authored** slot `< entries` is missing on B, A's close claims something
+   B never sent, and B refuses at once as a mismatch (below). A listed constraint id B does
+   not hold is always treated as an A-authored constraint in flight, and the close is held:
+   B stores its own constraints at approval, before it sends them, and a constraint that
+   reaches B from A is stored with A as its author, so A cannot make B sign a constraint as
+   B's that B never approved (review 47). A close that lists an id A never sends is therefore
+   held, not refused. A held close is re-checked on every arrival; B's abandon is the way out
    if A never sends the missing mail. B drops its own entries at
    slots `≥ entries` (a late entry A never applied; audited `debate.ignored {reason:
-   "late"}`), derives the Decision itself from its own tables with A's `entries`,
+   "late"}`; the stored rows are unchanged, and B's debate view shows them with state
+   `late`), derives the Decision itself from its own tables with A's `entries`,
    `constraints`, `outcome`, `reason` and `at`, and checks:
    - its own `decision_hash` equals `decision`;
    - `sig` verifies under A's key over its own `msg`;
@@ -158,7 +166,15 @@ automatically; no human step (OD-P3-5).
   inconsistent): B stores A's claimed hash and its own, sets `peer_refused` on its side,
   closes its mirror (`cancelled`), audits `decision.refuse {session, peer, reason}`, notifies
   `debate.broken`, and sends `debate.sign {at, decision: <B's hash>, refused: "mismatch",
-  request, session}`. A sets `peer_refused`. A correct pair never gets here: the transcript
+  request, session}`. B's phase becomes `broken`. **B's own record** is the Decision B
+  derives from its transcript with A's `entries`, `constraints` and `at` and the outcome
+  rule 6 gives for that transcript (not A's claim), stored **unsigned** (no `sig_initiator`,
+  no `sig_respondent`: B never keeps a signature over bytes it did not check) with
+  `state = peer_refused` and `peer_hash` = A's claimed hash. When B cannot derive one
+  (fewer than two positions within `entries`, or `at` before `opened`), B stores no row and
+  `decision` in its refusal is `Hash` of the empty canonical form (`SHA-256("dorylinae-decision-v1\n")`),
+  which no Decision has. A sets `peer_refused`, stores B's hash as `peer_hash`, closes its
+  debate (`closed`, the outcome A decided) and notifies `debate.broken`. A correct pair never gets here: the transcript
   is identical by construction, so a mismatch means a bug or a modified daemon, and both
   humans see it.
 - **Silence** (B offline, or B abandoned; a Phase 2 daemon cannot get here, it never accepts
@@ -195,7 +211,9 @@ This file is what goes next to the Markdown in a repo (`d-….json`). **Verifica
 the vector checker):
 
 1. Parse strictly; `decision` must pass the schema of this document and of every embedded
-   debate message (the same validators as the daemon).
+   debate message (the same validators as the daemon), and `canonical(decision)` must be at
+   most `MaxDecision` bytes. Keys and signatures are strict base64url (the unused bits of the
+   last character are zero), so each has one text form (review 47 L1, L2).
 2. Recompute `canonical(decision)`, `msg` and `decision_hash`; it must equal `hash`.
 3. Verify each present signature under `participants.initiator` / `.respondent` over `msg`.
 4. Recompute `id` from `session` (rule 1).

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 )
@@ -84,11 +85,11 @@ func Sign(priv ed25519.PrivateKey, canon []byte) string {
 // VerifySignature reports whether sig (base64url) is key's (a wire-form
 // identity key) signature over Msg(canon).
 func VerifySignature(key string, canon []byte, sig string) bool {
-	pub, err := base64.RawURLEncoding.DecodeString(key)
+	pub, err := b64.DecodeString(key)
 	if err != nil || len(pub) != ed25519.PublicKeySize {
 		return false
 	}
-	s, err := base64.RawURLEncoding.DecodeString(sig)
+	s, err := b64.DecodeString(sig)
 	if err != nil || len(s) != ed25519.SignatureSize {
 		return false
 	}
@@ -139,6 +140,15 @@ var ErrInconsistent = errors.New("decision: outcome is inconsistent with the tra
 
 // ErrIncomplete is a transcript without both positions: there is no Decision.
 var ErrIncomplete = errors.New("decision: the transcript lacks a position")
+
+// ErrClosedBeforeOpened is a close whose at is earlier than the request's
+// created: the Decision would fail verification step 5 (opened <= closed),
+// so none is derived (review 47 M1).
+var ErrClosedBeforeOpened = errors.New("decision: closed is before opened")
+
+// b64 decodes keys and signatures strictly: the unused low bits of the last
+// character must be zero, so each value has one text form (review 47 L1).
+var b64 = base64.RawURLEncoding.Strict()
 
 // TooLargeError is a derived Decision over MaxDecision.
 type TooLargeError struct{ Size int }
@@ -225,6 +235,15 @@ func Derive(in Input) ([]byte, error) {
 	}
 	if o, r := Expected(answer != nil, accept); o != in.Outcome || r != in.Reason {
 		return nil, ErrInconsistent
+	}
+	created, _ := req["created"].(string)
+	opened, err1 := time.Parse(timeFmt, created)
+	closed, err2 := time.Parse(timeFmt, in.Closed)
+	if err1 != nil || err2 != nil {
+		return nil, errors.New("decision: opened or closed is not a wire time")
+	}
+	if closed.Before(opened) {
+		return nil, ErrClosedBeforeOpened
 	}
 
 	d := map[string]any{
