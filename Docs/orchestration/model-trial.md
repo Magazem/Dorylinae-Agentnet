@@ -36,6 +36,7 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 | 2.4 quarantine | S | ~60 | 0 | 0 | 0/2/0 | — |
 | 2.D1 device link | M | ~60 | 0 | 0 | 0/0/1 | — |
 | 2.3c fetch client (control, model claude-sonnet-5) | M | ~17 | 0 | 0 | 0/0/4 | — |
+| 2.9 e2e + audit + docs + D23 (claude-sonnet-5) | M | ~70 (incl. an overnight pause) | 0 | 0 | not reviewed | — |
 
 ## Opus 5.5 tickets
 
