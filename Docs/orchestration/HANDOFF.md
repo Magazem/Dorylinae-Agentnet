@@ -76,8 +76,7 @@ helper (D13). Follow the same flow as Phase 1:
 
 **Backlog (not blocking):** review Lows in `Docs/review/07`–`22`; 05-review M1 (direct path
 at-most-once); **M2 (relay abuse limits + TLS) is a beta gate (D17)**; relay pairing limits L1/L5 (08b)
-before hosted relay; a dedicated `stale` ack status instead of `unsupported`; `status` cannot
-split delivered vs failed counts; accept/decline/defer `--from` takes a raw key only;
+before hosted relay; a dedicated `stale` ack status instead of `unsupported`; `accept/decline/defer `--from` takes a raw key only;
 team-invite table prune and `team_delete` not cancelling pending invites (18).
 
 ## 1. How this team runs

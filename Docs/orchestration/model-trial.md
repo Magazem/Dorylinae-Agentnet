@@ -67,3 +67,4 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 | Ticket | Model/thinking | Minutes | Follow-ups | Gate failures | Notes |
 |---|---|---|---|---|---|
 | B-3 harness portability (Windows PS 5.1 root, bash 3.2 fds) | Sonnet 5, thinking off | ~6 | 0 | 0 | Precise and scoped; flagged the same bug in the Phase 1 script without touching it; ran the local stand-in to prove the Windows fix |
+| B-2 status count split (control) | Sonnet 5, normal thinking | ~10 | 0 | 0 | Clean and backward-compatible; noted its own test gap (human output only asserted with zeros) |
