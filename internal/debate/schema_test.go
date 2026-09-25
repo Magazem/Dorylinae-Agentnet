@@ -505,7 +505,7 @@ func TestTypedValidate(t *testing.T) {
 }
 
 func TestConstraintText(t *testing.T) {
-	ok := []string{"No new dependency", "Must stay compatible with Go 1.22", "Ümlaut and 中文 and a" + r(0xa0) + "b", strings.Repeat("é", 500)}
+	ok := []string{"No new dependency", "Must stay compatible with Go 1.22", "Ümlaut and 中文 and a" + r(0x301) + "b", strings.Repeat("é", 500)}
 	for _, s := range ok {
 		if err := ValidateConstraintText(s); err != nil {
 			t.Errorf("%q: %v", s, err)
@@ -517,6 +517,8 @@ func TestConstraintText(t *testing.T) {
 		"zw" + r(0x200b) + "sp", "zwj" + r(0x200d), "bom" + r(0xfeff), "rlo" + r(0x202e) + "x",
 		"lri" + r(0x2066), "tag" + r(0xe0041) + r(0xe007f), "soft" + r(0xad) + "hyphen",
 		"private" + r(0xe000), "unassigned" + r(0x0378),
+		// Graphic but invisible (review 46 H1).
+		"nbsp" + r(0xa0), "vs16" + r(0xfe0f), "vs257" + r(0xe0100), "cgj" + r(0x34f), "filler" + r(0x3164), "braille" + r(0x2800),
 	}
 	for _, s := range bad {
 		err := ValidateConstraintText(s)

@@ -3,6 +3,9 @@ package daemon
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 )
 
 // The approval summary shows the constraint text in full with the
@@ -26,5 +29,19 @@ func TestConstraintSummaryDisplayQuote(t *testing.T) {
 		if strings.ContainsRune(s, r) {
 			t.Errorf("summary holds U+%04X raw", r)
 		}
+	}
+}
+
+// Review 46 H2: the approval window shows the summary in full for the
+// longest constraint, even when every character is escaped (json.Marshal
+// writes "<" as <) and the peer's name is at its 40-code-point bound.
+func TestConstraintSummaryFitsWindow(t *testing.T) {
+	text := strings.Repeat("<", 500)
+	s := constraintSummary(strings.Repeat("n", 40), "s-0123456789abcdef0123456789abcdef", text)
+	if n := utf8.RuneCountInString(s); n > notify.MaxWindowSummary {
+		t.Fatalf("worst-case summary is %d code points, the window shows %d", n, notify.MaxWindowSummary)
+	}
+	if got := notify.Clean(s, notify.MaxWindowSummary); got != s {
+		t.Fatal("the window would cut or alter the worst-case summary")
 	}
 }

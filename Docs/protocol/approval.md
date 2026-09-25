@@ -57,8 +57,11 @@ approval = {id: "a-" + 32 hex, kind, subject, summary, created, expires,
 ```
 
 - `kind`: `grant`, `grant_policy`, `release`, `accept_result`, `device_link`,
-  `device_scope`. The action waits in the owning table in a `pending_approval` state that
-  references the approval id.
+  `device_scope`, `debate_constraint` (3.4, [debate.md](debate.md#human-constraints-34)). The
+  action waits in the owning table in a `pending_approval` state that references the approval
+  id, except `debate_constraint`: the constraint waits only in the approval's in-memory action
+  and is stored by its Perform, so a restart (which expires every pending approval) or a
+  rejection leaves nothing in the debate tables.
 - `code`: 6 decimal digits from `crypto/rand` (uniform, leading zeros kept). The daemon keeps
   only a check value **in memory**:
   `code_mac = HMAC-SHA256(approval_key, "dorylinae-approval-v2\n" ‖ id ‖ "\n" ‖ code)`, where
@@ -312,6 +315,7 @@ session, `i-…` device-link intent, `l-…` link for a scope). Never the code o
 
 ```sql
 -- migration 15 (2.2a): approvals, grant_policies (policies: grant.md)
+-- (migration 19, 3.4, rebuilds approvals to add 'debate_constraint' to the kind CHECK)
 CREATE TABLE approvals (
     id        TEXT PRIMARY KEY,                 -- a-<32 hex>
     kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope')),

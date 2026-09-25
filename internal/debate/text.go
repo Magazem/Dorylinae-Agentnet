@@ -67,17 +67,32 @@ func checkArgument(field, s string) error {
 // (Docs/protocol/debate.md §Human constraints, review 43 H3): Line(500) and
 // visible characters only, every rune graphic or U+0020 and none of format
 // class Cf (bidi controls, zero-width characters, U+FEFF, tag characters).
-// Errors name the field "text".
+// unicode.IsGraphic also admits characters that render as nothing, so these
+// are refused too (review 46 H1): variation selectors (256 of them, enough to
+// hide one byte each after a visible character), the other default-ignorable
+// code points (U+034F, the Hangul fillers), every space but U+0020 and the
+// blank Braille pattern U+2800. Errors name the field "text".
 func ValidateConstraintText(s string) error {
 	if err := checkLine("text", s, maxConstraint); err != nil {
 		return err
 	}
 	for _, r := range s {
-		if (r != ' ' && !unicode.IsGraphic(r)) || unicode.Is(unicode.Cf, r) {
+		if (r != ' ' && !unicode.IsGraphic(r)) || invisibleRune(r) {
 			return fieldErr("text", "must hold visible characters only (U+%04X is not)", r)
 		}
 	}
 	return nil
+}
+
+// invisibleRune reports a rune that renders as nothing (or as a space other
+// than U+0020) although it may be graphic: format characters (Cf), variation
+// selectors, other default-ignorable code points, non-ASCII spaces and U+2800.
+func invisibleRune(r rune) bool {
+	return unicode.Is(unicode.Cf, r) ||
+		unicode.Is(unicode.Variation_Selector, r) ||
+		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) ||
+		(r != ' ' && unicode.Is(unicode.Zs, r)) ||
+		r == 0x2800
 }
 
 // ValidateTopic checks the topic of a debate request (its brief): the request

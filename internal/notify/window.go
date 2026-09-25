@@ -20,8 +20,13 @@ func (ApprovalWindow) Start(ctx context.Context, id, tag, kind, summary string, 
 	return startDialog(ctx, id, tag, kind, summary, expires)
 }
 
-// maxWindowSummary bounds the summary shown in the dialog, in code points.
-const maxWindowSummary = 600
+// MaxWindowSummary bounds the summary shown in the dialog, in code points;
+// a longer one is cut with "…". An approval whose summary must be shown in
+// full (a debate constraint, review 46 H2) refuses a longer one up front. It
+// fits a 500-code-point constraint even when every character is escaped.
+const MaxWindowSummary = 4096
+
+const maxWindowSummary = MaxWindowSummary
 
 // windowText sanitises every value before any platform code sees it: no
 // control character (NUL, newline, escape) and a bounded length, whatever the

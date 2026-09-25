@@ -128,12 +128,20 @@ func TestConstraintVisibleOnly(t *testing.T) {
 		"bidi override":    "No new " + string(rune(0x202e)) + "dependency",
 		"BOM":              string(rune(0xfeff)) + "No new dependency",
 		"tag character":    "No new dependency\U000E0041",
-		"newline":          "No new\ndependency",
-		"C1":               "No new\u009bdependency",
-		"U+2028":           "No new" + string(rune(0x2028)) + "dependency",
-		"empty":            "",
-		"leading space":    " No new dependency",
-		"501 code points":  strings.Repeat("x", 501),
+		// Graphic but invisible (review 46 H1).
+		"variation selector":     "No new dependency" + string(rune(0xfe0f)),
+		"VS supplement (a byte)": "No new dependency\U000E0141\U000E0142",
+		"CGJ":                    "No new" + string(rune(0x034f)) + "dependency",
+		"Hangul filler":          "No new " + string(rune(0x3164)) + " dependency",
+		"no-break space":         "No new" + string(rune(0x00a0)) + "dependency",
+		"em space":               "No new" + string(rune(0x2003)) + "dependency",
+		"blank Braille":          "No new dependency " + string(rune(0x2800)),
+		"newline":                "No new\ndependency",
+		"C1":                     "No new\u009bdependency",
+		"U+2028":                 "No new" + string(rune(0x2028)) + "dependency",
+		"empty":                  "",
+		"leading space":          " No new dependency",
+		"501 code points":        strings.Repeat("x", 501),
 	} {
 		_, err := a.ds.PrepareConstraint(context.Background(), sid, text)
 		var fe *FieldError
@@ -153,6 +161,8 @@ func TestConstraintVisibleOnly(t *testing.T) {
 	}
 	// 500 visible code points, including non-ASCII, pass.
 	constrain(t, a, sid, strings.Repeat("é", 500))
+	// Combining marks and non-Latin scripts stay allowed.
+	constrain(t, a, sid, "Garder le résultat, 日本語 ok")
 }
 
 // A constraint is added only in positions, rounds or converge (bad_state);
@@ -370,5 +380,29 @@ func TestConstraintLateOnB(t *testing.T) {
 	}
 	if _, err := b.ds.PrepareConstraint(context.Background(), sid, "After the end"); err == nil {
 		t.Fatal("closed debate accepted a constraint")
+	}
+}
+
+// Review 46 L2: a cancelled close carries no Decision, so B applies it at
+// once even when it lists an A constraint B has not received; the late mail
+// is then ignored ("closed").
+func TestConstraintCancelledCloseNotHeld(t *testing.T) {
+	a, b, _, sid := openPositions(t, 1)
+	toConverge(t, a, b, sid)
+	pc := constrain(t, a, sid, "Keep the wire format")
+	cl := closeTo(t, a, b, sid)
+	if !contains(closeList(cl), pc.ID) {
+		t.Fatal("the close does not list A's constraint")
+	}
+	cl.body["outcome"], cl.body["reason"] = OutcomeCancelled, ReasonCancelled
+	delete(cl.body, "decision")
+	delete(cl.body, "sig")
+	mustDeliver(t, b, a.self, cl)
+	if v := view(t, b, sid); v.Phase != PhaseClosed || v.Outcome != OutcomeCancelled {
+		t.Fatalf("B did not apply the cancelled close at once: %+v", v)
+	}
+	pass(t, a, b, MailConstraint)
+	if n := b.count(sid); n != 0 || !b.audit.has("debate.ignored", `"reason":"closed"`, MailConstraint) {
+		t.Fatalf("B stored %d constraints after the cancelled close", n)
 	}
 }

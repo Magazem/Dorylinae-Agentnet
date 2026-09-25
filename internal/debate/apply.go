@@ -571,9 +571,13 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "outcome"}))
 		return nil
 	}
-	missing, err := missingConstraints(ctx, tx, r.session, listed)
-	if err != nil {
-		return err
+	// A cancelled close has no Decision to hold for: it ends B's mirror at
+	// once (review 46 L2), so a lost A constraint mail cannot keep it open.
+	var missing []string
+	if outcome != OutcomeCancelled {
+		if missing, err = missingConstraints(ctx, tx, r.session, listed); err != nil {
+			return err
+		}
 	}
 	if len(missing) > 0 {
 		if _, err := tx.ExecContext(ctx, `UPDATE debates SET close_body = ?, updated = ? WHERE session = ?`, string(raw), storeTime(now), r.session); err != nil {

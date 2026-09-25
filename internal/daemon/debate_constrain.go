@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
@@ -88,6 +89,12 @@ func registerDebateConstrain(srv *ipc.Server, ds *debate.Store, apprStore *appro
 			return nil, constrainError(err)
 		}
 		summary := constraintSummary(peerDisplayName(ctx, ps, pc.Peer), pc.Session, pc.Text)
+		// The human approves what the window shows, so the text must never be
+		// cut there (review 46 H2). A 500-code-point text always fits; this
+		// guards the summary wording and the window bound.
+		if utf8.RuneCountInString(summary) > notify.MaxWindowSummary {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "text: too long to show in full in the approval window"}
+		}
 		var approvalID string
 		var idMu sync.Mutex
 		action := approval.Action{

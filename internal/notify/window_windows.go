@@ -44,17 +44,21 @@ $form.TopMost = $true
 $form.FormBorderStyle = 'FixedDialog'
 $form.MinimizeBox = $false
 $form.MaximizeBox = $false
-$form.ClientSize = New-Object System.Drawing.Size(420,160)
-$label = New-Object System.Windows.Forms.Label
+$form.ClientSize = New-Object System.Drawing.Size(520,300)
+$label = New-Object System.Windows.Forms.TextBox
+$label.Multiline = $true
+$label.ReadOnly = $true
+$label.TabStop = $false
+$label.WordWrap = $true
+$label.ScrollBars = 'Vertical'
 $label.Text = $kind + ': ' + $sum
-$label.AutoSize = $false
-$label.Size = New-Object System.Drawing.Size(390,70)
+$label.Size = New-Object System.Drawing.Size(490,200)
 $label.Location = New-Object System.Drawing.Point(15,10)
 $form.Controls.Add($label)
 $box = New-Object System.Windows.Forms.TextBox
 $box.MaxLength = 6
 $box.Size = New-Object System.Drawing.Size(120,24)
-$box.Location = New-Object System.Drawing.Point(15,90)
+$box.Location = New-Object System.Drawing.Point(15,225)
 $form.Controls.Add($box)
 $guardUntil = [DateTime]::MinValue
 $form.Add_Activated({ $script:guardUntil = (Get-Date).AddSeconds(1) })
@@ -62,12 +66,12 @@ $box.Add_KeyPress({ if ((Get-Date) -lt $script:guardUntil) { $_.Handled = $true 
 $approve = New-Object System.Windows.Forms.Button
 $approve.Text = 'Approve'
 $approve.Enabled = $false
-$approve.Location = New-Object System.Drawing.Point(150,125)
+$approve.Location = New-Object System.Drawing.Point(250,260)
 $approve.Add_Click({ $script:answer = 'approve ' + $box.Text; $form.Close() })
 $form.Controls.Add($approve)
 $reject = New-Object System.Windows.Forms.Button
 $reject.Text = 'Reject'
-$reject.Location = New-Object System.Drawing.Point(260,125)
+$reject.Location = New-Object System.Drawing.Point(360,260)
 $reject.Add_Click({ $script:answer = 'reject'; $form.Close() })
 $form.Controls.Add($reject)
 $box.Add_TextChanged({ $approve.Enabled = ($box.Text.Length -eq 6) })

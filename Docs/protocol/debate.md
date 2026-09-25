@@ -336,12 +336,23 @@ dependency"). It appears in the Decision under **human decisions**.
   sense), and **only visible characters** (review 43 H3): every rune must satisfy
   `unicode.IsGraphic` or be U+0020, and none may be a format character (`unicode.Cf`: bidi
   controls, zero-width characters, U+FEFF, the invisible tag characters U+E0000–U+E007F, and so
-  on). Otherwise `bad_request` at `debate_constrain` and `bad_body` on receipt. The reason: the
+  on). `unicode.IsGraphic` admits some characters that render as nothing, so these are refused
+  as well (review 46 H1): variation selectors (`unicode.Variation_Selector`, U+FE00–U+FE0F and
+  U+E0100–U+E01EF: 256 of them, enough to hide one byte each after a visible character), the
+  other default-ignorable code points (`unicode.Other_Default_Ignorable_Code_Point`: U+034F,
+  the Hangul fillers, …), every space separator (`Zs`) but U+0020, and the blank Braille
+  pattern U+2800. Otherwise `bad_request` at `debate_constrain` and `bad_body` on receipt. The reason: the
   human approves what the window shows, and the peer's *agent* reads the raw bytes, so any
   invisible character would let a local agent smuggle an unseen instruction into a record that
   says "human decision". The approval summary also renders the text with the review-40
   `DisplayQuote` rule (`internal/device/scope.go`), never through `notify.Clean` (which does
-  not handle zero-width or tag characters). On Linux the approval window receives the summary
+  not handle zero-width or tag characters). The window shows the summary in full: it is bounded
+  at 4096 code points (`notify.MaxWindowSummary`, which a 500-code-point text fits even with
+  every character escaped), and the Windows window shows it in a scrolling read-only box
+  (review 46 H2); `debate_constrain` refuses a summary that would not fit (`bad_request`). The
+  approval row keeps the summary, so the text also sits in `approvals.summary` (local data,
+  pruned with the decided approvals) whether or not it is approved; it is never in a debate
+  table, the audit log or a debate event before approval. On Linux the approval window receives the summary
   through argv (D20), so other local users can see a constraint's text while the window is
   open; that is the accepted D20 boundary.
 - **Id.** `c-` + 32 hex from `crypto/rand`, chosen at `--constrain`. **`at`** is the time of
@@ -356,7 +367,9 @@ dependency"). It appears in the Decision under **human decisions**.
   `(at, id)`. A's `debate.close` lists the ids A holds as `active`; both Decisions contain
   exactly those ([decision.md](decision.md#derivation)). **A is authoritative for the set.**
   An A-authored constraint mail can be overtaken by the close, so B holds the close until it
-  has every listed id ([decision.md §Signing](decision.md#signing), review 43 H2). A
+  has every listed id ([decision.md §Signing](decision.md#signing), review 43 H2); B cannot
+  tell a missing A constraint from an id A made up, so it holds either way and its abandon is
+  the way out. A `cancelled` close carries no Decision and is never held (review 46 L2). A
   constraint that reaches A after the close is not in the record (audited `debate.ignored
   {reason: "closed"}` on A); B's view marks its own unlisted constraints `late`.
 - **Limits.** At most 10 `active` constraints per debate (both sides together). The sender
@@ -583,7 +596,7 @@ CREATE TABLE debate_constraints (
     author   TEXT NOT NULL CHECK (author IN ('initiator', 'respondent')),
     text     TEXT NOT NULL,                            -- content
     at       TEXT NOT NULL,
-    state    TEXT NOT NULL CHECK (state IN ('pending_approval', 'active', 'late', 'excess')),
+    state    TEXT NOT NULL CHECK (state IN ('pending_approval', 'active', 'late', 'excess')), -- pending_approval is unused: a constraint waits in the approval's in-memory action (3.4)
     approval TEXT,
     PRIMARY KEY (session, id)
 );
