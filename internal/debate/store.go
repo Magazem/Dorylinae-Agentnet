@@ -2,6 +2,7 @@ package debate
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -18,7 +19,7 @@ import (
 )
 
 // Mail kinds (Docs/protocol/debate.md §Kinds). debate.constraint is in
-// constraint.go; debate.sign (3.3a) is added by its ticket.
+// constraint.go, debate.sign in decision.go.
 const (
 	MailEntry  = "debate.entry"
 	MailReveal = "debate.reveal"
@@ -44,6 +45,9 @@ const (
 	stateApplied   = "applied"
 	stateSent      = "sent" // the respondent's own entries
 	stateEarly     = "early"
+	// stateLate is a view-only state: B's own entry at a slot A's close did
+	// not count (never stored; see buildView).
+	stateLate = "late"
 )
 
 // Notification events (Docs/protocol/debate.md §Notifications), passed to
@@ -79,6 +83,11 @@ type Store struct {
 	Audit    AuditSink // may be nil
 	Requests *request.Store
 	Sessions *worksession.Store
+
+	// Priv loads the daemon's identity key, which signs Decisions
+	// (Docs/protocol/decision.md §Signing, OD-P3-5). The copy is cleared
+	// after use.
+	Priv func() (ed25519.PrivateKey, error)
 
 	// PeerQuarantine reports, through tx, the peer-wide quarantine clause
 	// from this side: this daemon issued a sensitive grant to peer whose exp

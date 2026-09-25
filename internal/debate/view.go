@@ -135,9 +135,25 @@ func buildView(r row, tr transcript) View {
 		slots = append(slots, sl)
 	}
 	sort.Ints(slots)
+	// On a closed B, its own entries at slots A's close did not count are
+	// late: A never applied them and they are in no Decision (decision.md
+	// §Signing step 2).
+	late := -1
+	if r.role == RoleRespondent && r.phase == PhaseClosed && r.closeBody.Valid {
+		var cb struct {
+			Entries *int `json:"entries"`
+		}
+		if json.Unmarshal([]byte(r.closeBody.String), &cb) == nil && cb.Entries != nil {
+			late = *cb.Entries
+		}
+	}
 	for _, sl := range slots {
 		e := tr[sl]
-		v.Transcript = append(v.Transcript, ViewEntry{Slot: sl, Author: e.author, Kind: e.kind, At: e.at, State: e.state, Entry: json.RawMessage(e.canon)})
+		state := e.state
+		if late >= 0 && sl >= late && e.author == RoleRespondent {
+			state = stateLate
+		}
+		v.Transcript = append(v.Transcript, ViewEntry{Slot: sl, Author: e.author, Kind: e.kind, At: e.at, State: state, Entry: json.RawMessage(e.canon)})
 	}
 	switch {
 	case r.open():

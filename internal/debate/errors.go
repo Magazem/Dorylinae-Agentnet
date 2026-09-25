@@ -16,6 +16,8 @@ var (
 	// ErrQuarantineActive: the peer-wide quarantine clause holds for the
 	// peer from this side (quarantine_active, §Quarantine interplay).
 	ErrQuarantineActive = errors.New("debate: a sensitive grant to this peer is less than 7 days past its expiry")
+	// ErrUnknownDecision: no Decision for that id (unknown_decision).
+	ErrUnknownDecision = errors.New("debate: unknown decision")
 )
 
 // BadStateError refuses an action because of the debate's phase (bad_state).

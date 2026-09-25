@@ -511,7 +511,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	debates := &debate.Store{
 		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
 		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
-		Log: opts.Logger,
+		Priv: identityPriv(ks), Log: opts.Logger,
 	}
 	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates

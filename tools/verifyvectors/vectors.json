@@ -63,5 +63,13 @@
   "nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
   "position": "{\"argument\":\"Retries should back off exponentially, capped at 10 minutes.\",\"assumptions\":[\"Clock skew between peers is under 5 s\"],\"claim\":\"Use capped exponential backoff for outbox retries\",\"evidence\":[{\"kind\":\"file\",\"ref\":\"internal/mail/outbox.go\"}],\"rejected_alternatives\":[{\"option\":\"Fixed 30 s retry\",\"reason\":\"Floods the relay after an outage\"}]}",
   "commitment": "a24d1e0306c3bd0a129a4f15da39d0fce4f36258c13b2c4c65ba0e2b6cb81ed2"
+ },
+ "decision": {
+  "session": "s-36375782ceb6baea9cee4d4273dfb035",
+  "canonical": "{\"closed\":\"2026-10-01T09:20:00Z\",\"converge\":{\"answer\":{\"accept\":true},\"proposal\":{\"agreement\":{\"decision\":\"Capped exponential backoff with full jitter\"}}},\"final_agreement\":{\"decision\":\"Capped exponential backoff with full jitter\"},\"id\":\"d-7eaeb0b78e6bd96981357b500af94044\",\"opened\":\"2026-10-01T09:00:00Z\",\"outcome\":\"agreed\",\"participants\":{\"initiator\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"respondent\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\"},\"positions\":{\"initiator\":{\"initial\":{\"argument\":\"Retries should back off exponentially, capped at 10 minutes.\",\"assumptions\":[\"Clock skew between peers is under 5 s\"],\"claim\":\"Use capped exponential backoff for outbox retries\",\"evidence\":[{\"kind\":\"file\",\"ref\":\"internal/mail/outbox.go\"}],\"rejected_alternatives\":[{\"option\":\"Fixed 30 s retry\",\"reason\":\"Floods the relay after an outage\"}]}},\"respondent\":{\"initial\":{\"argument\":\"Jitter matters more than the curve.\",\"claim\":\"Add full jitter to the existing backoff\"}}},\"problem\":{\"title\":\"Outbox retry policy\",\"topic\":\"How should the outbox retry?\"},\"reason\":\"accepted\",\"request\":\"r-0123456789abcdef0123456789abcdef\",\"rounds\":[{\"initiator\":{\"challenges\":[]},\"n\":1,\"respondent\":{\"challenges\":[]}}],\"rounds_max\":1,\"session\":\"s-36375782ceb6baea9cee4d4273dfb035\",\"team\":\"t-00112233445566778899aabbccddeeff\",\"v\":1}",
+  "id": "d-7eaeb0b78e6bd96981357b500af94044",
+  "hash_hex": "6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede",
+  "sig_initiator": "oU23UZtZYRFm7RVkDdqPfoFfL6ZFlJj8K4Xqq4ySy1EtDdeO58GEo148fZbERBYbW-75C5erU6AhqoDwiDBnAw",
+  "sig_respondent": "xCdaoO0EujU6LbZJOgvIX_FvFlEikdlftxbUmUF9ef_1xTMrqScV_9UDGrsQu8aO_H7adF331lOzjs6PTJv-Cg"
  }
 }

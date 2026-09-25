@@ -109,6 +109,7 @@ func TestMigration19RebuildKeepsRows(t *testing.T) {
 		`DROP TABLE debates`,
 		`DROP TABLE debate_entries`,
 		`DROP TABLE debate_constraints`,
+		`DROP TABLE decisions`,
 		`DELETE FROM migrations WHERE version > 18`,
 	}
 	for _, q := range rewind {

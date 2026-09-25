@@ -1,6 +1,7 @@
 package debate
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
@@ -8,24 +9,47 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
-// Review 45 H1: a modified A cannot close B's mirror with an outcome B's own
-// transcript contradicts (agreement exists only as B's own answer).
+// Review 45 H1, as 3.3a sharpened it: a modified A cannot close B's mirror
+// with an outcome B's own transcript contradicts (agreement exists only as
+// B's own answer). closeMatches runs before any derivation: B refuses
+// (peer_refused, debate.sign refused "mismatch", its mirror cancelled and the
+// debate broken) and never signs.
 func TestCloseOutcomeCheckedAgainstAnswer(t *testing.T) {
 	closeBody := func(n *dnode, reqID, sid, outcome, reason string) sentMail {
 		return sentMail{kind: MailClose, body: map[string]any{
 			"at": wireTime(n.clock), "constraints": []any{}, "entries": 6, "outcome": outcome, "reason": reason,
 			"request": reqID, "session": sid,
+			"decision": strings.Repeat("a", 64), "sig": strings.Repeat("A", 86),
 		}}
+	}
+	refused := func(t *testing.T, b *dnode, sid string) {
+		t.Helper()
+		if p := phaseOf(t, b, sid); p != PhaseBroken {
+			t.Fatalf("B phase %s, want broken", p)
+		}
+		if st, o := sessionState(t, b, sid); st != worksession.StateClosed || o != worksession.OutcomeCancelled {
+			t.Fatalf("B session %s/%s", st, o)
+		}
+		if b.events.count(EventAgreed) != 0 || b.events.count(EventBroken) != 1 || !b.audit.has("decision.refuse", `"reason":"outcome"`) {
+			t.Fatalf("B events/audit:\n%s", b.audit.all())
+		}
+		var sigs int
+		if err := b.db.QueryRow(`SELECT COUNT(*) FROM decisions WHERE sig_respondent IS NOT NULL`).Scan(&sigs); err != nil || sigs != 0 {
+			t.Fatalf("B signed %d Decisions (%v)", sigs, err)
+		}
+		sm := b.ob.take(t, MailSign)
+		if sm.body["refused"] != refusedMismatch || sm.body["sig"] != nil {
+			t.Fatalf("debate.sign %v", sm.body)
+		}
 	}
 	t.Run("agreed before any answer", func(t *testing.T) {
 		a, b, reqID, sid := openPositions(t, 1)
 		mustDeliver(t, b, keyA, closeBody(a, reqID, sid, OutcomeAgreed, ReasonAccepted))
+		refused(t, b, sid)
+		// A later close is stored for the record and changes nothing.
 		mustDeliver(t, b, keyA, closeBody(a, reqID, sid, OutcomeEscalated, ReasonRejected))
-		if p := phaseOf(t, b, sid); p != PhaseRounds {
-			t.Fatalf("B phase %s, want rounds", p)
-		}
-		if b.events.count(EventAgreed) != 0 || !b.audit.has("debate.ignored", "outcome") {
-			t.Fatal("fabricated close not ignored")
+		if p := phaseOf(t, b, sid); p != PhaseBroken {
+			t.Fatalf("B phase %s", p)
 		}
 	})
 	t.Run("agreed after a refusal", func(t *testing.T) {
@@ -38,18 +62,7 @@ func TestCloseOutcomeCheckedAgainstAnswer(t *testing.T) {
 		pass(t, a, b, MailEntry)
 		submit(t, b, sid, KindAnswer, answer(false))
 		mustDeliver(t, b, keyA, closeBody(a, reqID, sid, OutcomeAgreed, ReasonAccepted))
-		if p := phaseOf(t, b, sid); p != PhaseConverge {
-			t.Fatalf("B phase %s after a fabricated agreement", p)
-		}
-		if st, _ := sessionState(t, b, sid); st != worksession.StateOpen {
-			t.Fatalf("B session %s", st)
-		}
-		// The genuine close (escalated, rejected) still applies.
-		pass(t, b, a, MailEntry)
-		pass(t, a, b, MailClose)
-		if v := view(t, b, sid); v.Phase != PhaseClosed || v.Outcome != OutcomeEscalated {
-			t.Fatalf("B after the real close: %+v", v)
-		}
+		refused(t, b, sid)
 	})
 	t.Run("timeout needs B's position", func(t *testing.T) {
 		a, b := newDNode(t, keyA), newDNode(t, keyB)
@@ -58,10 +71,18 @@ func TestCloseOutcomeCheckedAgainstAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 		mustDeliver(t, b, keyA, closeBody(a, reqID, sid, OutcomeEscalated, ReasonTimeout))
-		if p := phaseOf(t, b, sid); p != PhasePositions {
-			t.Fatalf("B phase %s, want positions", p)
+		refused(t, b, sid)
+	})
+	t.Run("cancelled/timeout before B's position still closes", func(t *testing.T) {
+		a, b := newDNode(t, keyA), newDNode(t, keyB)
+		reqID, sid := startDebate(t, a, b, 1)
+		if _, err := b.req.Accept(t.Context(), reqID, keyA); err != nil {
+			t.Fatal(err)
 		}
-		mustDeliver(t, b, keyA, closeBody(a, reqID, sid, OutcomeCancelled, ReasonTimeout))
+		body := closeBody(a, reqID, sid, OutcomeCancelled, ReasonTimeout)
+		delete(body.body, "decision")
+		delete(body.body, "sig")
+		mustDeliver(t, b, keyA, body)
 		if v := view(t, b, sid); v.Phase != PhaseClosed || v.Outcome != OutcomeCancelled {
 			t.Fatalf("B after cancelled/timeout: %+v", v)
 		}

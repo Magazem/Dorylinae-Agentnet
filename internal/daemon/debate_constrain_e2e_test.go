@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -175,7 +176,7 @@ func TestDebateConstrainE2E(t *testing.T) {
 	dsSubmit(t, a.ds, sid, debate.KindProposal, `{"agreement":{"decision":"Capped backoff with jitter"}}`)
 	harnessWait(t, "B to apply the proposal", nextIs(b.harnessNode, sid, 5))
 	dsSubmit(t, b.ds, sid, debate.KindAnswer, `{"accept":true}`)
-	harnessWait(t, "A to close", phaseIs(a.harnessNode, sid, debate.PhaseClosing))
+	harnessWait(t, "A to close (B signed)", phaseIs(a.harnessNode, sid, debate.PhaseClosed))
 	harnessWait(t, "B to close", phaseIs(b.harnessNode, sid, debate.PhaseClosed))
 	a.approve(t, late.ID)
 	harnessWait(t, "the late approval to be rejected", func() bool {
@@ -186,6 +187,23 @@ func TestDebateConstrainE2E(t *testing.T) {
 	}
 	if a.constraints(sid, "active") != 2 || b.constraints(sid, "active") != 2 {
 		t.Fatal("the late constraint was stored")
+	}
+	// 3.4 with 3.3a: both approved constraints are in both sides' Decisions
+	// under human decisions; the unapproved and the late ones are not.
+	d := sameSignedDecision(t, a.harnessNode, b.harnessNode, sid, debate.OutcomeAgreed)
+	var hd struct {
+		HumanDecisions []struct {
+			By   string `json:"by"`
+			Text string `json:"text"`
+		} `json:"human_decisions"`
+	}
+	if err := json.Unmarshal([]byte(d), &hd); err != nil {
+		t.Fatal(err)
+	}
+	if len(hd.HumanDecisions) != 2 || !strings.Contains(d, `"by":"initiator"`) || !strings.Contains(d, `"by":"respondent"`) ||
+		!strings.Contains(d, `Go 1.22`) || !strings.Contains(d, "No new dependency") ||
+		strings.Contains(d, "Pending at") || strings.Contains(d, "Too early") {
+		t.Fatalf("human decisions: %+v", hd.HumanDecisions)
 	}
 	if code, _ := callCode(t, a.harnessNode, "debate_constrain", daemon.DebateConstrainParams{ID: sid, Text: "After the end"}); code != "bad_state" {
 		t.Fatalf("closing: %q, want bad_state", code)

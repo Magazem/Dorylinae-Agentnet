@@ -40,3 +40,21 @@ func TestDetectsAuditMismatch(t *testing.T) {
 		t.Fatalf("audit mismatch not detected (%d failures):\n%s", n, out.String())
 	}
 }
+
+// Ticket 3.3a: the Decision checks run, and a corrupted Decision hash is
+// reported as exactly that failure.
+func TestDetectsDecisionMismatch(t *testing.T) {
+	var out bytes.Buffer
+	if n := run(&out, vectorsJSON); n != 0 || !strings.Contains(out.String(), "PASS decision sig respondent") ||
+		!strings.Contains(out.String(), "PASS decision negative fails at step 5") {
+		t.Fatalf("decision checks did not run:\n%s", out.String())
+	}
+	bad := bytes.Replace(vectorsJSON, []byte(`"6ec367cd`), []byte(`"6ec367ce`), 1)
+	if bytes.Equal(bad, vectorsJSON) {
+		t.Fatal("test corruption did not apply")
+	}
+	out.Reset()
+	if n := run(&out, bad); n == 0 || !strings.Contains(out.String(), "FAIL decision hash") {
+		t.Fatalf("decision mismatch not detected (%d failures):\n%s", n, out.String())
+	}
+}

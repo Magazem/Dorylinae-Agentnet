@@ -114,13 +114,15 @@ func TestDebateRoundTrip(t *testing.T) {
 		t.Fatalf("B answer: %d %s %s", code, out, errs)
 	}
 
-	// B's mirror closes at once (no signing yet: 3.3a); A stays "closing"
-	// until then, which agentnet wait does not yet treat as done.
+	// B checks A's close, signs the Decision and closes its mirror; A is
+	// "closing" until B's debate.sign arrives, then closed (3.3a).
 	waitCode, w = debateWaitOn(t, b, sub.Session, "10")
 	if waitCode != exitOK || w.Wait != "closed" || w.Debate == nil || w.Debate.Phase != "closed" || w.Debate.Outcome != "agreed" {
 		t.Fatalf("B wait at the end = %d %+v", waitCode, w)
 	}
-	pollCLI(t, a, "A's debate to reach closing", func(o string) bool { return strings.Contains(o, `"phase":"closing"`) }, "debate", sub.Session, "--json")
+	pollCLI(t, a, "A's debate to close (B signed)", func(o string) bool {
+		return strings.Contains(o, `"phase":"closed"`) && strings.Contains(o, `"outcome":"agreed"`)
+	}, "debate", sub.Session, "--json")
 
 	// agentnet debates lists it on both sides.
 	_, out, _ = cli(t, a, "debates", "--json")

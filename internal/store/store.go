@@ -498,6 +498,24 @@ CREATE TABLE debate_constraints (
     PRIMARY KEY (session, id)
 );
 `},
+	// Decision records (Docs/protocol/decision.md §Storage, ticket 3.3a):
+	// one row per debate that closed agreed or escalated, kept indefinitely.
+	{20, "decisions", `
+CREATE TABLE decisions (
+    id        TEXT PRIMARY KEY,                 -- d-<32 hex>
+    session   TEXT NOT NULL UNIQUE,
+    role      TEXT NOT NULL CHECK (role IN ('initiator', 'respondent')),
+    peer      TEXT NOT NULL,
+    decision  TEXT NOT NULL CHECK (json_valid(decision)),   -- canonical (content)
+    hash      TEXT NOT NULL,
+    sig_initiator  TEXT,
+    sig_respondent TEXT,
+    peer_hash TEXT,                             -- the peer's differing hash on a refusal
+    state     TEXT NOT NULL CHECK (state IN ('awaiting_peer', 'signed', 'peer_refused')),
+    created   TEXT NOT NULL,
+    updated   TEXT NOT NULL
+);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

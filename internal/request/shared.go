@@ -12,6 +12,12 @@ func HasControl(s, allowed string) bool { return hasControl(s, allowed) }
 // HasC1 reports whether s holds a C1 control character (U+0080-U+009F).
 func HasC1(s string) bool { return hasC1(s) }
 
+// ValidateTitle checks a request title (Docs/protocol/request.md §Request
+// object: 1-120 code points, no control characters). Errors name "title".
+func ValidateTitle(s string) error {
+	return checkCodePoints("title", s, minTitleCodePoints, maxTitleCodePoints, "")
+}
+
 // ValidateArtifact checks one artifact against Docs/protocol/request.md
 // §Artifacts. Errors name base[i].member.
 func ValidateArtifact(base string, i int, a Artifact) error { return validateArtifact(base, i, a) }

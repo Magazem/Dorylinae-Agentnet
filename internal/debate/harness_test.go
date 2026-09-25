@@ -39,6 +39,21 @@ func seedKey(start byte) string {
 	return base64.RawURLEncoding.EncodeToString(ed25519.NewKeyFromSeed(s).Public().(ed25519.PublicKey))
 }
 
+// seedPriv returns the identity key of self (keyA or keyB) for signing
+// Decisions, so signatures verify under the node's key.
+func seedPriv(self string) func() (ed25519.PrivateKey, error) {
+	for _, start := range []byte{0x00, 0x20} {
+		if seedKey(start) == self {
+			s := make([]byte, ed25519.SeedSize)
+			for i := range s {
+				s[i] = start + byte(i)
+			}
+			return func() (ed25519.PrivateKey, error) { return ed25519.NewKeyFromSeed(s), nil }
+		}
+	}
+	return nil
+}
+
 const testTeam = "t-fedcba9876543210fedcba9876543210"
 
 var (
@@ -233,7 +248,7 @@ func newDNode(t *testing.T, self string) *dnode {
 	n.caps = &capability.Store{DB: n.db, Now: now}
 	n.ds = &Store{
 		DB: n.db, Self: self, Outbox: n.ob, Audit: n.audit, Requests: n.req, Sessions: n.ws,
-		PeerQuarantine: n.caps.PeerQuarantineHoldsTx, Now: now,
+		PeerQuarantine: n.caps.PeerQuarantineHoldsTx, Now: now, Priv: seedPriv(self),
 		OnEvent: func(_ context.Context, ev, _, _, _ string) { n.events.add(ev) },
 	}
 	n.req.Sessions = n.ws
@@ -272,6 +287,8 @@ func kindOf(n *dnode, kind string) mail.Kind {
 		return n.ds.CloseKind()
 	case MailConstraint:
 		return n.ds.ConstraintKind()
+	case MailSign:
+		return n.ds.SignKind()
 	}
 	panic("kindOf: unknown kind " + kind)
 }

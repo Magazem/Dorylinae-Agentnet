@@ -86,9 +86,10 @@ func (s *Store) revealTx(ctx context.Context, tx *sql.Tx, r row, tr transcript, 
 }
 
 // closeTx is A's close (§Outcome, decision.md §Signing step 1): cancelled
-// closes at once (no Decision); agreed and escalated go to closing, where
-// 3.3a derives, signs and stores the Decision and B's debate.sign moves the
-// debate to closed. The work session closes in the same transaction
+// closes at once (no Decision); agreed and escalated go to closing, and in
+// the same transaction the Decision is derived, signed and stored
+// awaiting_peer (decideTx), its hash and signature riding in the close; B's
+// debate.sign moves the debate to closed. The work session closes in the same transaction
 // (accepted when a Decision exists, cancelled otherwise), and debate.close
 // goes to B. entries counts the slots A applied; constraints lists the ids A
 // holds as active. The closing phase keeps outcome NULL (the table's CHECK):
@@ -110,13 +111,19 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 		"at": wireTime(now), "constraints": idsAny, "entries": n, "outcome": outcome, "reason": reason,
 		"request": r.requestID, "session": r.session,
 	}
+	var out afters
 	if outcome == OutcomeCancelled {
 		if err := setClosed(ctx, tx, r.session, outcome, reason, now); err != nil {
 			return nil, err
 		}
-	} else if _, err := tx.ExecContext(ctx, `UPDATE debates SET phase = ?, reason = ?, turn_deadline = NULL, updated = ? WHERE session = ?`,
-		PhaseClosing, reason, storeTime(now), r.session); err != nil {
-		return nil, fmt.Errorf("debate: closing: %w", err)
+	} else {
+		if _, err := tx.ExecContext(ctx, `UPDATE debates SET phase = ?, reason = ?, turn_deadline = NULL, updated = ? WHERE session = ?`,
+			PhaseClosing, reason, storeTime(now), r.session); err != nil {
+			return nil, fmt.Errorf("debate: closing: %w", err)
+		}
+		if err := s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out); err != nil {
+			return nil, err
+		}
 	}
 	if _, err := s.sendLastState(ctx, tx, r, MailClose, body, now); err != nil {
 		return nil, err
@@ -125,7 +132,6 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 	if outcome == OutcomeCancelled {
 		wsOutcome = worksession.OutcomeCancelled
 	}
-	var out afters
 	afterWS, err := s.Sessions.CloseDebateTx(ctx, tx, r.session, wsOutcome, now)
 	if err != nil {
 		return nil, err

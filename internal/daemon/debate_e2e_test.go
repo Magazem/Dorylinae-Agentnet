@@ -125,7 +125,7 @@ func TestDebateE2E(t *testing.T) {
 	dsSubmit(t, aDS, sid, debate.KindProposal, `{"agreement":{"decision":"Capped backoff with jitter"}}`)
 	harnessWait(t, "B to apply the proposal", nextIs(b, sid, 5))
 	dsSubmit(t, bDS, sid, debate.KindAnswer, `{"accept":true}`)
-	harnessWait(t, "A to close", phaseIs(a, sid, debate.PhaseClosing))
+	harnessWait(t, "A to close (B signed)", phaseIs(a, sid, debate.PhaseClosed))
 	harnessWait(t, "B to close", phaseIs(b, sid, debate.PhaseClosed))
 	harnessWait(t, "B's request to complete", func() bool {
 		return b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND id = '`+res.ID+`' AND state = 'completed' AND note = 'debate agreed'`) == 1
@@ -136,6 +136,9 @@ func TestDebateE2E(t *testing.T) {
 	if n := a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '` + sid + `' AND kind = 'debate' AND state = 'closed' AND outcome = 'accepted'`); n != 1 {
 		t.Fatal("A's debate session is not closed accepted")
 	}
+	// 3.3 (ticket 3.3a): the same Decision bytes and both signatures on
+	// both sides.
+	sameSignedDecision(t, a, b, sid, debate.OutcomeAgreed)
 	va, err := aDS.Load().Get(context.Background(), sid)
 	if err != nil {
 		t.Fatal(err)

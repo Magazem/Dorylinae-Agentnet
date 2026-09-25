@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -262,8 +263,10 @@ func (s *Store) applyEntryOnB(ctx context.Context, tx *sql.Tx, op *mail.Opened, 
 		if err := s.drainTx(ctx, tx, r, tr, out); err != nil {
 			return err
 		}
-		_, err := s.advanceTx(ctx, tx, r, tr, s.now())
-		return err
+		if _, err := s.advanceTx(ctx, tx, r, tr, s.now()); err != nil {
+			return err
+		}
+		return s.retryIfHeld(ctx, tx, r, out)
 	case !t.Done && slot >= 2 && slot > t.Slot:
 		// Mail can overtake mail: hold it until the missing slot arrives
 		// (its turn and targets are checked then).
@@ -395,8 +398,25 @@ func (s *Store) applyReveal(ctx context.Context, tx *sql.Tx, op *mail.Opened) (e
 	if err := s.drainTx(ctx, tx, r, tr, &out); err != nil {
 		return err
 	}
-	_, err = s.advanceTx(ctx, tx, r, tr, now)
-	return err
+	if _, err = s.advanceTx(ctx, tx, r, tr, now); err != nil {
+		return err
+	}
+	return s.retryIfHeld(ctx, tx, r, &out)
+}
+
+// retryIfHeld re-checks a close B holds for a missing A entry or constraint
+// after something arrived (decision.md §Signing step 2: "A held close is
+// re-checked on every arrival"). On an open debate close_body is only ever a
+// held close.
+func (s *Store) retryIfHeld(ctx context.Context, tx *sql.Tx, r row, out *afters) error {
+	cur, err := getRow(ctx, tx, r.session)
+	if err != nil {
+		return err
+	}
+	if cur.role != RoleRespondent || !cur.open() || !cur.closeBody.Valid {
+		return nil
+	}
+	return s.retryHeldClose(ctx, tx, cur, out)
 }
 
 // brokenTx is B's answer to a bad reveal (§Commit-reveal, review 43 L3): in
@@ -454,11 +474,9 @@ var validClose = map[string]map[string]bool{
 
 // applyClose applies A's debate.close on B. A cancelled close ends B's
 // mirror at once. An agreed or escalated close carries A's decision hash and
-// signature (3.3a): 3.3a adds holding a close for missing A entries or
-// constraints, B's own derivation and checks, and debate.sign; until then B
-// closes its mirror with A's outcome once it matches B's own answer
-// (closeMatches). A close for a debate B already closed
-// (abandoned) or broke is stored for the record and changes nothing.
+// signature, which B checks against its own derivation before it signs
+// (applyCloseOnB). A close for a debate B already closed (abandoned) or
+// broke is stored for the record and changes nothing.
 func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err error) {
 	b := op.Msg.Body
 	if err = strictBody(b, "at", "constraints", "decision", "entries", "outcome", "reason", "request", "session", "sig"); err != nil {
@@ -498,8 +516,11 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 	}
 	_, hasDecision := b["decision"]
 	_, hasSig := b["sig"]
-	if hasDecision != hasSig || (outcome == OutcomeCancelled && hasDecision) {
-		return badBody("decision and sig come together, and never with a cancelled outcome")
+	if hasDecision != hasSig || (outcome == OutcomeCancelled) == hasDecision {
+		return badBody("an agreed or escalated close carries decision and sig, a cancelled one neither")
+	}
+	if d, _ := b["decision"].(string); hasDecision && !hex64.MatchString(d) {
+		return badBody("decision must be 64 lowercase hex characters")
 	}
 	r, found, err := bodyRow(ctx, tx, op, sid, reqID, RoleRespondent)
 	if err != nil {
@@ -536,26 +557,28 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 	return s.applyCloseOnB(ctx, tx, r, b, &out)
 }
 
-// applyCloseOnB applies a checked close to B's open mirror. A close listing a
-// constraint id B does not hold (an A-authored constraint mail the close
-// overtook) is held in close_body until it arrives (review 43 H2,
-// retryHeldClose); B's own active constraints the close does not list become
-// late.
+// applyCloseOnB applies a checked close to B's open mirror (decision.md
+// §Signing step 2). A cancelled close ends the mirror at once. For an agreed
+// or escalated close, B first checks the claimed outcome against its own
+// transcript (closeMatches, review 45 H1: in front of everything else, so B
+// never signs an outcome its transcript contradicts), then A's entries
+// count (closeGap): a claim B can reject at once is refused (refuseOnB); a
+// close that overtook an A-authored entry or constraint is held in
+// close_body until it arrives (review 43 H2; re-checked on every arrival,
+// retryHeldClose). Then B derives the Decision itself and checks A's hash
+// and signature; on success it signs, stores the Decision signed, closes its
+// mirror and sends debate.sign. B's own entries A did not count are late
+// (not in the Decision), and so are B's own constraints the close does not
+// list.
 func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[string]any, out *afters) error {
 	outcome, _ := b["outcome"].(string)
 	reason, _ := b["reason"].(string)
+	at, _ := b["at"].(string)
 	entries, err := intMember(b, "entries")
 	if err != nil {
 		return err
 	}
-	var listed []string
-	if list, ok := b["constraints"].([]any); ok {
-		for _, v := range list {
-			if id, ok := v.(string); ok {
-				listed = append(listed, id)
-			}
-		}
-	}
+	listed := listedConstraints(b)
 	raw, err := json.Marshal(b)
 	if err != nil {
 		return fmt.Errorf("debate: encode close: %w", err)
@@ -567,23 +590,54 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 	}
 	if !closeMatches(tr, outcome, reason) {
 		// A cannot fabricate the outcome (§Security considerations, "One
-		// writer", review 45 H1): B keeps its mirror open and may abandon.
-		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "outcome"}))
-		return nil
+		// writer", review 45 H1): a claim B's own transcript contradicts is
+		// refused before any derivation, and never signed.
+		return s.refuseOnB(ctx, tx, r, tr, b, raw, "outcome", out)
 	}
-	// A cancelled close has no Decision to hold for: it ends B's mirror at
-	// once (review 46 L2), so a lost A constraint mail cannot keep it open.
-	var missing []string
+	var canon []byte
 	if outcome != OutcomeCancelled {
-		if missing, err = missingConstraints(ctx, tx, r.session, listed); err != nil {
+		// A cancelled close has no Decision to hold for: it ends B's mirror
+		// at once (review 46 L2), so a lost A mail cannot keep it open.
+		refuse, hold := closeGap(tr, r.roundsMax, entries)
+		if refuse != "" {
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, refuse, out)
+		}
+		if !hold {
+			missing, err := missingConstraints(ctx, tx, r.session, listed)
+			if err != nil {
+				return err
+			}
+			hold = len(missing) > 0
+		}
+		if hold {
+			if _, err := tx.ExecContext(ctx, `UPDATE debates SET close_body = ?, updated = ? WHERE session = ?`, string(raw), storeTime(now), r.session); err != nil {
+				return fmt.Errorf("debate: hold close: %w", err)
+			}
+			return nil
+		}
+		canon, err = s.deriveTx(ctx, tx, r, tr, entries, listed, outcome, reason, at)
+		if errors.Is(err, decision.ErrInconsistent) {
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, "outcome", out)
+		}
+		if err != nil {
 			return err
 		}
-	}
-	if len(missing) > 0 {
-		if _, err := tx.ExecContext(ctx, `UPDATE debates SET close_body = ?, updated = ? WHERE session = ?`, string(raw), storeTime(now), r.session); err != nil {
-			return fmt.Errorf("debate: hold close: %w", err)
+		claimed, _ := b["decision"].(string)
+		sigA, _ := b["sig"].(string)
+		switch {
+		case decision.Hash(canon) != claimed:
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, "hash", out)
+		case !decision.VerifySignature(r.peer, canon, sigA):
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, "signature", out)
 		}
-		return nil
+		if err := s.signOnB(ctx, tx, r, canon, sigA, now, out); err != nil {
+			return err
+		}
+		for slot, e := range tr {
+			if e.author == RoleRespondent && slot >= entries {
+				out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailEntry, "reason": "late"}))
+			}
+		}
 	}
 	if err := markLateTx(ctx, tx, r.session, listed); err != nil {
 		return err

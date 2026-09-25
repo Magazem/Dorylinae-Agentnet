@@ -1,8 +1,9 @@
 // Command specvectors prints the test vectors published in
 // Docs/protocol/pairing.md (pairing v2, fingerprints) and
 // Docs/protocol/mail.md (mailbox announcements, sealed mail), the grant
-// vector of Docs/protocol/grant.md and the audit chain of
-// Docs/protocol/audit.md.
+// vector of Docs/protocol/grant.md, the audit chain of Docs/protocol/audit.md,
+// the debate commitment of Docs/protocol/debate.md and the Decision of
+// Docs/protocol/decision.md.
 //
 // Pairing values are deterministic. HPKE sealing draws its ephemeral key from
 // crypto/rand, so every run prints a new mail payload; the published payload
@@ -293,6 +294,8 @@ func main() {
 	printAuditVector()
 	fmt.Println("== debate commitment (3.1a, debate.md §Commit-reveal)")
 	printDebateVector(keyI, keyR)
+	fmt.Println("== decision (3.3a, decision.md §Vector)")
+	printDecisionVector(privI, privR, keyI, keyR)
 }
 
 // printDebateVector prints the session id and the commitment of
@@ -434,4 +437,48 @@ func printAuditVector() {
 		}
 		fmt.Printf("row %d\n  %s\n  %s %x\n", r.id, rowC, label, prev)
 	}
+}
+
+// printDecisionVector prints the Decision of Docs/protocol/decision.md
+// §Vector (one round of passes, a proposal and an accepting answer), its id,
+// decision_hash and both signatures, re-implemented from the text: the
+// entries are the debate messages as the transcript holds them, copied into
+// the object by derivation rules 1-12.
+func printDecisionVector(privI, privR ed25519.PrivateKey, keyI, keyR string) {
+	const session = "s-36375782ceb6baea9cee4d4273dfb035"
+	idSum := sha256.Sum256([]byte("dorylinae-decision-id-v1\n" + session))
+	id := "d-" + hex.EncodeToString(idSum[:16])
+	posI := map[string]any{
+		"claim":                 "Use capped exponential backoff for outbox retries",
+		"assumptions":           []any{"Clock skew between peers is under 5 s"},
+		"evidence":              []any{map[string]any{"kind": "file", "ref": "internal/mail/outbox.go"}},
+		"rejected_alternatives": []any{map[string]any{"option": "Fixed 30 s retry", "reason": "Floods the relay after an outage"}},
+		"argument":              "Retries should back off exponentially, capped at 10 minutes.",
+	}
+	posR := map[string]any{"claim": "Add full jitter to the existing backoff", "argument": "Jitter matters more than the curve."}
+	agreement := map[string]any{"decision": "Capped exponential backoff with full jitter"}
+	d := map[string]any{
+		"v": 1, "id": id, "session": session, "request": "r-0123456789abcdef0123456789abcdef",
+		"team":         "t-00112233445566778899aabbccddeeff",
+		"participants": map[string]any{"initiator": keyI, "respondent": keyR},
+		"problem":      map[string]any{"title": "Outbox retry policy", "topic": "How should the outbox retry?"},
+		"rounds_max":   1,
+		"positions": map[string]any{
+			"initiator": map[string]any{"initial": posI}, "respondent": map[string]any{"initial": posR},
+		},
+		"rounds": []any{map[string]any{
+			"n": 1, "initiator": map[string]any{"challenges": []any{}}, "respondent": map[string]any{"challenges": []any{}},
+		}},
+		"converge":        map[string]any{"proposal": map[string]any{"agreement": agreement}, "answer": map[string]any{"accept": true}},
+		"final_agreement": agreement,
+		"outcome":         "agreed", "reason": "accepted",
+		"opened": "2026-10-01T09:00:00Z", "closed": "2026-10-01T09:20:00Z",
+	}
+	canon := canonical(d)
+	msg := append([]byte("dorylinae-decision-v1\n"), canon...)
+	fmt.Printf("canonical       %s\n", canon)
+	fmt.Printf("id              %s   (from session %s)\n", id, session)
+	fmt.Printf("decision_hash   %x\n", sha256.Sum256(msg))
+	fmt.Printf("sig initiator   %s\n", b64u.EncodeToString(ed25519.Sign(privI, msg)))
+	fmt.Printf("sig respondent  %s\n", b64u.EncodeToString(ed25519.Sign(privR, msg)))
 }
