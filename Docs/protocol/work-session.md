@@ -325,6 +325,20 @@ instructions, links or poisoned content into it.
 The release decision in Phase 2 is taken on metadata (sizes and status) plus whatever the
 human learns outside AgentNet; a human-only preview is OD-P2-7.
 
+**Deleted bytes at the SQLite layer (OD-P3-13).** The `DELETE`/blanking above removes a row's
+*current* value, but SQLite does not zero a page it frees or overwrites unless told to: a
+quarantined result's bytes can otherwise survive in a free page of the main database file
+(recoverable with a raw file scan) after the row that held them is gone. Since 3.9 the store
+opens with `PRAGMA secure_delete=ON` ([store.go](../../internal/store/store.go)), so freed and
+overwritten content is zeroed at the SQLite layer, narrowing that gap. It does **not** cover
+**WAL frames**: in WAL journal mode a page that changes is first written to the `-wal` file and
+only folded into the main database file at a checkpoint, so an old copy of a deleted or
+blanked value can remain in `-wal` (or in `-shm`) until the next checkpoint runs, and
+`secure_delete` does not reach that copy. This is a same-user read of files the user already
+owns (the same boundary as [approval.md §Threat model](approval.md#threat-model)), not a new
+exposure to a remote peer; it is a gap in how completely a *local* delete removes bytes from
+disk, not fixed for Phase 3.
+
 ## Cancel
 
 - **A**: `agentnet session <id> --cancel [--reason R]` in state `open` → `closed`,

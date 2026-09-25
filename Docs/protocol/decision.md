@@ -386,7 +386,8 @@ Kept indefinitely. `decisions` goes into the DROP lists of both rewind tests.
 | `decision.create` | both / `daemon` | `{id, session, peer, outcome, hash, bytes, signed_by}` |
 | `decision.sign_in` | A / `daemon` | `{id, session, peer}` |
 | `decision.refuse` | either / `daemon` | `{id, session, peer, reason}` |
-| `decision.export` | local / `cli` | `{id, format: "md"|"json"}` (only when written to `--out`) |
+
+Exporting a Decision (`agentnet decision <id> --md|--json`, `--out`) is **not audited** (D33): it is a local read of a record the daemon already holds, like `agentnet log`. Revisit in the next large security review.
 
 The hash is not content: it cannot be inverted, and it lets an audit reader tie a log row
 to a committed Decision file.

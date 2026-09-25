@@ -1,9 +1,11 @@
-# Known limitations (Phase 1 beta)
+# Known limitations (beta)
 
-Status: Phase 1. These are **deliberate** limits of the first beta, not bugs. Several may
-change after beta feedback. If one of them gets in your way, tell us: that is how we decide
-what to change first. The decisions behind them are in
-[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md#owner-decisions-needed).
+Status: Phase 1–3. These are **deliberate** limits (or, where noted, accepted gaps) of the
+beta, not bugs. Several may change after beta feedback. If one of them gets in your way, tell
+us: that is how we decide what to change first. The Phase 1 decisions behind them are in
+[../review/11-phase1-tickets.md](../review/11-phase1-tickets.md#owner-decisions-needed); the
+Phase 3 ones in
+[../review/42-phase3-tickets.md](../review/42-phase3-tickets.md#owner-decisions-needed).
 
 ## Teams
 
@@ -76,3 +78,43 @@ what to change first. The decisions behind them are in
 - **Webhooks do not include the request title unless you turn it on**
   (`agentnet notify --webhook-title on`), and never include the brief. Slack and Discord
   cannot check the webhook signature.
+
+## Debates and decisions (Phase 3)
+
+- **A Decision can end up single-signed.** If a peer goes silent after your side has closed
+  the debate and signed, the exported Decision carries only your signature: `decision verify`
+  exits 6 ("unconfirmed") and the Markdown shows an UNCONFIRMED banner, "Outcome claimed by
+  the initiator". Only a Decision with **both** signatures proves anything about what the
+  respondent agreed to. (OD-P3-5, OD-P3-14)
+- **The audit chain does not prove anything against a full database rewrite.** It makes
+  tampering with individual rows evident (a changed, deleted or reordered row breaks
+  `agentnet log --verify`), but anyone who can write your `dorylinae.db` file — which includes
+  any program running as you — can drop the chain's triggers, edit rows and recompute every
+  hash from scratch. Use `agentnet log --head` to record an anchor (in a commit message, a
+  ticket, a message to a teammate) if you need to detect a rewrite of everything **before**
+  that point. (OD-P3-6)
+- **Deleted content can survive in free pages and in the WAL until a checkpoint.** The store
+  now runs with `PRAGMA secure_delete=ON`, which zeroes bytes it frees or overwrites, but a
+  page changed under WAL journal mode is only folded back into the main database file at a
+  checkpoint; until then an old copy of a deleted or quarantined value can remain in the
+  `-wal` (or `-shm`) file. This narrows, but does not close, the gap described under
+  [Requests](#requests) for quarantined results. (OD-P3-13; see also
+  [work-session.md](../protocol/work-session.md#release))
+- **Program-owner checks are weaker on macOS/BSD and over network paths.** The check that a
+  device-linking helper program is owned and only writable by someone you trust does not read
+  macOS/BSD ACLs (a `chmod +a` grant is invisible to it), and on a UNC path, mapped drive or
+  NFS mount it trusts the file server's reported owner and administrators group, which the
+  server (not your machine) controls. (review 41 L4, L5)
+- **A same-size file rewrite between two reads of a fetched file is not detected.** `changed`
+  compares size and modification time; a rewrite that keeps both the same (rare, and only
+  possible for files over 256 KiB rewritten mid-fetch) passes unnoticed. (OD-P3-11; see
+  [fetch.md](../cli/fetch.md))
+- **On macOS, a long config-directory path can be too long for a Unix domain socket.**
+  `agentnetd.sock` lives under your per-user config directory; macOS's `sun_path` limit (104
+  bytes, shorter than Linux's 108) can be exceeded by a long username or a relocated
+  `$DORYLINAE_HOME`, and the daemon then fails to bind. Move `$DORYLINAE_HOME` to a shorter
+  path if this happens.
+
+## Revisit in a later review
+
+- Decision exports are not audited (D33); revisit (a small IPC call that records `decision.export` with no content) in the next large security review.

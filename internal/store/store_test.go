@@ -33,6 +33,26 @@ func TestOpenAppliesMigrationsOnce(t *testing.T) {
 	}
 }
 
+// TestOpenSetsSecureDelete verifies OD-P3-13 (a): the store enables
+// PRAGMA secure_delete so freed pages are overwritten with zeros instead of
+// leaving deleted (e.g. quarantined) bytes recoverable from free pages.
+func TestOpenSetsSecureDelete(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(testutil.TempDir(t), "t.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	var v int
+	if err := s.DB().QueryRowContext(ctx, `PRAGMA secure_delete`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if v != 1 {
+		t.Fatalf("secure_delete = %d, want 1 (on)", v)
+	}
+}
+
 func TestOpenRejectsNewerSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(testutil.TempDir(t), "t.db")

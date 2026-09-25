@@ -385,6 +385,21 @@ waits at most 1 s like `ping`):
 - `device_link`, `device_list`, `device_unlink`, `device_scope_set`, `device_scope_clear`,
   `device_scope_show` ([device.md](device.md#ipc-and-cli)).
 
+## Phase 3 methods
+
+Specified in their documents, with the same rules (review 48: this table was missing
+`decision_show`/`decision_list`):
+
+- `request_submit` gains `debate: {"position", "rounds"?, "turn_timeout_s"?}` for a request of
+  type `debate` ([debate.md](debate.md#ipc)); `context` also applies to `debate`, as it already
+  does to `question` ([consult.md](consult.md#agentnet-consult));
+- `debate_submit`, `debate_show`, `debate_list` ([debate.md](debate.md#ipc));
+- `debate_constrain` (a human constraint, approval-gated: `debate_constraint`)
+  ([debate.md](debate.md#human-constraints-34), [approval.md](approval.md#ipc-and-cli));
+- `decision_show`, `decision_list` ([decision.md](decision.md#ipc-and-cli));
+- `audit_list`, `audit_verify`, `audit_head` ([audit.md](audit.md#agentnet-log); `audit_verify`
+  is exempt from the 2-second rule, see [Audit events](#audit-events-written-by-the-daemon-lifecycle) below).
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.
