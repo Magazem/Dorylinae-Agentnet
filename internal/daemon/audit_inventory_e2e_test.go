@@ -227,7 +227,7 @@ func TestAuditInventoryDevices(t *testing.T) {
 	scope := map[string]any{
 		"types":    []string{"task"},
 		"repos":    []map[string]string{{"label": "repo", "path": repo}},
-		"commands": []map[string]any{{"name": "t", "repo": "repo", "argv": []string{buildRunHelper(t)},"timeout_s": 5}},
+		"commands": []map[string]any{{"name": "t", "repo": "repo", "argv": []string{buildRunHelper(t)}, "timeout_s": 5}},
 		"expires":  help.clk.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339),
 	}
 	rawScope, _ := json.Marshal(scope)
