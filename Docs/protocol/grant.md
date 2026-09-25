@@ -303,7 +303,11 @@ enclosing one). The `git` executable is resolved once at daemon start with `exec
 on Windows the `git.exe` in `git --exec-path` is used instead, because Git for Windows'
 `cmd\git.exe` is a launcher whose child outlives a kill on timeout. Requires Git ≥ 2.32
 (`GIT_CONFIG_GLOBAL`); `GIT_NO_LAZY_FETCH` needs 2.44 and is backed by the `protocol`
-overrides below. Every served command is prefixed with the command-line overrides
+overrides below. **Enforced at daemon start (D23):** `git --version` is checked once,
+next to the executable resolution; below 2.32, `git.read` grants are refused
+(`unsupported`) with the version and requirement in the daemon's logs and in `status`'s
+`git` field (`"ok"` or `"unsupported: <reason>"`). `fs` serving does not use this
+executable and is unaffected. Every served command is prefixed with the command-line overrides
 `-c core.fsmonitor=false -c core.hooksPath=<os.DevNull> -c protocol.allow=never` and
 `-c protocol.<p>.allow=never` for `ext`, `file`, `git`, `ssh`, `http` and `https`; the
 command line outranks any repository config or include. `safe.directory` is not

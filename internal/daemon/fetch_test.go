@@ -104,7 +104,7 @@ func TestFetchServedOverNoiseSession(t *testing.T) {
 	r := &memRelay{nodes: map[string]*session.Manager{}}
 	gpub := ed25519.PublicKey(h.priv.Public().(ed25519.PublicKey))
 	grantorMgr := newMemManager(t, r, gpub, h.priv, h)
-	stop := startFetchServer(grantorMgr, h.caps, h.ws, h.log, h.self)
+	stop, _ := startFetchServer(grantorMgr, h.caps, h.ws, h.log, h.self, nil)
 	t.Cleanup(stop)
 	holderMgr := newMemManager(t, r, hpub, hpriv, h)
 	resps := make(chan map[string]any, 64)

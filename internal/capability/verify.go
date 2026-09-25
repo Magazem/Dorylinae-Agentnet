@@ -24,10 +24,13 @@ const (
 
 // VerifyError is returned by Verify when a step fails. Reason is the wire
 // error code; Step is the number in Docs/protocol/grant.md §Verification.
+// GrantID is set only when the failure comes after step 4 (signature), so the
+// id is trustworthy (review 28 L9, grant.orphan audits {grant, peer}).
 type VerifyError struct {
-	Reason string
-	Step   int
-	Err    error
+	Reason  string
+	Step    int
+	Err     error
+	GrantID string
 }
 
 func (e *VerifyError) Error() string {
@@ -45,6 +48,16 @@ func ReasonOf(err error) string {
 	var ve *VerifyError
 	if errors.As(err, &ve) {
 		return ve.Reason
+	}
+	return ""
+}
+
+// GrantIDOf returns the trustworthy grant id carried by err (a *VerifyError
+// rejected after step 4), or "" if none.
+func GrantIDOf(err error) string {
+	var ve *VerifyError
+	if errors.As(err, &ve) {
+		return ve.GrantID
 	}
 	return ""
 }
@@ -167,7 +180,7 @@ func Verify(raw []byte, p VerifyParams) (*Grant, error) {
 	}
 	known, open := p.SessionOpen(g.Session, g.Iss, g.Aud)
 	if !known {
-		return nil, reject(7, ReasonUnknownSession, nil)
+		return nil, &VerifyError{Reason: ReasonUnknownSession, Step: 7, GrantID: g.ID}
 	}
 	if !open {
 		return nil, reject(7, ReasonSessionNotOpen, nil)

@@ -33,6 +33,11 @@ agentnetd running
   presence: visible, relay connected
 ```
 
+`--json` also carries `git`: `"ok"` when `git.read` grants can be issued, or
+`"unsupported: <reason>"` when the resolved git is missing or older than 2.32 (D23,
+[../protocol/grant.md](../protocol/grant.md#serving-git)); `fs` grants are unaffected either
+way.
+
 With `--team backend` (Phase 1), a member table follows:
 
 ```

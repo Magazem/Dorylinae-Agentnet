@@ -54,6 +54,10 @@ type StatusResult struct {
 	// Approval is the approval channel: "desktop", "terminal" or
 	// "terminal-debug" (Docs/protocol/approval.md §Headless machines).
 	Approval string `json:"approval"`
+	// Git is "ok" or "unsupported: <reason>" (D23, Docs/protocol/grant.md
+	// §Serving git): below Git 2.32, git.read grants are refused; fs serving
+	// is unaffected.
+	Git string `json:"git"`
 }
 
 // PresenceStatus is the "presence" object of "status", own values only.
@@ -487,7 +491,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
 	}
-	defer startFetchServer(sessions, capStore, wsStore, log, id.Card().Card.PublicKey)()
+	stopFetch, gitReason := startFetchServer(sessions, capStore, wsStore, log, id.Card().Card.PublicKey, opts.Logger)
+	defer stopFetch()
 	fetchClient := startFetchClient(sessions, capStore, wsStore, id.Card().Card.PublicKey)
 	defer fetchClient.Close()
 	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
@@ -556,6 +561,10 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
 			}
 		}
+		gitStatus := "ok"
+		if gitReason != "" {
+			gitStatus = "unsupported: " + gitReason
+		}
 		res := StatusResult{
 			Outbox:        counts,
 			PID:           os.Getpid(),
@@ -563,6 +572,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			UptimeSeconds: time.Since(started).Seconds(),
 			Approval:      approvalMode,
 			Version:       version.Version,
+			Git:           gitStatus,
 			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender, teamStore),
 		}
 		if p.Team != "" {

@@ -69,7 +69,7 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			})
 			if verr != nil {
 				if capability.ReasonOf(verr) == capability.ReasonUnknownSession {
-					pendingGrant.Store(op, &grantOutcome{kind: "orphan", peer: op.Msg.From})
+					pendingGrant.Store(op, &grantOutcome{kind: "orphan", grant: capability.GrantIDOf(verr), peer: op.Msg.From})
 					return nil
 				}
 				return fmt.Errorf("grant: %s: %w", capability.ReasonOf(verr), mail.ErrBadBody)
@@ -108,7 +108,7 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			out := v.(*grantOutcome)
 			switch out.kind {
 			case "orphan":
-				_ = log.Append(ctx, audit.ActorDaemon, "grant.orphan", map[string]any{"peer": out.peer})
+				_ = log.Append(ctx, audit.ActorDaemon, "grant.orphan", map[string]any{"grant": out.grant, "peer": out.peer})
 			case "conflict":
 				_ = log.Append(ctx, audit.ActorDaemon, "grant.conflict", map[string]any{"grant": out.grant, "peer": out.peer})
 			case "in":

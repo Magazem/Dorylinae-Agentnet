@@ -27,6 +27,8 @@ const (
 	fakeGitOut  = "CAPTEST_FAKE_GIT_OUT"
 	// fakeGitExecPath is what the fake prints for --exec-path.
 	fakeGitExecPath = "CAPTEST_FAKE_GIT_EXEC_PATH"
+	// fakeGitVersion is what the fake prints for --version.
+	fakeGitVersion = "CAPTEST_FAKE_GIT_VERSION"
 )
 
 func TestMain(m *testing.M) {
@@ -61,6 +63,8 @@ func fakeGit(mode string) int {
 		fmt.Printf("%s\x00commit\x00%s\x00\n", args[len(args)-1], strings.Repeat("a", 40))
 	case slices.Contains(args, "--exec-path"):
 		fmt.Println(os.Getenv(fakeGitExecPath))
+	case slices.Contains(args, "--version"):
+		fmt.Println(os.Getenv(fakeGitVersion))
 	}
 	return 0 // ls-tree: no entries
 }
@@ -749,6 +753,55 @@ func TestGitMissingBinaryUnsupported(t *testing.T) {
 	_, _, err := GitBackend{}.Stat(context.Background(), Record{Path: testutil.TempDir(t), Branch: "main"}, "a")
 	if FetchCode(err) != CodeUnsupported {
 		t.Fatalf("no git: %v, want unsupported", err)
+	}
+}
+
+// D23 (Docs/orchestration/HANDOFF.md §3): a git older than 2.32 makes
+// git.read grants refused (unsupported), with a clear reason for status/logs;
+// fs serving does not go through GitBackend at all.
+func TestGitVersionEnforced(t *testing.T) {
+	t.Setenv(fakeGitMode, "version")
+	fake := fakeGitPath(t)
+
+	cases := []struct {
+		version string
+		usable  bool
+	}{
+		{"git version 2.31.0", false},
+		{"git version 2.31.9", false},
+		{"git version 2.32.0", true},
+		{"git version 2.32.1.windows.1", true},
+		{"git version 2.45.1", true},
+		{"git version 1.9.5", false},
+		{"git version 3.0.0", true},
+	}
+	for _, c := range cases {
+		t.Setenv(fakeGitVersion, c.version)
+		reason := gitVersionReason(fake)
+		if c.usable && reason != "" {
+			t.Errorf("%s: reason %q, want none", c.version, reason)
+		}
+		if !c.usable && reason == "" {
+			t.Errorf("%s: no reason, want one (below 2.32)", c.version)
+		}
+	}
+
+	t.Setenv(fakeGitVersion, "not a git version at all")
+	if reason := gitVersionReason(fake); reason == "" {
+		t.Fatal("unparsable --version output accepted")
+	}
+}
+
+// TestGitVersionCheckedOnce confirms the check runs against the resolved
+// binary (via GitCommand/gitVersionReason), not a hardcoded assumption, so a
+// fresh git on the test machine (CI has one) is reported usable.
+func TestGitVersionCheckedOnce(t *testing.T) {
+	realGit, err := LookGit()
+	if err != nil {
+		t.Skip("git is not on PATH")
+	}
+	if reason := gitVersionReason(realGit); reason != "" {
+		t.Fatalf("the real git on this machine: %q (bump CI's git if this is genuinely too old)", reason)
 	}
 }
 

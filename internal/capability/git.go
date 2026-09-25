@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -148,14 +150,48 @@ type GitBackend struct {
 	Timeout time.Duration
 }
 
-// NewGitBackend resolves git once. Without git the backend answers
-// `unsupported`.
-func NewGitBackend() GitBackend {
+// gitMinMajor.gitMinMinor is the minimum git version grant.md requires (D23):
+// GIT_CONFIG_GLOBAL needs 2.32. Below it, git.read grants are refused
+// (`unsupported`); fs serving does not use this backend and is unaffected.
+const gitMinMajor, gitMinMinor = 2, 32
+
+var gitVersionRe = regexp.MustCompile(`^git version (\d+)\.(\d+)`)
+
+// gitVersionReason runs `git --version` on gitPath and returns a non-empty,
+// human-readable reason if it is unusable: the command failed, its output
+// was not understood, or the version is older than gitMinMajor.gitMinMinor.
+func gitVersionReason(gitPath string) string {
+	cmd, cancel := GitCommand(context.Background(), gitPath, "--version")
+	defer cancel()
+	out, err := cmd.Output()
+	if err != nil {
+		return "git --version failed: " + err.Error()
+	}
+	m := gitVersionRe.FindSubmatch(out)
+	if m == nil {
+		return fmt.Sprintf("git --version output not understood: %q", strings.TrimSpace(string(out)))
+	}
+	major, _ := strconv.Atoi(string(m[1]))
+	minor, _ := strconv.Atoi(string(m[2]))
+	if major < gitMinMajor || (major == gitMinMajor && minor < gitMinMinor) {
+		return fmt.Sprintf("git %d.%d found, need %d.%d or newer", major, minor, gitMinMajor, gitMinMinor)
+	}
+	return ""
+}
+
+// NewGitBackend resolves git once and checks its version (D23). Without a
+// usable git (missing, or older than gitMinMajor.gitMinMinor) the backend
+// answers `unsupported` for every call, and the returned reason explains why
+// for the daemon's status and logs; fs serving is unaffected.
+func NewGitBackend() (GitBackend, string) {
 	p, err := LookGit()
 	if err != nil {
-		return GitBackend{}
+		return GitBackend{}, "git is not installed or not on PATH"
 	}
-	return GitBackend{Git: p}
+	if reason := gitVersionReason(p); reason != "" {
+		return GitBackend{}, reason
+	}
+	return GitBackend{Git: p}, ""
 }
 
 type gitEntry struct {

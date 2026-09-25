@@ -365,7 +365,9 @@ a body cannot be moved to another session.
 5. Apply the transition ([Transitions](#transitions-authoritative-on-a)).
 
 After commit: audit `ws.result_in {session, peer, round, result_bytes, output_bytes,
-artifacts, quarantined}` and notify `session.result` (or `session.quarantined`).
+artifacts, quarantined}`, and notify `session.quarantined` when the result entered
+quarantine (there is no separate non-quarantined result notification, see
+[Notifications](#notifications)).
 
 ### Ordering
 
@@ -490,11 +492,14 @@ Exit 1 error, 2 usage, 3 daemon not running, as for every command. The `--json` 
 
 ## Notifications
 
-New events for [notify.md](notify.md) (the `notify.events` setting): `session.result` (A,
-on by default: "<name> sent a result for <title> (<status>)"), `session.quarantined` (A, on:
-"<name>'s result for <title> is quarantined: run agentnet release"), `session.changes` (B,
-on), `session.closed` (B, off). Webhooks carry the event name, session id, request id and
-peer only; never result content, `changes` or reasons.
+New event for [notify.md](notify.md) (the `notify.events` setting): `session.quarantined` (A,
+on by default), content-free like every other Phase 2 notification: "<name>'s result is
+quarantined and waits for your release" (no title, no status). A completed or cancelled
+session is reported through the existing request-level events (`request.completed`,
+`request.cancelled`), not a separate `session.*` event; `session.result` and
+`session.changes` from the plan's wording were not implemented as separate events for the
+same reason (review 35 L5; 2.9 reconciliation). Webhooks carry the event name, session id,
+request id and peer only; never result content, `changes` or reasons.
 
 ## Audit
 
