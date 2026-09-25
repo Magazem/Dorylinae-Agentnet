@@ -1,5 +1,10 @@
 # Phase 2 manual tests
 
+**Status (2026-09-25):** owner's Windows 11 walkthrough below has three open
+items; all are environment-blocked on the owner's PC (grant-label length,
+drive-root ACLs, untested toast-history/no-desktop-session cases), not
+product defects, and do not gate Phase 2 per the owner.
+
 Mark each step `[x] PASS` or `[x] FAIL` and add notes. Created by ticket 2.2d
 (the approval window); later Phase 2 tickets add their own sections here
 (2.2a's toast-history check moves here from its own ticket).
@@ -18,33 +23,36 @@ create ...`; until then, any build with a small Go program that calls
 
 ### Windows 11 (PowerShell 5.1, no admin)
 
-- [ ] A window titled `AgentNet approval a-xxxxxx` appears, `TopMost`, with the
+- [x] A window titled `AgentNet approval a-xxxxxx` appears, `TopMost`, with the
       kind and summary text, a 6-digit input box (focused), **Approve**
-      (disabled until 6 digits) and **Reject**.
-- [ ] The desktop toast shows a code in its **title** (`AgentNet code NNNNNN
-      for approval a-xxxxxx`) and the summary in the body.
-- [ ] Typing the code from the toast and clicking Approve performs the
+      (disabled until 6 digits) and **Reject**. (PASS, owner, 2026-09-25)
+- [x] The desktop toast shows a code in its **title** (`AgentNet code NNNNNN
+      for approval a-xxxxxx`) and the summary in the body. (PASS, owner, 2026-09-25)
+- [x] Typing the code from the toast and clicking Approve performs the
       action; the window closes and a new toast without a code says
-      "Approved: …".
-- [ ] A wrong 6-digit code reopens the window with "Wrong code, N attempts
-      left"; the 3rd wrong code rejects instead of reopening.
-- [ ] Clicking Reject rejects immediately (no code needed).
-- [ ] Pressing Enter or Esc in the window does nothing (no default/cancel
-      button).
-- [ ] Typing immediately after the window appears (within ~1 s) does not
-      reach the input box (the focus/input guard).
-- [ ] `agentnet approve --open <id>` on an already-open window does nothing
-      new (no second window); on a dismissed one, it reopens the window.
-- [ ] Stopping `agentnetd` (Ctrl+C) closes any open approval window.
-- [ ] **Long summaries (review 46 H2, added in Phase 3):** an approval whose summary is several hundred characters long (e.g. a long device scope, or a debate constraint once Phase 3 lands) shows the WHOLE text: on Windows in a read-only, word-wrapped, scrollable box; on Linux (zenity/kdialog) and macOS, check that the end of the text is visible or reachable. Nothing is cut off before the code field.
+      "Approved: …". (PASS, owner, 2026-09-25)
+- [x] A wrong 6-digit code reopens the window with "Wrong code, N attempts
+      left"; the 3rd wrong code rejects instead of reopening. (PASS, owner, 2026-09-25)
+- [x] Clicking Reject rejects immediately (no code needed). (PASS, owner, 2026-09-25)
+- [x] Pressing Enter or Esc in the window does nothing (no default/cancel
+      button). (PASS, owner, 2026-09-25)
+- [x] Typing immediately after the window appears (within ~1 s) does not
+      reach the input box (the focus/input guard). (PASS with a note: when the
+      daemon is a background console process the popup never auto-focuses, so
+      you must click into the code box first; this matches approval.md ('a
+      background process usually cannot take the focus'), not a bug. — owner, 2026-09-25)
+- [x] `agentnet approve --open <id>` on an already-open window does nothing
+      new (no second window); on a dismissed one, it reopens the window. (PASS, owner, 2026-09-25)
+- [x] Stopping `agentnetd` (Ctrl+C) closes any open approval window. (PASS, owner, 2026-09-25)
+- [ ] **Long summaries (review 46 H2, added in Phase 3):** an approval whose summary is several hundred characters long (e.g. a long device scope, or a debate constraint once Phase 3 lands) shows the WHOLE text: on Windows in a read-only, word-wrapped, scrollable box; on Linux (zenity/kdialog) and macOS, check that the end of the text is visible or reachable. Nothing is cut off before the code field. (OPEN: blocked on the owner's Windows PC, not a product defect — grant labels are capped at 59 chars + 4-char hash by design in internal/daemon/grant.go deriveLabel, so a grant can't produce a long-enough summary to exercise this; needs a device-scope or debate-constraint approval instead.)
 - [ ] **Toast history removal (moved from ticket 2.2a):** after the approval
       is decided (or expires), open Windows' Notification Center and confirm
       the AgentNet approval toast is gone from the history, not just
-      dismissed from the screen.
+      dismissed from the screen. (OPEN: blocked on the owner's Windows PC, not a product defect — not tested yet.)
 - [ ] Running `agentnetd` from a Task Scheduler task in session 0, or over an
       RDP/SSH logon with no interactive desktop, reports `approval_window:
       "missing"` in `status` and the approval fails `approval_unavailable`
-      rather than silently doing nothing.
+      rather than silently doing nothing. (OPEN: blocked on the owner's Windows PC, not a product defect — the no-desktop-session case is not tested yet.)
 
 ### macOS
 
@@ -88,17 +96,24 @@ create ...`; until then, any build with a small Go program that calls
 
 ## Headless / terminal mode (ticket 2.2d, [approval.md](../Docs/protocol/approval.md#headless-machines))
 
-- [ ] `agentnetd` started in a real terminal (not through `DORYLINAE_DEBUG`)
+- [x] `agentnetd` started in a real terminal (not through `DORYLINAE_DEBUG`)
       with `DORYLINAE_APPROVAL=terminal` writes
       `AgentNet approval a-xxxxxx: <summary>. Code NNNNNN. Type "a-xxxxxx
       NNNNNN" to approve or "reject a-xxxxxx" to reject.` to its stderr, and
-      typing that line on its stdin approves.
-- [ ] Redirecting `agentnetd`'s stdin or stderr to a file (no
-      `DORYLINAE_DEBUG`) refuses to start with a clear exit-2 message.
-- [ ] `agentnet approve --open <id>` against a terminal-mode daemon fails
-      `bad_request` ("answer on the daemon's terminal").
+      typing that line on its stdin approves. (PASS, owner, 2026-09-25)
+- [x] Redirecting `agentnetd`'s stdin or stderr to a file (no
+      `DORYLINAE_DEBUG`) refuses to start with a clear exit-2 message. (PASS, owner, 2026-09-25)
+- [x] `agentnet approve --open <id>` against a terminal-mode daemon fails
+      `bad_request` ("answer on the daemon's terminal"). (PASS, owner, 2026-09-25)
 
 ## Own-device helper runs (ticket 2.D2, [device.md](../Docs/protocol/device.md#running-in-scope-requests))
+
+OPEN: blocked on the owner's Windows PC, not a product defect — both C:\ and
+D:\ carry a non-default ACL entry `NT AUTHORITY\Authenticated Users:(M)` on
+the drive root, which correctly trips the device helper's writable-by-others
+safety check (D24/L11) for any program on the drive. Fix if wanted, elevated
+PowerShell: `icacls C:\ /remove:g "NT AUTHORITY\Authenticated Users"`. This
+whole section is untested on this PC until that is fixed.
 
 Automated coverage (`internal/device/runner_test.go`,
 `internal/daemon/device_run_e2e_test.go`) runs a test program built with `go build`.
