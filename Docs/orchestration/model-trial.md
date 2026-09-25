@@ -68,3 +68,6 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 |---|---|---|---|---|---|
 | B-3 harness portability (Windows PS 5.1 root, bash 3.2 fds) | Sonnet 5, thinking off | ~6 | 0 | 0 | Precise and scoped; flagged the same bug in the Phase 1 script without touching it; ran the local stand-in to prove the Windows fix |
 | B-2 status count split (control) | Sonnet 5, normal thinking | ~10 | 0 | 0 | Clean and backward-compatible; noted its own test gap (human output only asserted with zeros) |
+| B-1 --from takes a peer name | Sonnet 5, thinking off | ~8 | 0 | 0 | Reused the daemon-side resolver; widened scope slightly (also `complete`, same flag and doc row); real 3-daemon tests incl. ambiguous names and `-` keys |
+
+**Trial 2 result (3 tickets):** thinking-off Sonnet was as fast or faster (6–8 min vs ~10 for the control), needed no rework, passed the gate first time, and its reports were as careful as the control's (both flagged their own gaps). On routine, well-scoped tickets with our current specs and tests, thinking adds no visible value. Caveat: three small tickets; nothing ambiguous or cross-cutting was tried.
