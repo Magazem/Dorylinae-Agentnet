@@ -36,6 +36,7 @@ create ...`; until then, any build with a small Go program that calls
 - [ ] `agentnet approve --open <id>` on an already-open window does nothing
       new (no second window); on a dismissed one, it reopens the window.
 - [ ] Stopping `agentnetd` (Ctrl+C) closes any open approval window.
+- [ ] **Long summaries (review 46 H2, added in Phase 3):** an approval whose summary is several hundred characters long (e.g. a long device scope, or a debate constraint once Phase 3 lands) shows the WHOLE text: on Windows in a read-only, word-wrapped, scrollable box; on Linux (zenity/kdialog) and macOS, check that the end of the text is visible or reachable. Nothing is cut off before the code field.
 - [ ] **Toast history removal (moved from ticket 2.2a):** after the approval
       is decided (or expires), open Windows' Notification Center and confirm
       the AgentNet approval toast is gone from the history, not just
