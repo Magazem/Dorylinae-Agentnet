@@ -78,7 +78,8 @@ s-5214…  role initiator  phase rounds  turn peer
 `rounds {max, current}`, `turn` (`you`/`peer`/`none`), `expect` (the next entry kind, when it is
 your turn), `deadline`, `waiting` (`reveal`/`entry`/`signature`), `topic`, `context`
 (`{name, bytes}`, never the text), `transcript` (`{slot, author, kind, at, entry}`) and
-`constraints` (empty until 3.4 adds `--constrain`).
+`constraints` (`{id, author, at, text, state}`, active and late, never excess; see [Human
+constraints](#human-constraints)).
 
 ## Submitting an entry
 

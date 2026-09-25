@@ -319,6 +319,18 @@ type ViewConstraint struct {
 	State  string // active or late
 }
 
+// countVisibleConstraints counts sid's constraints an agent may see (active
+// and late, never excess), for the list view (review 46 L7: List() keeps
+// counts, not the texts).
+func countVisibleConstraints(ctx context.Context, q queryer, sid string) (int, error) {
+	var n int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM debate_constraints WHERE session = ? AND state IN (?, ?)`,
+		sid, ConstraintActive, ConstraintLate).Scan(&n); err != nil {
+		return 0, fmt.Errorf("debate: count constraints: %w", err)
+	}
+	return n, nil
+}
+
 // loadConstraints returns sid's constraints an agent may see, ordered by
 // (at, id): every state but excess (§Human constraints, "Limits").
 func loadConstraints(ctx context.Context, q queryer, sid string) ([]ViewConstraint, error) {

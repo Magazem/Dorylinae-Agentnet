@@ -1,8 +1,8 @@
 package main
 
 // Ticket 3.1b: `agentnet debate` / `agentnet debates` (Docs/protocol/debate.md,
-// Docs/cli/debate.md). `--constrain` (3.4) is not implemented here: it is a
-// deliberate seam left for that ticket.
+// Docs/cli/debate.md). `--constrain` (ticket 3.4) routes to runDebateConstrain
+// in debate_constrain.go.
 
 import (
 	"encoding/json"
@@ -74,6 +74,7 @@ Usage:
   agentnet debate <id> [--json]
   agentnet debate <id> --position-file F | --move-file F | --propose-file F | --answer-file F [--json]
   agentnet debate <id> --cancel [--reason R] [--json]
+  agentnet debate <id> --constrain TEXT [--json]
 
 <peer> is a peer name or public key, with an optional "@". <id> is a debate's
 session id (s-...) or the request id it belongs to (r-...).
@@ -101,6 +102,11 @@ Flags:
   --answer-file F            an answer: {"accept", ...} ("-" = stdin)
   --cancel                   close an open or invited debate (no Decision)
   --reason R                 optional, with --cancel, 1-500 characters
+  --constrain TEXT           add a human constraint, approval-gated: the
+                            AgentNet approval window shows the peer, the
+                            session and TEXT in full, and only your code
+                            stores and sends it (Docs/protocol/debate.md
+                            §Human constraints)
   --json                     print machine-readable JSON on stdout
 
 Each entry file is a JSON object of the given kind (Docs/protocol/debate.md
@@ -132,6 +138,7 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 	idemKey := fs.String("idempotency-key", "", "1-64 characters of [A-Za-z0-9._:-]")
 	cancel := fs.Bool("cancel", false, "close an open or invited debate")
 	reason := fs.String("reason", "", "optional, with --cancel")
+	constrain := fs.String("constrain", "", "add a human constraint, approval-gated")
 	var contextFiles []string
 	fs.Func("context-file", "a context file (repeatable, up to 8)", func(v string) error {
 		contextFiles = append(contextFiles, v)
@@ -167,10 +174,14 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 		switch {
 		case entryActions > 1:
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give at most one of --position-file, --move-file, --propose-file or --answer-file")
-		case *cancel && entryActions > 0:
-			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--cancel cannot be combined with an entry file")
+		case *cancel && (entryActions > 0 || set["constrain"]):
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--cancel cannot be combined with an entry file or --constrain")
+		case set["constrain"] && entryActions > 0:
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--constrain cannot be combined with an entry file")
 		case *cancel:
 			return runDebateCancel(*asJSON, stdout, stderr, id, *reason)
+		case set["constrain"]:
+			return runDebateConstrain(*asJSON, stdout, stderr, id, *constrain)
 		case entryActions == 1:
 			kind, path := debateEntryKind(set, *positionFile, *moveFile, *proposeFile, *answerFile)
 			return runDebateSubmit(*asJSON, stdout, stderr, id, kind, path)
@@ -181,10 +192,10 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	// Starting a new debate: --move-file/--propose-file/--answer-file only
-	// make sense against an existing debate id, never a peer.
-	if *cancel || set["move-file"] || set["propose-file"] || set["answer-file"] {
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give a debate id (s-... or r-...) with --cancel, --move-file, --propose-file or --answer-file")
+	// Starting a new debate: --move-file/--propose-file/--answer-file/--constrain
+	// only make sense against an existing debate id, never a peer.
+	if *cancel || set["move-file"] || set["propose-file"] || set["answer-file"] || set["constrain"] {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give a debate id (s-... or r-...) with --cancel, --move-file, --propose-file, --answer-file or --constrain")
 	}
 	if !set["position-file"] {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--position-file is required to start a debate")

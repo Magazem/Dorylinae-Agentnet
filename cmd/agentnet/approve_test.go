@@ -15,13 +15,36 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 )
 
-type approveFakeNotifier struct{ lastTitle, lastBody string }
+// approveFakeNotifier records the title/body so a test can extract the code.
+// Show also runs from the store's window-watch goroutine (outcome notices),
+// so the fields are guarded by mu (review 31: -race runs only in CI).
+type approveFakeNotifier struct {
+	mu                  sync.Mutex
+	lastTitle, lastBody string
+}
 
 func (f *approveFakeNotifier) Show(_ context.Context, _ string, _ time.Time, title, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.lastTitle, f.lastBody = title, body
 	return nil
 }
 func (f *approveFakeNotifier) Remove(context.Context, string) {}
+
+// lastCode extracts the 6-digit code from the desktop title ("AgentNet code
+// 482913 for approval a-...", Docs/protocol/approval.md §Delivering the code).
+func (f *approveFakeNotifier) lastCode(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	title := f.lastTitle
+	f.mu.Unlock()
+	const marker = "code "
+	i := strings.Index(strings.ToLower(title), marker)
+	if i < 0 || len(title) < i+len(marker)+6 {
+		t.Fatalf("no code in title: %q", title)
+	}
+	return title[i+len(marker) : i+len(marker)+6]
+}
 
 // approveFakeWindow is a fake approval.WindowRunner: it never spawns a real
 // dialog process (Docs/review/23-phase2-tickets.md 2.2d).

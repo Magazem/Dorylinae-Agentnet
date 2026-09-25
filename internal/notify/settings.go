@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 )
 
 // storeTimeFmt matches internal/mail.StoreTimeFmt without importing mail.
@@ -43,8 +45,10 @@ const (
 	// Desktop only: it is not sent to the webhook.
 	EventDeviceLinked = "device.linked"
 	// Debate events (Docs/protocol/debate.md §Notifications), content-free:
-	// never the topic, entries or constraint text.
-	EventDebateConstraint = "debate.constraint"
+	// never the topic, entries or constraint text. EventDebateConstraint
+	// mirrors internal/debate.EventConstraint (the single source of truth:
+	// it is what Store.OnEvent actually fires), so the two can never drift.
+	EventDebateConstraint = debate.EventConstraint
 	EventDebateAgreed     = "debate.agreed"
 	EventDebateEscalated  = "debate.escalated"
 	EventDebateBroken     = "debate.broken"

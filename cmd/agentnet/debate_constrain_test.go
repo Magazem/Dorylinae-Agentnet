@@ -68,9 +68,10 @@ func TestDebateConstrainCLI(t *testing.T) {
 func TestDebateConstrainUsage(t *testing.T) {
 	shortHome(t)
 	for name, args := range map[string][]string{
-		"no id":          {"debate", "--constrain", "x"},
-		"no --constrain": {"debate", "s-0123456789abcdef0123456789abcdef"},
-		"two ids":        {"debate", "s-1", "s-2", "--constrain", "x"},
+		"no id":                 {"debate", "--constrain", "x"},
+		"two ids":               {"debate", "s-1", "s-2", "--constrain", "x"},
+		"--constrain --cancel":  {"debate", "s-0123456789abcdef0123456789abcdef", "--constrain", "x", "--cancel"},
+		"--constrain with move": {"debate", "s-0123456789abcdef0123456789abcdef", "--constrain", "x", "--move-file", "f"},
 	} {
 		var out, errb bytes.Buffer
 		if c := run(args, &out, &errb); c != exitUsage {

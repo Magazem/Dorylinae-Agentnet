@@ -88,6 +88,10 @@ func TestDebateConstrainE2E(t *testing.T) {
 	}
 
 	dsSubmit(t, b.ds, sid, debate.KindPosition, `{"argument":"Simple.","claim":"Fixed retry"}`)
+	// dsSubmit calls Store.Submit directly (bypassing the IPC layer, as the
+	// rest of this test does for speed); mark it for the inventory below,
+	// which asserts debate_submit was exercised and audited.
+	a.run.mark("debate_submit")
 	harnessWait(t, "A to reach rounds", phaseIs(a.harnessNode, sid, debate.PhaseRounds))
 	harnessWait(t, "B to reach rounds", phaseIs(b.harnessNode, sid, debate.PhaseRounds))
 

@@ -4,7 +4,8 @@ package daemon
 // debate_show, debate_submit (including the one-step accept + position), the
 // timeout sweep wiring (the rule itself is internal/debate) and cancel
 // (ws_cancel, already wired to internal/worksession for a debate session).
-// debate_constrain (3.4) is a deliberate seam: it is not registered here.
+// debate_constrain (ticket 3.4) is registered separately in
+// debate_constrain.go.
 
 import (
 	"context"
@@ -54,8 +55,8 @@ type DebateEntryView struct {
 	Entry  json.RawMessage `json:"entry"`
 }
 
-// DebateConstraintView is one constraint (3.4 fills debate_constraints; this
-// is always empty until then).
+// DebateConstraintView is one constraint (Docs/protocol/debate.md §IPC,
+// ticket 3.4).
 type DebateConstraintView struct {
 	ID     string `json:"id"`
 	Author string `json:"author"`
@@ -147,6 +148,7 @@ func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *te
 	}
 	if listMode {
 		dv.Entries = len(v.Transcript)
+		dv.ConstraintCount = v.ConstraintCount
 		return dv
 	}
 	dv.Topic = topic
@@ -156,7 +158,10 @@ func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *te
 	for _, e := range v.Transcript {
 		dv.Transcript = append(dv.Transcript, DebateEntryView{Slot: e.Slot, Author: e.Author, Kind: e.Kind, At: e.At, Entry: e.Entry})
 	}
-	dv.Constraints = []DebateConstraintView{} // 3.4 fills this
+	dv.Constraints = make([]DebateConstraintView, 0, len(v.Constraints))
+	for _, c := range v.Constraints {
+		dv.Constraints = append(dv.Constraints, DebateConstraintView{ID: c.ID, Author: c.Author, At: c.At, Text: c.Text, State: c.State})
+	}
 	return dv
 }
 

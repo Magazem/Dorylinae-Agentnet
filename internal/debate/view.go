@@ -30,8 +30,11 @@ type View struct {
 	Waiting      string    // "reveal", "entry" or "signature"
 	Transcript   []ViewEntry
 	// Constraints are the human constraints an agent may see, ordered by
-	// (at, id): active and late, never excess (3.4).
-	Constraints []ViewConstraint
+	// (at, id): active and late, never excess (3.4). Get fills this; List
+	// fills ConstraintCount instead (review 46 L7: the list view keeps
+	// counts, not the texts).
+	Constraints     []ViewConstraint
+	ConstraintCount int
 }
 
 // ViewEntry is one transcript entry. Entry is its canonical JSON.
@@ -98,8 +101,9 @@ func (s *Store) List(ctx context.Context, phase, peer string) ([]View, error) {
 			return nil, err
 		}
 		v := buildView(r, tr)
-		// The list view keeps counts only (§IPC); 3.1b drops the texts.
-		if v.Constraints, err = loadConstraints(ctx, s.DB, r.session); err != nil {
+		// The list view keeps counts only (§IPC), so it never loads the
+		// texts (review 46 L7).
+		if v.ConstraintCount, err = countVisibleConstraints(ctx, s.DB, r.session); err != nil {
 			return nil, err
 		}
 		out = append(out, v)
