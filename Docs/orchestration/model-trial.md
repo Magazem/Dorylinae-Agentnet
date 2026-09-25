@@ -59,3 +59,10 @@ complex tasks and investigations, and measure whether it is faster or needs fewe
 
 - **INV-1 (Opus 5.5):** 24 min, no follow-ups, my gate found nothing. It reproduced the flake under synthetic load, proved the root cause (a 1.5 s test ConfirmWait vs Argon2id under load, not the bus), fixed three other tests with the same exposure, and reported an unrelated flake instead of guessing at it. No Sonnet baseline for investigations; qualitatively above the Sonnet reports so far (evidence-based, scoped).
 
+
+## Trial 2 (D27): Sonnet with thinking off vs normal Sonnet
+
+Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and metrics. Routine, well-scoped backlog tickets only.
+
+| Ticket | Model/thinking | Minutes | Follow-ups | Gate failures | Notes |
+|---|---|---|---|---|---|

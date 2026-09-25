@@ -89,6 +89,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
   |---|---|---|
   | Worker-Haiku | `custom-1789380226358-958d` | read-only summaries, mechanical work |
   | Worker-Sonnet | `custom-1789380226495-f6d5` | well-specified implementation |
+  | Worker-Sonnet-Lite | `custom-1790318917893-ab35` | trial (D27): Sonnet, thinking off, routine well-scoped tickets |
   | Worker-Opus | `custom-1789460333299-bbb1` | specs, security reviews, investigations/hard debugging, security-critical or OS-level code (D26) |
   Owner has approved Opus for specs and security reviews.
 - **Dispatch** with `team_task_create owner=<slot>`. New workers often say "ready, no task"
@@ -166,6 +167,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D24 | Review-40 helper runner: **L1** clearing the scope, unlinking, or scope expiry **kills a running command's process tree** (reported as cancelled). **L11** refuse a program (or its folder) that users other than the owner (or admins) can write, checked at scope-set and at every run. Ticket 2.D3. |
 | D25 | Add content-free notifications **session.result** (A: a result waits for your accept; not sent when quarantined, which has its own event) and **session.changes** (B: the requester asked for changes). No session.closed (request.completed/cancelled cover it). Ticket 2.N. |
 | D26 | **Model policy (after the D21 trial, `Docs/orchestration/model-trial.md`):** Sonnet (Sonnet 5) is the default for well-specified implementation tickets. Opus (Opus 5.5) is for investigations and hard debugging, security-critical or OS-level code (process control, permissions, crypto, parsing input from peers), specs, and security reviews. |
+| D27 | **Trial: Sonnet with thinking off** for routine, well-scoped tickets. New template **Worker-Sonnet-Lite** `custom-1790318917893-ab35` (Sonnet, thought_level=off, same worker rules as Worker-Sonnet). First pair: B-1 (Lite) vs B-2 (normal Sonnet control), both small backlog items. Results in `Docs/orchestration/model-trial.md`. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
