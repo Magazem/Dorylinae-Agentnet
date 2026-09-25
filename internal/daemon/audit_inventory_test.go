@@ -48,6 +48,9 @@ var methodInventory = map[string]invEntry{
 	"ping_status": exempt(), "presence_get": exempt(), "request_list": exempt(), "request_show": exempt(),
 	"status": exempt(), "team_list": exempt(), "team_show": exempt(), "ws_list": exempt(), "ws_show": exempt(),
 	"audit_list": exempt(), "audit_verify": exempt(), "audit_head": exempt(),
+	// shutdown audits daemon.stop_requested, but calling it would stop the shared
+	// scenario's daemons; TestShutdownIPC (daemon_test.go) asserts that row.
+	"shutdown": exempt(),
 
 	// Approvals.
 	"approval_open":   acts("A", "approval.open"),
