@@ -149,6 +149,10 @@ func TestInstallUninstallLifecycleAndAudit(t *testing.T) {
 		if e.Action != wantActions[i] || e.Actor != audit.ActorCLI || d.Changed != wantChanged[i] || d.Platform != "stub" {
 			t.Errorf("event %d = %s/%s %+v", i, e.Actor, e.Action, d)
 		}
+		// Review 44 L4: no paths in the audit detail.
+		if !d.CustomHome || strings.Contains(string(e.Detail), home) || strings.ContainsAny(string(e.Detail), `/\`) {
+			t.Errorf("event %d detail is not path-free: %s", i, e.Detail)
+		}
 	}
 }
 

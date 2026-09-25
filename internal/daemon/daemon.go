@@ -545,6 +545,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerApproval(srv, apprStore)
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
 		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
+	registerAudit(srv, log)
 	registerFetch(srv, fetchClient)
 	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay, helper, scopeApprovalsPending, devHooks)
 	registerDeviceScope(srv, devStore, apprStore, peerStore, helper, p.Dir, scopeApprovalsPending)

@@ -99,6 +99,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runRevoke(args[1:], stdout, stderr)
 	case "fetch":
 		return runFetch(args[1:], stdout, stderr)
+	case "log":
+		return runLog(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -142,6 +144,7 @@ Commands:
   device    Link two of your own devices (controller and helper)
   grant     Give a teammate's agent scoped read access (also: grants, revoke, grant policy)
   fetch     Read a file or listing under a grant you hold
+  log       Show the audit log and check its hash chain
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

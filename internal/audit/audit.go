@@ -162,7 +162,7 @@ func startChain(ctx context.Context, q queryExecer, headID int64) (int64, []byte
 	if stored > 0 {
 		// Only code that bypasses this package (with the trigger dropped)
 		// can leave an unchained head after the chain started.
-		return 0, nil, fmt.Errorf("chain broken: unchained row %d after the chain start", headID)
+		return 0, nil, fmt.Errorf("chain broken: unchained row %d after the chain start (run 'agentnet log --verify', which works without the daemon)", headID)
 	}
 	prev := genesis()
 	var d chainStartDetail

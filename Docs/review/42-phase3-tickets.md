@@ -103,7 +103,7 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   file at schema 17 both succeed and apply each migration once (M9, `store.apply` under
   `BEGIN IMMEDIATE` with the version re-read); `Verify` walks in pages and an IPC call and a
   mail apply complete while it verifies 10⁵ rows (M8); an anchor on a legacy row is
-  `bad_request`.
+  `anchor_mismatch` (owner decision D31, review 44; it was `bad_request` in the approved text).
 
 ### 3.2 Debate message schemas (review, with 3.1a)
 

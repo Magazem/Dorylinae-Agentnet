@@ -44,10 +44,12 @@ func defaultServiceDeps() (serviceDeps, error) {
 	return serviceDeps{platform: pl, runner: service.ExecRunner{}, env: env, exe: exe}, nil
 }
 
+// serviceAuditDetail is path-free (audit.md: detail never carries paths, review
+// 44 L4): the platform, whether the config directory was given with --home,
+// and whether anything changed.
 type serviceAuditDetail struct {
 	Platform   string `json:"platform"`
-	Executable string `json:"executable,omitempty"`
-	Home       string `json:"home"`
+	CustomHome bool   `json:"custom_home"`
 	Changed    bool   `json:"changed"`
 }
 
@@ -127,9 +129,9 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		return 1
 	}
 
-	action, detail := audit.ActionServiceUninstall, serviceAuditDetail{Platform: plan.Platform, Home: p.Dir, Changed: res.Changed}
+	action, detail := audit.ActionServiceUninstall, serviceAuditDetail{Platform: plan.Platform, CustomHome: *home != "", Changed: res.Changed}
 	if install {
-		action, detail.Executable = audit.ActionServiceInstall, spec.Executable
+		action = audit.ActionServiceInstall
 	}
 	if err := recordAudit(ctx, p, action, detail); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: done, but the audit event could not be recorded: %v\n", name, err)

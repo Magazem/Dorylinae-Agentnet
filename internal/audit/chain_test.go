@@ -218,9 +218,10 @@ func TestLegacyRowsMigrate(t *testing.T) {
 	if len(evs) != 5 || evs[2].ID != 5 || evs[3].ID != 7 {
 		t.Fatalf("List = %+v, want the 3 legacy rows and 2 appended ones, without chain_start", evs)
 	}
-	// An anchor on a legacy row is a caller error (IPC bad_request).
-	if _, err := l.Verify(context.Background(), Anchor{ID: 2, Hash: storedHash(t, s.DB(), 7)}); !errors.Is(err, ErrBadAnchor) {
-		t.Fatalf("legacy anchor: %v, want ErrBadAnchor", err)
+	// An anchor on a legacy row is tampering (D31), not a caller error.
+	res = mustVerify(t, l, Anchor{ID: 2, Hash: storedHash(t, s.DB(), 7)})
+	if res.Status != StatusBroken || res.Reason != ReasonAnchorMismatch || res.FirstBad != 2 {
+		t.Fatalf("legacy anchor: %+v, want broken anchor_mismatch at row 2", res)
 	}
 }
 

@@ -60,8 +60,10 @@ the user must run `loginctl enable-linger` themselves; `install` does not do thi
 ## Behaviour to know about
 
 - **Audit:** a successful `install` / `uninstall` (not `--dry-run`) appends `service.install` /
-  `service.uninstall` to the audit log (actor `cli`, detail: platform, home, and for install the
-  executable; for uninstall `changed` says whether anything was removed). A failed run writes none.
+  `service.uninstall` to the audit log (actor `cli`, detail `{"platform", "custom_home",
+  "changed"}`: no paths, because the audit log never carries them; `custom_home` says whether
+  `--home` was given, and for uninstall `changed` says whether anything was removed). A failed
+  run writes none. (Before 3.6b the detail also carried `home` and `executable`.)
 - **Stopping is a hard stop.** On Windows, `uninstall` ends the task, which terminates the daemon
   without a graceful shutdown, so no `daemon.stop` audit row is written for that run (see the
   0.2a notes). launchd and systemd send SIGTERM, which the daemon handles gracefully.

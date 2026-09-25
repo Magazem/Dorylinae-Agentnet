@@ -385,7 +385,10 @@ The table is append-only (triggers reject UPDATE and DELETE). Since migration 18
 refuses unchained inserts, so every writer goes through `internal/audit` (`Append`,
 `AppendTx`). The first append after the migration writes `audit.chain_start` (actor
 `daemon`, detail `{"legacy_last_id", "legacy_rows"}`), which seals the rows written before
-it. `agentnet log` (3.6b) reads and verifies the chain: see [audit.md](audit.md).
+it. `agentnet log` (3.6b) reads and verifies the chain through `audit_list`, `audit_head`
+and `audit_verify` (all read-only; `audit_verify` is exempt from the 2-second rule and the
+CLI calls it with a 120 s timeout), and reads the database file directly when the daemon is
+not running: see [audit.md](audit.md).
 
 The daemon also records `identity.create` when it creates an identity or
 re-creates a missing card (detail in [agent-card.md](agent-card.md)); it holds

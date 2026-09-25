@@ -154,6 +154,17 @@ can tell tampering from an IPC error; exit 1 stays "error"). The walk takes abou
 per 10⁵ rows; the IPC 2-second rule is relaxed for `audit_verify` only, like `wait`: the CLI
 calls it with `--timeout` (default 120 s).
 
+**When the daemon will not start** (review 44 L2). After an unchained row the daemon's own
+first append (`daemon.start`) fails, so the daemon does not run, and an IPC-only `--verify`
+would be unusable exactly when it is needed. `agentnet log` therefore falls back to the
+database file when nothing listens on the IPC endpoint: it opens `dorylinae.db` **read-only**
+(`store.OpenReadOnly`: no migrations, `query_only`) and runs the same `Query`, `Head` and
+`Verify` code in the CLI process, printing `agentnetd is not running; reading the database
+directly (read-only)` on stderr. No daemon and no database file is exit 3. The failed append
+names the command (`… run 'agentnet log --verify', which works without the daemon`). The
+fallback is a read of a file the user owns, so it adds no trust: a same-user attacker can
+already read and rewrite it.
+
 **The walk must not hold the daemon's only connection** (review 43 M8). The store has one
 connection (`SetMaxOpenConns(1)`), so a single streaming query over 10⁶ rows would stall mail
 delivery, the sweeps and every other IPC call for as long as it runs. `Verify` therefore
@@ -195,12 +206,14 @@ somewhere the attacker cannot rewrite. Phase 3 provides the cheap form (OD-P3-6)
 
 - `agentnet log --head [--json]` prints `{"id", "hash", "ts"}` of the newest row.
 - `agentnet log --verify --anchor ID:HASH` checks that a head recorded earlier is still in
-  the chain unchanged. `ID` must be a row with a stored hash (from `audit.chain_start` on);
-  an anchor on a legacy row is `bad_request`. That is decided after the walk: if the walk
-  fails first, the failure is reported, and an anchored row with a NULL hash after
-  `audit.chain_start` is `unchained`, or `anchor_mismatch` if the log has no chain start at all
-  (review 44 M1: nulling hashes must not turn tampering into a caller error). The owner can paste a head into a commit message, a ticket or a
-  message to a teammate; any later rewrite of the rows up to it is then detected.
+  the chain unchanged. An anchor's hash only ever comes from a row with a stored hash (from
+  `audit.chain_start` on), so **an anchor on a legacy row is `anchor_mismatch`** (decision D31:
+  it is tampering, not a caller error; a row whose hash was nulled looks exactly the same).
+  That is decided after the walk: if the walk fails first, that failure is reported, and an
+  anchored row with a NULL hash after `audit.chain_start` is `unchained` (review 44 M1). Only
+  a malformed anchor (not `ID:HASH`) is `bad_request`. The owner can paste a head into a
+  commit message, a ticket or a message to a teammate; any later rewrite of the rows up to it
+  is then detected.
 
 Deferred options (not needed for the acceptance test): a periodic `audit.checkpoint` signed
 with the identity key (it adds nothing against a same-user attacker who can read the key
@@ -218,7 +231,18 @@ agentnet log --head [--json]
 
 IPC `audit_list {since?, until?, session?, action?, limit?, after_id?}` →
 `{"events": [{"id", "ts", "actor", "action", "detail", "hash"}], "next_after_id"?}`, oldest
-first, at most `limit` (default 1000, max 5000) per call; the CLI pages with `after_id`.
+first, at most `limit` (default 1000, a larger value is clamped to 5000) per call; when more
+rows match, `next_after_id` is the id to pass as `after_id`, and the CLI pages with it until
+it is absent (`--limit N` stops after N rows; without it the CLI prints every match).
+`since` and `until` are RFC 3339 times (the CLI turns `24h` into one); a bad time, a
+negative `limit` or `after_id`, or a `session` that is neither `s-` nor `r-` is `bad_request`.
+`audit_list` shows **every row, `audit.chain_start` included** (`hash` is absent on a legacy
+row); only `Log.List`, the internal helper of the Phase 1 tests, still hides it. `--since`
+and `--until` compare the parsed time (the stored `ts` has a variable number of fractional
+digits, so a text comparison would misorder `…:05.5Z` and `…:05Z`).
+IPC `audit_head {}` → `{"head": {"id", "hash", "ts"} | null}` is what `--head` prints, and
+`audit_verify {anchors?: ["ID:HASH", …]}` → `{"verify": {…}}` is [Verification](#verification).
+All three only read. `audit_verify` is exempt from the IPC 2-second rule; `audit_list` and `audit_head` are quick reads.
 
 - `--since` takes a Go duration (`24h`, `90m`) or an RFC 3339 time; `--until` a time.
 - `--session s-…` shows the rows whose `detail.session` is that id, **plus** the rows of its
@@ -242,8 +266,21 @@ daemon (IPC), like every other command.
 3.6 adds an **inventory test** (`TestAuditInventory`): for each IPC method and each
 registered mail kind, one e2e step asserts that at least one audit row with the documented
 action appears (polled with a deadline). Methods that only read (`*_list`, `*_show`,
-`status`, `audit_*`) are exempt and listed in the test. Gaps found while writing this spec,
-fixed in 3.6b: `grant.orphan` lacks the `grant` id (review 28, L9).
+`status`, `audit_*`) are exempt and listed in the test; so are `notify_test` (one probe, only
+its failure is audited as `notify.fail`) and the mail kind `keys` (no `mail.in` by design,
+[mail.md](mail.md); rotation is `mailbox.rotate`). The test lists every method and mail kind
+in a table with the action it documents, calls each state-changing method through two live
+daemons (and the device methods through a linked pair), and a second test compares the table
+with the `srv.Handle(...)` and mail-kind registrations in the source, so a method added
+without an entry fails the build of the test suite. Gaps found while writing this spec:
+
+- `grant.orphan` lacked the `grant` id (review 28, L9): the holder now audits `{grant, peer}`
+  with the id from the verified token, and a test covers it.
+- `service.install` (and `service.uninstall`) carried `home` and `executable`, filesystem
+  paths, against the rule above (review 44 L4). The detail is now `{platform, custom_home,
+  changed}` ([agentnetd-install.md](../cli/agentnetd-install.md)); the install test asserts no
+  path separator in it, and `TestAuditInventory` asserts none in any row of either daemon's
+  log.
 
 ## No content, still
 

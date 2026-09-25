@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -97,7 +98,8 @@ func ParseAnchor(s string) (Anchor, error) {
 }
 
 // ErrBadAnchor marks an anchor the caller got wrong (IPC bad_request): not
-// ID:HASH, or an ID that is a legacy row, which has no stored hash.
+// ID:HASH. An anchor on a legacy row is tampering (anchor_mismatch), not a
+// caller error (decision D31).
 var ErrBadAnchor = errors.New("audit: bad anchor")
 
 // Verification failure reasons (audit.md §Verification).
@@ -143,9 +145,8 @@ type verifyState struct {
 	started bool  // audit.chain_start seen
 	anchors map[int64][]string
 	seen    map[int64]bool
-	// legacyAnchor is the first anchored row the walk found without a
-	// stored hash; Verify decides at the end whether that is the caller's
-	// mistake or tampering.
+	// legacyAnchor is the first anchored row the walk found without a stored
+	// hash; if nothing else failed it is an anchor_mismatch.
 	legacyAnchor int64
 }
 
@@ -154,8 +155,32 @@ func (s *verifyState) fail(id int64, reason string) {
 }
 
 // afterPage, when set by tests, runs after each page's read has released the
-// connection.
-var afterPage func()
+// connection. Other packages install it with SetPageHook.
+var (
+	afterPage func()
+	hookMu    sync.Mutex
+)
+
+// SetPageHook installs f to run after each page Verify reads, with the
+// connection already released (nil removes it). It exists for the IPC-level
+// test that other work proceeds mid-walk (review 44 L5) and returns a restore.
+func SetPageHook(f func()) (restore func()) {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	old := afterPage
+	afterPage = f
+	return func() {
+		hookMu.Lock()
+		defer hookMu.Unlock()
+		afterPage = old
+	}
+}
+
+func pageHook() func() {
+	hookMu.Lock()
+	defer hookMu.Unlock()
+	return afterPage
+}
 
 // Verify walks every row up to the current head in id order and reports the
 // first failure. It reads the head once and then pages of at most verifyPage
@@ -163,13 +188,11 @@ var afterPage func()
 // before the next, so other work proceeds while a large log is checked.
 // Rows appended during the walk are after Head and not checked in this run.
 //
-// An error is returned only for a failed read or a bad anchor (ErrBadAnchor);
-// tampering is a result with Status "broken". An anchor on a row without a
-// stored hash is ErrBadAnchor only when the walk is otherwise clean and the
-// row lies before audit.chain_start: a NULL hash after the chain start is
-// "unchained", and one in a log with no chain start at all is
-// "anchor_mismatch" (an anchor's hash only ever comes from a stored row), so
-// nulling hashes cannot turn tampering into a caller error (review 44 M1).
+// An error is returned only for a failed read; tampering is a result with
+// Status "broken". An anchor's hash only ever comes from a stored row, so an
+// anchor on a row without one (a legacy row, or one whose hash was nulled) is
+// "anchor_mismatch" when the walk is otherwise clean, and a NULL hash after
+// the chain start is "unchained" first (review 44 M1, decision D31).
 func (l *Log) Verify(ctx context.Context, anchors ...Anchor) (*VerifyResult, error) {
 	st := &verifyState{prev: genesis(), anchors: map[int64][]string{}, seen: map[int64]bool{}}
 	st.res.Status = StatusOK
@@ -199,8 +222,8 @@ func (l *Log) Verify(ctx context.Context, anchors ...Anchor) (*VerifyResult, err
 		if err != nil {
 			return nil, err
 		}
-		if afterPage != nil {
-			afterPage()
+		if f := pageHook(); f != nil {
+			f()
 		}
 		for _, r := range page {
 			if !st.check(r) {
@@ -214,9 +237,6 @@ func (l *Log) Verify(ctx context.Context, anchors ...Anchor) (*VerifyResult, err
 	}
 	st.checkAnchorsMissing()
 	if st.res.Status == StatusOK && st.legacyAnchor != 0 {
-		if st.started {
-			return nil, fmt.Errorf("%w: row %d is a legacy row without a stored hash", ErrBadAnchor, st.legacyAnchor)
-		}
 		st.fail(st.legacyAnchor, ReasonAnchorMismatch)
 	}
 	return &st.res, nil
