@@ -50,6 +50,7 @@ specs merged to main. Self-hosted relays: D17.
 |---|---|---|---|---|
 | 2.D3 (D24) | Opus | done ~15 min | review R-2.D3 `01a0d722-f0c3…` task `01a0d723-2447…` → Docs/review/41 | `device-harden` |
 | 2.9 | Sonnet | **merged** (whole-loop e2e, TestPhase2AuditHasNoContent, D23 git version check, status `git` field, docs fixes) | | |
+| 2.N (D25) | Sonnet | **merged** (session.result on A, session.changes on B; content-free, after commit) | | |
 | 2.H harness (Claude Code + agy) + stand-in CI | Sonnet | `01a0d32e-1359…` | `01a0d32e-9031…` | `harness-p2` |
 Then 2.D3 security review, 2.P push (a `phase-2` tag only with the owner's OK).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
