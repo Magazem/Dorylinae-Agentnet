@@ -416,6 +416,7 @@ sizes.
 | `grant.fetch` | grantor / `daemon` | `{grant, peer, op, bytes, result}` where `result` is `ok` or the error code. **Rate-limited** to 60 rows per grant per minute; the rest are counted and summarised once a minute as `grant.fetch_summary {grant, ops, bytes, errors}` |
 | `grant.policy_add`, `grant.policy_remove` | grantor / `cli` | `{policy, peer, action}` |
 | `grant.orphan`, `grant.conflict` | holder / `daemon` | `{grant, peer}` |
+| `grant.refused` | grantor / `cli` (or `daemon` on the policy path) | `{session, peer, action, reason, policy?}`: a sensitive grant refused `debate_open` ([debate.md §Quarantine interplay](debate.md#quarantine-interplay)) |
 
 ## Tables
 

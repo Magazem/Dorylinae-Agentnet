@@ -316,7 +316,10 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 		out.state = newState
 		out.seq = seq
 		finalState = newState
-		if (newState == StateDeclined || newState == StateCancelled) && row.typ == TypeDebate && s.Debates != nil {
+		// A request.complete before any accept (a modified B) ends an invited
+		// debate too: its row would otherwise block sensitive grants to the
+		// peer for ever (debate_open, review 45 M1).
+		if (newState == StateDeclined || newState == StateCancelled || newState == StateCompleted) && row.typ == TypeDebate && s.Debates != nil {
 			if err := s.Debates.EndedTx(ctx, tx, "out", row.peer, row.id, s.now()); err != nil {
 				return err
 			}

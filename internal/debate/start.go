@@ -141,9 +141,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 	return nil
 }
 
-// EndedTx implements request.DebateHooks: a debate request declined or
-// cancelled before accept closes its debate row cancelled (A's committed
-// position is never sent).
+// EndedTx implements request.DebateHooks: a debate request declined,
+// cancelled or (by a modified B) completed before accept closes its debate
+// row cancelled (A's committed position is never sent).
 func (s *Store) EndedTx(ctx context.Context, tx *sql.Tx, direction, peer, id string, now time.Time) error {
 	role := RoleRespondent
 	if direction == "out" {

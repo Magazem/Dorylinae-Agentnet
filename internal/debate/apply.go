@@ -456,7 +456,8 @@ var validClose = map[string]map[string]bool{
 // mirror at once. An agreed or escalated close carries A's decision hash and
 // signature (3.3a): 3.3a adds holding a close for missing A entries or
 // constraints, B's own derivation and checks, and debate.sign; until then B
-// closes its mirror with A's outcome. A close for a debate B already closed
+// closes its mirror with A's outcome once it matches B's own answer
+// (closeMatches). A close for a debate B already closed
 // (abandoned) or broke is stored for the record and changes nothing.
 func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err error) {
 	b := op.Msg.Body
@@ -532,6 +533,16 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "state"}))
 		return nil
 	}
+	tr, err := loadTranscript(ctx, tx, r.session)
+	if err != nil {
+		return err
+	}
+	if !closeMatches(tr, outcome, reason) {
+		// A cannot fabricate the outcome (§Security considerations, "One
+		// writer", review 45 H1): B keeps its mirror open and may abandon.
+		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "outcome"}))
+		return nil
+	}
 	if err := setClosed(ctx, tx, r.session, outcome, reason, now); err != nil {
 		return err
 	}
@@ -549,6 +560,32 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 		wsOutcome, note, event = worksession.OutcomeCancelled, "session cancelled", ""
 	}
 	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, now, &out)
+}
+
+// closeMatches checks A's close against B's own transcript: agreed needs B's
+// answer accepting, escalated/rejected B's answer refusing, and
+// escalated/timeout B's position (a timeout after both positions exist). A
+// cancelled close is always possible (A's cancel, B's ws.cancel, a timeout
+// before B's position reached A).
+func closeMatches(tr transcript, outcome, reason string) bool {
+	var ans *Answer
+	for _, e := range tr {
+		if e.author == RoleRespondent && e.state == stateSent {
+			if a, ok := e.entry.(*Answer); ok {
+				ans = a
+			}
+		}
+	}
+	switch {
+	case outcome == OutcomeAgreed:
+		return ans != nil && ans.Accept
+	case outcome == OutcomeEscalated && reason == ReasonRejected:
+		return ans != nil && !ans.Accept
+	case outcome == OutcomeEscalated:
+		e, ok := tr[1]
+		return ok && e.state == stateSent
+	}
+	return true
 }
 
 // echo re-sends the initiator's last_state for sid if it was last sent over
