@@ -161,25 +161,28 @@ func decodeTime(field string, raw any) (time.Time, error) {
 	return t, nil
 }
 
-func decodeArtifacts(raw any) ([]Artifact, error) {
+func decodeArtifacts(raw any) ([]Artifact, error) { return decodeArtifactsAt("artifacts", raw) }
+
+// decodeArtifactsAt is decodeArtifacts naming the array base in its errors.
+func decodeArtifactsAt(base string, raw any) ([]Artifact, error) {
 	list, ok := raw.([]any)
 	if !ok {
-		return nil, fieldErr("artifacts", "must be an array")
+		return nil, fieldErr(base, "must be an array")
 	}
 	out := make([]Artifact, 0, len(list))
 	for i, el := range list {
 		obj, ok := el.(map[string]any)
 		if !ok {
-			return nil, fieldErr(artifactIndex(i), "must be an object")
+			return nil, fieldErr(artifactIndex(base, i), "must be an object")
 		}
 		var a Artifact
 		for k, v := range obj {
 			if !artifactSpecKeys[k] {
-				return nil, fieldErr(artifactIndex(i), "has unknown member %q", k)
+				return nil, fieldErr(artifactIndex(base, i), "has unknown member %q", k)
 			}
 			s, ok := v.(string)
 			if !ok {
-				return nil, fieldErr(artifactField(i, k), "must be a string")
+				return nil, fieldErr(artifactField(base, i, k), "must be a string")
 			}
 			setArtifactField(&a, k, s)
 		}

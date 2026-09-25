@@ -167,9 +167,9 @@ func validateArtifact(base string, i int, a Artifact) error {
 	return nil
 }
 
-func artifactIndex(i int) string { return "artifacts[" + itoa(i) + "]" }
-func artifactField(i int, member string) string {
-	return "artifacts[" + itoa(i) + "]." + member
+func artifactIndex(base string, i int) string { return base + "[" + itoa(i) + "]" }
+func artifactField(base string, i int, member string) string {
+	return base + "[" + itoa(i) + "]." + member
 }
 
 func itoa(i int) string {
