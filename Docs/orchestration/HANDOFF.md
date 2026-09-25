@@ -8,11 +8,9 @@ Last updated: 2026-09-25 (Friday), PARKED at the end of the work-PC session.
 
 ## 0. Status and next steps
 
-**FIRST JOB AT HOME: CI on main is RED** (runs 36134360946, 36134971574; check the latest). All failures are in the audit-inventory e2e tests from 3.6b, which interact with later work (a Sonnet-Lite ticket is enough):
-1. Linux + race: `notify.fail` audit detail contains raw OS error text (`exec: "notify-send": executable file not found in $PATH`), which the no-paths check rejects. Fix in code: audit a short error CODE for notify.fail, never err.Error() (the no-content/no-paths rule).
-2. Linux + Windows: TestAuditInventoryDevices uses the Go toolchain binary as the scope program; on CI the toolcache dir is world-writable, so 2.D3's writable-by-others check correctly refuses it (Windows: "resolve the program: path not found"). Fix the TEST: build a helper into testutil.PrivateDir as the 2.D2/2.D3 tests do.
-3. macOS: TestAuditInventory `alice ws_cancel: unknown_session`: the scenario cancels before the session exists; wait for it.
-Run the per-OS lint and the full gate; watch CI until green before 3.H.
+**2026-09-25 (home PC): CI on main is GREEN** (fe84b10, run 36162547249) after the audit-inventory fixes (2afb00d + gofmt). Two one-off failures seen in run 36161093939 and not repeated: `TestFetchAuditRateLimitAndSummary` (race; ops 9 vs 10) and `TestDecisionCLIRoundTrip` (Windows i/o timeout). Treat as flakes; investigate if they recur. **Orchestrator lesson: no push notification when CI finishes; poll it (background watcher) instead of ending a turn on "waiting".**
+
+**3.H is waiting on the owner installing `agy` on the home PC** (D34: keep the Claude Code <-> agy real run). Branch `p3/p3-harness` is rebased on main in worktree `AgentNet-wt/p3-harness` (local, not pushed), conflict in tests/phase3-manual.md resolved. Note: on this PC the private-dir tests fail locally (`C:` writable by Authenticated Users), so run internal/daemon and internal/device tests in CI only.
 
 **PARKED 2026-09-25 (work PC → home PC).** Phase 3 is complete except the **3.H real-agent run** and **3.P**:
 - Merged on main: 3.2, 3.1a, 3.1b, 3.4 (+3.4-i), 3.6a, 3.6b, 3.3a, 3.3b, 3.7, 3.9, DX-1; decisions D30–D33.
@@ -188,6 +186,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D31 | Review 44: an audit anchor on a pre-chain (legacy) row always reports `anchor_mismatch` (tampering), not bad_request. Changes one D30 acceptance line; implemented in 3.6b. |
 | D32 | `github.com/yuin/goldmark` allowed as a **test-only** dependency (3.3b), to prove the Decision Markdown is inert; it must not be linked into shipped binaries. |
 | D33 | Review 48 M4: **decision exports are not audited** (a local read, like `agentnet log`); the `decision.export` row is dropped from the spec (3.9). **Revisit in the next large security review:** the alternative (a small IPC call that audits exports with no content). Listed in Docs/beta/known-limitations.md. |
+| D34 | Home PC has no `agy`: owner chose to install it and run the original Claude Code <-> agy 3.H rounds (not Claude<->Claude). |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
