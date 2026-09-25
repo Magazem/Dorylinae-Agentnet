@@ -161,6 +161,10 @@ VALUES (?, 'peerb', 'h', '[]', '{}', ?, ?, ?)`, peerKey, time.Now().UTC().Format
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Close cancels the window watches of approvals still pending at the end,
+	// as the daemon does when it stops; without it their goroutines outlive
+	// the test.
+	t.Cleanup(apprStore.Close)
 
 	p, err := paths.In(filepath.Join(dir, "ep"))
 	if err != nil {
@@ -789,7 +793,7 @@ func newGrantFakeWindow() *grantFakeWindow {
 func (w *grantFakeWindow) Start(_ context.Context, id, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	h := &grantFakeHandle{answers: make(chan [2]string, 1)}
+	h := &grantFakeHandle{answers: make(chan [2]string, 1), killed: make(chan struct{})}
 	w.handles[id] = h
 	return h, nil
 }
@@ -801,7 +805,11 @@ func (w *grantFakeWindow) answer(id, kind, code string) {
 	h.answers <- [2]string{kind, code}
 }
 
-type grantFakeHandle struct{ answers chan [2]string }
+type grantFakeHandle struct {
+	answers chan [2]string
+	killed  chan struct{} // closed by Kill: Answer returns, as the real dialog's does
+	once    sync.Once
+}
 
 func (h *grantFakeHandle) Ready(context.Context) bool { return true }
 
@@ -809,12 +817,14 @@ func (h *grantFakeHandle) Answer(ctx context.Context) (string, string, error) {
 	select {
 	case a := <-h.answers:
 		return a[0], a[1], nil
+	case <-h.killed:
+		return "", "", context.Canceled
 	case <-ctx.Done():
 		return "", "", ctx.Err()
 	}
 }
 
-func (h *grantFakeHandle) Kill() {}
+func (h *grantFakeHandle) Kill() { h.once.Do(func() { close(h.killed) }) }
 
 // TestGrantApprovedThroughWindow: a pending grant becomes active, and its
 // mail is queued, only when the approval window answers "approve <code>"

@@ -95,6 +95,30 @@ func newFetchHarness(t *testing.T, be Backend, tweak func(*FetchConfig)) *fetchH
 
 func (h *fetchHarness) advance(d time.Duration) { h.clock.Add(int64(d)) }
 
+// waitAudited waits until the audit window of grant has accounted for n ops
+// (rows written plus ops suppressed). The server audits an op after sending its
+// response, so a caller that has its answer can still be ahead of the audit.
+func (h *fetchHarness) waitAudited(grant string, n int) {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a := h.srv.aud
+		a.mu.Lock()
+		got := 0
+		if w := a.wins[grant]; w != nil {
+			got = w.rows + int(w.ops)
+		}
+		a.mu.Unlock()
+		if got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("audit accounted for %d ops of grant %s, want %d", got, grant, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (h *fetchHarness) auditsOf(action string) []auditRow {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -935,6 +959,7 @@ func TestFetchAuditRateLimitAndSummary(t *testing.T) {
 		}
 		h.advance(time.Second)
 	}
+	h.waitAudited(rec.ID, 70)
 	// 60 rows in the first minute, the rest suppressed
 	if n := len(h.auditsOf("grant.fetch")); n != auditRowsPerMinute {
 		t.Fatalf("grant.fetch rows = %d, want %d", n, auditRowsPerMinute)

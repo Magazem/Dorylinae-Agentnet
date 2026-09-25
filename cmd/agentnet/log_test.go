@@ -12,11 +12,15 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
 
-// startLogDaemon runs a daemon on p until the returned stop is called.
+// startLogDaemon runs a daemon on p until the returned stop is called. It
+// returns once the daemon's start-up rows are all written: the first mailbox
+// key rotation appends mailbox.rotate from a goroutine after ready, and a row
+// landing mid-test moves the head between two reads.
 func startLogDaemon(t *testing.T, p paths.Paths) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -41,7 +45,20 @@ func startLogDaemon(t *testing.T, p paths.Paths) (stop func()) {
 		}
 	}
 	t.Cleanup(stop)
-	return stop
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		code, out, errs := runLogCmd("--action", mailbox.ActionRotate, "--json")
+		if code != exitOK {
+			t.Fatalf("log --action %s: %d %s", mailbox.ActionRotate, code, errs)
+		}
+		if len(decodeEvents(t, out)) > 0 {
+			return stop
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s row 10 s after the daemon started", mailbox.ActionRotate)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // runLogCmd runs `agentnet log args...` and returns exit code, stdout, stderr.
