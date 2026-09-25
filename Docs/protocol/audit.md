@@ -51,9 +51,26 @@ one for `Append`):
 3. Insert the new row with an **explicit** `id = head.id + 1` and its `hash`.
 
 The daemon's store has one connection (`SetMaxOpenConns(1)`), so in-process appends are
-serialised. A second process (`agentnetd install`) is serialised by SQLite's write lock:
-`Append` uses `BEGIN IMMEDIATE`, and on `SQLITE_BUSY` it retries once after 100 ms and then
-returns the error. A failing `AppendTx` fails the caller's transaction, as today.
+serialised. A second process (`agentnetd install`, which appends right after it has started
+the daemon) is serialised by SQLite's write lock: `Append` runs its transaction on a
+dedicated `sql.Conn` opened with an explicit `BEGIN IMMEDIATE` (database/sql's `BeginTx`
+issues a deferred `BEGIN`), so the head is read under the write lock, and the DSN's
+`busy_timeout(5000)` does the waiting (no extra retry loop; review 43 L9). The explicit `id`
+is also the primary key, so two writers can never both append `head.id + 1`: the loser fails
+and nothing forks. `AppendTx` runs inside the caller's (deferred) transaction; in WAL mode, if
+the other process committed after that transaction's first read, the upgrade to a write fails
+with `SQLITE_BUSY_SNAPSHOT`, which `busy_timeout` does not retry. That already holds for any
+write today; it is rare (the second writer runs once per install) and the caller's usual
+error handling applies. A failing `AppendTx` fails the caller's transaction, as today.
+
+**Migrations and the second process** (review 43 M9). `agentnetd install` opens the store
+through `store.Open`, which runs migrations, right after starting the daemon, which runs them
+too. `store.migrate` reads the schema version **outside** the per-migration transaction, so
+after an upgrade both processes can try migration 18: the loser fails with "duplicate column"
+(18), "table already exists" or a rebuild error (19), and if the loser is the daemon it exits
+at start. Ticket 3.6a fixes `store.apply`: each migration runs in a `BEGIN IMMEDIATE`
+transaction that re-reads `MAX(version)` and skips the migration if another process has
+applied it. A test runs two `store.Open` calls on one file concurrently and both succeed.
 
 ### Migration 18
 
@@ -131,9 +148,18 @@ first failure:
 Result: `{"ok": true, "verify": {"status": "ok"|"broken", "rows", "legacy_rows",
 "chained_from", "head": {"id", "hash", "ts"}, "first_bad"?: id, "reason"?}}`. Exit 0 when
 `ok`, **exit 5** when `broken` (a new exit code, documented in `Docs/cli/log.md`, so scripts
-can tell tampering from an IPC error; exit 1 stays "error"). The walk streams rows and takes
-about a second per 10⁵ rows; the IPC 2-second rule is relaxed for `audit_verify` only, like
-`wait`: the CLI calls it with `--timeout` (default 120 s).
+can tell tampering from an IPC error; exit 1 stays "error"). The walk takes about a second
+per 10⁵ rows; the IPC 2-second rule is relaxed for `audit_verify` only, like `wait`: the CLI
+calls it with `--timeout` (default 120 s).
+
+**The walk must not hold the daemon's only connection** (review 43 M8). The store has one
+connection (`SetMaxOpenConns(1)`), so a single streaming query over 10⁶ rows would stall mail
+delivery, the sweeps and every other IPC call for as long as it runs. `Verify` therefore
+reads the head once, then walks **pages** of at most 2000 rows (`WHERE id > ? ORDER BY id
+LIMIT 2000`, carrying the previous hash between pages), each page its own short read that
+releases the connection before the next. Rows appended during the walk are after the head it
+read and are not checked in that run; the result's `head` says where it stopped. A test
+checks that an IPC call and a mail apply complete while a verify of 10⁵ rows is running.
 
 ### What the chain proves, and what it does not
 
@@ -167,7 +193,8 @@ somewhere the attacker cannot rewrite. Phase 3 provides the cheap form (OD-P3-6)
 
 - `agentnet log --head [--json]` prints `{"id", "hash", "ts"}` of the newest row.
 - `agentnet log --verify --anchor ID:HASH` checks that a head recorded earlier is still in
-  the chain unchanged. The owner can paste a head into a commit message, a ticket or a
+  the chain unchanged. `ID` must be a row with a stored hash (from `audit.chain_start` on);
+  an anchor on a legacy row is `bad_request`. The owner can paste a head into a commit message, a ticket or a
   message to a teammate; any later rewrite of the rows up to it is then detected.
 
 Deferred options (not needed for the acceptance test): a periodic `audit.checkpoint` signed

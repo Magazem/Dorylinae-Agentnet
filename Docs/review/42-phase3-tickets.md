@@ -1,6 +1,6 @@
 # 42: Phase 3 tickets (3.1–3.7: debate, decision records, audit chain, experience record)
 
-Status: **draft, for adversarial spec review and then owner approval.** No code starts
+Status: **draft, adversarially reviewed ([43](43-phase3-spec-review.md), fixes applied), for owner approval.** No code starts
 before approval (HANDOFF rule 3). Specs: [debate.md](../protocol/debate.md),
 [decision.md](../protocol/decision.md), [audit.md](../protocol/audit.md),
 [experience.md](../protocol/experience.md), and small additions to
@@ -41,8 +41,8 @@ rewind tests drop **and recreate the table in its pre-migration form** (noted pe
 
 | # | Name | Tables | Ticket | Rewind-test note |
 |---|---|---|---|---|
-| 18 | `audit_chain` | `audit_events` + column `hash`, trigger `audit_events_chained` | 3.6a | both tests: `DROP TABLE audit_events`, then the migration-1 `CREATE TABLE`, index and two triggers |
-| 19 | `debates` | rebuild `requests` (type `debate`), rebuild `approvals` (kind `debate_constraint`), `work_sessions` + column `kind`, new `debates`, `debate_entries`, `debate_constraints` | 3.1a | `requests`, `approvals`, `work_sessions` are already dropped by both tests; add the three new tables. A separate test checks that the rebuild keeps rows, the `result` column, and all three `requests` indexes (including the unique idempotency index) |
+| 18 | `audit_chain` | `audit_events` + column `hash`, trigger `audit_events_chained` | 3.6a | both tests: `DROP TABLE audit_events`, then the migration-1 `CREATE TABLE`, index and two triggers. 3.6a also makes `store.apply` re-read the version under `BEGIN IMMEDIATE` (review 43 M9: `agentnetd install` and the daemon migrate concurrently after an upgrade) |
+| 19 | `debates` | rebuild `requests` (type `debate`), rebuild `approvals` (kind `debate_constraint`), `work_sessions` + column `kind`, new `debates`, `debate_entries`, `debate_constraints` | 3.1a | `requests`, `approvals`, `work_sessions` are already dropped by both tests; add the three new tables. Both rebuilds use **explicit column lists** (review 43 M10). A separate test fills every column of `requests` and `approvals` with distinct values in rows of every state, migrates, and compares **every column of every row**, the `result` column, and all indexes by `sqlite_master` (including the unique partial idempotency index, then proven by a duplicate insert) |
 | 20 | `decisions` | `decisions` | 3.3a | add `decisions` |
 | 21 | `experience_records` | `experience_records` | 3.7 | add `experience_records` |
 
@@ -63,12 +63,12 @@ implementation workers at once, HANDOFF §5).
 | 3.1a | Debate core: request type `debate` (+ requests rebuild), commitment and reveal, kinds `debate.*`, slot/turn engine on A and mirror on B, quarantine edges, `reservedKindPrefixes`, work-session `kind`, `approvals` rebuild | 3.2; **merge** after 3.6a | 19 | L | **yes** | Opus | 3.6b |
 | 3.6b | `agentnet log`: `audit_list`, `audit_verify`, `--since/--until/--session/--action`, `--verify`, `--head`, `--anchor`, `TestAuditInventory`, review-28 L9 | 3.6a | — | M | — | Sonnet | 3.1a, 3.1b |
 | 3.1b | Debate IPC and CLI: `debate`, `debates`, `debate_submit` (incl. one-step accept + position), `wait` for debates, the timeout sweep wiring (the rule itself is 3.1a), cancel/abandon, notifications, `Docs/cli/debate.md` | 3.1a | — | M | — | Sonnet | 3.4, 3.6b |
-| 3.4 | Human constraints: `debate_constrain`, approval kind `debate_constraint`, kind `debate.constraint`, limits, late constraints | 3.1a | — | S | **yes** | Sonnet | 3.1b, 3.6b |
+| 3.4 | Human constraints: `debate_constrain`, approval kind `debate_constraint`, kind `debate.constraint`, visible-only text, limits (`excess`), late constraints | 3.1a | — | S | **yes** | Opus (review 43 L8: approval gate + peer input, D26) | 3.1b, 3.6b |
 | 3.3a | Decision: derivation, canonical form, signing exchange (`debate.close`/`debate.sign`), refusal and silence, `decisions` table, vectors in `tools/specvectors` and `tools/verifyvectors` | 3.1b, 3.4 | 20 | M | **yes** | Opus | — |
-| 3.3b | Decision output: `decision_list/show`, `agentnet decisions`, `decision <id> [--json\|--md]`, `decision verify` (offline), the inert Markdown renderer with golden files | 3.3a | — | M | **yes** (light, with 3.3a) | Sonnet | 3.7 |
-| 3.7 | Experience record: builder, migration 21, write in every closing transaction, the "never in the record" tests | 3.3a | 21 | S | — | Lite | 3.3b |
+| 3.3b | Decision output: `decision_list/show`, `agentnet decisions`, `decision <id> [--json\|--md]`, `decision verify` (offline), the inert Markdown renderer with golden files | 3.3a | — | M | **yes** (with 3.3a; review 43 L8: Markdown inertness is the security property) | Sonnet | 3.7 |
+| 3.7 | Experience record: builder, migration 21, write in every closing transaction, the "never in the record" tests | 3.3a | 21 | S | — | Sonnet (review 43 L8: privacy invariant in every closing transaction, not routine per D28) | 3.3b |
 | 3.9 | Phase 3 e2e, `TestPhase3AuditHasNoContent`, docs reconciliation, known limitations | 3.3b, 3.6b, 3.7 | — | M | — | Sonnet | 3.H |
-| 3.H | Headless harness run (3.1 acceptance): Claude Code + agy, both rounds; stand-in debate mode; weekly workflow | 3.3b, 3.4 | — | M | — | Sonnet | 3.9 |
+| 3.H | Headless harness run (3.1 acceptance): Claude Code + agy, both rounds; stand-in debate mode; weekly workflow | 3.3b, 3.4, 3.6b | — | M | — | Sonnet | 3.9 |
 | 3.P | Phase 3 push (`main`; a `phase-3` tag **only with the owner's OK**) | all above | — | — | — | — | — |
 
 Plan step **3.5 (escalation)** has no ticket of its own: the `escalated` outcome is in 3.1a
@@ -99,7 +99,11 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   `AppendTx` rolled back leaves no row and no gap; an `Append` from a second process (a
   second `sql.DB` on the same file) while the daemon's handle holds a write transaction
   succeeds after the lock is released, and the chain stays valid; `TestAppendListAndAppendOnly`
-  still passes; both rewind tests pass.
+  still passes; both rewind tests pass. **Review 43:** two concurrent `store.Open` calls on one
+  file at schema 17 both succeed and apply each migration once (M9, `store.apply` under
+  `BEGIN IMMEDIATE` with the version re-read); `Verify` walks in pages and an IPC call and a
+  mail apply complete while it verifies 10⁵ rows (M8); an anchor on a legacy row is
+  `bad_request`.
 
 ### 3.2 Debate message schemas (review, with 3.1a)
 
@@ -144,7 +148,15 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   on a sensitive `grant_create` to a peer in an open debate; `mail_submit` refuses
   `debate.x` and `decision.x`; the work session of a debate refuses `ws_result`,
   `ws_accept_result`, `ws_request_changes`, `ws_release`, `ws_discard` and ignores a
-  `ws.result`; both rewind tests pass.
+  `ws.result`; both rewind tests pass. **Review 43:** a slot-1 entry that reaches A before the
+  `request.accept` opens the session and is applied, and the reveal is sent (M3); a
+  `request.complete` from B during an open debate closes it `cancelled` on A with result and
+  note dropped and the inbox copy blank (M4); `debate_open` also while `invited`, at
+  `approval_confirm` of a pending sensitive grant, and on the policy path (M5); an
+  idempotent `debate` retry with a different position is `idempotency_conflict` (L11); C1
+  characters and U+2028/U+2029 are refused in every debate string (L1); a reveal with a
+  malformed nonce or non-canonical position → `broken`; on `broken`, B's mirror, request and
+  experience record close in the same transaction (L3).
 
 ### 3.6b `agentnet log`
 
@@ -163,8 +175,12 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
 
 - Files: `internal/daemon` (handlers, `wait` support, timeout sweep), `internal/notify`
   (events `debate.constraint`, `debate.agreed`, `debate.escalated`, `debate.broken`),
+  `internal/ipc/ipc.go` (result encoding with `SetEscapeHTML(false)`, review 43 M7),
   `cmd/agentnet/debate.go`, `cmd/agentnet/session.go` (`wait`), `Docs/cli/debate.md`,
   `Docs/cli/request.md`, and tests.
+- Review 43 additions: `debate_show` of a maximal transcript made of `<`, `&` and non-ASCII
+  text stays under the 1 MiB line (M7); `request_complete` on a debate request whose session
+  is open is `bad_state` (M4).
 - Acceptance: CLI tests for every form with human and `--json` output and exit codes;
   `--position-file` on a pending debate accepts and submits in one transaction (an injected
   failure leaves neither); `wait` returns `turn` when it becomes the caller's turn and
@@ -186,7 +202,11 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   `converge` is `bad_state`, and one confirmed after that is `rejected`/`precondition`;
   the 11th is `constraint_limit` (sender) / ignored (receiver); a constraint reaching A
   after the close is not in either Decision and is `late` on B; constraint text is in no
-  audit row.
+  audit row. **Review 43:** a constraint containing a zero-width character, a bidi control,
+  U+FEFF or a tag character (U+E0041) is `bad_request` at `debate_constrain` and `bad_body` on
+  receipt (H3); the approval summary uses the `DisplayQuote` rule; both sides adding their
+  10th constraint at the same time end with identical Decisions (the receiver keeps the
+  over-limit one, A's close decides; H2).
 
 ### 3.3a Decision object and signatures (review)
 
@@ -205,8 +225,15 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   last entry is held and applied when the entry arrives; B offline → A `awaiting_peer`,
   then `signed` when B returns; derivation uses no local name or clock (two daemons with
   different names and skewed clocks produce identical bytes); both rewind tests pass.
+  **Review 43:** a close that overtakes an A-authored **constraint** is held and applied when
+  the constraint arrives, and both sides sign (H2); a close that counts a B slot or lists a B
+  constraint B never sent is refused at once, not held (H2); a `debate.sign` with a wrong hash
+  or bad signature makes A `peer_refused`; a worst-case Decision (every entry at 32768 bytes,
+  two revisions, maximal proposal and answer, 10 constraints) derives under `MaxDecision` =
+  786432 (M6); the vector without the respondent signature verifies with exit 6 and the
+  step-5 negative fails at step 5.
 
-### 3.3b Decision output (review, light, with 3.3a)
+### 3.3b Decision output (review, with 3.3a)
 
 - Files: `internal/decision` (Markdown renderer), `internal/daemon` (`decision_list`,
   `decision_show`), `cmd/agentnet/decision.go`, `Docs/cli/decision.md`, golden files under
@@ -220,8 +247,13 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
   text** (asserted by rendering the output with a CommonMark + GFM renderer in the test,
   e.g. `github.com/yuin/goldmark` as a **test-only** dependency (or, if the owner prefers no new module, a hand-written checker of the few constructs the renderer emits), and checking the HTML has no
   `<a`, `<img`, `<script`, `<table`, `<h` from peer text); `decision verify` works without a
-  daemon, exits 0/1, and names the failing step; `--out` refuses to overwrite without
-  `--force`.
+  daemon, exits 0/6/1, and names the failing step; `--out` refuses to overwrite without
+  `--force`. **Review 43:** the adversarial set also has a multi-line argument whose lines
+  start at column 0 with `# `, `- `, `<div>` and `[x]: http://e` (no fence breakout, M2; every
+  fence at column 0), zero-width and tag characters (rendered as `\u{…}`, M1), and a long
+  argument full of newlines and tabs (kept, not collapsed); an `awaiting_peer` and a
+  `peer_refused` Decision render the UNCONFIRMED banner and "Outcome claimed by the
+  initiator" (H1); every human decision carries its "approved on … machine" label.
 
 ### 3.7 Experience record
 
@@ -278,9 +310,12 @@ Critical path: 3.2 → 3.1a → 3.1b/3.4 → 3.3a → 3.3b → 3.9/3.H. 3.6a and
 - **Forced disagreement** is deterministic only with the stand-in (`--disagree` answers
   `accept: false`), so it runs in the **weekly CI job** (Linux, Windows, macOS) and in the
   3.3a e2e test, not with real agents.
-- Cost note: about 6 agent invocations per debate (2 positions + up to 4 moves + proposal and
-  answer, minus passes); at the 2.H rate of ~0.2–0.4 USD per Claude invocation, one Claude
-  round costs roughly 1–2 USD.
+- Cost note (corrected by review 43 L7): a 2-round debate takes **6–8** agent invocations
+  (A's start with its position, B's position, up to 4 moves, the proposal and the answer;
+  6 when both pass in round 1), about half of them Claude when Claude is one side. The run has
+  two debates (Claude as initiator, then as respondent), so about **7–8 Claude invocations**:
+  at the 2.H rate of ~0.2–0.4 USD each, roughly **1.5–3.5 USD per full 3.H run**, more if a
+  turn is retried. Later turns re-read a growing transcript, so the upper end is likelier.
 
 ### 3.P Phase 3 push
 
@@ -293,19 +328,20 @@ debate across two machines) is an owner activity after 3.P, recorded in
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| OD-P3-1 | Commit–reveal shape (plan: "each side commits a position hash, then reveals") | (a) **one-sided**: the initiator commits inside the request; the respondent's position goes in the clear; the initiator's daemon reveals only after applying it; (b) symmetric: both commit after accept, both reveal after both commitments are in | **(a)**. Same property (neither opening position can be influenced by the other), two fewer mails and one fewer phase. The initiator's agent must write its position before sending, which is natural for the side that asks |
+| OD-P3-1 | Commit–reveal shape (plan: "each side commits a position hash, then reveals") | (a) **one-sided**: the initiator commits inside the request; the respondent's position goes in the clear; the initiator's daemon reveals only after applying it; (b) symmetric: both commit after accept, both reveal after both commitments are in | **(a)**. Same property (neither opening position can be influenced by the other), two fewer mails and one fewer phase. The initiator's agent must write its position before sending, which is natural for the side that asks. *Review 43: confirmed.* Binding and hiding hold (256-bit nonce, domain-separated preimage with fixed-length fields before the one variable one, session and author bound, so no replay across debates); B learns only the commitment before its own position leaves its daemon. Either side can still open with a placeholder and revise after seeing the other's; that is equally true of (b), and the Decision shows `initial` and `final` |
 | OD-P3-2 | How a debate is typed | (a) a new request type `debate` (rebuild `requests` for its CHECK); (b) type `task` plus a `debate` member (no rebuild) | **(a)**. Clean views and filters (`inbox` shows a debate as one), and Phase 2 daemons refuse it clearly. The rebuild is one migration with its own test |
-| OD-P3-3 | Human constraint injection (3.4): can an agent forge a "human decision"? | (a) approval-gated (kind `debate_constraint`, window code); (b) no gate, recorded as "added through the CLI on <side>"; (c) gated only with `--human` | **(a)**. The plan puts it in a signed record as a *human* decision; without a gate any agent could write one. It costs the human one code per constraint, and the harness confirms it through terminal mode |
+| OD-P3-3 | Human constraint injection (3.4): can an agent forge a "human decision"? | (a) approval-gated (kind `debate_constraint`, window code); (b) no gate, recorded as "added through the CLI on <side>"; (c) gated only with `--human` | **(a)**. The plan puts it in a signed record as a *human* decision; without a gate any agent could write one. It costs the human one code per constraint, and the harness confirms it through terminal mode. *Amended by review 43 (H3, L16):* the gate only works if the human sees every character, so constraint text is **visible characters only** (no format or invisible characters), shown with the `DisplayQuote` rule. The gate protects the **local** side only: a modified peer daemon can add unapproved constraints under its own side's name, and the Markdown labels each one "approved on the X machine; the other side cannot check this" |
 | OD-P3-4 | Grants and quarantine in debates | (a) no grants in debates; refuse debate start/accept while the peer-wide quarantine clause holds; refuse sensitive grants to a peer during an open debate; (b) allow grants and quarantine debate entries like results; (c) ignore (debate entries are "new mail" under OD-P2-15 (a)) | **(a)**. It closes the side door with three simple checks and no new quarantine states. (c) would let a worker return sensitive data through a debate one day after reading it. Revisit (b) if users want evidence fetched during debates |
-| OD-P3-5 | Who signs the Decision | (a) the daemon, automatically, as an attestation of the transcript; agreement is B's `answer`; (b) each human approves the signature | **(a)**. A signature that waits for a human makes the escalated case (3.5) hang, and the human already expressed agreement (or not) through the answer. The Markdown states what a signature means |
+| OD-P3-5 | Who signs the Decision | (a) the daemon, automatically, as an attestation of the transcript; agreement is B's `answer`; (b) each human approves the signature | **(a)**. A signature that waits for a human makes the escalated case (3.5) hang, and the human already expressed agreement (or not) through the answer. The Markdown states what a signature means. *Amended by review 43 (H1):* only a **two-signature** Decision proves anything about the respondent; a single-signed one is "unconfirmed" (verify exit 6, banner in the Markdown). See OD-P3-14 |
 | OD-P3-6 | Audit anchor | (a) `log --head` and `log --verify --anchor ID:HASH` (manual anchors, free); (b) also send each side's head inside its Decision signature; (c) periodic signed checkpoints | **(a)**. (c) adds nothing against a same-user attacker who can read the key file fallback; (b) is cheap but leaks row counts to the peer and couples two features; add it if the beta shows a need |
 | OD-P3-7 | Turn parameters | rounds 1–5 (default 2); `turn_timeout_s` 300–86400 (default 3600); the initiator proposes; converge after two empty moves in a row or when rounds run out; early `--escalate` deferred | **As specified** |
 | OD-P3-8 | Experience record | (a) daemon-assembled snapshot, no read command, no agent notes, kept indefinitely; (b) add `agentnet experience <id>` (local only); (c) a retention limit (e.g. 365 d) | **(a) for Phase 3** (the plan says nothing reads it). Decide (c) before the beta, together with the other content tables |
-| OD-P3-9 | 3.H agent driving | (a) turn-driven: the script invokes the agent whose turn it is, once per turn; (b) both agents run concurrently and loop on `wait` | **(a)**. Deterministic, no long-lived agent sessions, and a stuck agent is a clear per-turn failure. Costs about 6 invocations per debate |
+| OD-P3-9 | 3.H agent driving | (a) turn-driven: the script invokes the agent whose turn it is, once per turn; (b) both agents run concurrently and loop on `wait` | **(a)**. Deterministic, no long-lived agent sessions, and a stuck agent is a clear per-turn failure. Costs 6–8 invocations per debate, about 1.5–3.5 USD of Claude per full 3.H run (review 43 L7) |
 | OD-P3-10 | Decision file in a repo | (a) Markdown plus a separate `d-….json` for verification; (b) the JSON embedded in the Markdown | **(a)**. Embedding needs a fence around peer bytes inside a document humans read; two files are simpler and the Markdown names the JSON |
 | OD-P3-11 | Review 38 L3: `changed` cannot detect a same-size `fs.read` rewrite between two reads | (a) defer (documented in `Docs/cli/fetch.md`); (b) add a version (size + mtime) to fs read responses (a grant.md protocol change, small ticket) | **(a)**. Not needed for Phase 3 acceptance; rare (files > 256 KiB rewritten mid-fetch). Do (b) in the 4.8 hardening pass |
 | OD-P3-12 | OD-P2-2 (d): OS user-presence (Windows Hello `UserConsentVerifier`, macOS LocalAuthentication) on top of approvals | (a) defer to Phase 4 hardening (before 4.8); (b) Phase 3 ticket | **(a)**. It needs per-OS work and a manual test on each OS, and no Phase 3 acceptance test needs it. Constraint approvals (OD-P3-3) use the existing window |
 | OD-P3-13 | Review 35: deleted quarantined bytes can survive in SQLite free pages and the WAL | (a) turn on `PRAGMA secure_delete=ON` in the store DSN (one line, in 3.9) and document that WAL frames persist until a checkpoint; (b) defer | **(a)**. Cheap, narrows the D18 promise gap, no protocol change |
+| OD-P3-14 (new, review 43 H1) | Exporting a single-signed Decision (`awaiting_peer` or `peer_refused`) | (a) allow `decision --md`/`--json` with the UNCONFIRMED banner, "Outcome claimed by the initiator", and `decision verify` exit 6 (as now specified); (b) as (a), and also refuse `--md --out` of an unconfirmed Decision unless `--unconfirmed` is given; (c) never export until both signatures exist | **(a)**. The banner and the exit code already stop the file passing as agreed, and (c) would hide a record the initiator's human may need when the peer vanished. Choose (b) if the owner expects Decision files to be committed by agents without a human look |
 
 ### Phase 2 leftovers
 

@@ -70,8 +70,10 @@ else (no local names, no local clock, no config):
 
 1. `id` = `"d-" ‖ lowercase-hex(SHA-256("dorylinae-decision-id-v1\n" ‖ session)[0:16])`.
 2. `team`, `problem.title`, `problem.topic` from the stored canonical request; `context`
-   in request order, each `{"name", "bytes": len(text), "sha256": hex SHA-256(text)}` over the
-   UTF-8 bytes after CRLF → LF (as sent); absent when the request had none.
+   in request order, each `{"name", "bytes": len(text), "sha256": hex SHA-256(text)}` where
+   `text` is the UTF-8 bytes of the context file's `text` member **exactly as in the stored
+   canonical request** (already LF-only; no further transformation); absent when the request
+   had none.
 3. `positions.X.initial` = slot 0 (initiator) / slot 1 (respondent). `positions.X.final` =
    the last `revision` X made, absent if X never revised.
 4. `rounds`: one element per round that has at least one applied move, in order, `n` from 1;
@@ -83,7 +85,9 @@ else (no local names, no local clock, no config):
 8. `remaining_disagreement` = the proposal's list followed by the answer's, exact duplicates
    (same canonical bytes) dropped after the first; absent when empty.
 9. `human_decisions`: the constraints whose ids are listed in A's `debate.close`, ordered by
-   `(at, id)`; `by` from the author; absent when none.
+   `(at, id)`; `by` from the author; absent when none. The list is A's (A is authoritative for
+   the set); B uses it as given, whatever state its own rows have (`active`, `late` or
+   `excess` do not matter, only the id, author, `at` and text).
 10. `affected_artifacts` = the proposal's, absent if none.
 11. `opened` = the request's `created`; `closed` = the `at` of A's `debate.close`.
 12. Only entries with slot `< entries` (from the close) are used; see [Signing](#signing).
@@ -92,10 +96,17 @@ Optional members are absent, never empty arrays or `null`.
 
 ### Size
 
-The transcript is at most 14 entries of 32 KiB, the topic 16 KiB, context references and
-constraints about 7 KiB, so `canonical(decision)` is below 500 KiB (`MaxDecision` =
-524288 bytes, enforced as a sanity check at derivation; exceeding it is a bug, not a peer
-error). A Decision is never mailed, and its view stays under the 1 MiB IPC line.
+The Decision **copies** some entry content twice (review 43 M6): the transcript is at most
+14 entries of 32 KiB (458752 bytes), `positions.*.final` repeats up to two revisions (≤ 65536),
+`final_agreement` repeats the proposal's agreement, and `remaining_disagreement` and
+`affected_artifacts` repeat parts of the proposal and the answer (≤ 3 × 32768 together). The
+topic is ≤ 16384 bytes (≤ 32768 escaped), context references about 3 KiB, and 10
+constraints of 500 code points about 42 KiB escaped. The worst case is about 740 KB, so
+**`MaxDecision` = 786432 bytes** (768 KiB), enforced as a sanity check at derivation (exceeding
+it is a bug, not a peer error; a test builds the worst case and checks it derives). A Decision
+is never mailed. `decision_show` returns it as a JSON object with the IPC encoder's HTML
+escaping off ([debate.md §IPC](debate.md#ipc)), so the view is the canonical size plus the
+signatures and names, under the 1 MiB IPC line.
 
 ## Signing
 
@@ -117,8 +128,13 @@ automatically; no human step (OD-P3-5).
    (for `cancelled`: no `decision`, no `sig`, and no Decision row). `entries` is the number
    of transcript slots A applied (a B entry that arrived after the close is not counted);
    `constraints` is the sorted list of constraint ids A holds.
-2. **B** applies it after its transcript has all `entries` slots (a close that overtakes
-   an entry is held in `close_body` until the entry arrives). B drops its own entries at
+2. **B** applies it after its transcript has all `entries` slots **and** every constraint id
+   listed in `constraints` (a close that overtakes an A entry or an A constraint is held in
+   `close_body` until it arrives; review 43 H2). B does **not** wait for what only B could
+   have sent: if a **B-authored** slot `< entries` or a listed **B-authored** constraint id is
+   missing on B, A's close claims something B never sent, and B refuses at once as a
+   mismatch (below). A held close is re-checked on every arrival; B's abandon is the way out
+   if A never sends the missing mail. B drops its own entries at
    slots `≥ entries` (a late entry A never applied; audited `debate.ignored {reason:
    "late"}`), derives the Decision itself from its own tables with A's `entries`,
    `constraints`, `outcome`, `reason` and `at`, and checks:
@@ -131,7 +147,10 @@ automatically; no human step (OD-P3-5).
    On success, in one transaction: sign, store the Decision with both signatures
    (`state = signed`), phase `closed`, close the mirror and complete the request, and send
    `debate.sign {at, decision, request, session, sig}`.
-3. **A** verifies B's `sig` over A's own `msg` for the hash it stored and sets `signed`.
+3. **A** verifies B's `sig` over A's own `msg` for the hash it stored and sets `signed`. A
+   `debate.sign` whose `decision` differs from A's stored hash, or whose `sig` does not
+   verify, is treated as a refusal (`peer_refused`, B's hash stored as `peer_hash`, audit
+   `decision.refuse`).
 
 **If B refuses or never signs.**
 
@@ -142,11 +161,20 @@ automatically; no human step (OD-P3-5).
   request, session}`. A sets `peer_refused`. A correct pair never gets here: the transcript
   is identical by construction, so a mismatch means a bug or a modified daemon, and both
   humans see it.
-- **Silence** (B offline, B abandoned, or a Phase 2 daemon): A's Decision stays
-  `awaiting_peer`. It is still a record: `decision --md` renders it with the line "Signed by
-  the initiator only; the respondent's signature is missing" and `--json` carries one
-  signature. The `debate.close` is outboxed like all mail (7 days, D10), so B signs whenever
-  it comes back. An abandoning B does not sign (it left the debate).
+- **Silence** (B offline, or B abandoned; a Phase 2 daemon cannot get here, it never accepts
+  a debate): A's Decision stays `awaiting_peer`. It is still a local record, but it is **not
+  a proof of anything the respondent said** (review 43 H1): with one signature, every
+  respondent entry in it, including `accept: true`, is only the initiator's claim, and a
+  modified initiator daemon (or anyone holding A's key) can produce such a file for a debate
+  that never happened. So a single-signed file is **unconfirmed** everywhere: `decision
+  verify` does not exit 0 for it ([Signed file](#signed-file-third-party-verification)),
+  and the Markdown starts with the banner of [Markdown](#markdown). The `debate.close` is
+  outboxed like all mail (7 days, D10), so B signs whenever it comes back. An abandoning B
+  does not sign (it left the debate).
+- **`peer_refused`** Decisions render the same banner with "the respondent refused to sign:
+  its record differs". The signed file does not carry the local state, so a refused
+  Decision exported as JSON is indistinguishable from an unconfirmed one, which is why both
+  are treated alike.
 - **Escalated (3.5)** is not a refusal. `escalated` Decisions are signed by both exactly as
   `agreed` ones.
 
@@ -171,9 +199,19 @@ the vector checker):
 2. Recompute `canonical(decision)`, `msg` and `decision_hash`; it must equal `hash`.
 3. Verify each present signature under `participants.initiator` / `.respondent` over `msg`.
 4. Recompute `id` from `session` (rule 1).
-5. Report `{"valid": bool, "signed_by": ["initiator", "respondent"], "hash", "id",
-   "participants": {…, "fingerprint"}}`. Exit 0 valid (with one or two signatures), 1
-   invalid, with the failing step.
+5. Check the derivation invariants that do not need the transcript tables (review 43 L12):
+   `outcome`/`reason` against `converge.answer` (rule 6), `final_agreement` present iff
+   `agreed` and equal to `converge.proposal.agreement`, `remaining_disagreement` equal to
+   rule 8 applied to the proposal and answer, `affected_artifacts` equal to the proposal's,
+   `positions.*.final` equal to the last `revision` in `rounds`, `rounds[i].n = i + 1`,
+   `participants.initiator ≠ participants.respondent`, and `opened` ≤ `closed`.
+6. Report `{"valid": bool, "complete": bool, "signed_by": ["initiator", "respondent"],
+   "hash", "id", "participants": {…, "fingerprint"}}`. **Exit 0 only when valid with both
+   signatures** (`complete: true`). **Exit 6** when every check passes but only the initiator
+   signed (`complete: false`: "unconfirmed: the respondent has not signed; its entries are the
+   initiator's claim"). A file with only a respondent signature is invalid (the initiator
+   always signs first). Exit 1 invalid, with the failing step. Scripts that test `$? -eq 0`
+   therefore never accept an unconfirmed Decision (review 43 H1).
 
 A valid file proves that the holders of those two keys signed that content. **Who** holds a
 key is learned out of band: the Markdown and the verify output print each key's
@@ -199,7 +237,9 @@ sig respondent  xCdaoO0EujU6LbZJOgvIX_FvFlEikdlftxbUmUF9ef_1xTMrqScV_9UDGrsQu8aO
 Negative checks (each fails at the stated verify step): the respondent's signature moved
 to `initiator` (3); `outcome` changed to `escalated` (2, `hash` mismatch; with `hash` also
 recomputed: 3); a member added (`"note": "x"`: 1); `id` of another session (4); a
-`claim` with a newline (1). `tools/specvectors` and `tools/verifyvectors` reproduce the
+`claim` with a newline (1); `final_agreement.decision` changed to another valid line, with
+`hash` and both signatures recomputed with the vector keys (5). The vector with the `respondent` signature removed verifies with
+**exit 6** (`complete: false`). `tools/specvectors` and `tools/verifyvectors` reproduce the
 vector and the negatives (ticket 3.3a).
 
 ## Markdown
@@ -220,21 +260,39 @@ fields) is rendered **inert**:
 - **Multi-line text** (`argument`, the topic): in a fenced code block whose fence is a run
   of backticks one longer than the longest run inside the text (at least three), with no
   info string. CommonMark and GFM render a fenced block literally: no HTML, no links, no
-  emphasis, no headings.
+  emphasis, no headings. **Every fence starts at column 0 outside any container** (review 43
+  M2): never inside a list item or block quote. Inside a list item, a content line indented
+  less than the item's content column ends the item and with it the fence, and the rest of the
+  peer text is then parsed as Markdown. So the per-side structure uses headings (`###`,
+  `####`) and fences at top level; lists carry only single-line code spans.
 - **Single-line text**: in an inline code span whose delimiter is a backtick run one longer
   than the longest run inside, padded with one space on each side. Code spans are literal
   too, including URLs (no autolink).
 - **Never** inside a table (a `|` in a code span still splits a GFM table cell); lists and
   headings are used instead.
-- Before either, the text is cleaned as by `notify.Clean` (review 40): bidi controls and
-  zero-width characters become `?`, so the rendered text shows what the bytes say. The JSON
-  file keeps the exact bytes; the Markdown is a view.
+- Before either, the text goes through **`decision.Visible`** (review 43 M1), **not**
+  `notify.Clean`: `Clean` turns newlines into spaces, collapses white space, truncates, and does
+  not touch zero-width or tag characters. `Visible` keeps `\n` and `\t` (multi-line text only)
+  and replaces every other rune that is not `unicode.IsGraphic` (space excepted) or is a format
+  character (`unicode.Cf`: bidi controls, zero-width characters, U+FEFF, tag characters
+  U+E0000–U+E007F), and every C0/C1 control, by the visible ASCII text `\u{XXXX}` (hex of the
+  code point), the rule of review 40's `DisplayQuote`. The rendered text then shows what the
+  bytes say. The escape adds no backticks, so the fence and span lengths are computed after it.
+  The JSON file keeps the exact bytes; the Markdown is a view.
 - Daemon-written text (headings, labels, enum values, ids, hashes, fingerprints, times) is
   plain Markdown.
 - No raw HTML, no images, no links are ever emitted. The file name is chosen by the user
   (`--out`); the default suggestion is `<id>.md`, never derived from peer text.
 
 **Layout** (headings fixed):
+
+A Decision with one signature (`awaiting_peer`, `peer_refused`, or a verified file with
+`complete: false`) starts, before the title, with the fixed line **"> UNCONFIRMED: signed by
+the initiator only. The respondent's entries and the outcome below are the initiator's claim
+and are not proven."** (plus "The respondent refused to sign: its record differs." for
+`peer_refused`), and the Outcome line reads "Outcome claimed by the initiator: …" (review 43
+H1). Each human decision is labelled "approved on the initiator's (respondent's) machine; the
+other side cannot check this".
 
 ```
 # Decision d-… : <title as code span>
@@ -289,7 +347,7 @@ Kept indefinitely. `decisions` goes into the DROP lists of both rewind tests.
 | `agentnet decisions [--json]` | `decision_list` |
 | `agentnet decision <id> [--json]` | the signed file |
 | `agentnet decision <id> --md [--out FILE]` | Markdown to stdout or FILE (refuses to overwrite without `--force`) |
-| `agentnet decision verify FILE [--md] [--json]` | offline, no daemon |
+| `agentnet decision verify FILE [--md] [--json]` | offline, no daemon. Exit 0 valid with two signatures, 6 valid but unconfirmed (initiator only), 1 invalid |
 
 ## Audit
 
@@ -310,7 +368,9 @@ to a committed Decision file.
   The domain string separates it from mail, card and grant signatures.
 - **No fabricated agreement.** `agreed` requires the respondent's own `accept: true` entry
   in the respondent's own transcript; A cannot produce a Decision B signs that says
-  otherwise.
+  otherwise. This holds for a **two-signature** Decision only: a single-signed one is the
+  initiator's claim, which is why verify exits 6 and the Markdown carries the UNCONFIRMED
+  banner.
 - **Truncation by A.** A decides `entries`. It can drop B's *late* entry (after a timeout),
   never an entry it already applied (B has seen A's later entries that depend on it, and A's
   close cannot be earlier than those). The outcome is then `escalated`/`timeout`, never

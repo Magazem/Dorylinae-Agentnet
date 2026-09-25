@@ -26,6 +26,14 @@ request line and reads one response line; a connection may carry several
 request/response pairs in sequence. Lines are limited to 1 MiB. The server
 closes connections that stay idle for more than 30 s.
 
+**Phase 3 draft (ticket 3.1b, review 43 M7):** the server encodes results with
+HTML escaping **off** (`json.Encoder.SetEscapeHTML(false)`). With the default
+`json.Marshal`, each `<`, `>` and `&` in peer text becomes a six-byte `<`
+escape, so a debate or Decision view full of such characters would exceed the
+1 MiB line although its canonical form fits ([debate.md §IPC](debate.md#ipc)).
+IPC is not HTML, and clients parse JSON, so nothing else changes. The same fix
+also bounds `request_show` of a question whose context files are `<`-heavy.
+
 ## Request
 
 ```json

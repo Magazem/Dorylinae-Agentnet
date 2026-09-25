@@ -28,7 +28,7 @@ Canonical JSON, one per `(session, role)`:
 | what worked | `worked?: {"status", "summary"?, "verification"}` | the **accepted** result's D14 `status` and `summary`; debate: `final_agreement.decision` |
 | what failed | `failed?: {"rounds_rejected", "last_changes"?}`; debate: `{"remaining_disagreement_points"}` (count) | round count − 1 and the last changes text; for a cancelled session `{"cancelled_by": "requester"|"worker"|"timeout"}` |
 | verification | `verification: "none"|"tests_passed"|"human_accepted"` plus `verification_by` | the session |
-| acceptance | `acceptance: {"outcome", "age_s", "decision"?: {"id", "hash", "signed_by"}}` | the close; the Decision for a debate |
+| acceptance | `acceptance: {"outcome", "age_s", "decision"?: {"id", "hash"}}` | the close; the Decision for a debate. No signature state: A writes its record at `closing`, before B signs, and the record is never updated (review 43 L2); the `decisions` table has the current state |
 | — | `opened`, `closed` | the session |
 
 Optional members are absent when there is no data. The record's canonical size is capped at
@@ -49,8 +49,9 @@ Optional members are absent when there is no data. The record's canonical size i
 ## When and where
 
 - Written **in the transaction that closes the session** on each side (A's close
-  transition; B's mirror applying `closed`; for a debate, the close or the apply of
-  `debate.close`), so a crash never leaves a closed session without its record, and a
+  transition; B's mirror applying `closed`; for a debate, A's close, B's apply of
+  `debate.close`, B's local abandon, B's `broken` close, or B's `decision.refuse` close), so a
+  crash never leaves a closed session without its record, and a
   rolled-back close leaves no record. Exactly one record per `(session, role)` (a second
   close is impossible by the state machine).
 - Stored in the daemon's SQLite database, migration **21** (ticket 3.7):
