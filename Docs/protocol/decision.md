@@ -1,0 +1,323 @@
+# Decision records
+
+Status: **draft** for Phase 3 (plan step 3.3, and the escalated case of 3.5). The debate
+that produces a Decision is in [debate.md](debate.md). Ticket split:
+[../review/42-phase3-tickets.md](../review/42-phase3-tickets.md). Change this document first.
+
+Conventions as in [debate.md](debate.md). Canonical JSON is
+[agent-card.md §Canonical serialisation](agent-card.md#canonical-serialisation) (RFC 8785).
+
+## What a Decision is
+
+The artifact of a debate: one JSON object that says what was asked, who took part, what each
+side claimed and challenged, what the humans constrained, and how it ended. It is
+**derived** deterministically from the debate transcript, so both daemons compute the same
+bytes independently, and **signed by both daemons' identity keys**. A Decision exists for a
+debate that closed `agreed` or `escalated`; a `cancelled` debate has none.
+
+What the two signatures mean: *"this is the debate as my daemon recorded it"*. They do
+**not** mean "I agree": agreement is the `outcome`, taken from the respondent's own `answer`
+entry. An escalated Decision is signed the same way (3.5).
+
+## Object
+
+```
+decision = {
+  "v": 1,
+  "id": "d-…",
+  "session": "s-…", "request": "r-…", "team": "t-…",
+  "participants": {"initiator": <key>, "respondent": <key>},
+  "problem": {"title", "topic", "context"?: [{"name", "bytes", "sha256"}]},
+  "rounds_max": 1..5,
+  "positions": {
+     "initiator":  {"initial": <position>, "final"?: <position>},
+     "respondent": {"initial": <position>, "final"?: <position>}
+  },
+  "rounds"?: [{"n", "initiator"?: <move>, "respondent"?: <move>}],
+  "converge"?: {"proposal": <proposal>, "answer"?: <answer>},
+  "final_agreement"?: <agreement>,
+  "remaining_disagreement"?: [<disagreement>],
+  "human_decisions"?: [{"id", "by": "initiator"|"respondent", "at", "text"}],
+  "affected_artifacts"?: [<artifact>],
+  "outcome": "agreed"|"escalated",
+  "reason": "accepted"|"rejected"|"timeout",
+  "opened", "closed"
+}
+```
+
+`<position>`, `<move>`, `<proposal>`, `<answer>`, `<agreement>` and `<disagreement>` are the
+[debate message](debate.md#messages-32) objects, copied byte-for-byte (they are already
+canonical). `<artifact>` is the request artifact shape.
+
+**Plan field → member** (plan 3.3 lists thirteen fields; they all come from the transcript):
+
+| Plan field | Member |
+|---|---|
+| problem | `problem` (the request title and topic; context files by name, size and SHA-256 of the text, **not** the text) |
+| participants | `participants` (identity keys; names are local and are added only by the Markdown renderer) |
+| initial positions | `positions.*.initial` |
+| assumptions, evidence, arguments, rejected alternatives | inside the positions (`assumptions`, `evidence`, `argument`, `rejected_alternatives`), initial and final |
+| counterarguments | the challenges in `rounds` |
+| final agreement | `final_agreement` (present iff `outcome = agreed`) |
+| remaining disagreement | `remaining_disagreement` |
+| human decisions, constraints | `human_decisions`: the approved [constraints](debate.md#human-constraints-34). In Phase 3 a constraint is the only human input, so the plan's two fields are one list; the Markdown heading names both |
+| affected artifacts | `affected_artifacts` (from the proposal) |
+
+## Derivation
+
+Each daemon builds the Decision from its own tables at close, with these rules and nothing
+else (no local names, no local clock, no config):
+
+1. `id` = `"d-" ‖ lowercase-hex(SHA-256("dorylinae-decision-id-v1\n" ‖ session)[0:16])`.
+2. `team`, `problem.title`, `problem.topic` from the stored canonical request; `context`
+   in request order, each `{"name", "bytes": len(text), "sha256": hex SHA-256(text)}` over the
+   UTF-8 bytes after CRLF → LF (as sent); absent when the request had none.
+3. `positions.X.initial` = slot 0 (initiator) / slot 1 (respondent). `positions.X.final` =
+   the last `revision` X made, absent if X never revised.
+4. `rounds`: one element per round that has at least one applied move, in order, `n` from 1;
+   a side's move is absent if it has none in that round (a timeout). Absent if no move.
+5. `converge`: present when a proposal was applied; `answer` inside it when an answer was.
+6. `outcome` and `reason`: `agreed`/`accepted` iff the answer has `accept: true`;
+   `escalated`/`rejected` iff it has `accept: false`; otherwise `escalated`/`timeout`.
+7. `final_agreement` = the proposal's `agreement` iff `agreed`.
+8. `remaining_disagreement` = the proposal's list followed by the answer's, exact duplicates
+   (same canonical bytes) dropped after the first; absent when empty.
+9. `human_decisions`: the constraints whose ids are listed in A's `debate.close`, ordered by
+   `(at, id)`; `by` from the author; absent when none.
+10. `affected_artifacts` = the proposal's, absent if none.
+11. `opened` = the request's `created`; `closed` = the `at` of A's `debate.close`.
+12. Only entries with slot `< entries` (from the close) are used; see [Signing](#signing).
+
+Optional members are absent, never empty arrays or `null`.
+
+### Size
+
+The transcript is at most 14 entries of 32 KiB, the topic 16 KiB, context references and
+constraints about 7 KiB, so `canonical(decision)` is below 500 KiB (`MaxDecision` =
+524288 bytes, enforced as a sanity check at derivation; exceeding it is a bug, not a peer
+error). A Decision is never mailed, and its view stays under the 1 MiB IPC line.
+
+## Signing
+
+```
+msg           = "dorylinae-decision-v1\n" ‖ canonical(decision)
+decision_hash = lowercase-hex SHA-256(msg)
+sig           = base64url( Ed25519-Sign(identity_private_key, msg) )
+```
+
+The same identity keys that sign mail and cards (D6). Signing is done by the daemon
+automatically; no human step (OD-P3-5).
+
+**Collecting both signatures** (one round trip):
+
+1. **A** decides the outcome (B's answer applied, or a timeout, or a cancel). In one
+   transaction: phase `closing` (or `closed` for `cancelled`), derive the Decision, sign it,
+   store it in `decisions` with `state = awaiting_peer`, close the work session, and send
+   `debate.close {at, constraints, decision, entries, outcome, reason, request, session, sig}`
+   (for `cancelled`: no `decision`, no `sig`, and no Decision row). `entries` is the number
+   of transcript slots A applied (a B entry that arrived after the close is not counted);
+   `constraints` is the sorted list of constraint ids A holds.
+2. **B** applies it after its transcript has all `entries` slots (a close that overtakes
+   an entry is held in `close_body` until the entry arrives). B drops its own entries at
+   slots `≥ entries` (a late entry A never applied; audited `debate.ignored {reason:
+   "late"}`), derives the Decision itself from its own tables with A's `entries`,
+   `constraints`, `outcome`, `reason` and `at`, and checks:
+   - its own `decision_hash` equals `decision`;
+   - `sig` verifies under A's key over its own `msg`;
+   - the outcome is consistent with its transcript (rule 6 above; a `timeout` only while an
+     answer is missing);
+   - no **A-authored** entry B holds has a slot `≥ entries` (A cannot cut its own applied
+     entries), and `entries` is at least 2 (both positions).
+   On success, in one transaction: sign, store the Decision with both signatures
+   (`state = signed`), phase `closed`, close the mirror and complete the request, and send
+   `debate.sign {at, decision, request, session, sig}`.
+3. **A** verifies B's `sig` over A's own `msg` for the hash it stored and sets `signed`.
+
+**If B refuses or never signs.**
+
+- **Mismatch** (B's derivation differs, A's signature is bad, or the outcome is
+  inconsistent): B stores A's claimed hash and its own, sets `peer_refused` on its side,
+  closes its mirror (`cancelled`), audits `decision.refuse {session, peer, reason}`, notifies
+  `debate.broken`, and sends `debate.sign {at, decision: <B's hash>, refused: "mismatch",
+  request, session}`. A sets `peer_refused`. A correct pair never gets here: the transcript
+  is identical by construction, so a mismatch means a bug or a modified daemon, and both
+  humans see it.
+- **Silence** (B offline, B abandoned, or a Phase 2 daemon): A's Decision stays
+  `awaiting_peer`. It is still a record: `decision --md` renders it with the line "Signed by
+  the initiator only; the respondent's signature is missing" and `--json` carries one
+  signature. The `debate.close` is outboxed like all mail (7 days, D10), so B signs whenever
+  it comes back. An abandoning B does not sign (it left the debate).
+- **Escalated (3.5)** is not a refusal. `escalated` Decisions are signed by both exactly as
+  `agreed` ones.
+
+A single-signed Decision proves only what the initiator's daemon recorded; views and the
+Markdown always say how many signatures a Decision has.
+
+## Signed file (third-party verification)
+
+`agentnet decision <id> --json` prints, and `decision_show` returns:
+
+```json
+{"decision": <decision>, "hash": "<decision_hash>",
+ "signatures": {"initiator": "<sig>", "respondent"?: "<sig>"}}
+```
+
+This file is what goes next to the Markdown in a repo (`d-….json`). **Verification**
+(`agentnet decision verify FILE [--json]`, which runs **in the CLI without a daemon**, and
+the vector checker):
+
+1. Parse strictly; `decision` must pass the schema of this document and of every embedded
+   debate message (the same validators as the daemon).
+2. Recompute `canonical(decision)`, `msg` and `decision_hash`; it must equal `hash`.
+3. Verify each present signature under `participants.initiator` / `.respondent` over `msg`.
+4. Recompute `id` from `session` (rule 1).
+5. Report `{"valid": bool, "signed_by": ["initiator", "respondent"], "hash", "id",
+   "participants": {…, "fingerprint"}}`. Exit 0 valid (with one or two signatures), 1
+   invalid, with the failing step.
+
+A valid file proves that the holders of those two keys signed that content. **Who** holds a
+key is learned out of band: the Markdown and the verify output print each key's
+fingerprint ([pairing.md](pairing.md) fingerprints), which a reader compares with the one
+`agentnet peers` shows or that the person states.
+
+### Vector
+
+Keys: pairing vector seeds (A = `00…1f`, B = `20…3f`). Decision (one round, both passes,
+agreed), canonical:
+
+```
+{"closed":"2026-10-01T09:20:00Z","converge":{"answer":{"accept":true},"proposal":{"agreement":{"decision":"Capped exponential backoff with full jitter"}}},"final_agreement":{"decision":"Capped exponential backoff with full jitter"},"id":"d-7eaeb0b78e6bd96981357b500af94044","opened":"2026-10-01T09:00:00Z","outcome":"agreed","participants":{"initiator":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","respondent":"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"},"positions":{"initiator":{"initial":{"argument":"Retries should back off exponentially, capped at 10 minutes.","assumptions":["Clock skew between peers is under 5 s"],"claim":"Use capped exponential backoff for outbox retries","evidence":[{"kind":"file","ref":"internal/mail/outbox.go"}],"rejected_alternatives":[{"option":"Fixed 30 s retry","reason":"Floods the relay after an outage"}]}},"respondent":{"initial":{"argument":"Jitter matters more than the curve.","claim":"Add full jitter to the existing backoff"}}},"problem":{"title":"Outbox retry policy","topic":"How should the outbox retry?"},"reason":"accepted","request":"r-0123456789abcdef0123456789abcdef","rounds":[{"initiator":{"challenges":[]},"n":1,"respondent":{"challenges":[]}}],"rounds_max":1,"session":"s-36375782ceb6baea9cee4d4273dfb035","team":"t-00112233445566778899aabbccddeeff","v":1}
+```
+
+```
+id              d-7eaeb0b78e6bd96981357b500af94044   (from session s-36375782ceb6baea9cee4d4273dfb035)
+decision_hash   6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede
+sig initiator   oU23UZtZYRFm7RVkDdqPfoFfL6ZFlJj8K4Xqq4ySy1EtDdeO58GEo148fZbERBYbW-75C5erU6AhqoDwiDBnAw
+sig respondent  xCdaoO0EujU6LbZJOgvIX_FvFlEikdlftxbUmUF9ef_1xTMrqScV_9UDGrsQu8aO_H7adF331lOzjs6PTJv-Cg
+```
+
+Negative checks (each fails at the stated verify step): the respondent's signature moved
+to `initiator` (3); `outcome` changed to `escalated` (2, `hash` mismatch; with `hash` also
+recomputed: 3); a member added (`"note": "x"`: 1); `id` of another session (4); a
+`claim` with a newline (1). `tools/specvectors` and `tools/verifyvectors` reproduce the
+vector and the negatives (ticket 3.3a).
+
+## Markdown
+
+`agentnet decision <id> --md [--out FILE]` (the plan's "Markdown file suitable for a repo's
+decisions folder"). The renderer is a pure function of the signed file plus the local
+petnames of the two keys, in `internal/decision`, used by the CLI; `decision verify --md
+FILE` renders a verified file without a daemon (names then are the fingerprints).
+
+**Deterministic.** The same input gives the same bytes: UTF-8, LF line endings, one
+trailing newline, no render time, no locale-dependent formatting, fixed section order,
+entries in slot order. A golden-file test pins the output.
+
+**Safe for a repository.** Every string that came from an agent or a human (topic, title,
+names, claims, arguments, evidence refs, constraints, disagreement points, artifact
+fields) is rendered **inert**:
+
+- **Multi-line text** (`argument`, the topic): in a fenced code block whose fence is a run
+  of backticks one longer than the longest run inside the text (at least three), with no
+  info string. CommonMark and GFM render a fenced block literally: no HTML, no links, no
+  emphasis, no headings.
+- **Single-line text**: in an inline code span whose delimiter is a backtick run one longer
+  than the longest run inside, padded with one space on each side. Code spans are literal
+  too, including URLs (no autolink).
+- **Never** inside a table (a `|` in a code span still splits a GFM table cell); lists and
+  headings are used instead.
+- Before either, the text is cleaned as by `notify.Clean` (review 40): bidi controls and
+  zero-width characters become `?`, so the rendered text shows what the bytes say. The JSON
+  file keeps the exact bytes; the Markdown is a view.
+- Daemon-written text (headings, labels, enum values, ids, hashes, fingerprints, times) is
+  plain Markdown.
+- No raw HTML, no images, no links are ever emitted. The file name is chosen by the user
+  (`--out`); the default suggestion is `<id>.md`, never derived from peer text.
+
+**Layout** (headings fixed):
+
+```
+# Decision d-… : <title as code span>
+- Outcome: agreed | escalated (reason) ; Signed by: initiator and respondent | initiator only
+- Participants: initiator <name code span> (fingerprint …), respondent … (fingerprint …)
+- Session s-…, request r-…, team t-…, opened …, closed …, hash …
+## Problem            (topic fenced; context files as a list: name, bytes, sha256)
+## Initial positions  (per side: claim, assumptions, evidence, rejected alternatives, argument)
+## Rounds             (per round, per side: challenges with targets and evidence; revisions)
+## Final positions    (only sides that revised)
+## Final agreement    (agreed only: decision, points, argument)
+## Remaining disagreement
+## Human decisions and constraints
+## Affected artifacts
+## Verification       (the hash, both signatures, and: "Verify with agentnet decision verify <id>.json")
+```
+
+Empty sections are omitted.
+
+## Storage
+
+Migration **20** (ticket 3.3a):
+
+```sql
+CREATE TABLE decisions (
+    id        TEXT PRIMARY KEY,                 -- d-<32 hex>
+    session   TEXT NOT NULL UNIQUE,
+    role      TEXT NOT NULL CHECK (role IN ('initiator', 'respondent')),
+    peer      TEXT NOT NULL,
+    decision  TEXT NOT NULL CHECK (json_valid(decision)),   -- canonical (content)
+    hash      TEXT NOT NULL,
+    sig_initiator  TEXT,
+    sig_respondent TEXT,
+    peer_hash TEXT,                             -- the peer's differing hash on a refusal
+    state     TEXT NOT NULL CHECK (state IN ('awaiting_peer', 'signed', 'peer_refused')),
+    created   TEXT NOT NULL,
+    updated   TEXT NOT NULL
+);
+```
+
+Kept indefinitely. `decisions` goes into the DROP lists of both rewind tests.
+
+## IPC and CLI
+
+| Method | Params | Result / errors |
+|---|---|---|
+| `decision_list` | `{"state"?, "peer"?}` | `{"decisions": [{"id", "session", "peer", "outcome", "state", "created", "title"}]}` |
+| `decision_show` | `{"id"}` (`d-`, `s-` or `r-`) | the [signed file](#signed-file-third-party-verification) plus `{"state", "peer_names"}`. `unknown_decision` |
+
+| Command | Notes |
+|---|---|
+| `agentnet decisions [--json]` | `decision_list` |
+| `agentnet decision <id> [--json]` | the signed file |
+| `agentnet decision <id> --md [--out FILE]` | Markdown to stdout or FILE (refuses to overwrite without `--force`) |
+| `agentnet decision verify FILE [--md] [--json]` | offline, no daemon |
+
+## Audit
+
+| Action | Side / actor | Detail |
+|---|---|---|
+| `decision.create` | both / `daemon` | `{id, session, peer, outcome, hash, bytes, signed_by}` |
+| `decision.sign_in` | A / `daemon` | `{id, session, peer}` |
+| `decision.refuse` | either / `daemon` | `{id, session, peer, reason}` |
+| `decision.export` | local / `cli` | `{id, format: "md"|"json"}` (only when written to `--out`) |
+
+The hash is not content: it cannot be inverted, and it lets an audit reader tie a log row
+to a committed Decision file.
+
+## Security considerations
+
+- **What a signature covers.** Everything in the Decision, including both parties' keys,
+  the session and the request, so a signature cannot be moved to another debate or party.
+  The domain string separates it from mail, card and grant signatures.
+- **No fabricated agreement.** `agreed` requires the respondent's own `accept: true` entry
+  in the respondent's own transcript; A cannot produce a Decision B signs that says
+  otherwise.
+- **Truncation by A.** A decides `entries`. It can drop B's *late* entry (after a timeout),
+  never an entry it already applied (B has seen A's later entries that depend on it, and A's
+  close cannot be earlier than those). The outcome is then `escalated`/`timeout`, never
+  `agreed`. A modified A could claim a timeout to drop B's `accept: true`; the result is an
+  escalated record, B's view shows the dropped entry as `late`, and both humans are
+  notified, so it cannot pass as agreement.
+- **Repository safety.** The Markdown is inert (code spans and fences only for untrusted
+  text); the JSON is data. Neither is executed by AgentNet.
+- **Identity binding** is by fingerprint, out of band, as for everything signed in
+  AgentNet.

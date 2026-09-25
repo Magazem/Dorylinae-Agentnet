@@ -372,8 +372,9 @@ an entry here first.
 
 The `audit_events` table (`internal/audit`) records `daemon.start` and
 `daemon.stop` with `actor = "daemon"`. Detail JSON: `{"pid": N, "version": "..."}`.
-The table is append-only (triggers reject UPDATE and DELETE) and is not yet
-hash-chained; ticket 3.6 adds a chain column by migration.
+The table is append-only (triggers reject UPDATE and DELETE). Phase 3 (ticket 3.6a)
+adds a hash chain column by migration 18, and `agentnet log` (3.6b) reads and verifies it:
+see [audit.md](audit.md).
 
 The daemon also records `identity.create` when it creates an identity or
 re-creates a missing card (detail in [agent-card.md](agent-card.md)); it holds

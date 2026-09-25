@@ -5,8 +5,6 @@ Wire formats, data models and schemas for Dorylinae (AgentNet) live here.
 Per the build plan, any schema or interface change must be written in this
 directory **before** the ticket that implements it starts.
 
-Nothing is specified yet; Phase 0 adds the first documents.
-
 ## Documents
 
 - [ipc.md](ipc.md): local CLI <-> daemon protocol (ticket 0.2a)
@@ -24,6 +22,10 @@ Nothing is specified yet; Phase 0 adds the first documents.
 - [grant.md](grant.md): capability tokens, grant issuance, fetch and enforcement over Noise, revocation, sensitive grants, test vectors (tickets 2.2–2.4, draft)
 - [consult.md](consult.md): consult = `question` request with context files, answer with `result`, `wait` (ticket 2.5, draft)
 - [device.md](device.md): own-device helper (D13): device link, helper scope, allowlisted commands (tickets 2.D1–2.D2, draft)
+- [debate.md](debate.md): Phase 3 debate sessions: request type `debate`, commit–reveal of the opening position, turns and rounds, structured messages, human constraints, escalation (tickets 3.1a/b, 3.2, 3.4, draft)
+- [decision.md](decision.md): the Decision record: derivation, canonical form, signatures by both daemons, offline verification, inert Markdown (tickets 3.3a/b, draft)
+- [audit.md](audit.md): the hash-chained audit log, `agentnet log`, `--verify` and anchors, the no-content rule (tickets 3.6a/b, draft)
+- [experience.md](experience.md): the private per-session experience record (ticket 3.7, draft)
 - [../cli/ping.md](../cli/ping.md): `agentnet ping` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.6)
 - [../cli/relay.md](../cli/relay.md): `relay` flags and exit codes, and how `agentnetd` connects to it
 - [../cli/pair.md](../cli/pair.md): `agentnet pair` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.5b)

@@ -32,7 +32,7 @@ The body of kind `request` is `{"request": <object>}`, and nothing else. The obj
 | `from` | yes | `<key>` | Must equal `msg.from` |
 | `to` | yes | `<key>` | Must equal `msg.to` |
 | `team` | yes | string | Team id `t-` + 32 hex ([team.md](team.md)) |
-| `type` | yes | string | `review`, `task` or `question` |
+| `type` | yes | string | `review`, `task` or `question`; **Phase 3 draft:** also `debate` ([debate.md](debate.md#request-type-debate)) |
 | `title` | yes | string | 1–120 code points, no control characters |
 | `brief` | yes | string | 1–16384 bytes of UTF-8. No control characters except `\n` (U+000A) and `\t` (U+0009) |
 | `urgency` | yes | string | `low`, `normal`, `high` or `blocking`: the urgency **as sent**, after any sender-side downgrade |
@@ -42,7 +42,8 @@ The body of kind `request` is `{"request": <object>}`, and nothing else. The obj
 | `requested_grant` | no | object | [Requested grant](#requested-grant). Informational only |
 | `deadline` | no | string | Time. Must be later than `created` |
 | `created` | yes | string | Time. Set once at first submit. **Not** changed by a resend. Must be ≤ `msg.created` |
-| `context` | no | array | **Phase 2 draft.** Only with `type = question`: 1–8 context files, and the total cap becomes 327680 bytes. See [consult.md](consult.md#request-object-additions) |
+| `context` | no | array | **Phase 2 draft.** Only with `type = question` (Phase 3: or `debate`): 1–8 context files, and the total cap becomes 327680 bytes. See [consult.md](consult.md#request-object-additions) |
+| `debate` | cond. | object | **Phase 3 draft.** Required iff `type = debate`: `{"commitment", "rounds", "turn_timeout_s"}`. See [debate.md](debate.md#request-type-debate) |
 | `run` | no | object | **Phase 2 draft.** `{"command": "<name>"}` for an own-device helper. See [device.md](device.md#running-in-scope-requests) |
 
 No other members are allowed. Optional members are absent, never `null`. The canonical form of

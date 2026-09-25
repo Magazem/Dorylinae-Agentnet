@@ -25,7 +25,7 @@ One optional member is added to the request object ([request.md §Request object
 
 | Member | Req. | Type | Rules |
 |---|---|---|---|
-| `context` | no | array | Allowed **only** when `type = question` (else `bad_request` / `bad_body`). 1–8 [context files](#context-files), in order |
+| `context` | no | array | Allowed **only** when `type = question` or, from Phase 3, `debate` ([debate.md](debate.md#request-type-debate)) (else `bad_request` / `bad_body`). 1–8 [context files](#context-files), in order |
 
 ### Context files
 
