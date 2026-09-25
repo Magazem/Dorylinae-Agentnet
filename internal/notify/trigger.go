@@ -212,6 +212,10 @@ func titleLine(ev Event) string {
 		return fmt.Sprintf("%s cancelled their %s request", name, ev.Type)
 	case EventQuarantined:
 		return fmt.Sprintf("%s's result is quarantined and waits for your release", name)
+	case EventSessionResult:
+		return fmt.Sprintf("%s's result is ready for your review", name)
+	case EventSessionChanges:
+		return fmt.Sprintf("%s asked for changes", name)
 	case EventDeviceLinked:
 		// Type holds the peer's role in the link: helper or controller.
 		return fmt.Sprintf("%s is now linked as your %s", name, ev.Type)

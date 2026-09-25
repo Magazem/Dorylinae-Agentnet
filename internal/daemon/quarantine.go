@@ -11,6 +11,18 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
+// sessionNotifier builds a worksession hook that fires a content-free session
+// notification, after the commit that triggered it (D25).
+func sessionNotifier(req *request.Store, event, direction, state string) func(ctx context.Context, sid, peer, requestID string) {
+	return func(ctx context.Context, _, peer, requestID string) {
+		if req.Notify == nil {
+			return
+		}
+		typ, title, _ := req.PeekTypeTitle(ctx, direction, peer, requestID)
+		req.Notify(ctx, event, request.NotifyInfo{Peer: peer, Type: typ, Title: title, RequestID: requestID, State: state})
+	}
+}
+
 // wireQuarantine connects the work session store to the grants table and the
 // approval store (Docs/protocol/work-session.md §Quarantine, 2.4):
 //
@@ -34,6 +46,11 @@ func wireQuarantine(ws *worksession.Store, caps *capability.Store, appr *approva
 			req.Notify(ctx, notify.EventQuarantined, request.NotifyInfo{Peer: peer, RequestID: requestID, State: worksession.StateQuarantined})
 		}
 	}
+	// D25: a result waits for the requester (direction "out"), and a change
+	// request reaches the worker (direction "in"). Both carry only the peer and
+	// the request's type and title, never the result or the changes text.
+	ws.OnResult = sessionNotifier(req, notify.EventSessionResult, "out", worksession.StateAwaitingResult)
+	ws.OnChanges = sessionNotifier(req, notify.EventSessionChanges, "in", worksession.StateOpen)
 	ws.OnClosed = func(ctx context.Context, sid string) {
 		subjects := []string{sid}
 		if recs, err := caps.List(ctx, capability.ListFilter{Session: sid, Direction: capability.DirectionIssued}); err == nil {

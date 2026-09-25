@@ -23,6 +23,7 @@ type stateOutcome struct {
 	requestID  string
 	state      string
 	seq, round int
+	newRound   bool // state open with a changes text (a change request)
 	// auditComplete appends the request.complete audit row of a close,
 	// after commit (request.Store.CompleteInTx).
 	auditComplete func(context.Context)
@@ -200,7 +201,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		}
 	}
 
-	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, auditComplete: auditComplete})
+	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete})
 	return nil
 }
 
@@ -219,6 +220,9 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	}
 	if out.applied && out.state == StateClosed {
 		s.closedAfterCommit(ctx, out.sessionID)
+	}
+	if out.applied && out.newRound && s.OnChanges != nil {
+		s.OnChanges(ctx, out.sessionID, out.peer, out.requestID)
 	}
 	if s.Audit == nil {
 		return

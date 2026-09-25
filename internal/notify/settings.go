@@ -30,6 +30,14 @@ const (
 	// (Docs/protocol/work-session.md §Quarantine, 2.4). It carries no content:
 	// the peer name only.
 	EventQuarantined = "session.quarantined"
+	// EventSessionResult fires on the requester when a result for the current
+	// round waits for accept-result or request-changes (D25). Content-free: the
+	// peer name and the requester's own request title.
+	EventSessionResult = "session.result"
+	// EventSessionChanges fires on the worker when the requester asked for
+	// changes and a new round began (D25). Content-free: the peer name and the
+	// request title, never the changes text.
+	EventSessionChanges = "session.changes"
 	// EventDeviceLinked fires when an own-device link becomes active on this
 	// device (D22, review 36 L5). Content-free: the peer's name and its role.
 	// Desktop only: it is not sent to the webhook.
@@ -47,6 +55,10 @@ var DefaultEvents = map[string]bool{
 	EventCancelled: true,
 	// On by default: a quarantined result waits for a human to release it.
 	EventQuarantined: true,
+	// On by default: a waiting result and a change request both need a human
+	// or a worker to act.
+	EventSessionResult:  true,
+	EventSessionChanges: true,
 
 	EventDeviceLinked: true,
 }

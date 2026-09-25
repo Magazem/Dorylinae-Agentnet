@@ -204,6 +204,9 @@ func (s *Store) afterResult(ctx context.Context, op *mail.Opened) {
 	if out.quarantined && out.ignored == "" && !out.orphan && s.OnQuarantined != nil {
 		s.OnQuarantined(ctx, out.sessionID, out.peer, out.requestID)
 	}
+	if !out.quarantined && out.ignored == "" && !out.orphan && s.OnResult != nil {
+		s.OnResult(ctx, out.sessionID, out.peer, out.requestID)
+	}
 	if s.Audit == nil {
 		return
 	}

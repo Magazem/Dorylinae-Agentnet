@@ -366,8 +366,7 @@ a body cannot be moved to another session.
 
 After commit: audit `ws.result_in {session, peer, round, result_bytes, output_bytes,
 artifacts, quarantined}`, and notify `session.quarantined` when the result entered
-quarantine (there is no separate non-quarantined result notification, see
-[Notifications](#notifications)).
+quarantine, or `session.result` when it did not (see [Notifications](#notifications)).
 
 ### Ordering
 
@@ -492,14 +491,24 @@ Exit 1 error, 2 usage, 3 daemon not running, as for every command. The `--json` 
 
 ## Notifications
 
-New event for [notify.md](notify.md) (the `notify.events` setting): `session.quarantined` (A,
-on by default), content-free like every other Phase 2 notification: "<name>'s result is
-quarantined and waits for your release" (no title, no status). A completed or cancelled
-session is reported through the existing request-level events (`request.completed`,
-`request.cancelled`), not a separate `session.*` event; `session.result` and
-`session.changes` from the plan's wording were not implemented as separate events for the
-same reason (review 35 L5; 2.9 reconciliation). Webhooks carry the event name, session id,
-request id and peer only; never result content, `changes` or reasons.
+Events for [notify.md](notify.md) (the `notify.events` setting), all on by default and
+content-free (D25):
+
+- `session.quarantined` (A): "<name>'s result is quarantined and waits for your release" (no
+  title, no status).
+- `session.result` (A): "<name>'s result is ready for your review", body = the request title
+  (the requester's own text). Fired once, after commit, when a `ws.result` for the current
+  round is applied **without** quarantine (`awaiting_result`). Not fired for a quarantined
+  result (`session.quarantined` covers it), nor after a release (the human who approved the
+  release already knows), nor for an ignored or orphan result. A later round's result fires it
+  again.
+- `session.changes` (B): "<name> asked for changes", body = the request title (cleaned: it is
+  the peer's text on B). Fired once, after commit, when a `ws.state` starts a new round with a
+  `changes` text; never for a duplicate `ws.state`. The `changes` text is never shown.
+
+A completed or cancelled session is reported through the existing request-level events
+(`request.completed`, `request.cancelled`). Webhooks carry the event name, request id, peer
+and (with `title: true`) the request title only; never result content, `changes` or reasons.
 
 ## Audit
 

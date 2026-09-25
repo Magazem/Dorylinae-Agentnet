@@ -65,6 +65,18 @@ type Store struct {
 	// notification here). It receives ids only, never any result content.
 	OnQuarantined func(ctx context.Context, sid, peer, requestID string)
 
+	// OnResult, if set, is called after the commit of a ws.result that was
+	// applied without quarantine: a result for the current round now waits for
+	// accept-result or request-changes (D25, session.result). Not called for a
+	// quarantined result (OnQuarantined covers it) nor after a release (the
+	// human who released it already knows). Ids only, never content.
+	OnResult func(ctx context.Context, sid, peer, requestID string)
+
+	// OnChanges, if set, is called on the worker after the commit of a ws.state
+	// that started a new round with a changes text (D25, session.changes). Ids
+	// only: the changes text is never passed.
+	OnChanges func(ctx context.Context, sid, peer, requestID string)
+
 	Now func() time.Time
 }
 
