@@ -596,6 +596,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	})
 	registerDebate(srv, debates, peerStore, teamStore, reqStore)
 	registerDebateConstrain(srv, debates, apprStore, peerStore)
+	registerDecision(srv, debates, peerStore, reqStore, id.Card().Card.PublicKey, id.Card().Card.Name)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

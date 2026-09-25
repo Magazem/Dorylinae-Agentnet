@@ -441,3 +441,57 @@ func (s *Store) Decision(ctx context.Context, id string) (DecisionRecord, error)
 	d.Decision, d.SigInitiator, d.SigRespondent, d.PeerHash = []byte(canon), sigI.String, sigR.String, peerHash.String
 	return d, nil
 }
+
+// DecisionList returns every stored Decision, newest first, optionally
+// narrowed by state and peer (Docs/protocol/decision.md §IPC, decision_list).
+func (s *Store) DecisionList(ctx context.Context, state, peer string) ([]DecisionRecord, error) {
+	q := `SELECT id, session, role, peer, decision, hash, sig_initiator, sig_respondent, peer_hash, state, created, updated FROM decisions WHERE 1=1`
+	var args []any
+	if state != "" {
+		q += ` AND state = ?`
+		args = append(args, state)
+	}
+	if peer != "" {
+		q += ` AND peer = ?`
+		args = append(args, peer)
+	}
+	rows, err := s.DB.QueryContext(ctx, q+` ORDER BY created DESC, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("debate: list decisions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []DecisionRecord
+	for rows.Next() {
+		var d DecisionRecord
+		var canon string
+		var sigI, sigR, peerHash sql.NullString
+		if err := rows.Scan(&d.ID, &d.Session, &d.Role, &d.Peer, &canon, &d.Hash, &sigI, &sigR, &peerHash, &d.State, &d.Created, &d.Updated); err != nil {
+			return nil, fmt.Errorf("debate: list decisions: %w", err)
+		}
+		d.Decision, d.SigInitiator, d.SigRespondent, d.PeerHash = []byte(canon), sigI.String, sigR.String, peerHash.String
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// DecisionOutcome reads the outcome member of a stored canonical Decision
+// (exported for the daemon's decision_list/decision_show views).
+func DecisionOutcome(canon []byte) (string, error) {
+	return decisionOutcome(canon)
+}
+
+// DecisionBySession returns the stored Decision of a session, if any, found
+// reporting false when the debate has none yet (open, or cancelled).
+func (s *Store) DecisionBySession(ctx context.Context, session string) (DecisionRecord, bool, error) {
+	d, err := s.Decision(ctx, session)
+	if errors.Is(err, ErrUnknownDecision) {
+		return DecisionRecord{}, false, nil
+	}
+	if err != nil {
+		return DecisionRecord{}, false, err
+	}
+	return d, true, nil
+}

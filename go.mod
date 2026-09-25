@@ -8,6 +8,7 @@ require (
 	github.com/flynn/noise v1.1.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/mattn/go-isatty v0.0.24
+	github.com/yuin/goldmark v1.7.8
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.57.0
 	golang.org/x/sys v0.48.0

@@ -52,6 +52,7 @@ var methodInventory = map[string]invEntry{
 	// scenario's daemons; TestShutdownIPC (daemon_test.go) asserts that row.
 	"shutdown":    exempt(),
 	"debate_list": exempt(), "debate_show": exempt(),
+	"decision_list": exempt(), "decision_show": exempt(),
 
 	// Approvals.
 	"approval_open":   acts("A", "approval.open"),

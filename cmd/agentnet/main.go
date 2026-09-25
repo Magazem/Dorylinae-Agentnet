@@ -73,6 +73,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDebate(args[1:], stdout, stderr)
 	case "debates":
 		return runDebates(args[1:], stdout, stderr)
+	case "decision":
+		return runDecision(args[1:], stdout, stderr)
+	case "decisions":
+		return runDecisions(args[1:], stdout, stderr)
 	case "inbox":
 		return runInbox(args[1:], stdout, stderr)
 	case "accept":
@@ -146,6 +150,8 @@ Commands:
   consult   Ask a teammate's agent a question, with context files
   debate    Argue a question with a teammate's agent, ending in a Decision
   debates   List your debates
+  decision  Show, export or verify a Decision
+  decisions List your Decisions
   inbox     List the requests addressed to you
   accept    Accept a request from your inbox
   decline   Decline a request from your inbox

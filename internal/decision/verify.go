@@ -42,6 +42,10 @@ type Result struct {
 	Respondent string
 	// Decision is canonical(decision) (when step 1 passed).
 	Decision []byte
+	// SigInitiator and SigRespondent are the present signatures (base64url,
+	// when step 1 passed), for a renderer's Verification section.
+	SigInitiator  string
+	SigRespondent string
 }
 
 func fail(r Result, step int, format string, a ...any) Result {
@@ -136,9 +140,11 @@ func Verify(data []byte, schema Schema) Result {
 	}
 	res.Valid = true
 	res.SignedBy = []string{RoleInitiator}
-	if _, ok := sig[RoleRespondent]; ok {
+	res.SigInitiator = sig[RoleInitiator]
+	if s, ok := sig[RoleRespondent]; ok {
 		res.SignedBy = append(res.SignedBy, RoleRespondent)
 		res.Complete = true
+		res.SigRespondent = s
 	}
 	return res
 }

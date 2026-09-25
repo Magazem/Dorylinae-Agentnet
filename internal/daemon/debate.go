@@ -23,6 +23,17 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
 
+// DebateDecisionRef is debate_show's "decision" member (ticket 3.3b): a
+// pointer to the Decision once the debate has one (agreed, escalated or
+// broken with a one-sided record), never its content (fetch it with
+// decision_show). Absent while the debate is open or ended cancelled.
+type DebateDecisionRef struct {
+	ID       string   `json:"id"`
+	State    string   `json:"state"`
+	Outcome  string   `json:"outcome,omitempty"`
+	SignedBy []string `json:"signed_by"`
+}
+
 // CodeNotYourTurn is debate_submit's refusal when the given kind or the
 // caller is not the next slot (Docs/protocol/debate.md §IPC).
 const CodeNotYourTurn = "not_your_turn"
@@ -88,6 +99,7 @@ type DebateView struct {
 	Entries         int                    `json:"entries,omitempty"`
 	Constraints     []DebateConstraintView `json:"constraints,omitempty"`
 	ConstraintCount int                    `json:"constraint_count,omitempty"`
+	Decision        *DebateDecisionRef     `json:"decision,omitempty"`
 }
 
 // DebateListResult is the result of debate_list.
@@ -118,8 +130,11 @@ func debateRequestDirection(role string) string {
 }
 
 // buildDebateView renders v (Docs/protocol/debate.md §IPC). listMode omits
-// topic, context, the transcript and constraint texts, keeping their counts.
-func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *team.Store, rs *request.Store, listMode bool) DebateView {
+// topic, context, the transcript, constraint texts and the decision pointer,
+// keeping counts instead. ds is nil in call sites that never show a single
+// debate (there are none today, but the parameter stays optional so a
+// future list-only caller need not thread it).
+func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *team.Store, rs *request.Store, ds *debate.Store, listMode bool) DebateView {
 	fp, _ := envelope.KeyFingerprint(v.Peer)
 	name := v.Peer
 	if p, err := resolvePeer(ctx, ps, v.Peer); err == nil {
@@ -161,6 +176,19 @@ func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *te
 	dv.Constraints = make([]DebateConstraintView, 0, len(v.Constraints))
 	for _, c := range v.Constraints {
 		dv.Constraints = append(dv.Constraints, DebateConstraintView{ID: c.ID, Author: c.Author, At: c.At, Text: c.Text, State: c.State})
+	}
+	if ds != nil {
+		if d, found, err := ds.DecisionBySession(ctx, v.Session); err == nil && found {
+			outcome, _ := debate.DecisionOutcome(d.Decision)
+			var signedBy []string
+			if d.SigInitiator != "" {
+				signedBy = append(signedBy, debate.RoleInitiator)
+			}
+			if d.SigRespondent != "" {
+				signedBy = append(signedBy, debate.RoleRespondent)
+			}
+			dv.Decision = &DebateDecisionRef{ID: d.ID, State: d.State, Outcome: outcome, SignedBy: signedBy}
+		}
 	}
 	return dv
 }
@@ -229,7 +257,7 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 		}
 		out := make([]DebateView, len(views))
 		for i, v := range views {
-			out[i] = buildDebateView(ctx, v, ps, ts, rs, true)
+			out[i] = buildDebateView(ctx, v, ps, ts, rs, nil, true)
 		}
 		return DebateListResult{Debates: out}, nil
 	})
@@ -243,7 +271,7 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 		if err != nil {
 			return nil, debateError(err)
 		}
-		return DebateShowResult{Debate: buildDebateView(ctx, v, ps, ts, rs, false)}, nil
+		return DebateShowResult{Debate: buildDebateView(ctx, v, ps, ts, rs, ds, false)}, nil
 	})
 
 	srv.Handle("debate_submit", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -267,7 +295,7 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 		if err != nil {
 			return nil, debateError(err)
 		}
-		return DebateSubmitResult{Debate: buildDebateView(ctx, v, ps, ts, rs, false), MailID: out.MailID}, nil
+		return DebateSubmitResult{Debate: buildDebateView(ctx, v, ps, ts, rs, ds, false), MailID: out.MailID}, nil
 	})
 }
 
