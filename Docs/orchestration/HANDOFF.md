@@ -12,7 +12,7 @@ Last updated: 2026-09-25, Phase 3 spec work started.
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is
 free.
 
-**Phase 3 started 2026-09-25** (owner: "start now"). Step 1 done (~17 min, Opus): specs committed on `p3/specs` (bc3c45f): Docs/protocol/{debate,decision,audit,experience}.md + Docs/review/42-phase3-tickets.md (migrations 18–21, OD-P3-1..13). Step 2 done (~14 min, Opus): review 43 (0 C, 3 H, 10 M, all fixed; new OD-P3-14), commit c834ed7 on `p3/specs`. **Step 3: the owner is reading the specs/ODs before approving** (worktree `AgentNet-wt/p3-specs`; OD table in Docs/review/42-phase3-tickets.md). 3.H: one real-agent run near the end is approved; weekly CI uses the stand-in.
+**Phase 3 started 2026-09-25** (owner: "start now"). Step 1 done (~17 min, Opus): specs committed on `p3/specs` (bc3c45f): Docs/protocol/{debate,decision,audit,experience}.md + Docs/review/42-phase3-tickets.md (migrations 18–21, OD-P3-1..13). Step 2 done (~14 min, Opus): review 43 (0 C, 3 H, 10 M, all fixed; new OD-P3-14), commit c834ed7 on `p3/specs`. Step 3 done: owner approved (D30); specs merged to main. **Step 4: tickets** per 42.
 
 **Open items (all owner-side):**
 1. **Owner's two-machine run.** The top of `tests/phase1-manual.md` lists the only checks
@@ -170,6 +170,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D27 | **Trial: Sonnet with thinking off** for routine, well-scoped tickets. New template **Worker-Sonnet-Lite** `custom-1790318917893-ab35` (Sonnet, thought_level=off, same worker rules as Worker-Sonnet). First pair: B-1 (Lite) vs B-2 (normal Sonnet control), both small backlog items. Results in `Docs/orchestration/model-trial.md`. |
 | D28 | **Worker-Sonnet-Lite (Sonnet, thinking off) is the default for routine, well-scoped tickets** (backlog items, fixes, portability), under watch: keep logging every Lite ticket in `Docs/orchestration/model-trial.md`, and if a Lite ticket needs rework or misses spec, report it to the owner and fall back to normal Sonnet for that kind of work. Normal Sonnet for feature tickets with design choices; Opus per D26. |
 | D29 | Owner's Phase 1 two-machine run **passed** (2026-09-25); tag `phase-1` on 6baf246 (the Phase 1 close). Phase 2 manual checks are pending (owner runs them in the evening); `phase-2` tag after that. |
+| D30 | **Phase 3 specs approved (2026-09-25)**, OD-P3-1..14 as recommended in `Docs/review/42-phase3-tickets.md`: one-sided commit inside the request; new request type `debate`; constraints approval-gated (window); no grants in debates; daemons sign automatically, and only a two-signature Decision is confirmed (single-signed exports with an UNCONFIRMED banner, verify exit 6); manual audit anchors; experience record has no read command; review-38 L3 → 4.8; OS user-presence → Phase 4; secure_delete ON (3.9). 3.H: one real-agent run near the end. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);

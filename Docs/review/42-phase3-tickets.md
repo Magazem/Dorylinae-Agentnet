@@ -1,6 +1,6 @@
 # 42: Phase 3 tickets (3.1–3.7: debate, decision records, audit chain, experience record)
 
-Status: **draft, adversarially reviewed ([43](43-phase3-spec-review.md), fixes applied), for owner approval.** No code starts
+Status: **approved by the owner 2026-09-25 (D30 in HANDOFF), all OD-P3-1..14 as recommended; adversarially reviewed ([43](43-phase3-spec-review.md), fixes applied).** No code starts
 before approval (HANDOFF rule 3). Specs: [debate.md](../protocol/debate.md),
 [decision.md](../protocol/decision.md), [audit.md](../protocol/audit.md),
 [experience.md](../protocol/experience.md), and small additions to
