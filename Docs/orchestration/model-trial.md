@@ -85,3 +85,4 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 | 3.1b debate IPC/CLI | Sonnet 5 | **~130** (outlier) | gofmt after conflict resolution | not required |
 | DX-1 owner rough edges | Sonnet 5, thinking off | ~27 | missed a new audit-inventory entry (3.6b landed meanwhile) | not required |
 | 3.4-i integration 3.4 × 3.1b | Sonnet 5, thinking off | ~15 | clean | not required; found and fixed a real test-tracking bug |
+| 3.3a signed Decision | Opus 5.5 | ~23 | clean | pending |
