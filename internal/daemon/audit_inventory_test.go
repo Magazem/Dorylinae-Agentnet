@@ -50,7 +50,7 @@ var methodInventory = map[string]invEntry{
 	"audit_list": exempt(), "audit_verify": exempt(), "audit_head": exempt(),
 	// shutdown audits daemon.stop_requested, but calling it would stop the shared
 	// scenario's daemons; TestShutdownIPC (daemon_test.go) asserts that row.
-	"shutdown": exempt(),
+	"shutdown":    exempt(),
 	"debate_list": exempt(), "debate_show": exempt(),
 
 	// Approvals.
