@@ -4,9 +4,16 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-25, Phase 3 spec work started.
+Last updated: 2026-09-25 (Friday), PARKED at the end of the work-PC session.
 
 ## 0. Status and next steps
+
+**PARKED 2026-09-25 (work PC → home PC).** Phase 3 is complete except the **3.H real-agent run** and **3.P**:
+- Merged on main: 3.2, 3.1a, 3.1b, 3.4 (+3.4-i), 3.6a, 3.6b, 3.3a, 3.3b, 3.7, 3.9, DX-1; decisions D30–D33.
+- **3.H work in progress** is pushed as branch `p3/p3-harness` (b36bd13): the stand-in debate mode passes locally (agreed and escalated), scripts `phase3-agents.ps1`/`.sh`, the weekly workflow `phase3-harness.yml`, the snippet's debate paragraph; details in `WIP-3.H.md` on that branch. **Left:** the ONE approved real run (Claude Code ↔ agy, both directions, ~1.5–3.5 USD), with results recorded in `tests/phase3-manual.md`. The branch has a "3.H results" section, and main now has 3.9's version of that file: merge both. Then gate, merge the branch, dispatch the weekly workflow once, check CI.
+- **3.P:** push main; tag `phase-3` only with the owner's OK (and `phase-2` after the owner's Phase 2 manual checks).
+- Owner checks pending: `tests/phase2-manual.md` (including the long approval-window summary) and `tests/phase3-manual.md`.
+- Home PC: follow `Docs/orchestration/HOME-SETUP.md`; the boards are in `Docs/orchestration/board-snapshot.md`.
 
 **Phases 0, 1 and 2 are code-complete, merged and pushed. CI is green on main, and the weekly Phase 2 harness workflow (stand-in agent) passes on Linux, Windows and macOS.** Phase 2 real-agent rounds (Claude Code ↔ agy) passed both ways (2.H).
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is

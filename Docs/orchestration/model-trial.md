@@ -88,3 +88,5 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 | 3.3a signed Decision | Opus 5.5 | ~23 | clean | 0/0/1 |
 | 3.3b Decision output | Sonnet 5 | ~50 | golden files failed on Windows (CRLF; a .gitattributes issue, not the worker's) | 0/1/4 |
 | 3.7 experience record | Sonnet 5 | ~32 | clean | not required |
+| 3.9 Phase 3 e2e + docs | Sonnet 5 | ~16 | clean (D33 doc edit added by me; its message arrived after the worker finished) | not required |
+| 3.H harness (stand-in part) | Sonnet 5 | ~50 (parked before the real run) | clean | not required |
