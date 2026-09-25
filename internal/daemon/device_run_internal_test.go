@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -197,5 +198,47 @@ func TestScopeSummaryEscapesInvisibleCharacters(t *testing.T) {
 	}
 	if !strings.Contains(s, "\"/srv/re\\u200bpo\"") || !strings.Contains(s, "[\"/bin/tool\",\"--x\\u202e-- fr- mr\"]") {
 		t.Fatalf("summary does not show the escaped path and argv: %s", s)
+	}
+}
+
+// Review 41 M3, L2: while a command runs, each sweep re-reads its scope. A
+// scope replaced with a later expiry and the same command moves the expiry
+// the watch waits for (the plan's own made it re-check every 10 ms after the
+// old expiry); a scope replaced so that the command's name stands for other
+// arguments stops the run.
+func TestHelperSweepFollowsReplacedScope(t *testing.T) {
+	e := newRouteEnv(t)
+	ctx := context.Background()
+	if !e.route(t, "C", "r-1", "test") {
+		t.Fatal("not routed")
+	}
+	job, plan, err := e.r.take(ctx, true)
+	if err != nil || job == nil {
+		t.Fatalf("take: %v %v", job, err)
+	}
+	runCtx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
+	e.r.curMu.Lock()
+	e.r.cur = &activeRun{session: job.Session, stop: stop, plan: plan, expires: plan.Expires}
+	e.r.curMu.Unlock()
+
+	later := e.now.Add(3 * time.Hour).Truncate(time.Second)
+	if _, err := e.db.Exec(`UPDATE device_scopes SET scope = json_set(scope, '$.expires', ?)`, later.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	e.r.sweep(ctx)
+	if runCtx.Err() != nil {
+		t.Fatal("a scope replaced with a later expiry stopped the run")
+	}
+	if got := e.r.runExpires(); !got.Equal(later) {
+		t.Fatalf("expiry after the sweep = %v, want %v", got, later)
+	}
+
+	if _, err := e.db.Exec(`UPDATE device_scopes SET scope = json_set(scope, '$.commands[0].argv', json_array(json_extract(scope, '$.commands[0].argv[0]'), '--other'))`); err != nil {
+		t.Fatal(err)
+	}
+	e.r.sweep(ctx)
+	if !errors.Is(context.Cause(runCtx), errRunRevoked) {
+		t.Fatalf("a command whose arguments changed kept running: %v", context.Cause(runCtx))
 	}
 }

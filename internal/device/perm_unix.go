@@ -18,8 +18,9 @@ var adminGroups = map[string]bool{"root": true, "wheel": true, "admin": true, "s
 // checkPathOwner refuses p when it is owned by anyone but root or this user,
 // is writable by every user (sticky directories such as /tmp included), or is
 // writable by a group that is not root's, an admin group or this user's own
-// private group. A symbolic link itself is skipped: its permissions are never
-// used, and its directory, and what it points to, are checked.
+// private group, or when its Linux access list lets another user or group
+// write it (checkACL). A symbolic link itself is skipped: its permissions are
+// never used, and its directory, and what it points to, are checked.
 func checkPathOwner(p string, _ pathRole) error {
 	fi, err := os.Lstat(p)
 	if err != nil {
@@ -32,7 +33,11 @@ func checkPathOwner(p string, _ pathRole) error {
 	if !ok {
 		return &WritableError{Path: p, Who: "an unknown owner"}
 	}
-	return classifyUnix(p, uint64(st.Uid), uint64(st.Gid), fi.Mode().Perm(), uint64(os.Geteuid()), trustedGroup) //nolint:gosec // user ids are never negative
+	euid := uint64(os.Geteuid()) //nolint:gosec // user ids are never negative
+	if err := checkACL(p, euid, trustedGroup); err != nil {
+		return err
+	}
+	return classifyUnix(p, uint64(st.Uid), uint64(st.Gid), fi.Mode().Perm(), euid, trustedGroup)
 }
 
 // classifyUnix applies the rule of checkPathOwner to one owner, group and

@@ -3,6 +3,7 @@ package device
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -136,5 +137,55 @@ func TestClassifyACE(t *testing.T) {
 		if got := classifyACE(tc.typ, tc.fl, tc.mask, tc.sid, tc.owner, self, tc.role); got != tc.wantWho {
 			t.Errorf("%s: who = %q, want %q", tc.name, got, tc.wantWho)
 		}
+	}
+}
+
+// junction makes link a junction to target, or skips the test.
+func junction(t *testing.T, link, target string) {
+	t.Helper()
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil { //nolint:gosec // fixed test command
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+}
+
+// Review 41 M1: a junction on the program's path is checked as a link (its
+// own access list, which can rewrite where it points) and followed: the
+// directories above its target count too. CheckProgramOwner itself refuses
+// any path through a junction today (EvalSymlinks does not follow mount
+// points), so the walk is exercised directly.
+func TestOwnerWalkJunction(t *testing.T) {
+	dir := testutil.PrivateDir(t)
+	open := filepath.Join(dir, "open")
+	inner := filepath.Join(open, "real")
+	if err := os.MkdirAll(inner, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inner, "tool.exe"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := filepath.Join(dir, "j")
+	junction(t, j, inner)
+	walk := func() error {
+		w := ownerWalk{seen: map[string]bool{}}
+		return w.check(filepath.Join(j, "tool.exe"), 0)
+	}
+	if err := walk(); err != nil {
+		t.Fatalf("a junction to a private directory: %v", err)
+	}
+	var we *WritableError
+	grantUsers(t, open, fileDeleteChild)
+	if err := walk(); !errors.As(err, &we) || we.Path != open {
+		t.Fatalf("a junction whose target's directory Users can delete from: %v", err)
+	}
+
+	j2 := filepath.Join(dir, "j2")
+	junction(t, j2, filepath.Join(dir, "j2-target"))
+	if err := os.Mkdir(filepath.Join(dir, "j2-target"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	grantUsers(t, j2, fileWriteAttrs)
+	w := ownerWalk{seen: map[string]bool{}}
+	if err := w.check(j2, 1); !errors.As(err, &we) || we.Path != j2 {
+		t.Fatalf("a junction Users can rewrite: %v", err)
 	}
 }

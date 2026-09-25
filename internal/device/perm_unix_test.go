@@ -112,3 +112,51 @@ func TestClassifyUnix(t *testing.T) {
 		}
 	}
 }
+
+// Review 41 M1: a link to a link is judged along every hop. Here the
+// middle link sits in a world-writable directory that is neither on the
+// path as given nor on the fully resolved path, so whoever can write there
+// could point it at another program.
+func TestCheckProgramOwnerLinkHops(t *testing.T) {
+	dir := testutil.PrivateDir(t)
+	for _, d := range []string{"real", "open", "bin"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prog := filepath.Join(dir, "real", "tool")
+	if err := os.WriteFile(prog, []byte("x"), 0o700); err != nil { //nolint:gosec // an executable test file
+		t.Fatal(err)
+	}
+	hop := filepath.Join(dir, "open", "hop")
+	if err := os.Symlink(filepath.Join("..", "real", "tool"), hop); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "bin", "tool")
+	if err := os.Symlink(hop, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckProgramOwner(link); err != nil {
+		t.Fatalf("links through private directories: %v", err)
+	}
+	open := filepath.Join(dir, "open")
+	if err := os.Chmod(open, 0o777); err != nil { //nolint:gosec // the point of the test
+		t.Fatal(err)
+	}
+	var we *WritableError
+	if err := CheckProgramOwner(link); !errors.As(err, &we) || we.Path != open {
+		t.Fatalf("a link whose middle hop others can replace: %v", err)
+	}
+
+	// A loop of links is refused, not followed forever.
+	a, b := filepath.Join(dir, "bin", "a"), filepath.Join(dir, "bin", "b")
+	if err := os.Symlink(b, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckProgramOwner(a); err == nil {
+		t.Fatal("a loop of links was accepted")
+	}
+}

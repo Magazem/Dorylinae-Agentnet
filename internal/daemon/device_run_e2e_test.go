@@ -25,7 +25,18 @@ var (
 	runHelperOnce sync.Once
 	runHelperPath string
 	runHelperErr  error
+	runHelperDir  string
 )
+
+// TestMain removes the directory of buildRunHelper, which is under the
+// user's cache directory, not the temp directory (review 41 L6).
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if runHelperDir != "" {
+		_ = os.RemoveAll(runHelperDir)
+	}
+	os.Exit(code)
+}
 
 // buildRunHelper builds internal/device/testdata/runnerhelper once per test
 // binary (go build, no shell scripts).
@@ -33,6 +44,7 @@ func buildRunHelper(t *testing.T) string {
 	t.Helper()
 	runHelperOnce.Do(func() {
 		dir, err := testutil.MkdirPrivate("dn-runhelper-")
+		runHelperDir = dir
 		if err != nil {
 			runHelperErr = err
 			return
@@ -457,5 +469,20 @@ func TestDeviceLinkRejectFreesSlot(t *testing.T) {
 	harnessWait(t, "the attempt to be revoked", func() bool { return help.linkCount("pending_approval") == 0 })
 	if _, err := help.requestLink(other, "helper", devFP(t, other)); err != nil {
 		t.Fatalf("a second helper attempt right after a rejected one: %v", err)
+	}
+}
+
+// Review 41 L1: a run the daemon stopped with, whose scope is no longer valid
+// when it starts again (here: expired meanwhile), is reported like a run
+// stopped on revoke, ws.cancel and no result, not as "interrupted".
+func TestHelperRestartReportsRevokedRunCancelled(t *testing.T) {
+	e := newHelperEnv(t, true)
+	id, _ := e.startTree(t)
+	e.help.stop()
+	e.help.clk.Advance(8 * 24 * time.Hour)
+	e.help.start()
+	e.cancelled(t, id)
+	if n := e.ctrl.count(`SELECT COUNT(*) FROM work_sessions WHERE request_id = '` + id + `' AND result IS NOT NULL`); n != 0 {
+		t.Fatal("a run no longer allowed was reported with a result after the restart")
 	}
 }

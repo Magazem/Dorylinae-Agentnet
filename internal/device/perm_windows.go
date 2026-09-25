@@ -27,6 +27,7 @@ const (
 	fileWriteData   = 0x2
 	fileAppendData  = 0x4
 	fileDeleteChild = 0x40
+	fileWriteAttrs  = 0x100
 	accessDelete    = 0x10000
 	accessWriteDAC  = 0x40000
 	accessWriteOwn  = 0x80000
@@ -40,7 +41,9 @@ const (
 // .exe is loaded first) or a subdirectory (a "<name>.exe.local" redirect),
 // and deleting a child. Above that: deleting or renaming a child or the
 // directory itself; merely creating new entries there (the Authenticated
-// Users "append data" on C:\) cannot replace an existing one.
+// Users "append data" on C:\) cannot replace an existing one. On a symbolic
+// link or junction met on the way, anything that could rewrite where it
+// points: writing its data or attributes too (review 41 M1).
 func writeMask(role pathRole) uint32 {
 	common := uint32(accessDelete | accessWriteDAC | accessWriteOwn | genericAll)
 	switch role {
@@ -48,6 +51,8 @@ func writeMask(role pathRole) uint32 {
 		return common | fileWriteData | fileAppendData | genericWrite
 	case roleParent:
 		return common | fileWriteData | fileAppendData | fileDeleteChild | genericWrite
+	case roleLink:
+		return common | fileWriteData | fileAppendData | fileWriteAttrs | genericWrite
 	default:
 		return common | fileDeleteChild
 	}
@@ -57,6 +62,7 @@ func writeMask(role pathRole) uint32 {
 const (
 	aceAllowed         = 0x0
 	aceDenied          = 0x1
+	aceAllowedCompound = 0x4
 	aceAllowedObject   = 0x5
 	aceAllowedCallback = 0x9
 	aceDeniedCallback  = 0xA
@@ -121,7 +127,7 @@ func classifyACE(aceType, aceFlags uint8, mask uint32, sid, owner, self string, 
 	}
 	switch aceType {
 	case aceAllowed, aceAllowedCallback:
-	case aceAllowedObject, aceAllowedCbObject:
+	case aceAllowedObject, aceAllowedCbObject, aceAllowedCompound:
 		return "an object access entry"
 	default:
 		return ""

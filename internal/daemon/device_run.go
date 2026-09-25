@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,10 +40,14 @@ const runWatchEvery = time.Minute
 // ended or its scope was cleared, replaced without it, or expired.
 var errRunRevoked = errors.New("device: the run is no longer allowed")
 
-// activeRun is the command being run: its session and what stops it.
+// activeRun is the command being run: its session, what stops it, what it
+// runs and when its scope expires (kept current by each sweep, so a scope
+// replaced with a later expiry moves the watch's next check).
 type activeRun struct {
 	session string
 	stop    context.CancelCauseFunc
+	plan    device.RunPlan
+	expires time.Time
 }
 
 // deviceRunsKey is the settings row holding the run queue, so that a restart
@@ -188,6 +193,36 @@ func (r *helperRunner) stopRunning(session string) {
 	}
 }
 
+// stillRunning applies a sweep's plan for the running command of session: a
+// scope replaced so that the command's name now stands for another program,
+// arguments, environment or repo stops it (the human approved the new
+// command, not the one running, review 41 L2); otherwise its expiry is
+// updated for watch.
+func (r *helperRunner) stillRunning(session string, plan device.RunPlan) {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	if r.cur == nil || r.cur.session != session {
+		return
+	}
+	old := r.cur.plan
+	if old.Dir != plan.Dir || !slices.Equal(old.Command.Argv, plan.Command.Argv) || !slices.Equal(old.Command.Env, plan.Command.Env) {
+		r.cur.stop(errRunRevoked)
+		return
+	}
+	r.cur.expires = plan.Expires
+}
+
+// runExpires is when the running command's scope expires, as of the last
+// sweep.
+func (r *helperRunner) runExpires() time.Time {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	if r.cur == nil {
+		return time.Time{}
+	}
+	return r.cur.expires
+}
+
 // RouteTx implements request.HelperRouter (Docs/protocol/device.md §Running):
 // a request is in scope when the sender is this device's controller, the
 // scope allows its type and names its command, it was created after the link
@@ -278,14 +313,16 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 		return nil, device.RunPlan{}, err
 	}
 	stop := ""
+	var runningPlan device.RunPlan
 	if st.Running != nil {
-		_, ok, err := r.valid(ctx, tx, *st.Running, now)
+		p, ok, err := r.valid(ctx, tx, *st.Running, now)
 		if err != nil {
 			return nil, device.RunPlan{}, err
 		}
 		if !ok {
 			stop = st.Running.Session
 		}
+		runningPlan = p
 	}
 	var keep, dropped []runJob
 	var next *runJob
@@ -319,8 +356,11 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 	} else {
 		_ = tx.Rollback()
 	}
-	if stop != "" {
+	switch {
+	case stop != "":
 		r.stopRunning(stop)
+	case st.Running != nil && next == nil:
+		r.stillRunning(st.Running.Session, runningPlan)
 	}
 	for _, j := range dropped {
 		r.cancel(ctx, j)
@@ -360,7 +400,9 @@ func (r *helperRunner) finish(ctx context.Context) error {
 
 // recoverAfterRestart applies Docs/protocol/device.md §Limits to what a
 // previous run of the daemon left: a run that was executing is reported as
-// failed ("<name>: interrupted"), and queued runs are dropped with ws.cancel.
+// failed ("<name>: interrupted"), unless it is no longer allowed (then
+// ws.cancel, like a run stopped on revoke), and queued runs are dropped with
+// ws.cancel.
 func (r *helperRunner) recoverAfterRestart(ctx context.Context) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -375,6 +417,16 @@ func (r *helperRunner) recoverAfterRestart(ctx context.Context) error {
 	if running == nil && len(queued) == 0 {
 		return nil
 	}
+	revoked := false
+	if running != nil {
+		// Stopped because it was no longer allowed, but the daemon stopped
+		// before reporting it: report it as such (review 41 L1).
+		_, ok, err := r.valid(ctx, tx, *running, r.ds.Time())
+		if err != nil {
+			return err
+		}
+		revoked = !ok
+	}
 	st.Running, st.Queued = nil, nil
 	if err := saveRunState(ctx, tx, st, r.ds.Time()); err != nil {
 		return err
@@ -382,7 +434,10 @@ func (r *helperRunner) recoverAfterRestart(ctx context.Context) error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if running != nil {
+	switch {
+	case running != nil && revoked:
+		r.cancel(ctx, *running)
+	case running != nil:
 		res := &worksession.Result{Status: "fail", Summary: running.Command + ": interrupted", Verification: worksession.VerificationNone}
 		if _, _, err := r.ws.SubmitResult(ctx, running.Peer, running.Request, res); err != nil && r.logger != nil {
 			r.logger.Warn("device: report interrupted run", "session", running.Session, "error", err)
@@ -431,10 +486,10 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	runCtx, stop := context.WithCancelCause(ctx)
 	defer stop(nil)
 	r.curMu.Lock()
-	r.cur = &activeRun{session: j.Session, stop: stop}
+	r.cur = &activeRun{session: j.Session, stop: stop, plan: plan, expires: plan.Expires}
 	r.curMu.Unlock()
 	watched := make(chan struct{})
-	go func() { defer close(watched); r.watch(ctx, runCtx, plan.Expires) }()
+	go func() { defer close(watched); r.watch(ctx, runCtx) }()
 	defer func() {
 		stop(nil)
 		<-watched
@@ -500,8 +555,12 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 // watch re-checks the running command's scope until runCtx ends: at once
 // (a revocation that committed just before the run was registered in cur),
 // when the scope expires, and at least every watchEvery. A check that fails
-// stops the run (sweep → take → stopRunning).
-func (r *helperRunner) watch(ctx, runCtx context.Context, expires time.Time) {
+// stops the run (sweep → take → stopRunning). The expiry is the one the last
+// sweep saw (stillRunning): with the plan's own, a scope replaced with a
+// later expiry made every wait after the old one 10 ms (review 41 M3). An
+// expiry already past that the sweep did not act on (a failed sweep) waits
+// at most a second, never less.
+func (r *helperRunner) watch(ctx, runCtx context.Context) {
 	every := r.watchEvery
 	if every <= 0 {
 		every = runWatchEvery
@@ -509,9 +568,12 @@ func (r *helperRunner) watch(ctx, runCtx context.Context, expires time.Time) {
 	for {
 		r.sweep(ctx)
 		wait := every
-		if d := expires.Sub(r.ds.Time()); d < wait {
+		switch d := r.runExpires().Sub(r.ds.Time()); {
+		case d <= 0:
+			wait = min(every, time.Second)
+		case d < wait:
 			// Just past the expiry, so the check sees it expired.
-			wait = max(d+time.Millisecond, 10*time.Millisecond)
+			wait = d + time.Millisecond
 		}
 		t := time.NewTimer(wait)
 		select {

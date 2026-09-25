@@ -125,15 +125,22 @@ The stored `argv[0]` protects against a `PATH` change, not against the file bein
 So a program is accepted only when nobody but this device's user or an administrator can
 change it, checked at `device_scope_set` **and again when each run starts** (a failed
 start-time check is `"<name>: could not start"`). Checked: the file, the directory holding
-it and every directory above it, both along the stored path and along the path with
-symbolic links resolved. The content is not pinned (no hash), so an upgrade of the
+it and every directory above it along the stored path; every symbolic link (Windows: also
+junction) met on the way is followed, and its target and every directory above that are
+checked the same way, hop by hop, so a link that sits in a directory others can write is
+refused even when that directory is on neither the stored nor the fully resolved path
+(review 41 M1; at most 40 links). The content is not pinned (no hash), so an upgrade of the
 toolchain by the same user or an administrator keeps working.
 
 - **Unix:** each file or directory must be owned by root or this user, must not be
   writable by every user (so a sticky world-writable directory such as `/tmp` is refused
   too), and may be group-writable only when the group is root's (gid 0), an admin group
   (`root`, `wheel`, `admin`, `sudo`) or this user's private group (this user's primary
-  gid, named after the user). A symbolic link's own mode is not used.
+  gid, named after the user). A symbolic link's own mode is not used. On Linux the POSIX
+  access list (`system.posix_acl_access`) is read too: a named user other than root or this
+  user, or a named group not trusted as above, with write permission (not removed by the
+  mask) is refused (review 41 M2). macOS and BSD access lists are **not** read, and the
+  private-group rule trusts every member of that group.
 - **Windows:** the owner (from the security descriptor) must be this user, SYSTEM,
   BUILTIN\Administrators or NT SERVICE\TrustedInstaller, the DACL must exist, and no
   allow ACE may give another SID (Users, Authenticated Users, Everyone, another account…)
@@ -145,7 +152,12 @@ toolchain by the same user or an administrator keeps working.
   replace an existing one). Inherit-only ACEs do not apply to the object; deny ACEs are
   ignored (a stricter reading); CREATOR OWNER and OWNER RIGHTS stand for the owner; app
   package and capability SIDs (`S-1-15-…`) never grant access on their own and are
-  ignored; an object ACE that grants such a right is refused.
+  ignored; an object or compound ACE that grants such a right is refused. A symbolic link
+  or junction on the way is judged by its own access list (the link is not followed for
+  it), where writing its data or attributes (which could point it elsewhere) also counts.
+  A path through a junction is refused today anyway (Go's `EvalSymlinks` does not follow
+  mount points). On a network path the owner and ACEs are the file server's: its
+  administrators count as administrators.
 
 ## Running (in-scope requests)
 
@@ -210,8 +222,11 @@ above, and `check` names the first that failed.
 - The command runs as looked up in the scope **when it starts**: a scope replaced, cleared or
   expired while the run was queued is re-checked, and a run no longer allowed is dropped.
 - While it runs, the checks 1–4 are re-applied whenever the link or scope changes (unlink on
-  either side, `peers remove`, scope cleared or replaced), when the scope expires, and at
-  least once a minute (a changed clock). When they fail, the whole process tree is killed at
+  either side, `peers remove`, scope cleared or replaced), when the scope expires (as of the
+  last check: a scope replaced with a later expiry moves it), and at least once a minute (a
+  changed clock). A replaced scope whose command of that name now has another `argv`, `env`
+  or repo path stops the run too (review 41 L2); a changed `timeout_s` alone does not. When
+  they fail, the whole process tree is killed at
   once and the run is reported like a dropped queued run ([§Limits](#limits)): `ws.cancel`
   with no reason and no result (review 40 L1).
 
@@ -231,7 +246,9 @@ which the controller's daemon applies because the session is still `open`. A run
 no result): the controller's session closes as `cancelled`, as for a queued run, and no
 partial output is sent. A daemon restart
 drops queued runs the same way; a run that was executing is reported as `fail` with summary
-`"<name>: interrupted"`.
+`"<name>: interrupted"`, unless it is no longer allowed then (link ended, scope cleared or
+expired meanwhile): it is reported like a killed run, `ws.cancel` and no result (review 41
+L1).
 
 ## One-way hierarchy
 

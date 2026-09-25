@@ -160,7 +160,8 @@ command runs with no shell, in its repo, stdin empty, with only `PATH`, `HOME`/`
 `TMP`/`TEMP`/`TMPDIR`, `LANG`, `LC_ALL`, the Windows system variables (`SystemRoot`,
 `SystemDrive`, `windir`, `ComSpec`, `PATHEXT`, `LOCALAPPDATA`, `APPDATA`) and the `--env`
 names, and is killed with its whole process tree at its timeout, or at once when the scope is
-cleared, replaced without it or expires, or the link ends (the controller then sees the
+cleared, replaced without it (or with other arguments, environment or repo under its name)
+or expires, or the link ends (the controller then sees the
 session cancelled, with no result). Otherwise the controller gets a
 [result](../protocol/work-session.md#result-object-26) with `pass` (exit 0) or `fail`, the
 exit code and the last 32 KiB of output (ANSI sequences removed, other control characters
