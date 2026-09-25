@@ -200,3 +200,78 @@ Pass `-RepoRoot` explicitly when running through a tool that leaves `$PSScriptRo
 empty. The `.sh` port could not be run on the Windows machine it was written on
 (Git Bash named pipes do not connect to native Windows daemons); the weekly CI job
 is its first real run.
+
+---
+
+# Ticket 3.H: Phase 3 headless harness (debate)
+
+`phase3-agents.ps1` / `phase3-agents.sh` drive a [debate](../../Docs/protocol/debate.md)
+(request `debate` -> accept + opening position -> moves -> proposal/answer -> a signed
+[Decision](../../Docs/cli/decision.md) on both sides) through two headless agents. The
+fixture is a small repo with two plausible designs of one function
+(`fixture/NOTES.md`, `design_a.go`, `design_b.go`) so the agents have something to argue.
+Reuses the Phase 2 scaffolding unchanged: the loopback relay, two daemons with
+`DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1`, pairing, a team (`t3h`), and the
+script (never the agent) reading approval codes from a daemon's stderr and answering
+them on its stdin.
+
+## Turn-driven real agents (OD-P3-9)
+
+Unlike 2.H's concurrent A/B agents, a real-agent round here is **turn-driven**: the
+script polls `agentnet debate <id> --json` and, whenever it is a side's turn, runs
+that side's agent headless **once** with a short prompt, then polls again. The first
+prompt for the initiator names the question (from the fixture) and asks for a debate
+of at most 2 rounds; the first prompt for the respondent says a teammate invited it to
+a debate; every later prompt (either side) is the plain "Your AgentNet debate with your
+teammate is waiting for you. Take your next step, then stop." Prompts never name a
+subcommand — the agent learns them from [the snippet](../../Docs/agents/snippet.md)'s
+debate paragraph and `--help`. This costs about 6-8 agent invocations per debate
+(review 43 L7): both opening positions, up to 4 moves, the proposal and the answer.
+
+## The human constraint is added by the script, never the agent
+
+After both positions exist, **this script** (not an agent) runs `agentnet debate <id>
+--constrain "..."` on the initiator's daemon, and that daemon's already-running approval
+pump answers the code, exactly as a human would (OD-P3-3: an agent can never supply its
+own approval code). This exercises 3.4's human-constraint path without needing either
+agent to know about it.
+
+## Harnesses
+
+- `-Harness standin` (`--harness standin`, the default): the scripted Go program in
+  [`standin/`](standin/main.go) (`-mode debate`) drives both sides through the full
+  turn sequence itself, as two concurrent processes. Free; used by the weekly CI job
+  (`.github/workflows/phase3-harness.yml`, Linux, Windows, macOS). Runs **two**
+  scenarios: an agreed debate, and a forced escalation (`-disagree`, deterministic only
+  with the stand-in — OD-P3-7/3.5 — never with real agents).
+- `-Harness real` (`--harness real`): Claude Code and agy, each once as initiator and
+  once as respondent. Needs logged-in CLIs; run by hand before a release and record the
+  result in [`../phase3-manual.md`](../phase3-manual.md). Codex CLI via
+  `-InitiatorHarness codex -RespondentHarness ...`. **Never add `agy --sandbox`** (UAC
+  prompt, no admin). Tool confinement is as for 1.H/2.H (see above).
+
+## Assertions (from `--json` and the audit log, not agent text)
+
+Both debates end `closed` with outcome `agreed` or `escalated` (a real agent may
+legitimately disagree) and `rounds.current <= 2`; exactly one `debate` request on the
+initiator; the closed debate's Decision exports (`agentnet decision <id> --json --out`)
+and `agentnet decision verify` on the exported file exits 0 with two signatures
+(`complete: true`); `agentnet decision <id> --md --out` wrote a file; the human
+constraint is in the exported Decision's `human_decisions`; `agentnet log --verify` is
+`ok` on both daemons.
+
+## Running
+
+```powershell
+powershell -File tests/harness/phase3-agents.ps1 -RepoRoot <repo>            # stand-in
+powershell -File tests/harness/phase3-agents.ps1 -RepoRoot <repo> -Harness real
+```
+
+```bash
+tests/harness/phase3-agents.sh                  # stand-in
+tests/harness/phase3-agents.sh --harness real
+```
+
+Useful flags (both scripts): `-SkipBuild`/`--skip-build`, `-OnlyRound`/`--only-round`
+(stand-in: 1 = agreed, 2 = escalated), `-InitiatorHarness`/`-RespondentHarness`
+(`--initiator-harness`/`--respondent-harness`, mixed `claude`/`agy`/`codex`).

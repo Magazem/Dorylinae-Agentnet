@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,15 +35,22 @@ func main() {
 func run() error {
 	agentnet := flag.String("agentnet", "", "path to the agentnet executable")
 	home := flag.String("home", "", "DORYLINAE_HOME for this agent")
-	role := flag.String("role", "", "a (requester) or b (worker)")
+	mode := flag.String("mode", "phase2", "phase2 (ticket 2.H) or debate (ticket 3.H)")
+	role := flag.String("role", "", "a (requester/initiator) or b (worker/respondent)")
 	peer := flag.String("peer", "", "role a: the AgentNet peer name of b")
-	fixture := flag.String("fixture", "", "role a: absolute path of the fixture directory to grant fs.read on")
-	context := flag.String("context", "", "role a: absolute path of the consult context file")
-	branch := flag.String("branch", "phase2-harness", "role a: branch name named in the review request")
-	reviewKey := flag.String("review-key", "", "role a: idempotency key for the review request")
-	consultKey := flag.String("consult-key", "", "role a: idempotency key for the consult")
+	fixture := flag.String("fixture", "", "phase2 role a: absolute path of the fixture directory to grant fs.read on")
+	context := flag.String("context", "", "phase2 role a: absolute path of the consult context file")
+	branch := flag.String("branch", "phase2-harness", "phase2 role a: branch name named in the review request")
+	reviewKey := flag.String("review-key", "", "phase2 role a: idempotency key for the review request")
+	consultKey := flag.String("consult-key", "", "phase2 role a: idempotency key for the consult")
 	timeoutSeconds := flag.Int("timeout", 300, "seconds to wait for each blocking step")
 	pollMs := flag.Int("poll-ms", 500, "milliseconds between polls")
+	topic := flag.String("topic", "", "debate role a: the debate's topic")
+	claim := flag.String("claim", "", "debate mode: your opening position's claim")
+	argument := flag.String("argument", "", "debate mode: your opening position's argument")
+	rounds := flag.Int("rounds", 2, "debate role a: --rounds for the debate (1-5)")
+	debateKey := flag.String("debate-key", "", "debate role a: idempotency key for the debate request")
+	disagree := flag.Bool("disagree", false, "debate role b: answer accept:false to force an escalated outcome")
 	flag.Parse()
 
 	if *agentnet == "" || *home == "" {
@@ -53,16 +61,36 @@ func run() error {
 
 	c := &client{agentnet: *agentnet, home: *home}
 
-	switch *role {
-	case "a":
-		if *peer == "" || *fixture == "" || *context == "" || *reviewKey == "" || *consultKey == "" {
-			return fmt.Errorf("role a needs -peer, -fixture, -context, -review-key and -consult-key")
+	switch *mode {
+	case "debate":
+		switch *role {
+		case "a":
+			if *peer == "" || *topic == "" || *claim == "" || *argument == "" || *debateKey == "" {
+				return fmt.Errorf("debate role a needs -peer, -topic, -claim, -argument and -debate-key")
+			}
+			return debateRoleA(c, *peer, *topic, *claim, *argument, *rounds, *debateKey, timeout, poll)
+		case "b":
+			if *claim == "" || *argument == "" {
+				return fmt.Errorf("debate role b needs -claim and -argument")
+			}
+			return debateRoleB(c, *claim, *argument, *disagree, timeout, poll)
+		default:
+			return fmt.Errorf("-role must be a or b, got %q", *role)
 		}
-		return roleA(c, *peer, *fixture, *context, *branch, *reviewKey, *consultKey, timeout, poll)
-	case "b":
-		return roleB(c, timeout, poll)
+	case "phase2":
+		switch *role {
+		case "a":
+			if *peer == "" || *fixture == "" || *context == "" || *reviewKey == "" || *consultKey == "" {
+				return fmt.Errorf("role a needs -peer, -fixture, -context, -review-key and -consult-key")
+			}
+			return roleA(c, *peer, *fixture, *context, *branch, *reviewKey, *consultKey, timeout, poll)
+		case "b":
+			return roleB(c, timeout, poll)
+		default:
+			return fmt.Errorf("-role must be a or b, got %q", *role)
+		}
 	default:
-		return fmt.Errorf("-role must be a or b, got %q", *role)
+		return fmt.Errorf("-mode must be phase2 or debate, got %q", *mode)
 	}
 }
 
@@ -421,4 +449,152 @@ func handleConsult(c *client, requestID string) error {
 		return fmt.Errorf("result (consult answer): %w", err)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Ticket 3.H: debate mode. Issues exactly the `agentnet debate` CLI calls a
+// real headless agent would make, driven only by `agentnet debate <id>
+// --json`'s "turn"/"expect" fields (Docs/cli/debate.md), never by hardcoded
+// slot numbers. The harness script (never this program) runs the
+// `--constrain` step and confirms its approval code, so this file has no
+// approval handling of its own.
+// ---------------------------------------------------------------------------
+
+// debateRoleA is the initiator: starts the debate with a committed opening
+// position, then drives the turn loop until the debate closes.
+func debateRoleA(c *client, peer, topic, claim, argument string, rounds int, idemKey string, timeout, poll time.Duration) error {
+	position, err := json.Marshal(map[string]string{"claim": claim, "argument": argument})
+	if err != nil {
+		return err
+	}
+	resp, err := c.call(string(position), "debate", peer, "--topic", topic, "--position-file", "-",
+		"--rounds", strconv.Itoa(rounds), "--idempotency-key", idemKey)
+	if err != nil {
+		return fmt.Errorf("start debate: %w", err)
+	}
+	session := asString(resp, "session")
+	if session == "" {
+		return fmt.Errorf("debate start returned no session id: %v", resp)
+	}
+	if err := debateLoop(c, session, timeout, poll, false); err != nil {
+		return fmt.Errorf("debate loop (initiator): %w", err)
+	}
+	summary, _ := json.Marshal(map[string]string{"role": "a", "session": session})
+	fmt.Println(string(summary))
+	return nil
+}
+
+// debateRoleB is the respondent: finds the invited debate, accepts it and
+// submits its opening position in one step, then drives the turn loop.
+func debateRoleB(c *client, claim, argument string, disagree bool, timeout, poll time.Duration) error {
+	var session string
+	if _, err := pollUntil(timeout, poll, "an invited debate", func() (map[string]interface{}, bool, error) {
+		r, err := c.call("", "debates", "--phase", "invited")
+		if err != nil {
+			return nil, false, err
+		}
+		debates, _ := r["debates"].([]interface{})
+		for _, d := range debates {
+			dm, _ := d.(map[string]interface{})
+			if dm == nil {
+				continue
+			}
+			if s, _ := dm["session"].(string); s != "" {
+				session = s
+				return r, true, nil
+			}
+		}
+		return nil, false, nil
+	}); err != nil {
+		return fmt.Errorf("find invited debate: %w", err)
+	}
+
+	position, err := json.Marshal(map[string]string{"claim": claim, "argument": argument})
+	if err != nil {
+		return err
+	}
+	if _, err := c.call(string(position), "debate", session, "--position-file", "-"); err != nil {
+		return fmt.Errorf("accept + submit position: %w", err)
+	}
+	if err := debateLoop(c, session, timeout, poll, disagree); err != nil {
+		return fmt.Errorf("debate loop (respondent): %w", err)
+	}
+	summary, _ := json.Marshal(map[string]string{"role": "b", "session": session})
+	fmt.Println(string(summary))
+	return nil
+}
+
+// debateLoop polls `agentnet debate <session> --json` and, whenever it is
+// this side's turn, submits the entry `expect` names, until the debate
+// closes (or breaks). It never hardcodes slot numbers: the first move it
+// submits is a real challenge (so the fixture's two designs are actually
+// argued), every later move is a pass, which converges the debate in step
+// with whatever --rounds the initiator chose.
+func debateLoop(c *client, session string, timeout, poll time.Duration, disagree bool) error {
+	deadline := time.Now().Add(timeout)
+	myMoves := 0
+	for {
+		show, err := c.call("", "debate", session)
+		if err != nil {
+			return fmt.Errorf("debate show: %w", err)
+		}
+		phase := asString(show, "debate", "phase")
+		if phase == "closed" || phase == "broken" {
+			return nil
+		}
+		if asString(show, "debate", "turn") == "you" {
+			expect := asString(show, "debate", "expect")
+			var entry []byte
+			var flagName string
+			switch expect {
+			case "move":
+				flagName = "--move-file"
+				if myMoves == 0 {
+					entry, err = json.Marshal(map[string]interface{}{
+						"challenges": []map[string]interface{}{{
+							"targets":  []string{"argument"},
+							"argument": "Consider the maintenance and readability cost of this approach over time.",
+						}},
+					})
+				} else {
+					entry, err = json.Marshal(map[string]interface{}{"challenges": []interface{}{}})
+				}
+				myMoves++
+			case "proposal":
+				flagName = "--propose-file"
+				entry, err = json.Marshal(map[string]interface{}{
+					"agreement": map[string]string{
+						"decision": "Combine both designs: keep the simpler one and add the other's safety check.",
+					},
+				})
+			case "answer":
+				flagName = "--answer-file"
+				if disagree {
+					entry, err = json.Marshal(map[string]interface{}{
+						"accept": false,
+						"remaining_disagreement": []map[string]string{{
+							"point":      "Which design to keep as the base",
+							"initiator":  "prefers the first design for its simplicity",
+							"respondent": "prefers the second design for its performance",
+						}},
+					})
+				} else {
+					entry, err = json.Marshal(map[string]interface{}{"accept": true})
+				}
+			default:
+				return fmt.Errorf("debate %s: unexpected expect %q", session, expect)
+			}
+			if err != nil {
+				return err
+			}
+			if _, err := c.call(string(entry), "debate", session, flagName, "-"); err != nil {
+				return fmt.Errorf("submit %s: %w", expect, err)
+			}
+			continue
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for debate %s to close (phase=%s)", session, phase)
+		}
+		time.Sleep(poll)
+	}
 }

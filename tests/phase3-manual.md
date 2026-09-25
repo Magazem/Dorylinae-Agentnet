@@ -63,3 +63,11 @@ summary is a human-authored sentence that can run to several hundred characters.
       as something else.
 - [ ] Approve with the code from the toast/terminal and confirm `agentnet decision <id>
       --json`'s `human_decisions` carries the constraint text unchanged.
+
+## 3.H results
+
+Ticket 3.H: `tests/harness/phase3-agents.ps1`/`.sh`, real-agent debate round (Claude Code
+vs agy), OD-P3-9 turn-driven.
+
+<!-- filled in after the real run; see the worker's report for the run this section
+     summarises -->
