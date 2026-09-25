@@ -8,6 +8,12 @@ Last updated: 2026-09-25 (Friday), PARKED at the end of the work-PC session.
 
 ## 0. Status and next steps
 
+**FIRST JOB AT HOME: CI on main is RED** (runs 36134360946, 36134971574; check the latest). All failures are in the audit-inventory e2e tests from 3.6b, which interact with later work (a Sonnet-Lite ticket is enough):
+1. Linux + race: `notify.fail` audit detail contains raw OS error text (`exec: "notify-send": executable file not found in $PATH`), which the no-paths check rejects. Fix in code: audit a short error CODE for notify.fail, never err.Error() (the no-content/no-paths rule).
+2. Linux + Windows: TestAuditInventoryDevices uses the Go toolchain binary as the scope program; on CI the toolcache dir is world-writable, so 2.D3's writable-by-others check correctly refuses it (Windows: "resolve the program: path not found"). Fix the TEST: build a helper into testutil.PrivateDir as the 2.D2/2.D3 tests do.
+3. macOS: TestAuditInventory `alice ws_cancel: unknown_session`: the scenario cancels before the session exists; wait for it.
+Run the per-OS lint and the full gate; watch CI until green before 3.H.
+
 **PARKED 2026-09-25 (work PC → home PC).** Phase 3 is complete except the **3.H real-agent run** and **3.P**:
 - Merged on main: 3.2, 3.1a, 3.1b, 3.4 (+3.4-i), 3.6a, 3.6b, 3.3a, 3.3b, 3.7, 3.9, DX-1; decisions D30–D33.
 - **3.H work in progress** is pushed as branch `p3/p3-harness` (b36bd13): the stand-in debate mode passes locally (agreed and escalated), scripts `phase3-agents.ps1`/`.sh`, the weekly workflow `phase3-harness.yml`, the snippet's debate paragraph; details in `WIP-3.H.md` on that branch. **Left:** the ONE approved real run (Claude Code ↔ agy, both directions, ~1.5–3.5 USD), with results recorded in `tests/phase3-manual.md`. The branch has a "3.H results" section, and main now has 3.9's version of that file: merge both. Then gate, merge the branch, dispatch the weekly workflow once, check CI.

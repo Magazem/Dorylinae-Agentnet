@@ -47,7 +47,8 @@ project: AgentNet
   [ ] p4 (fetch) fetch Close waits on sends — cancel job ctx; 2.3c
   [ ] p4 (paths) COM0/LPT0 reserved name decision — owner call, next vectors
 
-== bug (24) ==
+== bug (25) ==
+  [ ] p1 (ci) CI red: audit inventory tests — notify.fail path, device test program, macOS race
   [ ] p3 (build) installed golangci-lint can't load config — built with go1.26, module is 1.27
   [ ] p3 (daemon) relay_unavailable right after connect — server ready before client conn set
   [ ] p3 (mail) relay error races relayed update — review 10 L1
