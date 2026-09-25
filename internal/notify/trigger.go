@@ -178,7 +178,7 @@ func (t *Trigger) reportFail(ctx context.Context, cause error) {
 	if throttled || t.Audit == nil {
 		return
 	}
-	_ = t.Audit.Append(ctx, "daemon", "notify.fail", map[string]string{"channel": "desktop", "error": cause.Error()})
+	_ = t.Audit.Append(ctx, "daemon", "notify.fail", map[string]string{"channel": "desktop", "code": "desktop_failed"})
 }
 
 // buildText renders the desktop title and body for ev

@@ -111,6 +111,9 @@ func TestAuditInventory(t *testing.T) {
 	run.call(b, "debate_submit", map[string]any{"id": dsub.Session, "kind": "position", "entry": e2ePosition("Fixed retry")}, &daemon.DebateSubmitResult{})
 	// Closed at once (A's own cancel): later sensitive grants must not trip
 	// the debate_open refusal (§Quarantine interplay).
+	harnessWait(t, "the debate session to exist on A", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+dsub.Session+`'`) == 1
+	})
 	a.call("ws_cancel", map[string]any{"id": dsub.Session}, &daemon.SessionResult{})
 
 	// Session 1: grant, approvals, fetch, result, quarantine, release, changes, accept.
@@ -174,7 +177,12 @@ func TestAuditInventory(t *testing.T) {
 	e.result(t, sid2, qMarkerResult("INV3"))
 	e.waitState(t, sid2, "quarantined")
 	run.call(a, "ws_discard", map[string]any{"id": sid2}, &daemon.SessionResult{})
-	run.call(a, "ws_cancel", map[string]any{"id": accept(submit("session three"))}, &daemon.SessionResult{})
+	// accept waited for A's mirror; A's ws_cancel needs the session to exist.
+	sid3 := accept(submit("session three"))
+	harnessWait(t, "session three to exist on A", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid3+`'`) == 1
+	})
+	run.call(a, "ws_cancel", map[string]any{"id": sid3}, &daemon.SessionResult{})
 	// A worker-side cancel sends the ws.cancel mail; A applies it (ws.cancel_in).
 	run.call(b, "ws_cancel", map[string]any{"id": accept(submit("session five"))}, &daemon.SessionResult{})
 	harnessWait(t, "A to apply the worker's cancel", func() bool { return auditHas(a, "ws.cancel_in") })
@@ -219,7 +227,7 @@ func TestAuditInventoryDevices(t *testing.T) {
 	scope := map[string]any{
 		"types":    []string{"task"},
 		"repos":    []map[string]string{{"label": "repo", "path": repo}},
-		"commands": []map[string]any{{"name": "t", "repo": "repo", "argv": []string{"go", "version"}, "timeout_s": 5}},
+		"commands": []map[string]any{{"name": "t", "repo": "repo", "argv": []string{buildRunHelper(t)},"timeout_s": 5}},
 		"expires":  help.clk.Now().Add(7 * 24 * time.Hour).UTC().Format(time.RFC3339),
 	}
 	rawScope, _ := json.Marshal(scope)
