@@ -533,6 +533,34 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "state"}))
 		return nil
 	}
+	return s.applyCloseOnB(ctx, tx, r, b, &out)
+}
+
+// applyCloseOnB applies a checked close to B's open mirror. A close listing a
+// constraint id B does not hold (an A-authored constraint mail the close
+// overtook) is held in close_body until it arrives (review 43 H2,
+// retryHeldClose); B's own active constraints the close does not list become
+// late.
+func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[string]any, out *afters) error {
+	outcome, _ := b["outcome"].(string)
+	reason, _ := b["reason"].(string)
+	entries, err := intMember(b, "entries")
+	if err != nil {
+		return err
+	}
+	var listed []string
+	if list, ok := b["constraints"].([]any); ok {
+		for _, v := range list {
+			if id, ok := v.(string); ok {
+				listed = append(listed, id)
+			}
+		}
+	}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return fmt.Errorf("debate: encode close: %w", err)
+	}
+	now := s.now()
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
 		return err
@@ -542,6 +570,19 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 		// writer", review 45 H1): B keeps its mirror open and may abandon.
 		out.add(s.audit("daemon", "debate.ignored", map[string]any{"session": r.session, "peer": r.peer, "kind": MailClose, "reason": "outcome"}))
 		return nil
+	}
+	missing, err := missingConstraints(ctx, tx, r.session, listed)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		if _, err := tx.ExecContext(ctx, `UPDATE debates SET close_body = ?, updated = ? WHERE session = ?`, string(raw), storeTime(now), r.session); err != nil {
+			return fmt.Errorf("debate: hold close: %w", err)
+		}
+		return nil
+	}
+	if err := markLateTx(ctx, tx, r.session, listed); err != nil {
+		return err
 	}
 	if err := setClosed(ctx, tx, r.session, outcome, reason, now); err != nil {
 		return err
@@ -559,7 +600,7 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 	case OutcomeCancelled:
 		wsOutcome, note, event = worksession.OutcomeCancelled, "session cancelled", ""
 	}
-	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, now, &out)
+	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, now, out)
 }
 
 // closeMatches checks A's close against B's own transcript: agreed needs B's

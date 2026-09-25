@@ -270,6 +270,8 @@ func kindOf(n *dnode, kind string) mail.Kind {
 		return n.ds.RevealKind()
 	case MailClose:
 		return n.ds.CloseKind()
+	case MailConstraint:
+		return n.ds.ConstraintKind()
 	}
 	panic("kindOf: unknown kind " + kind)
 }

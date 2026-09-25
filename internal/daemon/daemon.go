@@ -595,6 +595,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return ShutdownResult{OK: true}, nil
 	})
 	registerDebate(srv, debates, peerStore, teamStore, reqStore)
+	registerDebateConstrain(srv, debates, apprStore, peerStore)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()
 		fp, err := envelope.KeyFingerprint(sc.Card.PublicKey)

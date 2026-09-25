@@ -17,8 +17,8 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
-// Mail kinds (Docs/protocol/debate.md §Kinds). debate.constraint (3.4) and
-// debate.sign (3.3a) are added by their tickets.
+// Mail kinds (Docs/protocol/debate.md §Kinds). debate.constraint is in
+// constraint.go; debate.sign (3.3a) is added by its ticket.
 const (
 	MailEntry  = "debate.entry"
 	MailReveal = "debate.reveal"

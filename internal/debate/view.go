@@ -29,6 +29,9 @@ type View struct {
 	Deadline     time.Time // zero when none
 	Waiting      string    // "reveal", "entry" or "signature"
 	Transcript   []ViewEntry
+	// Constraints are the human constraints an agent may see, ordered by
+	// (at, id): active and late, never excess (3.4).
+	Constraints []ViewConstraint
 }
 
 // ViewEntry is one transcript entry. Entry is its canonical JSON.
@@ -51,7 +54,11 @@ func (s *Store) Get(ctx context.Context, id string) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	return buildView(r, tr), nil
+	v := buildView(r, tr)
+	if v.Constraints, err = loadConstraints(ctx, s.DB, r.session); err != nil {
+		return View{}, err
+	}
+	return v, nil
 }
 
 // List returns every debate, newest first, optionally narrowed by phase and
@@ -90,7 +97,12 @@ func (s *Store) List(ctx context.Context, phase, peer string) ([]View, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, buildView(r, tr))
+		v := buildView(r, tr)
+		// The list view keeps counts only (§IPC); 3.1b drops the texts.
+		if v.Constraints, err = loadConstraints(ctx, s.DB, r.session); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }

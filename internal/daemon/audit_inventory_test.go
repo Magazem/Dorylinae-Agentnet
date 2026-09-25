@@ -111,6 +111,10 @@ var methodInventory = map[string]invEntry{
 	"device_unlink":      acts("A", "device.unlink"),
 	"device_scope_set":   acts("B", "device.scope_set"),
 	"device_scope_clear": acts("B", "device.scope_clear"),
+
+	// Debates: checked by their own scenario (TestDebateConstrainE2E), not
+	// the shared one (sortedKeys).
+	"debate_constrain": acts("A", "debate.constraint"),
 }
 
 // mailKindInventory: every mail kind the daemon registers, with the action the
@@ -266,11 +270,24 @@ func checkInventory(t *testing.T, run *invRun, inv map[string]invEntry, names []
 	}
 }
 
-// sortedKeys returns the inventory names, device ones or the rest.
+// sortedKeys returns the inventory names, device ones or the rest; debate
+// ones are in neither (debateKeys).
 func sortedKeys(m map[string]invEntry, device bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
-		if strings.HasPrefix(k, "device") == device {
+		if strings.HasPrefix(k, "device") == device && !strings.HasPrefix(k, "debate") {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// debateKeys returns the debate inventory names.
+func debateKeys(m map[string]invEntry) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		if strings.HasPrefix(k, "debate") {
 			out = append(out, k)
 		}
 	}

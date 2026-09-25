@@ -144,9 +144,50 @@ agentnet debate <id> --cancel [--reason R]
 
 ## Human constraints
 
-`--constrain TEXT` (a human statement both agents must respect, recorded as a signed "human
-decision") is ticket 3.4, not implemented by this build. `debate_show`'s `constraints` array is
-always empty until then.
+```
+agentnet debate <id> --constrain TEXT [--json]
+```
+
+Adds a constraint: a statement from a human that both agents must respect from
+then on ("must stay compatible with Go 1.22", "no new dependency"). It is signed
+into the Decision under **human decisions**, so it needs your approval
+(OD-P3-3): the command creates a `debate_constraint` approval, the daemon opens
+the AgentNet approval window with the peer, the session and the text in full,
+and only once you type the code there is the constraint stored and sent to the
+peer. An agent that runs `--constrain` gets a pending approval and cannot finish
+it. A rejected or expired approval leaves no trace; headless machines confirm in
+terminal mode ([approve.md](approve.md)).
+
+- `<id>` is the debate's session (`s-`) or request (`r-`) id.
+- `TEXT` is one line of 1–500 **visible** characters: no control characters,
+  and no format characters (bidi controls, zero-width characters, U+FEFF, tag
+  characters), so the text you approve is exactly what the peer's agent reads.
+- Either side may add one while the debate is in `positions`, `rounds` or
+  `converge`; a debate holds at most 10 active constraints (both sides
+  together). If the debate leaves `converge` before you approve, the approval
+  is rejected (`precondition`).
+- A constraint that reaches the initiator after it closed the debate is in
+  neither record; the respondent's `debate` view marks it `late`.
+
+| Flag | Meaning |
+|------|---------|
+| `--constrain TEXT` | The constraint text |
+| `--json` | Machine-readable output on stdout: `{"ok": true, "approval": <approval view>}` |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Approval created (the constraint waits for your code) |
+| 1 | `bad_request` (text), `bad_state` (phase), `constraint_limit`, `unknown_session`, an approval error |
+| 2 | Usage error |
+| 3 | Daemon not running |
+
+### Human output
+
+```
+Approval a-0123456789abcdef0123456789abcdef: the constraint is added once you type the code into the AgentNet approval window.
+```
 
 ## Errors
 

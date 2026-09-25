@@ -266,12 +266,13 @@ func daemonKinds(ts *team.Store, rs *request.Store, ws *worksession.Store, caps 
 		kinds[worksession.KindState] = ws.StateKind()
 	}
 	// debate.* (Docs/protocol/debate.md §Kinds) needs sessions too: a debate
-	// is argued inside a work session of kind debate. debate.constraint
-	// (3.4) and debate.sign (3.3a) join here with their tickets.
+	// is argued inside a work session of kind debate. debate.sign (3.3a)
+	// joins here with its ticket.
 	if ds, ok := debateStore(rs); ok && ws != nil && rs.Sessions != nil {
 		kinds[debate.MailEntry] = ds.EntryKind()
 		kinds[debate.MailReveal] = ds.RevealKind()
 		kinds[debate.MailClose] = ds.CloseKind()
+		kinds[debate.MailConstraint] = ds.ConstraintKind()
 	}
 	// grant/grant.revoke are safe to register even before sessions ever open
 	// here (2.1b): a grant mail's step 7 (session known and open) fails

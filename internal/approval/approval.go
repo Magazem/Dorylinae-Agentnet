@@ -26,11 +26,15 @@ const (
 	KindAcceptResult = "accept_result"
 	KindDeviceLink   = "device_link"
 	KindDeviceScope  = "device_scope"
+	// KindDebateConstraint gates a human constraint on a debate
+	// (Docs/protocol/debate.md §Human constraints, OD-P3-3).
+	KindDebateConstraint = "debate_constraint"
 )
 
 var validKinds = map[string]bool{
 	KindGrant: true, KindGrantPolicy: true, KindRelease: true,
 	KindAcceptResult: true, KindDeviceLink: true, KindDeviceScope: true,
+	KindDebateConstraint: true,
 }
 
 // States (Docs/protocol/approval.md §Object).
