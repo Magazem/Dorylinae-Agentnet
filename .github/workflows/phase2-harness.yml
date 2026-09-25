@@ -1,0 +1,41 @@
+name: Phase 2 harness (weekly)
+
+# OD-P2-12: the same tests/harness/phase2-agents script as the manual real-agent
+# run, but with the scripted stand-in agent (tests/harness/standin), which needs no
+# API key or logged-in harness. Real Claude Code / agy rounds stay manual.
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  harness:
+    name: harness (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run the stand-in harness (Linux, macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: tests/harness/phase2-agents.sh --harness standin
+      - name: Run the stand-in harness (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: powershell -File tests/harness/phase2-agents.ps1 -Harness standin
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-logs-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/phase2-agents-*
+            /tmp/phase2-agents-*
+          if-no-files-found: ignore

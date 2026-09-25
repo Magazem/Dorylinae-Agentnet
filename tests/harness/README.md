@@ -137,3 +137,66 @@ requires.
   admin rights, or that agy's sandbox no longer requires elevation. Document
   any stronger allowlist mechanism found later (e.g. a working per-project
   `settings.json` override, or an execpolicy `.rules` file) here.
+
+---
+
+# Ticket 2.H: Phase 2 headless harness
+
+`phase2-agents.ps1` / `phase2-agents.sh` drive the whole Phase 2 loop through two
+headless agents: request -> accept (session) -> grant (`fs.read`) -> fetch ->
+result -> release (the grant makes the result quarantined) -> accept-result, plus
+a consult (`agentnet consult` with one context file, answered with `agentnet
+result`, then `wait` and `accept-result`). The prompts never name a subcommand;
+the agent learns them from [the snippet](../../Docs/agents/snippet.md) and `--help`.
+
+## Approvals are answered by the script, never the agent
+
+Both daemons start with `DORYLINAE_APPROVAL=terminal` and `DORYLINAE_DEBUG=1`
+(stdin and stderr are pipes). The script reads `AgentNet approval a-xxxxxx: ...
+Code NNNNNN.` from each daemon's stderr and writes `a-xxxxxx NNNNNN` to that
+daemon's stdin ([approval.md](../../Docs/protocol/approval.md#headless-machines)).
+The agent under test has no pipe and no CLI form that takes a code. Windows uses
+a small in-process C# thread (`Add-Type`); Linux/macOS use two named pipes per
+daemon (a `<>` open keeps stdin from seeing EOF between codes).
+
+## Harnesses
+
+- `-Harness standin` (`--harness standin`, the default): the scripted Go program in
+  [`standin/`](standin/main.go) runs the CLI calls a real agent would make, as two
+  concurrent processes (A and B). Free; used by the weekly CI job
+  ([`.github/workflows/phase2-harness.yml`](../../.github/workflows/phase2-harness.yml),
+  Linux, Windows, macOS; OD-P2-12). About 10 s.
+- `-Harness real` (`--harness real`): Claude Code and agy, round 1 Claude as A / agy
+  as B, round 2 swapped. Needs logged-in CLIs; run by hand before a release and
+  record the result in [`../phase2-manual.md`](../phase2-manual.md). Codex CLI via
+  `-SenderHarness codex -RecipientHarness ...`. **Never add `agy --sandbox`** (UAC
+  prompt, no admin). Tool confinement is as for 1.H (see above); the Claude prompt
+  allowlist is `PowerShell(agentnet *)` on Windows and `Bash(agentnet *)` elsewhere.
+
+Unlike 1.H, A and B run **concurrently**: A grants only after B accepts, and B
+fetches only after A grants. Each agent gets up to 7 minutes (`-AgentTimeoutSeconds`);
+the whole run has a 15-minute cap (`-TotalTimeoutSeconds`).
+
+## Assertions (from `--json` and the audit log, not agent text)
+
+On A: exactly one `review` and one `question` request; both sessions `closed` with
+`outcome: accepted`; at least one issued grant, and it ends `revoked` after the
+close; audit rows `request.submit`, `request.in`, `request.accept`, `ws.close`,
+`grant.create` and `grant.fetch` across the two daemons.
+
+## Running
+
+```powershell
+powershell -File tests/harness/phase2-agents.ps1 -RepoRoot <repo>            # stand-in
+powershell -File tests/harness/phase2-agents.ps1 -RepoRoot <repo> -Harness real
+```
+
+```bash
+tests/harness/phase2-agents.sh                  # stand-in
+tests/harness/phase2-agents.sh --harness real
+```
+
+Pass `-RepoRoot` explicitly when running through a tool that leaves `$PSScriptRoot`
+empty. The `.sh` port could not be run on the Windows machine it was written on
+(Git Bash named pipes do not connect to native Windows daemons); the weekly CI job
+is its first real run.

@@ -160,6 +160,32 @@ then `agentnet wait <session>`.
 - [ ] `agentnet audit` (or the `audit_events` table) on both devices holds no command name,
       argv, repo path or output.
 
+## 2.H headless harness run (2026-09-25, Windows 11, PowerShell 5.1, no admin)
+
+Script: `tests/harness/phase2-agents.ps1 -Harness real` (see `tests/harness/README.md`). Each
+round: A grants `fs.read` on a one-file fixture, B fetches it and returns a result (quarantined,
+then released and accepted), plus a consult with one context file. Approval codes were read from
+the daemons' stderr and typed on their stdin by the script only.
+
+| Round | A (requester) | B (worker) | Result | Duration | Notes |
+|---|---|---|---|---|---|
+| Stand-in | Go stand-in | Go stand-in | PASS | 5-6 s | Weekly-CI harness; Linux/macOS run only in CI (the `.sh` could not run locally: no WSL, Git Bash fifos do not reach native daemons) |
+| 1 | Claude Code (`claude -p`) | agy | PASS | 157 s | Claude used 39 turns, about 0.37 USD; no permission denials |
+| 2 | agy | Claude Code | PASS | 163 s | Claude (B) used 37 turns, about 0.20 USD; no permission denials |
+
+Asserted from `--json`: one review and one question request on A; both sessions `closed` /
+`accepted`; the grant issued and then `revoked`; audit rows `grant.create`, `grant.fetch`,
+`ws.close` and the request rows.
+
+Agent confusion (behaviour, not AgentNet): in round 1 Claude (A) ended its summary with "agent-b
+never got the read access, as far as I can tell" although B fetched the file and the round passed
+(A only sees the grant as `active`, not B's fetches). Two harness fixes were needed first, both
+in the script, not AgentNet: a job-based launch left `claude -p` waiting on an open stdin (now
+processes are started directly and stdin is closed), and the `PowerShell(agentnet *)` allowlist
+also needs `PowerShell(Start-Sleep *)` so an agent can wait. A sensitive grant makes B's result
+quarantined, so A has to run `agentnet session <id> --release` (the snippet now says so).
+No AgentNet bug found.
+
 ## 2.H headless harness note
 
 The 2.H script drives this through pipes with `DORYLINAE_DEBUG=1` and is
