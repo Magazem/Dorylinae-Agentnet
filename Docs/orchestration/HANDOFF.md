@@ -51,7 +51,7 @@ specs merged to main. Self-hosted relays: D17.
 | 2.D3 (D24) | Opus | **merged** (review 41: link-hop walk, Linux POSIX ACLs, watch expiry). Open: L5 UNC/NFS paths trust the file server admins (owner call later); L4 macOS ACLs not read. | | |
 | 2.9 | Sonnet | **merged** (whole-loop e2e, TestPhase2AuditHasNoContent, D23 git version check, status `git` field, docs fixes) | | |
 | 2.N (D25) | Sonnet | **merged** (session.result on A, session.changes on B; content-free, after commit) | | |
-| 2.H harness (Claude Code + agy) + stand-in CI | Sonnet | `01a0d32e-1359…` | `01a0d32e-9031…` | `harness-p2` |
+| 2.H | Sonnet | **merged** (stand-in PASS; real rounds Claude Code↔agy PASS both ways, 157 s / 163 s; ~0.2–0.4 USD per Claude run). The .sh and Linux/macOS legs are first exercised by the weekly workflow `.github/workflows/phase2-harness.yml` (manually dispatched once at merge). | | |
 Then 2.D3 security review, 2.P push (a `phase-2` tag only with the owner's OK).
 - 2.2d **merged** (2dc1b3d, aeb1680 AfterCommitter, 1664499 review 30 fixes). Review-30 notes L6/L7/L10 on the Sticky Board.
 - CI race failures after 2.2d: test-only races in approval/daemon fakes, fixed in 71db65d (review 31); store.go was fine.
