@@ -19,8 +19,7 @@ free. No workers, no worktrees, no open branches.
    `tests/phase1-smoke.ps1` (~65 steps, ~8 s, one machine, no admin). The Phase 0 two-machine
    run (`tests/phase0-manual.md`) is also still owed. The owner has one PC without admin
    rights at work; they will run it at home when they have time.
-2. **Tags.** `phase-0` exists. `phase-1` and `phase-2` tags need the owner's explicit OK, ideally
-   after item 1. Phase 2 manual checks (approval window per OS, device helper, Windows toast history) are in `tests/phase2-manual.md`.
+2. **Tags.** `phase-0` and `phase-1` exist. `phase-2` waits for the owner's Phase 2 manual checks. Phase 2 manual checks (approval window per OS, device helper, Windows toast history) are in `tests/phase2-manual.md`.
 3. **Codex CLI round of 1.H (optional).** 1.H passed with Claude Code + `agy` (Antigravity CLI)
    in both swapped rounds. Codex was blocked by the owner's account usage limit until
    2026-10-02; rerunning it then is optional.
@@ -88,7 +87,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
   |---|---|---|
   | Worker-Haiku | `custom-1789380226358-958d` | read-only summaries, mechanical work |
   | Worker-Sonnet | `custom-1789380226495-f6d5` | well-specified implementation |
-  | Worker-Sonnet-Lite | `custom-1790318917893-ab35` | trial (D27): Sonnet, thinking off, routine well-scoped tickets |
+  | Worker-Sonnet-Lite | `custom-1790318917893-ab35` | **default for routine, well-scoped tickets** (D28, under watch) |
   | Worker-Opus | `custom-1789460333299-bbb1` | specs, security reviews, investigations/hard debugging, security-critical or OS-level code (D26) |
   Owner has approved Opus for specs and security reviews.
 - **Dispatch** with `team_task_create owner=<slot>`. New workers often say "ready, no task"
@@ -167,6 +166,8 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D25 | Add content-free notifications **session.result** (A: a result waits for your accept; not sent when quarantined, which has its own event) and **session.changes** (B: the requester asked for changes). No session.closed (request.completed/cancelled cover it). Ticket 2.N. |
 | D26 | **Model policy (after the D21 trial, `Docs/orchestration/model-trial.md`):** Sonnet (Sonnet 5) is the default for well-specified implementation tickets. Opus (Opus 5.5) is for investigations and hard debugging, security-critical or OS-level code (process control, permissions, crypto, parsing input from peers), specs, and security reviews. |
 | D27 | **Trial: Sonnet with thinking off** for routine, well-scoped tickets. New template **Worker-Sonnet-Lite** `custom-1790318917893-ab35` (Sonnet, thought_level=off, same worker rules as Worker-Sonnet). First pair: B-1 (Lite) vs B-2 (normal Sonnet control), both small backlog items. Results in `Docs/orchestration/model-trial.md`. |
+| D28 | **Worker-Sonnet-Lite (Sonnet, thinking off) is the default for routine, well-scoped tickets** (backlog items, fixes, portability), under watch: keep logging every Lite ticket in `Docs/orchestration/model-trial.md`, and if a Lite ticket needs rework or misses spec, report it to the owner and fall back to normal Sonnet for that kind of work. Normal Sonnet for feature tickets with design choices; Opus per D26. |
+| D29 | Owner's Phase 1 two-machine run **passed** (2026-09-25); tag `phase-1` on 6baf246 (the Phase 1 close). Phase 2 manual checks are pending (owner runs them in the evening); `phase-2` tag after that. |
 | D15 | Consumer onboarding = plan item **4.9** (install → one `agentnet setup` → one connect command; agent-runnable; clean machine on 3 OSes; no config files). Don't rush it. |
 
 Still open (not urgent): relay hosting (Fly.io vs Hetzner) and account binding (4.1/4.2);
