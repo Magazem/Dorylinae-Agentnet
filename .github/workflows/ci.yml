@@ -20,7 +20,19 @@ jobs:
           go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
-      - run: go test ./... -count=1
+      # Windows runners put %TEMP% on the C: OS disk, where flushes are slow:
+      # every SQLite commit of the tests' daemons fsyncs, so the store-heavy
+      # packages ran 15-25x slower than on Linux (CPU-bound ones 1x) and IPC
+      # calls hit their timeouts (INV-2). RUNNER_TEMP is on the D: work drive.
+      # -timeout 20m: internal/daemon took 466-600 s on Windows, at the 10 min
+      # default; the headroom keeps a slow but passing run from being killed.
+      - name: Put test temp dirs on the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - run: go test ./... -count=1 -timeout 20m
 
   race:
     runs-on: ubuntu-latest
