@@ -215,7 +215,12 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, q := range []string{`DROP TABLE audit_events`, migrations[0].sql, `DELETE FROM migrations WHERE version > 17`} {
+		for _, q := range []string{
+			// Back to schema 17: undo migration 19 (debates), which alters work_sessions.
+			`DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
+			`ALTER TABLE work_sessions DROP COLUMN kind`,
+			`DROP TABLE audit_events`, migrations[0].sql, `DELETE FROM migrations WHERE version > 17`,
+		} {
 			if _, err := s.DB().ExecContext(ctx, q); err != nil {
 				t.Fatalf("%s: %v", q, err)
 			}

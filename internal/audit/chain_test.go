@@ -60,7 +60,11 @@ func legacyStore(t *testing.T, rows ...string) (*store.Store, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec(t, s.DB(), `DROP TABLE audit_events`, migration1, `DELETE FROM migrations WHERE version > 17`)
+	// Back to schema 17: undo migration 19 (debates) too, since it alters
+	// work_sessions and would fail when replayed.
+	exec(t, s.DB(), `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
+		`ALTER TABLE work_sessions DROP COLUMN kind`,
+		`DROP TABLE audit_events`, migration1, `DELETE FROM migrations WHERE version > 17`)
 	for _, r := range rows {
 		exec(t, s.DB(), `INSERT INTO audit_events (id, ts, actor, action, detail) VALUES `+r)
 	}
