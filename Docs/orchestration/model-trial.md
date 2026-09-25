@@ -81,6 +81,7 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 | 3.6a audit chain | Opus 5.5 | ~16 | clean | 0/0/1 |
 | 3.1a debate core | Opus 5.5 | ~40 | integration with 3.6a needed a test-helper fix (my merge) | 0/1/1 (joint with 3.2) |
 | 3.6b agentnet log | Sonnet 5 | ~27 | clean | not required |
-| 3.4 constraints | Opus 5.5 | ~18 | clean | pending |
+| 3.4 constraints | Opus 5.5 | ~18 | clean | 0/2/0 |
 | 3.1b debate IPC/CLI | Sonnet 5 | **~130** (outlier) | gofmt after conflict resolution | not required |
 | DX-1 owner rough edges | Sonnet 5, thinking off | ~27 | missed a new audit-inventory entry (3.6b landed meanwhile) | not required |
+| 3.4-i integration 3.4 × 3.1b | Sonnet 5, thinking off | ~15 | clean | not required; found and fixed a real test-tracking bug |
