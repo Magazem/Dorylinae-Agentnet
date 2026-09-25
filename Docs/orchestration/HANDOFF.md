@@ -4,13 +4,15 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-25, Phase 2 complete.
+Last updated: 2026-09-25, Phase 3 spec work started.
 
 ## 0. Status and next steps
 
 **Phases 0, 1 and 2 are code-complete, merged and pushed. CI is green on main, and the weekly Phase 2 harness workflow (stand-in agent) passes on Linux, Windows and macOS.** Phase 2 real-agent rounds (Claude Code ↔ agy) passed both ways (2.H).
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is
-free. No workers, no worktrees, no open branches.
+free.
+
+**Phase 3 started 2026-09-25** (owner: "start now"). Step 1: P3-SpecWriter (Opus) slot `01a0d76b-a2b3…`, task `01a0d76b-ea81…`, worktree `p3-specs` / `p3/specs`: Docs/protocol/{debate,decision,audit,experience}.md + Docs/review/42-phase3-tickets.md (migrations from 18, suggested model per ticket, OD-P3-n). Then an Opus adversarial spec review, then owner approval, then tickets.
 
 **Open items (all owner-side, none blocks Phase 2 spec work):**
 1. **Owner's two-machine run.** The top of `tests/phase1-manual.md` lists the only checks
