@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -276,5 +277,62 @@ func TestReadOutputFile(t *testing.T) {
 	}
 	if _, err := readOutputFile(dir + "/missing.txt"); err == nil {
 		t.Error("missing file: want an error")
+	}
+}
+
+// TestLifecycleFromForwardedVerbatim: --from (a name, a key, a key starting
+// with '-') reaches the daemon unchanged, which resolves it; a daemon error
+// such as ambiguous_peer or unknown_peer is reported, not swallowed.
+func TestLifecycleFromForwardedVerbatim(t *testing.T) {
+	cases := []struct {
+		verb string
+		args []string
+	}{
+		{"accept", nil},
+		{"decline", []string{"--reason", "no"}},
+		{"defer", []string{"--until", "2h"}},
+	}
+	froms := []struct{ name, from, errCode string }{
+		{"name", "bob", ""},
+		{"key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ""},
+		{"dash key", dashKey, ""},
+		{"unknown name", "nobody", "unknown_peer"},
+		{"ambiguous name", "twin", "ambiguous_peer"},
+	}
+	for _, c := range cases {
+		for _, f := range froms {
+			t.Run(c.verb+"/"+f.name, func(t *testing.T) {
+				p := shortHome(t)
+				var mu sync.Mutex
+				var got map[string]any
+				startFakeDaemon(t, p, map[string]ipc.HandlerFunc{
+					"request_" + c.verb: func(_ context.Context, params json.RawMessage) (any, error) {
+						mu.Lock()
+						defer mu.Unlock()
+						if err := json.Unmarshal(params, &got); err != nil {
+							t.Error(err)
+						}
+						if f.errCode != "" {
+							return nil, &ipc.Error{Code: f.errCode, Message: "no such peer"}
+						}
+						return daemon.RequestLifecycleResult{Request: daemon.RequestView{ID: "r-1", Peer: daemon.RequestPeerRef{Name: "bob"}}}, nil
+					},
+				})
+				args := append([]string{c.verb, "r-1", "--from", f.from, "--json"}, c.args...)
+				var out, errb bytes.Buffer
+				code := run(args, &out, &errb)
+				mu.Lock()
+				defer mu.Unlock()
+				if got["from"] != f.from {
+					t.Errorf("daemon got from = %v, want %q", got["from"], f.from)
+				}
+				if f.errCode == "" && code != exitOK {
+					t.Errorf("code %d, stdout %q, stderr %q", code, out.String(), errb.String())
+				}
+				if f.errCode != "" && (code != exitError || !strings.Contains(out.String(), f.errCode)) {
+					t.Errorf("code %d, stdout %q; want exit %d with %s", code, out.String(), exitError, f.errCode)
+				}
+			})
+		}
 	}
 }

@@ -285,6 +285,28 @@ type RequestCancelResult struct {
 	Duplicate bool        `json:"duplicate"`
 }
 
+// resolveFrom turns a lifecycle "from" param (a peer name or public key, with
+// or without a leading "@") into a public key with the shared peer resolver.
+// A well-formed key that is not paired (the sender was removed while its
+// request is still in the inbox) passes through unchanged. An unknown name is
+// unknown_peer and an ambiguous one ambiguous_peer.
+func resolveFrom(ctx context.Context, ps *peers.Store, from string) (string, error) {
+	if from == "" {
+		return "", nil
+	}
+	peer, err := resolvePeer(ctx, ps, from)
+	if err == nil {
+		return peer.PublicKey, nil
+	}
+	var ie *ipc.Error
+	if errors.As(err, &ie) && ie.Code == CodeUnknownPeer {
+		if _, kerr := envelope.ParseKey(from); kerr == nil {
+			return from, nil
+		}
+	}
+	return "", err
+}
+
 // registerLifecycle wires the recipient-side lifecycle IPC (request_accept,
 // request_decline, request_defer, request_complete), request_cancel,
 // request_resend, request_show, request_list and inbox_list
@@ -296,7 +318,11 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		v, err := rs.Accept(ctx, p.ID, p.From)
+		from, err := resolveFrom(ctx, ps, p.From)
+		if err != nil {
+			return nil, err
+		}
+		v, err := rs.Accept(ctx, p.ID, from)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
@@ -310,7 +336,11 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" || p.Reason == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id and reason are required"}
 		}
-		v, err := rs.Decline(ctx, p.ID, p.From, p.Reason)
+		from, err := resolveFrom(ctx, ps, p.From)
+		if err != nil {
+			return nil, err
+		}
+		v, err := rs.Decline(ctx, p.ID, from, p.Reason)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
@@ -328,7 +358,11 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "until: " + err.Error()}
 		}
-		v, err := rs.Defer(ctx, p.ID, p.From, until)
+		from, err := resolveFrom(ctx, ps, p.From)
+		if err != nil {
+			return nil, err
+		}
+		v, err := rs.Defer(ctx, p.ID, from, until)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}
@@ -347,7 +381,11 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err != nil {
 			return nil, err
 		}
-		v, err := rs.Complete(ctx, p.ID, p.From, p.Note, result)
+		from, err := resolveFrom(ctx, ps, p.From)
+		if err != nil {
+			return nil, err
+		}
+		v, err := rs.Complete(ctx, p.ID, from, p.Note, result)
 		if err != nil {
 			return nil, lifecycleError(err)
 		}

@@ -26,7 +26,7 @@ agentnet complete <id> [--note N] [--status pass|fail|partial|n/a [--summary S]
 | `--exit-code N` | `complete`: an integer from −2147483648 to 4294967295 |
 | `--output-from-file F` | `complete`: attach a text output such as a test log from file `F` (`-` = stdin), up to 32 KiB |
 | `--artifact SPEC` | `complete`: repeatable, up to 20. The same `SPEC` as [`agentnet request --artifact`](request.md) |
-| `--from <peer>` | Needed only when the id matches requests from several peers |
+| `--from <peer>` | Needed only when the id matches requests from several peers. A paired peer's name (case-insensitive, `@` optional) or public key. An unknown name is `unknown_peer`; a name shared by several peers is `ambiguous_peer` and lists their keys, so pass a key. A well-formed key that is no longer paired still works |
 | `--json` | Machine-readable output on stdout |
 
 ## Order

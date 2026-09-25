@@ -128,12 +128,15 @@ func runAccept(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet accept", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
-	from := fs.String("from", "", "pick the sender when the id matches requests from several peers")
+	from := fs.String("from", "", "pick the sender (peer name or public key) when the id matches requests from several peers")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stdout, `Accepts a request from your inbox.
 
 Usage:
   agentnet accept <id> [--from <peer>] [--json]
+
+  --from <peer>  the sender's name or public key, when the id matches requests
+                 from several peers
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
 `)
@@ -161,13 +164,16 @@ func runDecline(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet decline", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
-	from := fs.String("from", "", "pick the sender when the id matches requests from several peers")
+	from := fs.String("from", "", "pick the sender (peer name or public key) when the id matches requests from several peers")
 	reason := fs.String("reason", "", "required. 1-500 characters, sent to the requester")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stdout, `Declines a request from your inbox.
 
 Usage:
   agentnet decline <id> --reason R [--from <peer>] [--json]
+
+  --from <peer>  the sender's name or public key, when the id matches requests
+                 from several peers
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
 `)
@@ -199,13 +205,16 @@ func runDefer(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet defer", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
-	from := fs.String("from", "", "pick the sender when the id matches requests from several peers")
+	from := fs.String("from", "", "pick the sender (peer name or public key) when the id matches requests from several peers")
 	until := fs.String("until", "", "required. RFC 3339 time or a duration (2h, 3d), at most 90 days ahead")
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stdout, `Defers a request from your inbox.
 
 Usage:
   agentnet defer <id> --until T [--from <peer>] [--json]
+
+  --from <peer>  the sender's name or public key, when the id matches requests
+                 from several peers
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
 `)
@@ -255,7 +264,7 @@ func runComplete(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet complete", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print machine-readable JSON on stdout")
-	from := fs.String("from", "", "pick the sender when the id matches requests from several peers")
+	from := fs.String("from", "", "pick the sender (peer name or public key) when the id matches requests from several peers")
 	note := fs.String("note", "", "optional, up to 2000 characters, sent to the requester")
 	status := fs.String("status", "", "attach a result: pass, fail, partial or n/a")
 	summary := fs.String("summary", "", "result: one line, up to 280 characters")
@@ -339,8 +348,8 @@ Flags:
                          colour and cursor sequences are removed
   --artifact SPEC         repeatable, up to 20. The same SPEC as
                          'agentnet request --artifact'
-  --from <peer>           pick the sender when the id matches requests from
-                         several peers
+  --from <peer>           the sender's name or public key, when the id matches
+                         requests from several peers
   --json                  print machine-readable JSON on stdout
 
 Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
