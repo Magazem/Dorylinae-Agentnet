@@ -4,13 +4,13 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-23, Phase 2 wave P2-2.
+Last updated: 2026-09-25, Phase 2 complete.
 
 ## 0. Status and next steps
 
-**Phase 0 and Phase 1 are code-complete, merged and pushed; CI is green on all 15 jobs.**
+**Phases 0, 1 and 2 are code-complete, merged and pushed. CI is green on main, and the weekly Phase 2 harness workflow (stand-in agent) passes on Linux, Windows and macOS.** Phase 2 real-agent rounds (Claude Code ↔ agy) passed both ways (2.H).
 The repository is **public** (github.com/Magazem/Dorylinae-Agentnet), so GitHub Actions is
-free. Phase 2 work is in flight: see the wave table below for workers, worktrees and branches.
+free. No workers, no worktrees, no open branches.
 
 **Open items (all owner-side, none blocks Phase 2 spec work):**
 1. **Owner's two-machine run.** The top of `tests/phase1-manual.md` lists the only checks
@@ -19,8 +19,8 @@ free. Phase 2 work is in flight: see the wave table below for workers, worktrees
    `tests/phase1-smoke.ps1` (~65 steps, ~8 s, one machine, no admin). The Phase 0 two-machine
    run (`tests/phase0-manual.md`) is also still owed. The owner has one PC without admin
    rights at work; they will run it at home when they have time.
-2. **Tags.** `phase-0` exists. A `phase-1` tag (and possibly `phase-0.1`) needs the owner's
-   explicit OK, ideally after item 1.
+2. **Tags.** `phase-0` exists. `phase-1` and `phase-2` tags need the owner's explicit OK, ideally
+   after item 1. Phase 2 manual checks (approval window per OS, device helper, Windows toast history) are in `tests/phase2-manual.md`.
 3. **Codex CLI round of 1.H (optional).** 1.H passed with Claude Code + `agy` (Antigravity CLI)
    in both swapped rounds. Codex was blocked by the owner's account usage limit until
    2026-10-02; rerunning it then is optional.
