@@ -166,8 +166,8 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
     claude)
       command -v claude >/dev/null 2>&1 || { echo "claude executable not found"; return 1; }
       ( cd "$workdir" && DORYLINAE_HOME="$home" PATH="$bindir:$PATH" \
-        timeout "${timeout}s" claude "$prompt" -p --restricted --tools Bash \
-          --allowedTools "Bash(agentnet *)" "Bash(sleep *)" --permission-prompts none --output-format json \
+        timeout "${timeout}s" claude "$prompt" -p --restricted --tools Bash,Skill --model claude-opus-5-5 \
+          --allowedTools "Bash(agentnet *)" "Bash(sleep *)" "Bash(cat *)" --permission-prompts none --output-format json \
           --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources project \
           >"$out" 2>"$err" )
       rc=$?
@@ -388,10 +388,17 @@ run_round() { # run_round <round-num> <initiator> <respondent> <scenario> <relay
     echo "$snippet_body" >"$b_work/$b_file"
     cp "$fixture_dir/NOTES.md" "$a_work/NOTES.md"
     cp "$fixture_dir/NOTES.md" "$b_work/NOTES.md"
+    # --setting-sources project loads skills only from the agent's own work dir.
+    mkdir -p "$a_work/.claude/skills/agentnet-debate" "$b_work/.claude/skills/agentnet-debate"
+    cp "$REPO_ROOT/.claude/skills/agentnet-debate/SKILL.md" "$a_work/.claude/skills/agentnet-debate/SKILL.md"
+    cp "$REPO_ROOT/.claude/skills/agentnet-debate/SKILL.md" "$b_work/.claude/skills/agentnet-debate/SKILL.md"
 
     local bin_dir="$REPO_ROOT/bin"
     local start_prompt="You are working with a teammate whose AgentNet peer name is agent-b, on the shared team t3h. Read NOTES.md in your working directory: it describes two candidate designs of one function. Start a debate with agent-b about which design is better, arguing for whichever you judge stronger, with at most 2 rounds. Use exactly this idempotency key so a retry never starts it twice: $idem_key Then stop; you will be asked to take further steps in the same debate later."
     local join_prompt="A teammate's agent (agent-a) invited you to an AgentNet debate. Read NOTES.md in your working directory: it describes two candidate designs of one function. Check for the debate and take your next step in it, arguing for whichever design you judge stronger. Then stop; you will be asked to take further steps in the same debate later."
+    local cli_hint=' The CLI is `agentnet`; start with `agentnet --help`.'
+    [ "$initiator" = "claude" ] && start_prompt="$start_prompt$cli_hint"
+    [ "$respondent" = "claude" ] && join_prompt="$join_prompt$cli_hint"
     local follow_up_prompt="Your AgentNet debate with your teammate is waiting for you. Take your next step, then stop."
 
     local a_started=0 b_joined=0 constraint_done=0 turn_count=0 max_turns=14

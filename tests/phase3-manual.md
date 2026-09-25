@@ -101,3 +101,129 @@ Agent confusion / snippet wording problems seen:
   file, do not pipe stdin", "no need to explore first"); not re-tested by a new real run —
   the stand-in and the next weekly run cover it.
 - agy turns were single-shot (1 turn each) with no visible confusion.
+
+### 3.H2 (after DX-2)
+
+Three attempts. Attempts 1 and 2 were aborted by Claude before any `agentnet` command (the
+restricted harness blocked the measurement); attempt 3 completed a debate and is the usable
+result (verdict: improved, see the end of this subsection).
+
+#### Attempt 1
+
+One real round, 2026-09-25, `phase3-agents.ps1 -Harness real -OnlyRound 1` (claude -> agy), run dir
+`%TEMP%\phase3-agents-ea340c45`. Run once, no retry: an agent did run, so it was not a harness
+failure. Harness result: FAIL (`turn-driven loop exceeded its deadline`), 1,451 s wall clock, of
+which the agent work was 5.3 s; the rest was the script polling for a debate that never existed.
+
+| | 3.H round 1 (before DX-2) | 3.H2 round 1 (after DX-2) |
+|---|---|---|
+| claude invocations | several of 9 total turns (count not recorded) | 1 (turn 1), then the loop polled with nothing to run |
+| claude turns (`num_turns`) | up to 30 per invocation | 2 |
+| debate reached | agreed, 589 s | never started (0 moves, 0 agy turns) |
+| claude cost | 1.06 USD | 0.031 USD |
+| permission denials | 1-5 per invocation | 1 (the first call) |
+| `bad_request` / `not_your_turn` | several JSON-shape errors | none (no agentnet command was ever run) |
+| inline flags vs move files | move files, guessed shape | neither; never reached agentnet |
+| read the `hint` field | n/a | no |
+
+What happened: Claude's first and only tool call was `Get-Content NOTES.md; Get-Command *agentnet*
+| Select Name,Source`, denied by the restricted headless mode (`--allowedTools` only allows
+`PowerShell(agentnet *)`, `PowerShell(Start-Sleep *)`, `Write`). It then stopped with "I couldn't
+start the debate", having read no file and run no agentnet command, so none of the DX-2 features
+were exercised. Same failure mode as the earlier run (orientation via `Get-Content` denied), but
+this time it ended the turn instead of pressing on.
+
+Skill presence: NOT present. The harness builds `a-work` as an empty directory holding only
+`CLAUDE.md` (the updated snippet, present) and `NOTES.md`; nothing copies
+`.claude/skills/agentnet-debate` into it, and `--setting-sources project` only loads from that
+directory. So the SKILL.md was not available to Claude in this run; only the snippet was.
+Harness left unchanged. Also note the model differed: this run's claude was `claude-sonnet-5`
+(modelUsage), the earlier one was recorded as claude-opus-5-5, so the comparison is confounded.
+
+Verdict: INCONCLUSIVE, leaning worse for the harness. The 1 turn / 0.03 USD says nothing about
+DX-2 (the flags, errors, and `hint` were never reached). The concrete finding is that the start
+prompt tells Claude to "Read NOTES.md", the only read tool (`Get-Content`) is denied, and there is
+no path to read it, so Claude can abort before its first agentnet call. Suggested follow-ups (not
+done here): allow a read of NOTES.md (e.g. put its text in the prompt or allow
+`PowerShell(Get-Content NOTES.md)`), copy `.claude/skills/agentnet-debate` into the fixture, then
+re-run once.
+
+#### Attempt 2 (after two harness fixes)
+
+Harness changes in `phase3-agents.ps1` (mirrored in `phase3-agents.sh`): claude's
+`--allowedTools` gained `PowerShell(Get-Content *)` (`Bash(cat *)` in the .sh) so NOTES.md can be
+read; `.claude/skills/agentnet-debate/SKILL.md` is now copied into both `a-work` and `b-work`
+(identical fixture for agy). So the skill file IS now present in the Claude agent's work dir
+(verified in the run dir). Gates: PowerShell parse 0 errors, `bash -n` OK, `-Harness standin`
+PASS (both rounds, 15 s). Run 2026-09-25 22:00, run dir `%TEMP%\phase3-agents-34ff9cca`,
+`-Harness real -OnlyRound 1`. Model: `claude-sonnet-5` again (the first real run was
+`claude-opus-5-5`, so still confounded).
+
+| | 3.H round 1 (before DX-2) | 3.H2 attempt 2 |
+|---|---|---|
+| claude invocations | several of 9 turns | 1, then the run was stopped by hand |
+| claude turns (`num_turns`) | up to 30 per invocation | 3 |
+| debate reached | agreed, 589 s | never started (0 moves) |
+| claude cost | 1.06 USD | 0.015 USD |
+| permission denials | 1-5 per invocation | 1 |
+| `bad_request` / `not_your_turn` | several | none (no agentnet command run) |
+| inline flags / files / `hint` | move files, guessed shape | never reached |
+| skill invoked | n/a | no evidence (see below) |
+
+What happened: Claude read NOTES.md this time (fix 1 worked) and even formed a position (design
+A), but to "start the debate" it ran `Get-Command *agentnet* ...; Get-ChildItem -Force | Select
+Name`, which was denied, and it stopped saying it had "no AgentNet tool". It never tried
+`agentnet --help` or `agentnet debate ...`, although CLAUDE.md (the snippet) says exactly that
+the CLI is `agentnet` and to start with `agentnet --help`. I stopped the harness by hand after
+turn 1 (it would only have polled ~20 more minutes for a debate that cannot start).
+
+Likely blockers (not verified): the run passes `--tools "PowerShell,Write"`, which probably
+excludes the Skill tool, so the skill file cannot be invoked even though it is on disk; and
+`--allowedTools` permits only commands starting `agentnet *`, so any exploratory command is
+denied and Claude gives up instead of trying `agentnet` directly. Suggested next step (not done,
+needs a decision): say in the start prompt that the CLI is `agentnet` and to run
+`agentnet --help` first, and add `Skill` to `--tools`.
+
+Verdict: INCONCLUSIVE again. Cheap (0.015 USD), but nothing about DX-2 (flags, errors, `hint`,
+skill) was exercised, so it is neither better nor worse than the first run.
+
+#### Attempt 3 (last): CLI hint in the prompt, Skill tool, same model as the first run
+
+Harness changes (`phase3-agents.ps1`, mirrored in `.sh`), Claude agents only: the start/join
+prompt gets " The CLI is `agentnet`; start with `agentnet --help`." (no subcommand or flag named);
+`--tools` gains `Skill` (`PowerShell,Write,Skill`; `Bash,Skill` in the .sh); `--model
+claude-opus-5-5` (accepted by the CLI; the model of the first run; the run confirms
+`modelUsage: claude-opus-5-5`). Gates: PowerShell parse 0 errors, `bash -n` OK, `-Harness standin`
+PASS (16.5 s). Run 2026-09-25 22:02, run dir `%TEMP%\phase3-agents-7b3ca2bf`,
+`-Harness real -OnlyRound 1`. Numbers come from the harness logs plus Claude's own session
+transcripts (`~/.claude/projects/...phase3-agents-7b3ca2bf...-a-work/*.jsonl`).
+
+| | 3.H round 1 (before DX-2) | 3.H2 attempt 3 (after DX-2) |
+|---|---|---|
+| result | PASS, agreed | PASS, agreed |
+| elapsed (round) | 589.4 s | 211.2 s (script 214.4 s) |
+| turns (all agents) | 9 | 6 (claude 3: start, pass, proposal; agy 3) |
+| claude API turns (`num_turns`) | up to 30 per invocation | 8 + 13 + 12 = 33 (11 per invocation) |
+| claude time / cost | ~1.06 USD | 111 s / 0.538 USD (0.192 + 0.185 + 0.161) |
+| permission denials | 1-5 per invocation | 4 total (1 + 2 + 1) |
+| agentnet errors | several JSON-shape errors | 1 `bad_request` (proposal decision over 280 code points), fixed on the next call; no `not_your_turn` |
+| move style | move files, guessed shape | opening position: `--position-file` (file written with Write, correct shape first time); pass: inline `--pass`; proposal: inline `--agree "..."` |
+| `hint` field | n/a | present in `agentnet debate <id> --json`; the two follow-up turns each ran `debate <id> --json` and then made exactly the move the hint named |
+| skill invoked | n/a | No Skill-tool call. Claude read `.claude/skills/agentnet-debate/SKILL.md` itself with `Get-Content` in one turn (after a denied compound read); the other turns never opened it |
+
+Remaining waste: on every follow-up turn Claude still spent 4-8 calls on orientation (`Get-ChildItem`,
+reading CLAUDE.md/NOTES.md/position.json, `agentnet inbox`, `debate --help`, `sessions`) and had
+compound `Get-ChildItem ...; ...` / multi-file `Get-Content a, b, c` commands denied (4 denials).
+Both agents chose Design A, so no `--challenge` was needed and that flag was not exercised.
+
+Verdict: IMPROVED, with caveats. Round time fell 589 s -> 211 s, total turns 9 -> 6, and the
+JSON-shape guessing is gone (correct position-file shape first time, inline `--pass`/`--agree`,
+the single error message named the limit and was fixed in one retry). Claude cost 0.54 USD for the
+round vs 1.06 USD for the whole earlier run. Caveats: one run each; this debate had no
+disagreement (fewer moves than a contested one); agy time is inside the totals; the earlier run
+also lacked the prompt hint and the `Get-Content` allowance, so gains are not attributable to DX-2
+alone; the skill file was barely used, so `hint` plus self-explaining errors (not the skill) carried
+the gain. Orientation waste and denials persist and are a harness allowlist matter (compound and
+multi-file commands are denied), not a DX-2 one. A future round should allow read-only listing
+(`Get-ChildItem *`) or put the fixture contents in the prompt, and run several rounds (including a
+contested one) before drawing quantitative conclusions.

@@ -272,7 +272,8 @@ function Start-Agent {
             if (-not (Test-Path $exe)) { $exe = "$env:APPDATA/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe" }  # npm install: Get-Command finds a .cmd/.ps1 shim that cannot be started directly
             if (-not (Test-Path $exe)) { $cmd = Get-Command claude -ErrorAction SilentlyContinue; if ($cmd -and $cmd.Source -like "*.exe") { $exe = $cmd.Source } }
             if (-not (Test-Path $exe)) { return @{ Ran = $false; Reason = "claude executable not found" } }
-            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell,Write", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)", "Write",
+            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell,Write,Skill", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)", "PowerShell(Get-Content *)", "Write",
+                "--model", "claude-opus-5-5",
                 "--permission-prompts", "none", "--output-format", "json",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "project")
         }
@@ -563,10 +564,20 @@ func Debounce(fn func(), delay time.Duration) func() {
             Set-Content -Path (Join-Path $bWork $bSnippetFile) -Value $snippet -Encoding utf8
             Copy-Item -Path $notesPath -Destination (Join-Path $aWork "NOTES.md") -Force
             Copy-Item -Path $notesPath -Destination (Join-Path $bWork "NOTES.md") -Force
+            # --setting-sources project loads skills only from the agent's own work dir.
+            $skillSrc = Join-Path $RepoRoot ".claude\skills\agentnet-debate\SKILL.md"
+            foreach ($w in @($aWork, $bWork)) {
+                $skillDst = Join-Path $w ".claude\skills\agentnet-debate"
+                New-Item -ItemType Directory -Force -Path $skillDst | Out-Null
+                Copy-Item -Path $skillSrc -Destination (Join-Path $skillDst "SKILL.md") -Force
+            }
 
             $binDir = Join-Path $RepoRoot "bin"
             $startPrompt = "You are working with a teammate whose AgentNet peer name is agent-b, on the shared team t3h. Read NOTES.md in your working directory: it describes two candidate designs of one function. Start a debate with agent-b about which design is better, arguing for whichever you judge stronger, with at most 2 rounds. Use exactly this idempotency key so a retry never starts it twice: $idemKey Then stop; you will be asked to take further steps in the same debate later."
             $joinPrompt = "A teammate's agent (agent-b) is you; a teammate (agent-a) invited you to an AgentNet debate. Read NOTES.md in your working directory: it describes two candidate designs of one function. Check for the debate and take your next step in it, arguing for whichever design you judge stronger. Then stop; you will be asked to take further steps in the same debate later."
+            $cliHint = " The CLI is ``agentnet``; start with ``agentnet --help``."
+            if ($InitiatorTool -eq "claude") { $startPrompt += $cliHint }
+            if ($RespondentTool -eq "claude") { $joinPrompt += $cliHint }
             $followUpPrompt = "Your AgentNet debate with your teammate is waiting for you. Take your next step, then stop."
 
             $sessionId = $null
