@@ -76,7 +76,8 @@ s-5214…  role initiator  phase rounds  turn peer
 `--json` returns the [debate view](../protocol/debate.md#ipc) under `"debate"`: `session`,
 `request {id, title}`, `role`, `peer`, `team`, `phase`, `outcome`/`reason` once decided,
 `rounds {max, current}`, `turn` (`you`/`peer`/`none`), `expect` (the next entry kind, when it is
-your turn), `deadline`, `waiting` (`reveal`/`entry`/`signature`), `topic`, `context`
+your turn), `hint` (a one-line reminder of the CLI command to submit next, present only when
+`turn` is `you`), `deadline`, `waiting` (`reveal`/`entry`/`signature`), `topic`, `context`
 (`{name, bytes}`, never the text), `transcript` (`{slot, author, kind, at, entry}`) and
 `constraints` (`{id, author, at, text, state}`, active and late, never excess; see [Human
 constraints](#human-constraints)).
@@ -84,24 +85,54 @@ constraints](#human-constraints)).
 ## Submitting an entry
 
 ```
+agentnet debate <id> --claim S --argument S [--assumption S]... [--json]
+agentnet debate <id> --pass | --challenge TARGET=ARGUMENT... [--revise-claim S --revise-argument S] [--json]
+agentnet debate <id> --agree S [--remaining S] [--json]
+agentnet debate <id> --accept | --reject [--remaining S] [--json]
 agentnet debate <id> --position-file F | --move-file F | --propose-file F | --answer-file F [--json]
 ```
 
-Give exactly one entry file (`-` = stdin), a JSON object of the matching kind:
+Give exactly **one** entry: either one of the inline flag groups below, or one entry file
+(`-` = stdin), a JSON object of the matching kind. Mixing (two files, or a file and inline
+flags, or inline flags from two different kinds) is a usage error (exit 2). Inline flags build
+the same JSON an entry file would hold, then submit it through the same path; they work only on
+an existing `<id>`, not to start a debate.
 
 <a id="entry-files"></a>
 
-| Kind | Shape | Example |
-|---|---|---|
-| `position` | `{"claim", "argument", "assumptions"?, "evidence"?, "rejected_alternatives"?}` | `{"claim":"Use capped backoff","argument":"Keeps retries bounded."}` |
-| `move` | `{"challenges": [...], "revision"?}` — empty `challenges` is a pass | `{"challenges":[]}` |
-| `proposal` | `{"agreement": {"decision", ...}, "remaining_disagreement"?, "affected_artifacts"?}` | `{"agreement":{"decision":"Capped backoff with jitter"}}` |
-| `answer` | `{"accept": true\|false, "remaining_disagreement"?, "argument"?}` | `{"accept":true}` |
+| Kind | Shape | Example | Inline flags |
+|---|---|---|---|
+| `position` | `{"claim", "argument", "assumptions"?, "evidence"?, "rejected_alternatives"?}` | `{"claim":"Use capped backoff","argument":"Keeps retries bounded."}` | `--claim S --argument S [--assumption S]...` |
+| `move` | `{"challenges": [...], "revision"?}` — empty `challenges` is a pass | `{"challenges":[]}` | `--pass`, or `--challenge TARGET=ARGUMENT` (repeatable, up to 3) `[--revise-claim S --revise-argument S]` |
+| `proposal` | `{"agreement": {"decision", ...}, "remaining_disagreement"?, "affected_artifacts"?}` | `{"agreement":{"decision":"Capped backoff with jitter"}}` | `--agree S [--remaining S]` |
+| `answer` | `{"accept": true\|false, "remaining_disagreement"?, "argument"?}` | `{"accept":true}` | `--accept` \| `--reject` `[--remaining S]` |
+
+`evidence`, `rejected_alternatives` and per-side `remaining_disagreement` text stay file-only:
+`--remaining S` is a shorthand that records the same one-line text as the point and both sides'
+view, which the protocol's `{"point", "initiator", "respondent"}` shape requires all three of;
+use `--propose-file`/`--answer-file` for distinct text or more than one point.
+
+A move's `--challenge` value is `TARGET=ARGUMENT`, e.g. `--challenge claim="Why not use
+jitter?"` or `--challenge evidence/0="This benchmark used a different network."` (`TARGET` is
+one item of the *other* side's current position: `claim`, `argument`, `assumptions/<i>`,
+`evidence/<i>` or `rejected_alternatives/<i>`, [§Targets](../protocol/debate.md#targets)).
+
+```
+agentnet debate s-5214… --claim "Use capped backoff" --argument "Keeps retries bounded."
+agentnet debate s-5214… --pass
+agentnet debate s-5214… --challenge claim="Why not use jitter?"
+agentnet debate s-5214… --agree "Capped backoff with jitter"
+agentnet debate s-5214… --accept
+```
 
 `--help` shows this table; see [../protocol/debate.md §Messages](../protocol/debate.md#messages-32)
 for every field's limits. `debate_submit` refuses a kind or slot that is not yours
 (`not_your_turn`, naming the expected kind and author), a bad field (`bad_request`, naming the
-path, e.g. `entry.claim`), and a canonical entry over 32768 bytes (`entry_too_large`).
+path, e.g. `entry.claim`), and a canonical entry over 32768 bytes (`entry_too_large`). For both
+`not_your_turn` and `bad_request`, the CLI's error message (human and `--json` `error.message`)
+appends the expected entry's shape and a working example, plus the matching inline flags, so an
+agent does not need to guess the shape a second time. When it is your turn, `debate_show` and
+`agentnet wait`'s view also carry a `hint` string naming the exact command to submit next.
 
 **One-step accept + position.** `--position-file` on a debate that is still `pending` or
 `deferred` on you accepts it and submits your opening position in one transaction: either both

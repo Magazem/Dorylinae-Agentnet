@@ -91,6 +91,7 @@ type DebateView struct {
 	Rounds          DebateRoundsView       `json:"rounds"`
 	Turn            string                 `json:"turn"`
 	Expect          string                 `json:"expect,omitempty"`
+	Hint            string                 `json:"hint,omitempty"`
 	Deadline        string                 `json:"deadline,omitempty"`
 	Waiting         string                 `json:"waiting,omitempty"`
 	Topic           string                 `json:"topic,omitempty"`
@@ -158,6 +159,9 @@ func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *te
 		Rounds: DebateRoundsView{Max: v.RoundsMax, Current: v.RoundsUsed},
 		Turn:   v.Turn, Expect: v.Expect, Waiting: v.Waiting,
 	}
+	if v.Turn == "you" && v.Expect != "" {
+		dv.Hint = debateTurnHint(v.Expect)
+	}
 	if !v.Deadline.IsZero() {
 		dv.Deadline = wireTimeString(v.Deadline)
 	}
@@ -191,6 +195,24 @@ func buildDebateView(ctx context.Context, v debate.View, ps *peers.Store, ts *te
 		}
 	}
 	return dv
+}
+
+// debateTurnHint gives DebateView.Hint a one-line reminder of the CLI form
+// to submit next (DX-2), so an agent's first debate_show/wait already names
+// the exact command instead of it guessing at the entry shape. "<id>" is a
+// placeholder the agent substitutes with the debate's own id.
+func debateTurnHint(expect string) string {
+	switch expect {
+	case "position":
+		return `submit your opening position: agentnet debate <id> --claim "..." --argument "..."`
+	case "move":
+		return `submit a move: agentnet debate <id> --pass  or  --challenge claim="..."`
+	case "proposal":
+		return `submit a proposal: agentnet debate <id> --agree "..."`
+	case "answer":
+		return `submit an answer: agentnet debate <id> --accept  or  --reject`
+	}
+	return ""
 }
 
 func wireTimeString(t time.Time) string {

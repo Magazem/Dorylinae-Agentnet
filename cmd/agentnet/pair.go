@@ -221,9 +221,21 @@ func looksLikePeerKey(s string) bool {
 // callDaemon makes one IPC call and reports failures as the command's output.
 // It returns exitOK when res is filled in.
 func callDaemon(asJSON bool, stdout, stderr io.Writer, timeout time.Duration, method string, params, res any) int {
+	code, errCode, msg := callDaemonRaw(timeout, method, params, res)
+	if code != exitOK {
+		return failJSON(asJSON, stdout, stderr, code, errCode, msg)
+	}
+	return exitOK
+}
+
+// callDaemonRaw makes one IPC call without printing anything, so a caller
+// that wants to enrich the error message (debate's self-explaining errors,
+// DX-2) can do so before it reaches failJSON. code is exitOK with errCode
+// and msg both "" on success.
+func callDaemonRaw(timeout time.Duration, method string, params, res any) (code int, errCode, msg string) {
 	p, err := paths.Default()
 	if err != nil {
-		return failJSON(asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
+		return exitError, "daemon_error", err.Error()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -231,15 +243,14 @@ func callDaemon(asJSON bool, stdout, stderr io.Writer, timeout time.Duration, me
 		var ie *ipc.Error
 		switch {
 		case errors.Is(err, ipc.ErrNotRunning):
-			return failJSON(asJSON, stdout, stderr, exitDaemonNotFound, "daemon_not_running",
-				fmt.Sprintf("agentnetd is not running (endpoint: %s)", p.Endpoint))
+			return exitDaemonNotFound, "daemon_not_running", fmt.Sprintf("agentnetd is not running (endpoint: %s)", p.Endpoint)
 		case errors.As(err, &ie):
-			return failJSON(asJSON, stdout, stderr, exitError, ie.Code, ie.Message)
+			return exitError, ie.Code, ie.Message
 		case errors.Is(err, context.DeadlineExceeded):
-			return failJSON(asJSON, stdout, stderr, exitError, "timeout", "the daemon did not answer in time")
+			return exitError, "timeout", "the daemon did not answer in time"
 		default:
-			return failJSON(asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
+			return exitError, "daemon_error", err.Error()
 		}
 	}
-	return exitOK
+	return exitOK, "", ""
 }

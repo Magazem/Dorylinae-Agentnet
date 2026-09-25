@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
@@ -72,6 +73,10 @@ Usage:
                   [--title T] [--team T] [--urgency U --urgency-reason R]
                   [--idempotency-key K] [--json]
   agentnet debate <id> [--json]
+  agentnet debate <id> --claim S --argument S [--assumption S]... [--json]
+  agentnet debate <id> --pass | --challenge TARGET=ARGUMENT... [--revise-claim S --revise-argument S] [--json]
+  agentnet debate <id> --agree S [--remaining S] [--json]
+  agentnet debate <id> --accept | --reject [--remaining S] [--json]
   agentnet debate <id> --position-file F | --move-file F | --propose-file F | --answer-file F [--json]
   agentnet debate <id> --cancel [--reason R] [--json]
   agentnet debate <id> --constrain TEXT [--json]
@@ -97,9 +102,36 @@ Flags:
   --urgency U                low, normal (default), high or blocking
   --urgency-reason R         required with high and blocking
   --idempotency-key K        1-64 characters of [A-Za-z0-9._:-]
+
+Submitting an entry on an existing debate <id>: give exactly one of an entry
+file below, or one set of inline flags below (mixing either two files or a
+file and inline flags is a usage error). Inline flags build the same JSON an
+entry file would hold and submit it the same way; they only work on an
+existing <id>, never to start a debate.
+
   --move-file F              a move: {"challenges", "revision"?} ("-" = stdin)
   --propose-file F           a proposal: {"agreement", ...} ("-" = stdin)
   --answer-file F            an answer: {"accept", ...} ("-" = stdin)
+
+  --claim S                  position (inline): your one-line claim
+  --argument S               position (inline): your argument (multi-line)
+  --assumption S             position (inline): an assumption (repeatable)
+  --pass                     move (inline): no challenge, no revision
+  --challenge TARGET=S       move (inline): challenge one target with an
+                            argument (repeatable, up to 3), e.g.
+                            --challenge claim="Why not use jitter?"
+  --revise-claim S           move (inline): replace your claim (needs
+                            --revise-argument too)
+  --revise-argument S        move (inline): replace your argument (needs
+                            --revise-claim too)
+  --agree S                  proposal (inline): the agreed decision
+  --accept                   answer (inline): agree with the proposal
+  --reject                   answer (inline): escalate, no agreement
+  --remaining S               proposal/answer (inline): one remaining
+                            disagreement point, recorded as both sides'
+                            view too; use --propose-file/--answer-file for
+                            distinct per-side text or more than one point
+
   --cancel                   close an open or invited debate (no Decision)
   --reason R                 optional, with --cancel, 1-500 characters
   --constrain TEXT           add a human constraint, approval-gated: the
@@ -111,7 +143,8 @@ Flags:
 
 Each entry file is a JSON object of the given kind (Docs/protocol/debate.md
 §Messages): position {"claim","argument",...}, move {"challenges","revision"?},
-proposal {"agreement",...}, answer {"accept",...}.
+proposal {"agreement",...}, answer {"accept",...}. Evidence and rejected
+alternatives are file-only (no inline flag).
 
 Wait for your turn or the close with 'agentnet wait <id>'.
 
@@ -144,6 +177,25 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 		contextFiles = append(contextFiles, v)
 		return nil
 	})
+	claim := fs.String("claim", "", "position (inline): your one-line claim")
+	argument := fs.String("argument", "", "position (inline): your argument")
+	var assumptions []string
+	fs.Func("assumption", "position (inline): an assumption (repeatable)", func(v string) error {
+		assumptions = append(assumptions, v)
+		return nil
+	})
+	pass := fs.Bool("pass", false, "move (inline): no challenge, no revision")
+	var challenges []string
+	fs.Func("challenge", "move (inline): TARGET=ARGUMENT (repeatable)", func(v string) error {
+		challenges = append(challenges, v)
+		return nil
+	})
+	reviseClaim := fs.String("revise-claim", "", "move (inline): replace your claim")
+	reviseArgument := fs.String("revise-argument", "", "move (inline): replace your argument")
+	agree := fs.String("agree", "", "proposal (inline): the agreed decision")
+	accept := fs.Bool("accept", false, "answer (inline): agree with the proposal")
+	reject := fs.Bool("reject", false, "answer (inline): escalate, no agreement")
+	remaining := fs.String("remaining", "", "proposal/answer (inline): one remaining disagreement point")
 	fs.Usage = func() { _, _ = fmt.Fprint(stdout, debateUsage) }
 
 	pos, err := parseInterspersed(fs, args)
@@ -162,29 +214,47 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--reason is only valid with --cancel")
 	}
 
+	inlineKind, err := inlineDebateKind(set)
+	if err != nil {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
+	}
+
 	entryActions := 0
 	for _, a := range []bool{set["position-file"], set["move-file"], set["propose-file"], set["answer-file"]} {
 		if a {
 			entryActions++
 		}
 	}
+	if inlineKind != "" {
+		entryActions++
+	}
 
 	if isDebateID(pos[0]) {
 		id := pos[0]
 		switch {
 		case entryActions > 1:
-			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give at most one of --position-file, --move-file, --propose-file or --answer-file")
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give exactly one of an entry file (--position-file/--move-file/--propose-file/--answer-file) or one set of inline flags (--claim/--pass/--challenge/--agree/--accept/--reject)")
 		case *cancel && (entryActions > 0 || set["constrain"]):
-			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--cancel cannot be combined with an entry file or --constrain")
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--cancel cannot be combined with an entry file, inline flags or --constrain")
 		case set["constrain"] && entryActions > 0:
-			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--constrain cannot be combined with an entry file")
+			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--constrain cannot be combined with an entry file or inline flags")
 		case *cancel:
 			return runDebateCancel(*asJSON, stdout, stderr, id, *reason)
 		case set["constrain"]:
 			return runDebateConstrain(*asJSON, stdout, stderr, id, *constrain)
+		case inlineKind != "":
+			entry, err := buildInlineEntry(inlineKind, *claim, *argument, assumptions, *pass, challenges, *reviseClaim, *reviseArgument, *agree, *accept, *reject, *remaining)
+			if err != nil {
+				return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
+			}
+			return runDebateSubmit(*asJSON, stdout, stderr, id, inlineKind, entry)
 		case entryActions == 1:
 			kind, path := debateEntryKind(set, *positionFile, *moveFile, *proposeFile, *answerFile)
-			return runDebateSubmit(*asJSON, stdout, stderr, id, kind, path)
+			entry, err := readEntryFile(path)
+			if err != nil {
+				return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
+			}
+			return runDebateSubmit(*asJSON, stdout, stderr, id, kind, entry)
 		case set["topic"] || set["topic-from-file"] || set["rounds"] || set["turn-timeout"]:
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", fmt.Sprintf("%q looks like a debate id, not a peer; drop --topic/--rounds/--turn-timeout to show it", id))
 		default:
@@ -193,9 +263,10 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Starting a new debate: --move-file/--propose-file/--answer-file/--constrain
-	// only make sense against an existing debate id, never a peer.
-	if *cancel || set["move-file"] || set["propose-file"] || set["answer-file"] || set["constrain"] {
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give a debate id (s-... or r-...) with --cancel, --move-file, --propose-file, --answer-file or --constrain")
+	// and the inline entry flags only make sense against an existing debate
+	// id, never a peer.
+	if *cancel || set["move-file"] || set["propose-file"] || set["answer-file"] || set["constrain"] || inlineKind != "" {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give a debate id (s-... or r-...) with --cancel, --move-file, --propose-file, --answer-file, --constrain or the inline entry flags")
 	}
 	if !set["position-file"] {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--position-file is required to start a debate")
@@ -209,6 +280,128 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 		urgency: *urgency, urgencyReason: *urgencyReason, idemKey: *idemKey,
 		contextFiles: contextFiles,
 	})
+}
+
+// inlineDebateKind reports which entry kind the inline flags in set build
+// (DX-2): position (--claim/--argument/--assumption), move
+// (--pass/--challenge/--revise-claim/--revise-argument), proposal (--agree)
+// or answer (--accept/--reject). "", nil means none were given. It is a
+// usage error to give flags from more than one kind, or --remaining without
+// --agree/--accept/--reject to say which kind it belongs to.
+func inlineDebateKind(set map[string]bool) (string, error) {
+	kinds := map[string]bool{}
+	if set["claim"] || set["argument"] || set["assumption"] {
+		kinds["position"] = true
+	}
+	if set["pass"] || set["challenge"] || set["revise-claim"] || set["revise-argument"] {
+		kinds["move"] = true
+	}
+	if set["agree"] {
+		kinds["proposal"] = true
+	}
+	if set["accept"] || set["reject"] {
+		kinds["answer"] = true
+	}
+	switch len(kinds) {
+	case 0:
+		if set["remaining"] {
+			return "", errors.New("--remaining needs --agree (a proposal) or --accept/--reject (an answer) to say which kind it belongs to")
+		}
+		return "", nil
+	case 1:
+		for k := range kinds {
+			return k, nil
+		}
+	}
+	return "", errors.New("give inline flags from only one entry kind: position (--claim/--argument/--assumption), move (--pass/--challenge/--revise-claim/--revise-argument), proposal (--agree) or answer (--accept/--reject)")
+}
+
+// buildInlineEntry builds the canonical entry JSON for kind from the inline
+// flags (DX-2): the same shape an entry file holds.
+func buildInlineEntry(kind, claim, argument string, assumptions []string, pass bool, challenges []string, reviseClaim, reviseArgument, agree string, accept, reject bool, remaining string) (json.RawMessage, error) {
+	switch kind {
+	case "position":
+		return buildInlinePosition(claim, argument, assumptions)
+	case "move":
+		return buildInlineMove(pass, challenges, reviseClaim, reviseArgument)
+	case "proposal":
+		return buildInlineProposal(agree, remaining)
+	case "answer":
+		return buildInlineAnswer(accept, reject, remaining)
+	}
+	return nil, fmt.Errorf("unknown entry kind %q", kind)
+}
+
+func buildInlinePosition(claim, argument string, assumptions []string) (json.RawMessage, error) {
+	if claim == "" {
+		return nil, errors.New("--claim is required")
+	}
+	if argument == "" {
+		return nil, errors.New("--argument is required")
+	}
+	m := map[string]any{"claim": claim, "argument": argument}
+	if len(assumptions) > 0 {
+		m["assumptions"] = assumptions
+	}
+	return json.Marshal(m)
+}
+
+func buildInlineMove(pass bool, challenges []string, reviseClaim, reviseArgument string) (json.RawMessage, error) {
+	if pass && (len(challenges) > 0 || reviseClaim != "" || reviseArgument != "") {
+		return nil, errors.New("--pass cannot be combined with --challenge or --revise-claim/--revise-argument")
+	}
+	if (reviseClaim == "") != (reviseArgument == "") {
+		return nil, errors.New("--revise-claim and --revise-argument must be given together")
+	}
+	if !pass && len(challenges) == 0 && reviseClaim == "" {
+		return nil, errors.New("give --pass, --challenge or --revise-claim/--revise-argument")
+	}
+	chs := make([]map[string]any, 0, len(challenges))
+	for _, c := range challenges {
+		target, arg, ok := strings.Cut(c, "=")
+		if !ok || target == "" || arg == "" {
+			return nil, fmt.Errorf("--challenge %q: must be TARGET=ARGUMENT, e.g. --challenge claim=\"...\"", c)
+		}
+		chs = append(chs, map[string]any{"targets": []string{target}, "argument": arg})
+	}
+	m := map[string]any{"challenges": chs}
+	if reviseClaim != "" {
+		m["revision"] = map[string]any{"claim": reviseClaim, "argument": reviseArgument}
+	}
+	return json.Marshal(m)
+}
+
+// disagreementFromRemaining builds one §Disagreement item from a single
+// inline --remaining flag: the shorthand records the same text as the point
+// and both sides' view (the protocol requires all three). A caller who
+// wants distinct per-side text uses --propose-file/--answer-file instead.
+func disagreementFromRemaining(remaining string) []map[string]any {
+	if remaining == "" {
+		return nil
+	}
+	return []map[string]any{{"point": remaining, "initiator": remaining, "respondent": remaining}}
+}
+
+func buildInlineProposal(decision, remaining string) (json.RawMessage, error) {
+	if decision == "" {
+		return nil, errors.New("--agree is required")
+	}
+	m := map[string]any{"agreement": map[string]any{"decision": decision}}
+	if d := disagreementFromRemaining(remaining); d != nil {
+		m["remaining_disagreement"] = d
+	}
+	return json.Marshal(m)
+}
+
+func buildInlineAnswer(accept, reject bool, remaining string) (json.RawMessage, error) {
+	if accept == reject {
+		return nil, errors.New("give exactly one of --accept or --reject")
+	}
+	m := map[string]any{"accept": accept}
+	if d := disagreementFromRemaining(remaining); d != nil {
+		m["remaining_disagreement"] = d
+	}
+	return json.Marshal(m)
 }
 
 func debateEntryKind(set map[string]bool, positionFile, moveFile, proposeFile, answerFile string) (kind, path string) {
@@ -309,14 +502,14 @@ func runDebateShow(asJSON bool, stdout, stderr io.Writer, id string) int {
 	return exitOK
 }
 
-func runDebateSubmit(asJSON bool, stdout, stderr io.Writer, id, kind, path string) int {
-	entry, err := readEntryFile(path)
-	if err != nil {
-		return failJSON(asJSON, stdout, stderr, exitUsage, "usage", err.Error())
-	}
+func runDebateSubmit(asJSON bool, stdout, stderr io.Writer, id, kind string, entry json.RawMessage) int {
 	var res daemon.DebateSubmitResult
-	if code := callDaemon(asJSON, stdout, stderr, statusTimeout, "debate_submit", map[string]any{"id": id, "kind": kind, "entry": entry}, &res); code != exitOK {
-		return code
+	code, errCode, msg := callDaemonRaw(statusTimeout, "debate_submit", map[string]any{"id": id, "kind": kind, "entry": entry}, &res)
+	if code != exitOK {
+		if errCode == ipc.CodeBadRequest || errCode == daemon.CodeNotYourTurn {
+			msg = appendDebateEntryHint(msg, errCode, kind, id)
+		}
+		return failJSON(asJSON, stdout, stderr, code, errCode, msg)
 	}
 	if asJSON {
 		_ = json.NewEncoder(stdout).Encode(struct {
@@ -327,6 +520,53 @@ func runDebateSubmit(asJSON bool, stdout, stderr io.Writer, id, kind, path strin
 	}
 	_, _ = fmt.Fprintf(stdout, "Submitted %s to %s (now %s, turn: %s)\n", kind, res.Debate.Session, res.Debate.Phase, res.Debate.Turn)
 	return exitOK
+}
+
+// debateEntryShapes gives the shape and a working example of each entry
+// kind, taken from Docs/cli/debate.md, for appendDebateEntryHint.
+var debateEntryShapes = map[string]struct{ shape, example, inline string }{
+	"position": {
+		`{"claim", "argument", "assumptions"?, "evidence"?, "rejected_alternatives"?}`,
+		`{"claim":"Use capped backoff","argument":"Keeps retries bounded."}`,
+		`--claim "..." --argument "..."`,
+	},
+	"move": {
+		`{"challenges": [...], "revision"?}`,
+		`{"challenges":[{"targets":["claim"],"argument":"Why not?"}]}`,
+		`--pass, or --challenge claim="..."`,
+	},
+	"proposal": {
+		`{"agreement": {"decision", ...}, "remaining_disagreement"?, "affected_artifacts"?}`,
+		`{"agreement":{"decision":"Capped backoff with jitter"}}`,
+		`--agree "..."`,
+	},
+	"answer": {
+		`{"accept": true|false, "remaining_disagreement"?, "argument"?}`,
+		`{"accept":true}`,
+		`--accept, or --reject`,
+	},
+}
+
+// appendDebateEntryHint appends the expected shape and a working example for
+// kind (self-explaining errors, DX-2). For not_your_turn the message already
+// names the expected kind and author (debate.NotYourTurnError), but the
+// caller submitted a different kind, so this re-fetches the debate to hint
+// at the kind that actually is expected, best-effort.
+func appendDebateEntryHint(msg, errCode, submittedKind, id string) string {
+	kind := submittedKind
+	if errCode == daemon.CodeNotYourTurn {
+		var shown daemon.DebateShowResult
+		if code, _, _ := callDaemonRaw(statusTimeout, "debate_show", map[string]any{"id": id}, &shown); code == exitOK && shown.Debate.Expect != "" {
+			kind = shown.Debate.Expect
+		} else {
+			return msg
+		}
+	}
+	s, ok := debateEntryShapes[kind]
+	if !ok {
+		return msg
+	}
+	return fmt.Sprintf("%s (a %s entry looks like %s, e.g. %s; or inline: agentnet debate %s %s)", msg, kind, s.shape, s.example, id, s.inline)
 }
 
 // runDebateCancel cancels a debate (Docs/protocol/debate.md §Cancel and

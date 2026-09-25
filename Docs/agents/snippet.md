@@ -47,21 +47,30 @@ answer requests sent to you. Always pass `--json` and read the result from stdou
 - Use `high` or `blocking` urgency only when it truly is; there is a small weekly budget.
 - Debate: to argue a question with a teammate's agent, start one with `agentnet debate
   <peer> --topic "..." --position-file F --json` (your opening position, `{"claim",
-  "argument"}`, written to a file first). Follow up with `agentnet debate <id> --json` to
-  see whose turn it is (`turn: "you"` and `expect` name the next step) and `agentnet wait
-  <id> --json` to wait for it. Submit the entry `expect` names with `agentnet debate <id>
-  --move-file F` (or `--propose-file`/`--answer-file`), each a JSON file of the matching
-  shape (`agentnet debate --help` shows all four). No need to explore first: run
-  `agentnet debate <id> --json` and follow `turn`/`expect`. Write each file with your
-  file-writing tool; do not pipe stdin. A move is
-  `{"challenges":[{"targets":["claim"],"argument":"..."}]}` (`targets` are strings such
-  as `"claim"` or `"evidence/01"`, naming an item of the other side's position; an empty
-  `"challenges":[]` passes; an optional `"revision":{"claim","argument"}` replaces your own
-  position). If a teammate invites you to a debate,
-  `agentnet debate <id> --position-file F` on it both accepts and submits your own opening
-  position in one step. A debate ends in a signed Decision on both sides
+  "argument"}`, written to a file first with your file-writing tool; do not pipe stdin).
+  No need to explore first: run `agentnet debate <id> --json` (or `agentnet wait <id>
+  --json`) and follow `turn`/`expect`/`hint` — `turn: "you"` and `expect` name the next
+  step, and `hint` (present only when it is your turn) already gives the exact command to
+  run. If a teammate invites you to a debate, `agentnet debate <id> --position-file F` (or
+  the inline form below) on it both accepts and submits your own opening position in one
+  step.
+  Submit each entry with the **inline flags** (no file needed): a position is `--claim S
+  --argument S [--assumption S]...`; a move is `--pass` (nothing to challenge) or
+  `--challenge TARGET=ARGUMENT` (repeatable up to 3, e.g. `--challenge
+  claim="Why not use jitter?"`; `TARGET` is a string such as `"claim"` or `"evidence/01"`
+  naming an item of the *other* side's position) with an optional `--revise-claim S
+  --revise-argument S` to replace your own position; a proposal is `--agree S`; an answer
+  is `--accept` or `--reject`. `agentnet debate --help` shows the exact shape of all four
+  kinds plus a worked example, and `--position-file`/`--move-file`/`--propose-file`/
+  `--answer-file` (a JSON file of the matching shape, `-` = stdin) still work for text you'd
+  rather write as a file (evidence, rejected alternatives, or several remaining-disagreement
+  points): give exactly one of a file or the inline flags per call. If a submission is
+  refused (`bad_request`, `not_your_turn`), the error message already names the expected
+  shape and a working example — retry with that shape rather than guessing again.
+  A debate ends in a signed Decision on both sides
   (`agentnet decisions`, `agentnet decision <id> --md`); it carries no grants, and closing
-  it is `agentnet debate <id> --cancel`, never `accept-result`/`release`/`discard`.
+  it is `agentnet debate <id> --cancel`, never `accept-result`/`release`/`discard`. See the
+  `.claude/skills/agentnet-debate/SKILL.md` skill for the same loop.
 - A debate may gain a **human constraint** partway through (a rule the human adds, like "no
   new dependency"): that always needs your human's approval in the AgentNet window, exactly
   like a grant. **Never ask the user for a code, and never claim to enter one yourself** for
