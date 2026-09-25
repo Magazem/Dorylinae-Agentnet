@@ -5,9 +5,9 @@ Shows, exports or verifies a Decision, the signed artifact of a closed debate
 
 ```
 agentnet decisions [--state S] [--peer PEER] [--json]
-agentnet decision <id> [--json]
+agentnet decision <id> [--json [--out FILE [--force]]]
 agentnet decision <id> --md [--out FILE [--force]]
-agentnet decision verify FILE [--md] [--json]
+agentnet decision verify FILE [--md | --json]
 ```
 
 `<id>` is a Decision's own id (`d-…`), or the debate's session (`s-…`) or request (`r-…`) id.
@@ -18,15 +18,15 @@ agentnet decision verify FILE [--md] [--json]
 | `--peer PEER` (`decisions`) | a peer name or public key, with an optional `@` |
 | `--json` | machine-readable output on stdout |
 | `--md` | render Markdown suitable for a repository's decisions folder |
-| `--out FILE` (with `--md`) | write to `FILE` instead of stdout |
+| `--out FILE` (with `--md` or `--json`) | write to `FILE` instead of stdout (use it for the `d-….json` sidecar on Windows: a PowerShell 5.1 `>` redirect writes UTF-16, which `decision verify` refuses) |
 | `--force` (with `--out`) | overwrite an existing file |
 
 ## `decision verify`
 
-Reads a signed file — the one `--json` prints or `--out` writes — **without a daemon**:
+Reads a signed file — the one `--json` prints or `--json --out` writes — **without a daemon**:
 recomputes the hash, checks each present signature, the id and the derivation invariants
 ([decision.md §Signed file](../protocol/decision.md#signed-file-third-party-verification)).
-`--md` also renders Markdown to stdout; offline, names are the keys' fingerprints, never
+`--md` also renders Markdown to stdout (not together with `--json`); offline, names are the keys' fingerprints, never
 petnames (nothing here reaches a daemon to look one up).
 
 ## Exit codes
@@ -60,7 +60,7 @@ A script that checks `$? -eq 0` never treats an unconfirmed Decision as agreed.
 ```
 
 `agentnet decision <id> --json` prints the signed file itself (no `"ok"` wrapper: this is the
-same bytes `decision verify` reads, so it can be redirected straight to `d-….json`):
+same bytes `decision verify` reads; write it to `d-….json` with `--out`):
 
 ```json
 {"decision": {...}, "hash": "...", "signatures": {"initiator": "...", "respondent"?: "..."}}
@@ -84,7 +84,8 @@ affected artifacts, and a verification section with the hash and both signatures
 Deterministic: the same input gives the same bytes (UTF-8, LF only, one trailing newline, no
 render time). **Repository-safe**: every string that came from an agent or a human is rendered
 inert — a fenced code block for multi-line text, an inline code span for single-line text,
-never raw Markdown, a link, an image or a table. A Decision signed by the initiator only starts
+never raw Markdown, a link, an image or a table, and never `{{`, `{%` or `{#` (a static site
+generator's template pass would run them, even inside code). A Decision signed by the initiator only starts
 with a fixed **UNCONFIRMED** banner and its outcome line reads "claimed by the initiator".
 
 ```

@@ -23,7 +23,7 @@ type docVector struct {
 	sigI, sigR string
 }
 
-func readVector(t *testing.T) docVector {
+func readVector(t testing.TB) docVector {
 	t.Helper()
 	raw, err := os.ReadFile("../../Docs/protocol/decision.md")
 	if err != nil {
@@ -59,7 +59,7 @@ func seedPriv(start byte) ed25519.PrivateKey {
 	return ed25519.NewKeyFromSeed(s)
 }
 
-func canonOf(t *testing.T, v any) []byte {
+func canonOf(t testing.TB, v any) []byte {
 	t.Helper()
 	raw, err := json.Marshal(v)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestDeriveRefusesInconsistentOutcome(t *testing.T) {
 	}
 }
 
-func signedFile(t *testing.T, d map[string]any, sigs map[string]string, hash string) []byte {
+func signedFile(t testing.TB, d map[string]any, sigs map[string]string, hash string) []byte {
 	t.Helper()
 	s := map[string]any{}
 	for k, v := range sigs {
@@ -181,7 +181,7 @@ func signedFile(t *testing.T, d map[string]any, sigs map[string]string, hash str
 	return canonOf(t, map[string]any{"decision": d, "hash": hash, "signatures": s})
 }
 
-func vectorObject(t *testing.T, v docVector) map[string]any {
+func vectorObject(t testing.TB, v docVector) map[string]any {
 	t.Helper()
 	p, err := agentcard.ParseStrict(v.canon)
 	if err != nil {

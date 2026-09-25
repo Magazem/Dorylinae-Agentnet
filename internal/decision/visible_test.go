@@ -1,6 +1,10 @@
 package decision
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // Ticket 3.3b (review 43 M1): Visible keeps \n and \t only in multi-line
 // mode, and escapes C0/C1 controls, Unicode format characters and any other
@@ -47,6 +51,47 @@ func TestVisibleNeverPassesThroughInvisibleRunes(t *testing.T) {
 		s := Visible(string(r), true)
 		if s == string(r) {
 			t.Errorf("U+%04X passed through Visible unescaped", r)
+		}
+	}
+}
+
+// Review 48 L3: graphic but invisible runes (review 46 H1's set) are escaped
+// too; titles, file names and petnames never go through debate's filter.
+func TestVisibleEscapesGraphicInvisible(t *testing.T) {
+	for _, r := range []rune{0x3164, 0x115f, 0x1160, 0xffa0, 0x034f, 0xfe0f, 0xe0100, 0x00a0, 0x2003, 0x3000, 0x2800} {
+		want := fmt.Sprintf(`a\u{%X}b`, r)
+		if got := Visible("a"+string(r)+"b", false); got != want {
+			t.Errorf("Visible(U+%04X) = %q, want %q", r, got, want)
+		}
+	}
+	if got := Visible("a b", false); got != "a b" {
+		t.Errorf("U+0020 must be kept, got %q", got)
+	}
+}
+
+// Review 48 H1: TemplateInert leaves no "{{", "{%" or "{#" for a static
+// site generator's template pass (Liquid, Hugo shortcodes, Nunjucks).
+func TestTemplateInert(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"no braces", "no braces"},
+		{"{a} {} }}", "{a} {} }}"},
+		{"{{ site.github }}", `\u{7B}{ site.github }}`},
+		{"{% raw %}", `\u{7B}% raw %}`},
+		{"{# c #}", `\u{7B}# c #}`},
+		{"{{{", `\u{7B}\u{7B}{`},
+		{"{{<youtube x>}}", `\u{7B}{<youtube x>}}`},
+		{`\u{{`, `\u\u{7B}{`},
+		{"{", "{"},
+	}
+	for _, c := range cases {
+		got := TemplateInert(c.in)
+		if got != c.want {
+			t.Errorf("TemplateInert(%q) = %q, want %q", c.in, got, c.want)
+		}
+		for _, bad := range []string{"{{", "{%", "{#"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("TemplateInert(%q) = %q still holds %q", c.in, got, bad)
+			}
 		}
 	}
 }

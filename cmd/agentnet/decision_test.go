@@ -151,9 +151,21 @@ func TestDecisionCLIRoundTrip(t *testing.T) {
 
 	// `agentnet decision verify FILE` reads the written --json file back,
 	// offline: exit 0, complete, two signatures.
+	// Review 48 M3: `--json --out` writes the sidecar itself (the same bytes
+	// as stdout), refusing to overwrite without --force.
 	jsonFile := filepath.Join(dir, "decision.json")
-	if err := os.WriteFile(jsonFile, []byte(out), 0o600); err != nil {
-		t.Fatal(err)
+	if code, o, errs := cli(t, a, "decision", sid, "--json", "--out", jsonFile); code != exitOK {
+		t.Fatalf("decision --json --out: %d %s %s", code, o, errs)
+	}
+	if got, err := os.ReadFile(jsonFile); err != nil || string(got) != out { //nolint:gosec // test fixture path
+		t.Fatalf("--json --out wrote %q (%v), want the --json stdout bytes %q", got, err, out)
+	}
+	if code, _, _ := cli(t, a, "decision", sid, "--json", "--out", jsonFile); code == exitOK {
+		t.Fatal("decision --json --out over an existing file without --force must fail")
+	}
+	// Review 48 L5: verify --md --json would mix two formats on stdout.
+	if code, _, _ := cli(t, a, "decision", "verify", jsonFile, "--md", "--json"); code != exitUsage {
+		t.Fatalf("decision verify --md --json: exit %d, want %d", code, exitUsage)
 	}
 	vcode, vout, verrs := cli(t, a, "decision", "verify", jsonFile, "--json")
 	if vcode != exitOK {

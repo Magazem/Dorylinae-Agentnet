@@ -293,12 +293,24 @@ fields) is rendered **inert**:
   not touch zero-width or tag characters. `Visible` keeps `\n` and `\t` (multi-line text only)
   and replaces every other rune that is not `unicode.IsGraphic` (space excepted) or is a format
   character (`unicode.Cf`: bidi controls, zero-width characters, U+FEFF, tag characters
-  U+E0000–U+E007F), and every C0/C1 control, by the visible ASCII text `\u{XXXX}` (hex of the
-  code point), the rule of review 40's `DisplayQuote`. The rendered text then shows what the
-  bytes say. The escape adds no backticks, so the fence and span lengths are computed after it.
+  U+E0000–U+E007F), every graphic but invisible rune of review 46 H1 (variation selectors,
+  the other default-ignorable code points such as the Hangul fillers, every `Zs` space but
+  U+0020, U+2800; review 48 L3), and every C0/C1 control, by the visible ASCII text
+  `\u{XXXX}` (hex of the code point), the rule of review 40's `DisplayQuote`. The rendered
+  text then shows what the bytes say.
+- Then **`decision.TemplateInert`** (review 48 H1) replaces every `{` followed by `{`, `%` or
+  `#` by `\u{7B}`, so the file holds no `{{`, `{%` or `{#`. Static site generators run their
+  template language over a Markdown file before the Markdown parser, inside code spans and
+  fences too (Jekyll and GitHub Pages: Liquid, also on files without front matter; Eleventy:
+  Liquid by default; Hugo shortcodes; Nunjucks): peer text such as
+  `{% for i in (1..9) %}` + a backtick + `{% endfor %}` would expand to a backtick run longer
+  than the fence, close it, and publish the rest as live Markdown and raw HTML.
+- Neither escape adds a backtick, so the fence and span lengths are computed after both.
   The JSON file keeps the exact bytes; the Markdown is a view.
 - Daemon-written text (headings, labels, enum values, ids, hashes, fingerprints, times) is
-  plain Markdown.
+  plain Markdown; the Verification section's hash and signatures are code spans (base64url
+  `_` would otherwise be read as emphasis, review 48 L4). Every paragraph and list ends with
+  a blank line, so no label becomes a lazy continuation of the list before it (review 48 M2).
 - No raw HTML, no images, no links are ever emitted. The file name is chosen by the user
   (`--out`); the default suggestion is `<id>.md`, never derived from peer text.
 
@@ -363,9 +375,9 @@ Kept indefinitely. `decisions` goes into the DROP lists of both rewind tests.
 | Command | Notes |
 |---|---|
 | `agentnet decisions [--json]` | `decision_list` |
-| `agentnet decision <id> [--json]` | the signed file |
+| `agentnet decision <id> [--json [--out FILE]]` | the signed file, to stdout or FILE (refuses to overwrite without `--force`; review 48 M3: a PowerShell 5.1 redirect writes UTF-16, which verify refuses) |
 | `agentnet decision <id> --md [--out FILE]` | Markdown to stdout or FILE (refuses to overwrite without `--force`) |
-| `agentnet decision verify FILE [--md] [--json]` | offline, no daemon. Exit 0 valid with two signatures, 6 valid but unconfirmed (initiator only), 1 invalid |
+| `agentnet decision verify FILE [--md \| --json]` | offline, no daemon. Exit 0 valid with two signatures, 6 valid but unconfirmed (initiator only), 1 invalid |
 
 ## Audit
 

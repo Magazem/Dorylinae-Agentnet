@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 func position(claim, argument string) map[string]any {
@@ -272,7 +273,9 @@ func baselineHeadingCount(t *testing.T) map[string]int {
 
 func tagCounts(t *testing.T, md []byte) map[string]int {
 	t.Helper()
-	gm := goldmark.New(goldmark.WithExtensions(extension.GFM))
+	// WithUnsafe: the default renderer omits raw HTML, so without it no
+	// "<script" could ever be counted (review 48 M1).
+	gm := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(html.WithUnsafe()))
 	var buf bytes.Buffer
 	if err := gm.Convert(md, &buf); err != nil {
 		t.Fatalf("goldmark: %v", err)

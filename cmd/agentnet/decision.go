@@ -30,7 +30,7 @@ const decisionUsage = `Shows, exports or verifies a Decision, the signed artifac
 debate (Docs/protocol/decision.md).
 
 Usage:
-  agentnet decision <id> [--json]
+  agentnet decision <id> [--json [--out FILE [--force]]]
   agentnet decision <id> --md [--out FILE [--force]]
   agentnet decision verify FILE [--md] [--json]
 
@@ -40,7 +40,7 @@ request (r-...) id.
 Flags:
   --json    print the signed file {"decision","hash","signatures"} on stdout
   --md      render Markdown suitable for a repository's decisions folder
-  --out F   with --md: write to F instead of stdout
+  --out F   with --md or --json: write to F instead of stdout
   --force   with --out: overwrite an existing file
 
 'agentnet decision verify' reads a signed file (as written by --json or
@@ -62,7 +62,7 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print the signed file on stdout")
 	md := fs.Bool("md", false, "render Markdown suitable for a repository")
-	out := fs.String("out", "", "with --md: write to FILE instead of stdout")
+	out := fs.String("out", "", "with --md or --json: write to FILE instead of stdout")
 	force := fs.Bool("force", false, "with --out: overwrite an existing file")
 	fs.Usage = func() { _, _ = fmt.Fprint(stdout, decisionUsage) }
 	pos, err := parseInterspersed(fs, args)
@@ -78,8 +78,8 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 	if *md && *asJSON {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--md and --json exclude each other")
 	}
-	if *out != "" && !*md {
-		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--out is only valid with --md")
+	if *out != "" && !*md && !*asJSON {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--out is only valid with --md or --json")
 	}
 	if *force && *out == "" {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--force is only valid with --out")
@@ -93,7 +93,11 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		return runDecisionMarkdown(stdout, stderr, res, *out, *force)
 	}
 	if *asJSON {
-		return printDecisionSignedFile(stdout, res)
+		data, err := signedFileBytes(res)
+		if err != nil {
+			return failJSON(true, stdout, stderr, exitError, "internal", err.Error())
+		}
+		return writeDecisionOutput(stdout, stderr, data, *out, *force)
 	}
 	printDecisionHuman(stdout, res)
 	return exitOK
@@ -121,15 +125,19 @@ func signedFileOf(res daemon.DecisionShowResult) decisionSignedFile {
 	return f
 }
 
-func printDecisionSignedFile(stdout io.Writer, res daemon.DecisionShowResult) int {
-	enc := json.NewEncoder(stdout)
+// signedFileBytes is the signed file as `--json` prints it and `--json --out`
+// writes it. --out exists for --json too (review 48 M3): Windows PowerShell
+// 5.1's `>` and Out-File write UTF-16, which `decision verify` (strict UTF-8
+// JSON) refuses, so a redirected sidecar could not be verified.
+func signedFileBytes(res daemon.DecisionShowResult) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(signedFileOf(res)); err != nil {
-		_, _ = fmt.Fprintf(stdout, "error: %v\n", err)
-		return exitError
+		return nil, err
 	}
-	return exitOK
+	return buf.Bytes(), nil
 }
 
 func printDecisionHuman(w io.Writer, res daemon.DecisionShowResult) {
@@ -177,7 +185,9 @@ func writeDecisionOutput(stdout, stderr io.Writer, md []byte, out string, force 
 		return exitOK
 	}
 	if !force {
-		if _, err := os.Stat(out); err == nil {
+		// Lstat: a dangling symlink is an existing entry too, and the
+		// rename below would replace it (review 48 L6).
+		if _, err := os.Lstat(out); err == nil {
 			_, _ = fmt.Fprintf(stderr, "error: %s already exists (use --force to overwrite)\n", out)
 			return exitError
 		}
@@ -250,7 +260,7 @@ Usage:
   agentnet decision verify FILE [--md] [--json]
 
 Flags:
-  --md    also render Markdown to stdout (offline: names are the keys'
+  --md    also render Markdown to stdout, not with --json (offline: names are the keys'
           fingerprints, not petnames)
   --json  print {"valid","complete","signed_by","hash","id","participants",...}
 
@@ -290,7 +300,12 @@ func runDecisionVerify(args []string, stdout, stderr io.Writer) int {
 	if len(pos) != 1 {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give exactly one FILE (see 'agentnet decision verify --help')")
 	}
-	data, err := os.ReadFile(pos[0]) //nolint:gosec // the path is a user-supplied CLI argument, as intended
+	// Review 48 L5: --md and --json both write to stdout; mixed, the JSON is
+	// no longer parseable.
+	if *md && *asJSON {
+		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "--md and --json exclude each other")
+	}
+	data, err := readDecisionFile(pos[0])
 	if err != nil {
 		return failJSON(*asJSON, stdout, stderr, exitError, "io_error", err.Error())
 	}
@@ -335,6 +350,28 @@ func runDecisionVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return exit
+}
+
+// maxDecisionFile bounds what `decision verify` reads (review 48 L5): a
+// signed file is canonical(decision) (at most MaxDecision) re-indented by
+// --json, plus the hash and two signatures; 8 MiB leaves room for any
+// indentation and refuses a multi-gigabyte file before parsing it.
+const maxDecisionFile = 8 << 20
+
+func readDecisionFile(name string) ([]byte, error) {
+	f, err := os.Open(name) //nolint:gosec // the path is a user-supplied CLI argument, as intended
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxDecisionFile+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxDecisionFile {
+		return nil, fmt.Errorf("%s is over %d bytes, too large for a Decision file", name, maxDecisionFile)
+	}
+	return data, nil
 }
 
 func fingerprintOf(key string) string {
