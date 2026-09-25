@@ -69,5 +69,35 @@ summary is a human-authored sentence that can run to several hundred characters.
 Ticket 3.H: `tests/harness/phase3-agents.ps1`/`.sh`, real-agent debate round (Claude Code
 vs agy), OD-P3-9 turn-driven.
 
-<!-- filled in after the real run; see the worker's report for the run this section
-     summarises -->
+Real run 2026-09-25, `phase3-agents.ps1 -Harness real`, run dir
+`%TEMP%\phase3-agents-d18955f4`, total 1,196.7 s (limit 1500 s). Assertions came from
+`--json`/audit, not prose. Attempt 0 (`phase3-agents-91f922c3`) was a harness/setup failure
+before any debate started: headless `claude -p` was denied the file write for
+`position.json` (only `PowerShell(agentnet *)` was allowed), so no debate existed; fixed by
+adding the `Write` tool to the claude args in `Start-Agent`, then re-run.
+
+| Round | Result | Outcome | Duration | Turns |
+|-------|--------|---------|----------|-------|
+| 1 claude -> agy | PASS | agreed | 589.4 s | 9 |
+| 2 agy -> claude | PASS | agreed | 603.3 s | 9 |
+
+Cost: Claude Code (claude-opus-5-5) reported 1.06 USD (round 1) + 1.21 USD (round 2) = about
+2.27 USD; agy reports no cost (not included).
+
+Agent confusion / snippet wording problems seen:
+
+- Claude re-runs a directory listing (`Get-ChildItem`, `..`) and file reads at the start of
+  almost every turn; several of those (`Get-Content`, `Get-ChildItem`) were permission
+  denials in the restricted headless mode (1-5 denials per claude turn), so it burned turns
+  (up to 30) on orientation instead of the move.
+- The move-file JSON shape is not in the snippet: claude guessed `challenges:[{}]`, `text`
+  instead of `point`, and `targets:[0]` instead of `["0"]`, and fixed each after a CLI
+  error. The snippet should show one move example (challenge with string `targets`, `point`).
+- Claude tried piping JSON into `agentnet debate ... --position-file -` / `--move-file -`
+  (denied by the allowlist); the snippet should say "write the file with the Write tool".
+- Round 1 turn 5 and 6 were both claude's (turn 5 ended without moving), and round 2 turn 8
+  and 9 were both claude's; the turn-driven loop simply re-ran the same agent, no failure.
+- `Docs/agents/snippet.md` was changed after this run (exact move-file example, "write the
+  file, do not pipe stdin", "no need to explore first"); not re-tested by a new real run —
+  the stand-in and the next weekly run cover it.
+- agy turns were single-shot (1 turn each) with no visible confusion.

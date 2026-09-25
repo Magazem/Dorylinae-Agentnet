@@ -269,9 +269,10 @@ function Start-Agent {
     switch ($Tool) {
         "claude" {
             $exe = Join-Path $env:USERPROFILE ".local\bin\claude.exe"
-            if (-not (Test-Path $exe)) { $cmd = Get-Command claude -ErrorAction SilentlyContinue; if ($cmd) { $exe = $cmd.Source } }
+            if (-not (Test-Path $exe)) { $exe = "$env:APPDATA/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe" }  # npm install: Get-Command finds a .cmd/.ps1 shim that cannot be started directly
+            if (-not (Test-Path $exe)) { $cmd = Get-Command claude -ErrorAction SilentlyContinue; if ($cmd -and $cmd.Source -like "*.exe") { $exe = $cmd.Source } }
             if (-not (Test-Path $exe)) { return @{ Ran = $false; Reason = "claude executable not found" } }
-            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)",
+            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell,Write", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)", "Write",
                 "--permission-prompts", "none", "--output-format", "json",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "project")
         }

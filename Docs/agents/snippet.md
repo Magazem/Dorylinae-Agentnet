@@ -51,7 +51,13 @@ answer requests sent to you. Always pass `--json` and read the result from stdou
   see whose turn it is (`turn: "you"` and `expect` name the next step) and `agentnet wait
   <id> --json` to wait for it. Submit the entry `expect` names with `agentnet debate <id>
   --move-file F` (or `--propose-file`/`--answer-file`), each a JSON file of the matching
-  shape (`agentnet debate --help` shows all four). If a teammate invites you to a debate,
+  shape (`agentnet debate --help` shows all four). No need to explore first: run
+  `agentnet debate <id> --json` and follow `turn`/`expect`. Write each file with your
+  file-writing tool; do not pipe stdin. A move is
+  `{"challenges":[{"targets":["claim"],"argument":"..."}]}` (`targets` are strings such
+  as `"claim"` or `"evidence/01"`, naming an item of the other side's position; an empty
+  `"challenges":[]` passes; an optional `"revision":{"claim","argument"}` replaces your own
+  position). If a teammate invites you to a debate,
   `agentnet debate <id> --position-file F` on it both accepts and submits your own opening
   position in one step. A debate ends in a signed Decision on both sides
   (`agentnet decisions`, `agentnet decision <id> --md`); it carries no grants, and closing
