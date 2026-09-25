@@ -263,5 +263,6 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
 | `Docs/beta/known-limitations.md` | Beta limitations (single owner, lost owner device) |
 | `tests/phase0-manual.md`, `tests/phase1-manual.md` | Owner's manual checklists (two-machine parts at the top) |
 | `tests/phase1-smoke.ps1`, `tests/harness/` | One-machine smoke; headless agent harness |
+| `Docs/orchestration/board-snapshot.md` | Open Sticky Board notes + task-board note, taken at park (for moving PCs) |
 | `Docs/orchestration/HOME-SETUP.md` | How to replicate this team (templates, corrected Orchestrator rule, workflow, lessons) on another PC |
 | `Docs/orchestration/history.md` | Archived full handoff (per-wave detail, commit ids) |

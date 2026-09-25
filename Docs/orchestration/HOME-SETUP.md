@@ -245,5 +245,6 @@ as memories or just rely on HANDOFF.md (it contains the same facts):
    > Worker-Sonnet-Lite `<id>`, Worker-Opus `<id>`, Worker-Haiku `<id>`. Update HANDOFF.md §1 with
    > these ids (keep the work-PC ids too, labelled), then continue from §0.
 
-5. The home Orchestrator updates HANDOFF.md §1 with a "Home PC" template table, and from then on
+5. **Boards.** `Docs/orchestration/board-snapshot.md` holds the open Sticky Board notes and explains the task board. The home Orchestrator re-files the Sticky notes (if the Sticky Board app is installed at home) and creates fresh AionUi tasks only for tickets still open in HANDOFF.md §0. The work PC's task history isn't needed.
+6. The home Orchestrator updates HANDOFF.md §1 with a "Home PC" template table, and from then on
    everything proceeds exactly as on the work PC.
