@@ -190,7 +190,8 @@ migration placeholders (never merge a NO-OP placeholder migration).
 
 ### 5.4 Worker behaviour to expect
 
-- "Ready, no task yet" arrives before the task: ignore it once the board shows in_progress.
+- "Ready, no task yet" arrives before the task: harmless. But most new workers then go idle without
+  starting; if the worktree is still empty at the next check, interrupt with "start task <id> now".
 - Idle notifications are normal. A worker is stuck only if it stays idle with an empty
   worktree after a pointer message; then `team_interrupt_agent` with "start task <id> now".
   Spec and review workers read for a long time before writing; don't retire them early.
