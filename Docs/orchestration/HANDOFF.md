@@ -98,12 +98,13 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 - **Roster.** Only the Orchestrator is standing. No Butler/Manager/Mailbox exists: **the user
   is the Manager** and makes every decision; talk to them directly.
 - **Workers** (spawn yourself, one ticket each, retire after merge):
-  | Template | assistant_id | Use for |
-  |---|---|---|
-  | Worker-Haiku | `custom-1789380226358-958d` | read-only summaries, mechanical work |
-  | Worker-Sonnet | `custom-1789380226495-f6d5` | well-specified implementation |
-  | Worker-Sonnet-Lite | `custom-1790318917893-ab35` | **default for routine, well-scoped tickets** (D28, under watch) |
-  | Worker-Opus | `custom-1789460333299-bbb1` | specs, security reviews, investigations/hard debugging, security-critical or OS-level code (D26) |
+  | Template | Work-PC id | Home-PC id (paths: repo `C:\Users\yazan\Documents\AgentNet`, worktrees `...\AgentNet-wt`, Go `C:\Program Files\Go\bin`, lint `%TEMP%\gl\golangci-lint.exe`) | Use for |
+  |---|---|---|---|
+  | Worker-Haiku | `custom-1789380226358-958d` | `custom-1790347508758-2a2d` | read-only summaries, mechanical work |
+  | Worker-Sonnet | `custom-1789380226495-f6d5` | `custom-1790347507696-70dd` | well-specified implementation |
+  | Worker-Sonnet-Lite | `custom-1790318917893-ab35` | `custom-1790347508050-a205` | **default for routine, well-scoped tickets** (D28, under watch) |
+  | Worker-Opus | `custom-1789460333299-bbb1` | `custom-1790347508399-8e25` | specs, security reviews, investigations/hard debugging, security-critical or OS-level code (D26) |
+  Home templates are named with an "AgentNet " prefix. Rule 2's worktree path on this PC is `C:\Users\yazan\Documents\AgentNet-wt\<name>`.
   Owner has approved Opus for specs and security reviews.
 - **Dispatch** with `team_task_create owner=<slot>`. New workers often say "ready, no task"
   before the task arrives: send one short `team_send_message` pointing at the task id. If a
