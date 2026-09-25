@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -85,6 +86,9 @@ type Outbox struct {
 
 	once sync.Once
 	wake chan struct{}
+	// ready counts OnReady calls, so a hand-off that failed while the relay
+	// connected does not undo OnReady's "send now" with its backoff.
+	ready atomic.Uint64
 }
 
 // Submitted is the result of Submit.
@@ -285,6 +289,7 @@ func (o *Outbox) Run(ctx context.Context) {
 
 // OnReady is the relay-connected hook: every queued row is sent at once.
 func (o *Outbox) OnReady(ctx context.Context) {
+	o.ready.Add(1)
 	if _, err := o.DB.ExecContext(ctx,
 		`UPDATE outbox SET next_attempt = ? WHERE state = 'queued'`, stamp(o.now())); err != nil {
 		o.log().Warn("mail: outbox reconnect", "event", "mail_error", "error", err)
@@ -429,6 +434,7 @@ func (o *Outbox) send(ctx context.Context, r outboxRow) {
 		o.finish(ctx, r.id, "", StateFailed, "bad_frame")
 		return
 	}
+	ready := o.ready.Load()
 	if o.Sender == nil {
 		err = errors.New("no relay")
 	} else {
@@ -440,6 +446,16 @@ func (o *Outbox) send(ctx context.Context, r outboxRow) {
 WHERE id = ? AND state IN ('queued','relayed')`
 	if _, uerr := o.DB.ExecContext(ctx, q, next, stamp(now), err == nil, r.id); uerr != nil && ctx.Err() == nil {
 		o.log().Warn("mail: outbox update", "event", "mail_error", "error", uerr)
+	}
+	if err != nil && o.ready.Load() != ready {
+		// The relay connected while this hand-off failed (INV-4): OnReady's
+		// update may have run before the one above, so send the row now
+		// rather than after its backoff. OnReady counts before its update,
+		// so a hand-off that read the old count saw no connection yet.
+		if _, uerr := o.DB.ExecContext(ctx, `UPDATE outbox SET next_attempt = ? WHERE id = ? AND state = 'queued'`, stamp(now), r.id); uerr != nil && ctx.Err() == nil {
+			o.log().Warn("mail: outbox update", "event", "mail_error", "error", uerr)
+		}
+		o.Wake()
 	}
 }
 
