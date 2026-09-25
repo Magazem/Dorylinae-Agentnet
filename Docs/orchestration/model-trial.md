@@ -86,5 +86,5 @@ Template Worker-Sonnet-Lite (thought_level=off). Same task template, gate and me
 | DX-1 owner rough edges | Sonnet 5, thinking off | ~27 | missed a new audit-inventory entry (3.6b landed meanwhile) | not required |
 | 3.4-i integration 3.4 × 3.1b | Sonnet 5, thinking off | ~15 | clean | not required; found and fixed a real test-tracking bug |
 | 3.3a signed Decision | Opus 5.5 | ~23 | clean | 0/0/1 |
-| 3.3b Decision output | Sonnet 5 | ~50 | golden files failed on Windows (CRLF; a .gitattributes issue, not the worker's) | pending |
+| 3.3b Decision output | Sonnet 5 | ~50 | golden files failed on Windows (CRLF; a .gitattributes issue, not the worker's) | 0/1/4 |
 | 3.7 experience record | Sonnet 5 | ~32 | clean | not required |
