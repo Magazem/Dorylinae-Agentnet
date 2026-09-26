@@ -75,3 +75,38 @@ func TestFailedSendKeepsConcurrentReady(t *testing.T) {
 		}
 	}
 }
+
+// A failed hand-off must not undo OnPeerOnline of its own peer that ran while
+// it was in flight, but must ignore one for another peer.
+func TestFailedSendKeepsConcurrentPeerOnline(t *testing.T) {
+	for _, own := range []bool{false, true} {
+		sender, recip, _ := fixture(t)
+		st := openStore(t, filepath.Join(testutil.TempDir(t), "o.db"))
+		t.Cleanup(func() { _ = st.Close() })
+		out := &readySender{}
+		ob := &Outbox{
+			DB: st.DB(), Sender: out,
+			Peers: &obPeers{keys: map[string][]byte{recip.key: recip.mbox.PublicKey().Bytes()}},
+			Priv:  func() (ed25519.PrivateKey, error) { return append(ed25519.PrivateKey(nil), sender.priv...), nil },
+			Now:   func() time.Time { return vectorNow },
+		}
+		ctx := context.Background()
+		if _, err := ob.Submit(ctx, recip.key, "note", map[string]any{"text": "x"}); err != nil {
+			t.Fatal(err)
+		}
+		peer := "other"
+		if own {
+			peer = recip.key
+		}
+		out.onSend = func() { ob.OnPeerOnline(peer) }
+		ob.sendDue(ctx, vectorNow)
+		ob.sendDue(ctx, vectorNow)
+		want := 1
+		if own {
+			want = 2
+		}
+		if n := out.count(); n != want {
+			t.Fatalf("own=%v: %d hand-offs at the same instant, want %d", own, n, want)
+		}
+	}
+}

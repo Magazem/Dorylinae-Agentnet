@@ -89,6 +89,9 @@ type Outbox struct {
 	// ready counts OnReady calls, so a hand-off that failed while the relay
 	// connected does not undo OnReady's "send now" with its backoff.
 	ready atomic.Uint64
+	// online counts OnPeerOnline calls per peer, for the same reason as ready.
+	onlineMu sync.Mutex
+	online   map[string]uint64
 }
 
 // Submitted is the result of Submit.
@@ -303,12 +306,24 @@ func (o *Outbox) OnReady(ctx context.Context) {
 // outbox row addressed to it is sent now rather than waiting for its backoff.
 // A row already handed to the relay (state relayed) keeps its own schedule.
 func (o *Outbox) OnPeerOnline(peer string) {
+	o.onlineMu.Lock()
+	if o.online == nil {
+		o.online = map[string]uint64{}
+	}
+	o.online[peer]++
+	o.onlineMu.Unlock()
 	if _, err := o.DB.ExecContext(context.Background(),
 		`UPDATE outbox SET next_attempt = ? WHERE state = 'queued' AND to_key = ?`, stamp(o.now()), peer); err != nil {
 		o.log().Warn("mail: outbox peer online", "event", "mail_error", "error", err)
 		return
 	}
 	o.Wake()
+}
+
+func (o *Outbox) onlineCount(peer string) uint64 {
+	o.onlineMu.Lock()
+	defer o.onlineMu.Unlock()
+	return o.online[peer]
 }
 
 // Counts reports the rows in each state, plus Pending (queued + relayed).
@@ -435,6 +450,7 @@ func (o *Outbox) send(ctx context.Context, r outboxRow) {
 		return
 	}
 	ready := o.ready.Load()
+	online := o.onlineCount(r.to)
 	if o.Sender == nil {
 		err = errors.New("no relay")
 	} else {
@@ -447,11 +463,12 @@ WHERE id = ? AND state IN ('queued','relayed')`
 	if _, uerr := o.DB.ExecContext(ctx, q, next, stamp(now), err == nil, r.id); uerr != nil && ctx.Err() == nil {
 		o.log().Warn("mail: outbox update", "event", "mail_error", "error", uerr)
 	}
-	if err != nil && o.ready.Load() != ready {
+	if err != nil && (o.ready.Load() != ready || o.onlineCount(r.to) != online) {
 		// The relay connected while this hand-off failed (INV-4): OnReady's
 		// update may have run before the one above, so send the row now
 		// rather than after its backoff. OnReady counts before its update,
-		// so a hand-off that read the old count saw no connection yet.
+		// so a hand-off that read the old count saw no connection yet. The
+		// same holds for OnPeerOnline of this row's peer.
 		if _, uerr := o.DB.ExecContext(ctx, `UPDATE outbox SET next_attempt = ? WHERE id = ? AND state = 'queued'`, stamp(now), r.id); uerr != nil && ctx.Err() == nil {
 			o.log().Warn("mail: outbox update", "event", "mail_error", "error", uerr)
 		}
