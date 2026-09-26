@@ -45,15 +45,16 @@ func Render(d map[string]any, hash string, sigInitiator, sigRespondent string, r
 	}
 	outcome, _ := d["outcome"].(string)
 	reason, _ := d["reason"].(string)
-	outcomeLabel := fmt.Sprintf("%s (%s)", outcome, reason)
+	outcomeValue := fmt.Sprintf("%s (%s)", outcome, reason)
+	outcomeLine := "Outcome: " + outcomeValue
 	switch {
 	case complete:
 	case anySigned:
-		outcomeLabel = "claimed by the initiator: " + outcomeLabel
+		outcomeLine = "Outcome claimed by the initiator: " + outcomeValue
 	default:
-		outcomeLabel = "this side's own unsigned record, not proven: " + outcomeLabel
+		outcomeLine = "Outcome: this side's own unsigned record, not proven: " + outcomeValue
 	}
-	fmt.Fprintf(&b, "- Outcome: %s ; Signed by: %s\n", outcomeLabel, signedBy)
+	fmt.Fprintf(&b, "- %s ; Signed by: %s\n", outcomeLine, signedBy)
 
 	initName, respName := names["initiator"], names["respondent"]
 	initFP, respFP := fingerprints["initiator"], fingerprints["respondent"]

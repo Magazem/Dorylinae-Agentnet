@@ -10,17 +10,26 @@ tampered database looks like from the outside, and the long-text approval window
 [decision.md](../Docs/protocol/decision.md) documents that both peers' free-text (topic,
 positions, arguments, evidence notes, the proposal, the answer, any constraint) renders inert.
 
-- [ ] Run a debate to a close (agreed or escalated), then `agentnet decision <id> --md --out
+- [x] Run a debate to a close (agreed or escalated), then `agentnet decision <id> --md --out
       out.md` and push `out.md` (and its `d-….json`) to a scratch GitHub repo, or open it in
-      GitHub's Markdown preview (a gist works too).
-- [ ] A peer's argument containing Markdown syntax (a `#` heading, a `[link](javascript:...)`,
+      GitHub's Markdown preview (a gist works too). PASS — 2026-09-26, home PC, Windows 11,
+      main @ d87b24b. One agreed debate uploaded as a secret gist (deletable after this check).
+- [x] A peer's argument containing Markdown syntax (a `#` heading, a `[link](javascript:...)`,
       an image tag, a table, or raw HTML) renders as **plain text**, not as a heading, a
       clickable/`javascript:` link, an embedded image, or a table — matching the AST
-      inertness test in `internal/decision` (or the renderer's package).
-- [ ] The UNCONFIRMED banner (if the Decision is single-signed) is visible and not swallowed
-      by GitHub's Markdown renderer (e.g. not inside an HTML comment).
-- [ ] The file's JSON sibling is **not** required to render the Markdown — GitHub shows the
-      `.md` file on its own with no missing-reference warnings.
+      inertness test in `internal/decision` (or the renderer's package). PASS — the debate's
+      Markdown traps (headings, `javascript:` links, an image, a table, `<script>`,
+      `<details>`, an HTML comment, `{{ }}` and `{% %}`) all rendered as code spans/blocks;
+      GitHub's renderer showed no live link/image/table/HTML and no heading beyond the fixed
+      section headings.
+- [x] The UNCONFIRMED banner (if the Decision is single-signed) is visible and not swallowed
+      by GitHub's Markdown renderer (e.g. not inside an HTML comment). PASS — single-signed
+      case (A stopped while B answered, then B stopped and A restarted): `decision verify`
+      exits 6 (unconfirmed) and the `> UNCONFIRMED: ...` banner shows as a blockquote above
+      the title.
+- [x] The file's JSON sibling is **not** required to render the Markdown — GitHub shows the
+      `.md` file on its own with no missing-reference warnings. PASS — the `.md` renders
+      independently of the `d-….json`; the two-signature file verifies with exit 0.
 
 ## `agentnet log --verify` after a hand-edited database
 
@@ -29,20 +38,30 @@ SQLite). This exercises the "what the chain proves" limits documented in
 [audit.md §What the chain proves, and what it does not](../Docs/protocol/audit.md#what-the-chain-proves-and-what-it-does-not),
 outside of the unit tests that drop the triggers programmatically.
 
-- [ ] Stop `agentnetd`. Open `dorylinae.db` with `sqlite3` and run
+- [x] Stop `agentnetd`. Open `dorylinae.db` with `sqlite3` and run
       `UPDATE audit_events SET detail = detail WHERE id = (SELECT MAX(id) FROM audit_events)`
       or similar — confirm SQLite **refuses** it (the migration-1 update trigger), without
-      needing `agentnet` at all.
-- [ ] With the triggers dropped (`DROP TRIGGER audit_events_no_update` etc., as the automated
+      needing `agentnet` at all. PASS — 2026-09-26, home PC, Windows 11, main @ d87b24b. A
+      plain `UPDATE` is refused: `'audit_events is append-only'`.
+- [x] With the triggers dropped (`DROP TRIGGER audit_events_no_update` etc., as the automated
       tests do), change one `detail` field of a row, save, and restart the daemon (or run
       `agentnet log --verify` while it is stopped, which falls back to reading the file
       directly). Confirm the output is `{"verify": {"status": "broken", "reason":
-      "hash_mismatch", "first_bad": <id>}}` and the exit code is **5**.
-- [ ] Restore the row (or restore from a backup taken before this check) and confirm
-      `agentnet log --verify` returns to `{"status": "ok"}`, exit 0.
-- [ ] With the daemon stopped and no database file present, confirm `agentnet log --verify`
-      exits **3** ("no daemon and no database file").
-- [ ] Note here which SQLite tool was used and its version.
+      "hash_mismatch", "first_bad": <id>}}` and the exit code is **5**. PASS — with the 3
+      triggers dropped and a trailing space added to row 4's detail:
+      `{"status":"broken","reason":"hash_mismatch","first_bad":4}`, exit 5 (daemon stopped,
+      read-only fallback).
+- [x] Restore the row (or restore from a backup taken before this check) and confirm
+      `agentnet log --verify` returns to `{"status": "ok"}`, exit 0. PASS — after restoring
+      from backup: status ok, 55 rows, exit 0, triggers back.
+- [x] With the daemon stopped and no database file present, confirm `agentnet log --verify`
+      exits **3** ("no daemon and no database file"). PASS — exit 3
+      (`daemon_not_running ... no database at ...`).
+- [x] Note here which SQLite tool was used and its version. Python 3.14.4 `sqlite3` module,
+      SQLite 3.50.4; no `sqlite3` CLI on this PC.
+
+Notes: leftover `DORYLINAE_APPROVAL=terminal` / `DORYLINAE_HOME=...p2-alice` environment
+variables from the Phase 2 checks made daemons fail; cleared before these checks.
 
 ## The long approval-window summary for a debate constraint
 
@@ -53,16 +72,29 @@ summary is a human-authored sentence that can run to several hundred characters.
 
 - [ ] Start a debate on each OS (Windows, macOS, Linux) and run `agentnet debate <id>
       --constrain "<a sentence of at least 300 characters, plain visible text only>"`.
+      PASS on Windows only — 2026-09-26, home PC, Windows 11, main @ d87b24b. OPEN on macOS
+      and Linux: no machines available for this check.
 - [ ] Confirm the approval window's summary shows the **whole** constraint text: on Windows in
       the read-only, word-wrapped, scrollable box; on macOS and Linux, confirm the end of the
       text is visible or reachable (scrolling or resizing the dialog), matching the general
-      long-summary check already logged in `phase2-manual.md`.
+      long-summary check already logged in `phase2-manual.md`. PASS on Windows — a 349-char
+      constraint with é, ï, ü, an em dash, ✓ and 日本語: the whole text was visible, every
+      character correct. NOT fully covered even on Windows: the text fit without scrolling, so
+      the scrollable box itself was never exercised by scrolling (needs >1000 chars to force
+      it). OPEN on macOS and Linux: no machines available.
 - [ ] Confirm every character shown matches what was typed — no control character, no format
       character, and nothing outside the visible-characters rule of
       [debate.md](../Docs/protocol/debate.md) (`DisplayQuote`) is silently dropped or rendered
-      as something else.
+      as something else. PASS on Windows — every character of the 349-char constraint matched
+      what was typed. OPEN on macOS and Linux: no machines available.
 - [ ] Approve with the code from the toast/terminal and confirm `agentnet decision <id>
-      --json`'s `human_decisions` carries the constraint text unchanged.
+      --json`'s `human_decisions` carries the constraint text unchanged. PASS on Windows —
+      approving with the toast code worked; the signed Decision's `human_decisions[0].text` is
+      byte-identical to the typed text and carries two signatures. OPEN on macOS and Linux: no
+      machines available.
+
+Notes: PowerShell 5.1 strips embedded double quotes from arguments to native programs (a shell
+limitation, not `agentnet`'s).
 
 ## 3.H results
 
