@@ -14,7 +14,7 @@ So there are exactly two sources, and nothing else leaves a machine:
 
 | Source | What | Default | Can be turned off by |
 |---|---|---|---|
-| **Relay counters** (4.6a) | What the relay already sees, aggregated per billing team per UTC day | Always on at the hosted relay (it is how the operator runs the service and enforces the quota) | Nobody individually; documented in the privacy note |
+| **Relay counters** (4.6a) | What the relay already sees, aggregated per billing team per UTC day | Always on at the hosted relay (it is how the operator runs the service and enforces the quota) | Nobody individually; documented in the privacy note. The plan's "opt-out flag" is read as the daemon report's switch, not the relay's; the owner confirms that reading with OD-P4-8 |
 | **Daemon report** (4.6b) | A fixed set of weekly counters computed from the local database | **OD-P4-8** | The user: `agentnet telemetry off` |
 
 ## Rules for both
@@ -62,8 +62,18 @@ Relay-wide operator metrics (no team label) are in
 - Sent as a control frame on the authenticated connection:
   `{"op":"telemetry_report","report":{…}}` → `{"op":"telemetry_ok"}` or `error` `bad_report`.
   The relay adds it to the sender's billing team's weekly totals (`telemetry_weekly(team_id,
-  week, name, value)`) and **does not keep the individual report** (no per-key rows). Only on
-  a relay with accounts; the daemon never sends it anywhere else.
+  week, name, value)`) and **does not keep the individual report** (no per-key rows of
+  values). Only on a relay with accounts that lists `telemetry` in `ready`; the daemon never
+  sends it anywhere else.
+- **Exactly once per key and week** (review 50 M9). The daemon marks a report sent only on
+  `telemetry_ok`, so a lost `telemetry_ok` makes it resend; without a check the week would be
+  counted twice. The relay keeps `telemetry_seen(key_mac, week)` where `key_mac` =
+  HMAC-SHA256(a relay-local secret, key) truncated to 16 bytes, pruned after 3 weeks, and
+  answers a repeat with `telemetry_ok` without adding. It holds no values. Reports for a week
+  other than the previous or the current ISO week are `bad_report`.
+- The relay necessarily sees which key sent which report while it adds it (the frame arrives on
+  that key's authenticated connection). It must not log report bodies or per-key values; the
+  marker test covers the log.
 - Stored locally first (`telemetry_reports`: `week`, `json`, `sent_at` NULL, `state`), so
   `telemetry show` can show what was sent. Migration **22**.
 
@@ -130,7 +140,11 @@ counters kept until **90 days after the beta ends**, then deleted.
 ## Privacy
 
 - Per-team counters for teams of 2–5 people let the operator infer individual behaviour
-  ("someone on team X sent 3 blocking requests on Tuesday"). The privacy note says so plainly.
+  ("someone on team X sent 3 blocking requests on Tuesday"). A billing team with **one**
+  active member (the contact before anyone else joins, or a team whose others stopped) has
+  per-person counters outright; so does a week in which only one member sends a report. No
+  k-anonymity threshold is applied, because Gate 2 needs per-team numbers for small teams.
+  The privacy note says so plainly (review 50 M9).
 - Relay counters are needed to run the service; the daemon report is not. Hence the different
   defaults. Under the GDPR (EU testers) the daemon report is most defensible as **consent**
   (opt-in), the relay counters as legitimate interest; the owner decides with OD-P4-15 whether
@@ -144,5 +158,7 @@ counters kept until **90 days after the beta ends**, then deleted.
   debate text and peer names appear in no report, no relay table and no relay log.
 - A report with an extra member, a string in a counter, a negative or an out-of-range value is
   refused whole; the relay keeps no per-key report row.
+- The same week's report sent twice (lost `telemetry_ok`) is counted once; a report for a week
+  two weeks back is `bad_report`.
 - `telemetry off` → no report is sent the following week (fake clock); `show` prints the exact
   bytes that were sent.

@@ -1,6 +1,7 @@
 # 49: Phase 4 tickets (4.0 beta gate, 4.1–4.9: private beta operations)
 
-Status: **draft for the Opus adversarial spec review, then owner approval.** No code starts
+Status: **draft, reviewed** ([50-phase4-spec-review.md](50-phase4-spec-review.md): 0 C,
+3 H, 12 M fixed in place), **awaiting owner approval.** No code starts
 before approval (HANDOFF rule 3). Specs:
 [relay-hosted.md](../protocol/relay-hosted.md) (TLS, relay auth v2, abuse and pairing limits,
 persistence, backup/restore, quotas, monitoring, what the relay learns),
@@ -62,12 +63,16 @@ opens a database at the previous relay version with rows in it and migrates):
 
 | # | Name | Tables | Ticket |
 |---|---|---|---|
-| R1 | `relay_base` | `relay_migrations`; adopts the existing `queue` table unchanged (old queue files keep their envelopes) | 4.1a |
+| R1 | `relay_base` | `relay_migrations`; adopts the existing `queue` table unchanged (old queue files keep their envelopes); adds index `queue_by_sender (from_key, enqueued)` for the 4.0b caps (review 50 M3) | 4.1a |
 | R2 | `accounts` | `accounts`, `account_keys`, `bind_requests`, `web_sessions`, `billing_teams`, `billing_members` | 4.2a |
 | R3 | `beta_invites` | `beta_invites` | 4.3a |
 | R4 | `quota_usage` | `quota_usage` | 4.1c |
 | R5 | `telemetry` | `telemetry_daily`, `telemetry_weekly` | 4.6a |
 | R6 | `feedback` | `feedback` | 4.7a |
+
+R4–R6 are built in parallel (wave P4-5) and **merge in the order 4.1c, 4.6a, 4.7a**; a later
+ticket renumbers nothing, it rebases onto the earlier migration. R5 also holds
+`telemetry_seen` (review 50 M9).
 
 ## Tickets
 
@@ -80,23 +85,23 @@ workers at once, HANDOFF §5).
 
 | ID | Title | Depends on | Migr. | Size | Review | Model | ∥ |
 |---|---|---|---|---|---|---|---|
-| **4.0a** | TLS for the relay (cert/key, ACME, behind-proxy), non-loopback needs TLS, HTTP timeouts, `/healthz`, relay auth **v2** (origin-bound) + vector, daemon refuses remote `ws://` | specs approved | — | M | **yes** (R-4.0) | Opus | 4.0c, 4.1a |
+| **4.0a** | TLS for the relay (cert/key, ACME, behind-proxy), "public relay" rule, non-loopback needs TLS, HTTP timeouts, `/healthz`, relay auth **v2** (origin-bound, no downgrade) + vectors, daemon refuses remote `ws://`, `--relay-ca`, no redirects on dial | specs approved | — | M | **yes** (R-4.0) | Opus | 4.0c, 4.1a |
 | **4.0c** | Pairing limits: L1 (`AllowPairingV1`, zero = off), L5 per-prefix layer (+ per-account hooks used by 4.2a) | specs approved | — | S | **yes** (R-4.0) | Sonnet | 4.0a, 4.1a |
-| **4.0b** | Abuse limits: per-prefix, per-key, per-sender→recipient and per-sender queue caps, relay-wide caps, free-disk guard, trusted client-IP header, new error codes and daemon handling (`rate_limited`, `relay_full` as backoff) | 4.0a (same files) | — | L | **yes** (R-4.0) | Opus | 4.4c, 4.4d |
+| **4.0b** | Abuse limits: per-prefix (incl. per-prefix send rates and keys), per-key, per-sender→recipient and per-sender queue caps (in-memory totals), relay-wide caps, per-connection outbound byte cap and in-flight budget, free-disk guard, trusted client-IP header, new error codes and daemon handling (`rate_limited`, `relay_full` as backoff) | 4.0a (same files), 4.1a (R1 index) | — | L | **yes** (R-4.0) | Opus | 4.4c, 4.4d |
 | R-4.0 | Opus security review of 4.0a–c → `Docs/review/50-…`; then **G-4.0 owner sign-off** | 4.0a–c | — | — | — | Opus | — |
 | 4.0d | Self-hosting guide `Docs/beta/self-host-relay.md` (TLS options, proxy setup, limits, what the operator sees), `Docs/cli/relay.md`, known-limitations | 4.0b | — | S | — | Lite | R-4.0 |
 | 4.1a | Relay store: `--db`, relay migrations framework + R1, `secure_delete`, graceful shutdown, `Close` waits for connections (review 05 L6), `relay backup` / `relay restore`, restore-drill test, `--metrics-listen` | specs approved | R1 | M | — | Sonnet | 4.0a, 4.0c |
 | 4.2a | Accounts core (relay): R2, `--accounts`, account states in `ready`, `bind_*` frames, bound-only routing, revocation, suspension, admin CLI (`relay admin account …`), per-account pairing limits | G-4.0, 4.1a | R2 | L | **yes** | Opus | 4.4a |
 | 4.2b | Web login: GitHub OAuth (and/or magic link per OD-P4-2), login / code / confirm / account pages, cookies, CSRF, CSP, rate limits | 4.2a | — | L | **yes** | Opus | 4.2c, 4.3a |
-| 4.2c | Daemon + CLI: `account_*` IPC, `agentnet login/logout`, account in `status`, `account_required` errors with hints, audit | 4.2a | — | M | — | Sonnet | 4.2b, 4.3a |
-| 4.3a | Beta invites and billing teams: R3, `invite_redeem`, `relay admin invite/team`, admission by pairing (OD-P4-6), seats, contact removal, `--invite` on `login` | 4.2a | R3 | M | **yes** (authorization) | Sonnet | 4.2b, 4.2c |
+| 4.2c | Daemon + CLI: `account_*` IPC, `agentnet login/logout`, account in `status`, `account_required` errors with hints, audit; relay-supplied `url` checked before the OS opener, relay strings sanitised (review 50 H3) | 4.2a | — | M | **yes** (R-4.2: untrusted relay input reaches the OS opener) | Opus | 4.2b, 4.3a |
+| 4.3a | Beta invites and billing teams: R3, `invite_redeem`, `relay admin invite/team`, admission by pairing vouched by the issuer (`pair_admit`, OD-P4-6, review 50 H2), seats, contact removal, `--invite` on `login` | 4.2a | R3 | M | **yes** (authorization) | Opus (authorization, D26) | 4.2b, 4.2c |
 | 4.1c | Quotas: R4, charge per sender's billing team, soft mode + `quota_warning`, hard mode behind a flag, daemon display | 4.3a | R4 | S | — | Sonnet | 4.6a, 4.7a |
-| 4.6a | Relay telemetry counters: R5, daily counters, weekly totals intake, `relay admin stats` | 4.3a | R5 | M | — | Sonnet | 4.1c, 4.7a |
+| 4.6a | Relay telemetry counters: R5, daily counters, weekly totals intake (strict parser of untrusted reports, once per key and week), `relay admin stats` | 4.3a | R5 | M | **yes** (R-4.6: parses untrusted input) | Sonnet | 4.1c, 4.7a |
 | 4.6b | Daemon report: migration 22, weekly builder from local tables, `telemetry_report`, `agentnet telemetry`, `TestTelemetryHasNoContent` | 4.6a | 22 | M | **yes** (privacy invariant) | Sonnet | 4.9a |
 | 4.7a | `agentnet feedback`: sealing to the compiled-in operator key, R6, export/open, limits; `CHANGELOG.md` + release-notes step | 4.3a | R6 | S | **yes** (with 4.6b) | Sonnet | 4.1c, 4.6a |
-| 4.4a | Release pipeline: tag-triggered build of all binaries for 3 OSes × amd64/arm64, SHA-256 sums **signed** (OD-P4-19), `install.sh` (verifies the signature), Homebrew tap formula, version check in `ready` (`min_client`) | specs approved | — | M | **yes** (supply chain) | Sonnet | 4.2a |
-| 4.4b | Windows: per-user MSI (OD-P4-13), code signing in CI, `agentnetd` runs **windowless at logon** (board todo), uninstall | 4.4a + **certificate** | — | M | **yes** | Opus (OS-level) | any |
-| 4.4c | `agentnet doctor` + relay state in `status` (board todo): checks of [§CLI contracts](#doctor) | specs approved | — | M | — | Sonnet | 4.0b, 4.4d |
+| 4.4a | Release pipeline: tag-triggered build of all binaries for 3 OSes × amd64/arm64 (release builds without `testhooks`), SHA-256 sums **signed** (OD-P4-19), `install.sh` (verifies the signature as in [§install](#install-44)), Homebrew tap formula, version check in `ready` (`min_client`) | specs approved | — | M | **yes** (supply chain) | Opus (signature verification, D26) | 4.2a |
+| 4.4b | Windows: per-user MSI (OD-P4-13), code signing in CI, `agentnetd` runs **windowless at logon** (board todo), uninstall | 4.4a, 4.9a (its acceptance runs `setup`) + **certificate** | — | M | **yes** | Opus (OS-level) | any |
+| 4.4c | `agentnet doctor` + relay state in `status` (board todo): checks of [§CLI contracts](#doctor) except `account` (added by 4.2c) | 4.0a | — | M | — | Sonnet | 4.0b, 4.4d |
 | 4.4d | Unix hardening checks: keychain and 0600 fallback verified on Linux and macOS, service install/uninstall run for real in CI (systemd user unit in a container with a user session; launchd on the macOS runner) (board todos) | specs approved | — | M | — | Sonnet | 4.0b, 4.4c |
 | 4.9a | `agentnet setup` (login, service install, default hosted relay, telemetry question, doctor), non-interactive and `--json` | 4.2c, 4.4c, 4.6b | — | M | — | Sonnet | 4.1b |
 | 4.1b | Deploy: container image, host config (OD-P4-1/3), DNS + TLS, daily encrypted backup job to object storage, uptime monitor, alerts, `Docs/ops/relay-runbook.md`, `tests/phase4-manual.md` (restore drill on the real host) | 4.1a, 4.2a, 4.3a, G-4.0 | — | M | **yes** (deployment config) | Sonnet | 4.9a |
@@ -112,39 +117,48 @@ workers at once, HANDOFF §5).
 4.1b → 4.9b → 4.P. The Windows certificate is a parallel critical path (4.4b) set only by the
 owner's application date.
 
-**Opus reviews in batches:** R-4.0 (4.0a–c); R-4.2 (4.2a + 4.2b + 4.3a: auth, web, admission);
-R-4.4 (4.4a + 4.4b: supply chain and installer); R-4.6 (4.6b + 4.7a: nothing leaves a machine
-except the listed integers and a sealed note); 4.1b deploy config; 4.8b, 4.8c.
+**Opus reviews in batches:** R-4.0 (4.0a–c); R-4.2 (4.2a + 4.2b + 4.2c + 4.3a: auth, web,
+the relay-supplied login URL, admission); R-4.4 (4.4a + 4.4b: supply chain and installer);
+R-4.6 (4.6a + 4.6b + 4.7a: the report parser, and nothing leaves a machine except the listed
+integers and a sealed note); 4.1b deploy config; 4.8b, 4.8c.
 
 ## Waves (max ~3 implementation workers)
 
 | Wave | Tickets | Notes |
 |---|---|---|
-| P4-1 | 4.0a (Opus) ∥ 4.0c (Sonnet) ∥ 4.1a (Sonnet) | 4.0a and 4.0c touch different files (`relay.go`/`cmd/relay` vs `pairing.go`); 4.1a touches `queue.go` and adds a store file. Rebase order at merge: 4.0c, 4.0a, 4.1a |
-| P4-2 | 4.0b (Opus) ∥ 4.4c (Sonnet) ∥ 4.4d (Sonnet) | then **R-4.0**, 4.0d, **G-4.0** |
+| P4-1 | 4.0a (Opus) ∥ 4.0c (Sonnet) ∥ 4.1a (Sonnet) | 4.0a and 4.0c overlap only in `Options` (`relay.go`) and flag parsing in `cmd/relay/main.go` (4.0c's main work is in `pairing.go`); 4.1a touches `queue.go` and adds a store file. Rebase order at merge: 4.0c, 4.0a, 4.1a |
+| P4-2 | 4.0b (Opus) ∥ 4.4c (Sonnet) ∥ 4.4d (Sonnet) | starts after 4.1a and 4.0a merge; then **R-4.0**, 4.0d, **G-4.0** |
 | P4-3 | 4.2a (Opus) ∥ 4.4a (Sonnet) | + the owner's hosting / domain / OAuth-app setup |
-| P4-4 | 4.2b (Opus) ∥ 4.2c (Sonnet) ∥ 4.3a (Sonnet) | then R-4.2 |
-| P4-5 | 4.1c ∥ 4.6a ∥ 4.7a (all Sonnet) | 4.4b (Opus) whenever the certificate arrives |
-| P4-6 | 4.6b (Sonnet) ∥ 4.9a (Sonnet) ∥ 4.1b (Sonnet) | then R-4.6, R-4.4 |
-| P4-7 | 4.9b ∥ 4.5a ∥ 4.3b | then 4.P; 4.8a–c run during beta weeks 1–3, before wave 2 |
+| P4-4 | 4.2b (Opus) ∥ 4.2c (Opus) ∥ 4.3a (Opus) | then R-4.2 |
+| P4-5 | 4.1c ∥ 4.6a ∥ 4.7a (all Sonnet) | merge order 4.1c, 4.6a, 4.7a (R4, R5, R6) |
+| P4-6 | 4.6b (Sonnet) ∥ 4.1b (Sonnet) ∥ 4.3b (Lite) | 4.9a depends on 4.6b, so it is not in this wave (review 50 M11) |
+| P4-7 | 4.9a (Sonnet) ∥ 4.4b (Opus, when the certificate is there) | then R-4.6, R-4.4 |
+| P4-8 | 4.9b ∥ 4.5a | then 4.P; 4.8a–c run during beta weeks 1–3, before wave 2 |
 
 ## CLI contracts
 
 ### doctor
 
-`agentnet doctor [--json]`: never needs the daemon to be healthy to run; exits 0 if all checks
-pass, 1 if any fail, 2 on usage errors. Each check: `id`, `state` (`ok`/`warn`/`fail`/`skip`),
+`agentnet doctor [--json]`: never needs the daemon to be healthy to run; exits 0 if no check
+is `fail` (`warn` and `skip` still exit 0), 1 if any fail, 2 on usage errors.
+
+**doctor never authenticates to the relay with the identity key** (review 50 M4). The relay
+keeps one connection per key and replaces the older one (`internal/relay/relay.go:274-276`),
+so a doctor login would kick the running daemon, and envelopes forwarded or drained in that
+window would go to doctor's connection. With the daemon running, the `relay` and `account`
+checks come from the daemon over IPC (`status`). With it stopped, doctor only dials the relay,
+reads the `challenge` (auth versions offered, clock) and closes; `account` is `skip`. Each check: `id`, `state` (`ok`/`warn`/`fail`/`skip`),
 `detail` (content-free), `fix` (one command or sentence).
 
 | id | Checks |
 |---|---|
 | `binary` | CLI and daemon versions match; `min_client` from the relay's `ready` is met |
-| `config` | Config dir exists, owner-only (the existing D24/L11 check; a drive-root ACL like the owner's Authenticated Users:(M) shows as `warn` with the fix) |
+| `config` | Config dir exists, owner-only (the existing D24/L11 check; a drive-root ACL like the owner's Authenticated Users:(M) shows as `warn` with the fix; paths are printed relative to `~`) |
 | `keychain` | Identity key readable from the keychain or the 0600 / DACL fallback; which one |
 | `service` | Installed (task/unit/agent present), running, points at this binary and home |
 | `socket` | IPC reachable within 1 s; path length under the OS limit (macOS 104) |
-| `relay` | URL scheme rule, TCP + TLS reachable, relay auth v2 accepted, `connected` since, last error code |
-| `account` | Bound / unbound / suspended; billing team; quota state |
+| `relay` | URL scheme rule, TCP + TLS reachable, which roots (system or `relay_ca`), `challenge` offers auth v2; from the daemon: `connected` since, last error code |
+| `account` | From the daemon: bound / unbound / suspended; billing team; quota state (added by 4.2c) |
 | `git` | Git ≥ 2.32 (D23) or `warn` |
 | `clock` | Local clock within 2 min of the relay's (from `challenge.expires`) |
 
@@ -152,14 +166,15 @@ pass, 1 if any fail, 2 on usage errors. Each check: `id`, `state` (`ok`/`warn`/`
 
 ### setup
 
-`agentnet setup [--invite CODE] [--relay URL] [--telemetry on|off] [--no-browser]
-[--non-interactive] [--json]` does, in order, each step idempotent and skipped when already
+`agentnet setup [--invite CODE] [--relay URL] [--relay-ca FILE] [--telemetry on|off]
+[--no-browser] [--non-interactive] [--wait] [--json]` does, in order, each step idempotent and skipped when already
 done: (1) create identity if missing; (2) `agentnetd install` with the relay (default: the
 hosted relay URL compiled into the binary, OD-P4-14); (3) wait for the daemon (≤ 10 s);
 (4) login (device flow; prints URL, code and fingerprint; opens the browser unless
 `--no-browser`), redeeming `--invite` if given; (5) telemetry choice: interactive → asks with
-the full list shown; non-interactive → `--telemetry` is **required** (an agent must not choose
-silently for the human: it asks the human, per the snippet); (6) `doctor`; (7) prints the one
+the full list shown; non-interactive → `--telemetry` is **required** if OD-P4-8 = (a) (an
+agent must not choose silently for the human: it asks the human, per the snippet), optional
+under (b); (6) `doctor`; (7) prints the one
 next command (`agentnet team join <code>` or `agentnet team create …`). With `--json` every
 step reports `{step, state, detail}`; a step waiting for the browser returns `pending` with the
 URL within 2 s and `setup` can be re-run (or `--wait`) to continue. No config file is ever hand
@@ -171,6 +186,20 @@ edited.
   OS/arch into `~/.local/bin` (no sudo), verifies the SHA-256 against the **signed** sums file
   with a public key embedded in the script, and prints `agentnet setup`. Homebrew:
   `brew install <owner>/tap/agentnet`.
+- **What the script can actually verify** (review 50 M8). A POSIX shell cannot check Ed25519
+  itself, stock macOS ships LibreSSL (no Ed25519 in `openssl pkeyutl`), and minisign's default
+  signatures are over a BLAKE2b prehash. So: the signature is a **plain Ed25519 signature over
+  the bytes of `SHA256SUMS`** (not minisign's prehashed form); `install.sh` verifies it with
+  `openssl pkeyutl -verify -rawin` when OpenSSL ≥ 3 is present, else with `minisign -V` if
+  installed (the release also carries a legacy-format minisign signature), else it **stops**
+  and prints the Homebrew command and the manual steps. It never falls back to an unsigned
+  install. `SHA256SUMS` names the version; the script refuses a version older than the minimum
+  embedded in it (no rollback to a known-bad release by whoever serves the files).
+- **What it protects against, honestly:** the script is served from `<domain>`, so whoever
+  controls the domain or its host controls the embedded key and every curl install. The
+  signature protects against a swap of the release artefacts on GitHub (a leaked token, a
+  compromised CI step) only if the signing key is not also in GitHub (OD-P4-19). Homebrew
+  users trust the tap repository instead.
 - Windows: a **per-user MSI** (installs to `%LOCALAPPDATA%\Programs\AgentNet`, adds to the user
   PATH, no elevation; matters on the owner's no-admin work PC) or a signed zip; `winget` later.
 
@@ -186,7 +215,10 @@ edited.
 - Acceptance: the relay-hosted.md §1 acceptance lines; the auth v2 vector byte for byte,
   recomputed by `verifyvectors`; the relay-in-the-middle test; a v1 daemon against a
   `--require-auth-v2` relay gets `auth_failed`; a v2 daemon against an old relay (no `auth`
-  list in `challenge`) falls back to v1 **only on loopback**; `ReadHeaderTimeout` test with a
+  list in `challenge`, or `["v1"]`) falls back to v1 **only on loopback**, and on a
+  non-loopback URL signs nothing; a relay on `127.0.0.1` with `--behind-proxy` is public
+  (v2 required, pairing v1 off); a dial that gets a 301 fails; `--relay-ca` lets the daemon
+  reach a self-signed relay and the system roots still do not; `ReadHeaderTimeout` test with a
   slow client; `/healthz` returns 503 when the DB is closed.
 
 ### 4.0c Pairing limits (review, R-4.0)
@@ -209,7 +241,9 @@ edited.
   keys/prefixes unaffected, limit logged without payload); the stranger-fills-victim test (300
   per pair); the spoofed-header test; the relay stays within a memory bound with 5000 idle
   authenticated connections in a load test (`-short` skips it; runs weekly); the outbox resends
-  after `rate_limited` and the mail is delivered once.
+  after `rate_limited` and the mail is delivered once; 64 fresh keys from one prefix cannot
+  send more than the per-prefix rate; a non-reading recipient holds ≤ 4 MiB; no cap check scans
+  the queue table (the query plan uses the indexes).
 
 ### 4.0d Self-hosting guide
 
@@ -227,7 +261,9 @@ edited.
   delivered; kill -9 of the binary mid-traffic loses no queued envelope (plan 4.1); `backup`
   during writes gives a file that passes `integrity_check`; `restore` refuses a non-empty target
   without `--force`; the restore-drill test (relay-hosted.md §3) with two daemons: every unacked
-  mail reaches the inbox exactly once; `/metrics` is not served on the public listener.
+  mail reaches the inbox exactly once; `--replay-journal` restores post-backup unbinds and
+  invite redemptions (the journal writer lands here; the account and invite events are
+  wired by 4.2a/4.3a); `/metrics` is not served on the public listener.
 
 ### 4.2a Accounts core (review)
 
@@ -236,7 +272,7 @@ edited.
   subcommands operating on the DB), `internal/envelope` (frames and codes), tests,
   `Docs/protocol/envelope.md` (pointer to accounts.md).
 - Acceptance: accounts.md acceptance lines that do not need the web (the bind is completed by a
-  test hook standing in for the confirm page); the routing matrix (bound/unbound × team/no team
+  test hook standing in for the confirm page, compiled only with the `testhooks` tag); the routing matrix (bound/unbound × team/no team
   × `mail`/`presence`/`pair.confirm`/pairing frames) as a table test; unbind closes the
   connection within 1 s; no email in any log (marker test).
 
@@ -266,7 +302,9 @@ edited.
 - Files: `internal/relay` (R3, invites, billing teams, admission in `pairRedeem`, `team_full`),
   `cmd/relay` (`admin invite|team`), `internal/daemon` + `cmd/agentnet` (`login --invite`,
   `team join` reports `team_full`), `Docs/cli/team.md`, tests.
-- Acceptance: invites.md acceptance lines, on the CI matrix (plan 4.3: macOS, Linux, Windows).
+- Acceptance: invites.md acceptance lines, on the CI matrix (plan 4.3: macOS, Linux, Windows),
+  including the wrong-secret redeemer that is **not** admitted and the forged `pair_admit`.
+  Files also: `internal/daemon` pairing issuer (`pair_admit` after `tag_R`).
 
 ### 4.1c Quotas
 
@@ -344,7 +382,8 @@ edited.
   rollback, restore, rotate the OAuth secret, suspend a team, incident checklist),
   `tests/phase4-manual.md`.
 - Acceptance: a staging deploy (the owner creates the accounts) passes `doctor` from all three
-  OSes; the backup job's latest file restores into a scratch relay (manual drill recorded);
+  OSes; the production image is built without `testhooks` and a test fails if the hook route
+  answers; staging and production share no database, domain, OAuth app or operator key; the backup job's latest file restores into a scratch relay (manual drill recorded);
   the container runs as non-root with a read-only root filesystem except the volume.
 
 ### 4.9b Clean-machine runs
@@ -431,13 +470,15 @@ signing certificate, the outside review and the owner's time.
 3. **New web attack surface.** OAuth, sessions, CSRF and a device-flow page are the first web
    code in the project. Device-code phishing can bind an attacker's key to a victim's account
    (mitigated by the typed code and fingerprint page, and bounded: an account grants no peer
-   trust, only quota and billing-team admission). A web bug that allows binding any key to any
+   trust, only quota and billing-team admission). The CLI must not pass a relay-chosen login
+   URL to the OS opener unchecked (review 50 H3), and billing-team admission must be vouched
+   by the issuer's daemon, not granted on a lookup match (review 50 H2). A web bug that allows binding any key to any
    account would let an attacker spend quotas, occupy seats and get admitted to teams' billing
    teams, still without reading content.
 4. **Relay compromise = denial of service plus metadata, and the relay is now a single point.**
    A compromised relay cannot read or forge mail and cannot MITM pairing v2, but it can drop
    everything, delay selectively, delete queued mail, lie about account state, and (before
-   auth v2) replay authentication elsewhere. Every tester's default relay URL points at one
+   auth v2, or against a relay that still accepts v1) replay authentication elsewhere. Every tester's default relay URL points at one
    instance. The ack-deletion attack is why auth v2 binds the relay origin (4.0a).
 5. **Telemetry and feedback are the only channels that carry data to the operator on purpose,**
    and per-team counters on 2–5-person teams are effectively per-person. A schema slip or an
@@ -470,10 +511,11 @@ signing certificate, the outside review and the owner's time.
 | OD-P4-13 | Windows package form | (a) per-user MSI (no elevation); (b) per-machine MSI; (c) signed zip + `agentnet setup` only | **(a)**: no admin rights needed (matches the owner's work PC), and the daemon is per-user anyway; `winget` later |
 | OD-P4-14 | Domain and the default relay URL compiled into binaries | a project domain (the "AgentNet" name collides, plan §10); `relay.<domain>`; staging at `relay-staging.<domain>` | **Buy a Dorylinae-named domain now**; compile `wss://relay.<domain>` as the default; `--relay` overrides; self-hosters unaffected |
 | OD-P4-15 | Privacy note, beta terms, legal review | (a) short privacy note + beta terms drafted in 4.5a, owner reviews; (b) the same plus a paid legal review; who is the data controller | **The owner decides** (not a technical call). At minimum: what is collected (accounts, IPs in logs ≤ 14 days, counters, feedback), why, retention, deletion on request, the processors (host, object storage, GitHub/email provider), the controller's contact. A legal review is advisable if testers are in the EU |
-| OD-P4-16 | May an agent send feedback with `--yes` | (a) yes, with snippet guidance; (b) no, TTY confirmation only | **(a)**: agents are first-class users; the snippet tells them to show the human the text first |
+| OD-P4-16 | May an agent send feedback with `--yes` | (a) yes, with snippet guidance; (b) no, TTY confirmation only; (c) an agent's `feedback --yes` only drafts the note locally, and a human sends it with `agentnet feedback send` (TTY) or from the approval window (added by review 50 M10) | **(a)** by the author: agents are first-class users; the snippet tells them to show the human the text first. Review 50: an agent steered by a prompt it read (a peer's result, a web page) can send up to 5 × 4 KiB a day of whatever it holds to the operator without a human seeing it; the text reaches only the operator's offline key, so this is a tester-privacy issue, not an exfiltration channel to an attacker. (c) keeps the agent path with a human in the loop at the cost of one step |
 | OD-P4-17 | Local content retention before the beta (OD-P3-8 (c) and "the other content tables") | (a) no automatic deletion in the beta, documented; (b) 365-day retention for experience records, requests, results, debates | **(a)** for the beta (users' own machines; deletion adds risk of losing records people rely on); document it in known limitations; decide (b) from beta feedback |
 | OD-P4-18 | OS user-presence for approvals (OD-P3-12 → "Phase 4, before 4.8") | (a) ticket 4.8b before wave 2; (b) defer past the beta | **(a)**, off by default: it strengthens the approval gate the outside review will examine. Needs a short spec addition first |
-| OD-P4-19 | Release artefact signing | (a) minisign/Ed25519 over `SHA256SUMS`, public key embedded in `install.sh` and docs; (b) Sigstore cosign keyless; (c) checksums only | **(a)**: simplest to verify in a POSIX shell with no extra tool beyond a small verifier; (b) needs the cosign binary on the tester's machine |
+| OD-P4-19 | Release artefact signing, and where the key lives | (a) plain Ed25519 over `SHA256SUMS` (verified by OpenSSL ≥ 3 or minisign, [§install](#install-44)), public key embedded in `install.sh` and docs; (b) Sigstore cosign keyless; (c) checksums only. Key custody: (i) in a GitHub environment secret with the owner as required reviewer; (ii) offline on the owner's machine: CI publishes a **draft** release with `SHA256SUMS`, the owner signs locally and uploads the signature, then publishes | **(a)**, and review 50 M8 recommends **(ii)**: with (i) whoever takes over the owner's GitHub account can approve the environment and sign, so the signature adds nothing against the largest risk (top risk 2); (ii) costs the owner one command per release. A POSIX shell cannot verify any signature unaided; (b) needs cosign on the tester's machine |
+| OD-P4-21 | Queue flooding on self-hosted relays **without** accounts (new, review 50 M1) | (a) accept and document: a stranger who knows a victim's key and uses many keys can fill the victim's offline queue (delay, not loss; outbox resends), and many keys can fill the relay-wide queue; (b) recipient-declared senders: the daemon sends the relay the keys of its peers (`queue_allow`), and the relay queues only from those for that recipient (the relay already sees this graph from routing); (c) a key allowlist file for self-hosted relays (`--allow-keys`) | **(a) for the beta** (self-hosted relays serve a known group, and the attacker needs the victim's key), listed in known limitations; (b) if a self-hoster reports abuse. Not needed on the hosted relay (accounts) |
 | OD-P4-20 | Outside security review | scope, reviewer, budget | **Scope: grant issuance/enforcement and the sensitive-grant rule (plan), plus relay auth v2, accounts/web and the installer.** Book early (2–6 weeks); the owner chooses and pays |
 
 ## Phase 3 and backlog leftovers

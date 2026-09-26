@@ -47,7 +47,9 @@ on a relay with accounts, `ready` carries the key's account state:
 | `suspended` | Operator suspended the account, or its billing team | Nothing; `ready` is followed by `error` `account_suspended` and close 1008 |
 
 An `unbound` connection is still subject to every per-prefix and per-key limit, and at most
-**2 unbound connections per prefix** are kept open (they exist only to bind).
+**16 unbound connections per prefix** are kept open (they exist only to bind; the oldest is
+closed first). Not 2: a team that runs `agentnet setup` together behind one office NAT has one
+unbound connection per member until each confirms in the browser (review 50 M5).
 
 ### Who may send to whom
 
@@ -80,6 +82,8 @@ agentnet login           daemon                 relay                    browser
 ### Frames
 
 `bind_start` (daemon → relay): `{"op":"bind_start","device":"laptop","os":"windows"}`.
+A key that is already bound gets `error` `already_bound`: moving a key to another account
+needs `agentnet logout` first (review 50 L6).
 `device` is a label the human sees on the confirm page (≤ 32 chars, `[A-Za-z0-9 ._-]`,
 defaults to the host name shortened); `os` from `runtime.GOOS`.
 
@@ -92,6 +96,13 @@ defaults to the host name shortened); `os` from `runtime.GOOS`.
 - `url` is the fixed login page. **The code is never put in the URL** (no pre-filled
   `?code=`): typing it is what stops a phishing link from binding an attacker's key to the
   victim's account in one click.
+- **The daemon does not trust `url`** (review 50 H3). The relay is untrusted (D17), and the
+  CLI would otherwise hand a relay-chosen string to the OS opener (`rundll32
+  url.dll,FileProtocolHandler`, `open`, `xdg-open`), which also launches `file:`, `ms-msdt:`,
+  `search-ms:` and other registered handlers. The CLI accepts `url` only if it parses as
+  `https://`, its host and port equal the relay origin's, and it has no user info; otherwise
+  it prints "the relay sent an unexpected login URL" and opens nothing. The URL is printed with
+  control and bidi characters replaced ([relay-hosted.md](relay-hosted.md#daemon)).
 
 `bind_poll` → `bind_pending` (unchanged), `bind_done`
 `{"op":"bind_done","account":{…as in ready…}}`, or `error` `bind_expired` / `bind_denied`.
@@ -110,6 +121,11 @@ the account's current bound keys. Text: "Only confirm if you just ran `agentnet 
 
 If the account already has 4 keys, the page offers to unbind one first.
 
+When a key is bound, every **other** live key of the account gets a content-free control frame
+`{"op":"account_changed"}` and its daemon shows a desktop notification "a new device was
+bound to your account; check `agentnet status`", so a victim of device-code phishing sees it
+(review 50 L16).
+
 ### Web security requirements (ticket 4.2b)
 
 - Every page over TLS; HSTS (`max-age` 1 year); `Content-Security-Policy: default-src 'none';
@@ -118,12 +134,27 @@ If the account already has 4 keys, the page offers to unbind one first.
 - Session cookie: random 256-bit id, `HttpOnly; Secure; SameSite=Lax; Path=/`, lifetime 1 hour,
   server-side row, rotated after sign-in (no session fixation).
 - OAuth: `state` (256-bit, bound to the pre-login cookie) and PKCE; the callback verifies both;
-  the access token is used once to read `GET /user` and then discarded.
+  the access token is used once to read `GET /user` and then discarded. "Sign in with GitHub"
+  is a **GET link** to a relay endpoint that sets the pre-login cookie and redirects: a form
+  POST that redirects to `github.com` is blocked by `form-action 'self'` in Chromium browsers
+  (review 50 L5).
 - Magic link (if OD-P4-2 enables email): a 256-bit token, stored hashed, single use, valid
   15 minutes, bound to the browser that asked (a cookie), 3 emails per address per hour and 20
   per prefix per hour. The email contains the link and nothing about the device.
 - Every state-changing request is a POST with a CSRF token tied to the session.
-- Rate limits: sign-in starts 20 per prefix per 10 minutes.
+- Rate limits: sign-in starts 20 per prefix per 10 minutes; wrong user codes 5 per web
+  session **and** 20 per account per day.
+- **Outages** (review 50 L15): the relay is the account service (one binary, one database).
+  If GitHub (or the mail provider) is down, new sign-ins fail and bindings in progress expire;
+  existing bindings, routing and quotas are unaffected (nothing is checked against GitHub
+  after the bind). If the relay's database is unavailable, the relay refuses new connections
+  (fails closed) and `/healthz` is 503.
+- **Test hooks are not in release builds** (review 50 M7): the hook that completes a bind
+  without the browser, and the fake OAuth provider, are compiled only with the build tag
+  `testhooks`. Release and container builds do not set it, and a test builds the release
+  configuration and asserts that the hook's route and flag are absent. A staging relay that
+  needs them (4.9b) is a separate deployment with its own database, domain, OAuth app and
+  operator keys, and a banner on every page.
 
 ## Account page (minimal)
 
@@ -192,7 +223,9 @@ two accounts (no linking in the beta).
   `pair_new` are refused with `account_required`; after the browser flow (a fake OAuth provider
   in tests) the same connection sends mail without reconnecting.
 - The code is not in the URL; a wrong code 5 times ends the web session; an expired bind is
-  `bind_expired`; the 5th key needs an unbind.
+  `bind_expired`; the 5th key needs an unbind; `bind_start` from a bound key is `already_bound`.
+- A `bind_pending` whose `url` is `file:///…`, `http://…`, another host, or carries control
+  characters is not opened and not printed raw.
 - Unbind closes the live connection within 1 s; a suspended account's key is closed at `ready`.
 - Mail from a bound key to an unbound key gets `account_required`, and no row is queued.
 - Web: CSRF token missing → 403; cookie flags asserted; OAuth `state`/PKCE mismatch → error

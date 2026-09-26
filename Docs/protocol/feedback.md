@@ -13,20 +13,26 @@ operator.
 
 ```
 agentnet feedback "TEXT" [--attach-doctor] [--yes] [--json]
-agentnet feedback --file PATH [...]
 ```
+
+There is no `--file` (review 50 M10): a path argument lets an agent (or a prompt that steers
+it) send any readable file, such as a key or a `.env`, with one flag. A human who wants to
+paste a longer note uses the text argument or standard input on a TTY.
 
 - Text: 1–4096 bytes of UTF-8 after trimming; visible characters, `\n` and `\t` only (the
   same rule as debate constraints: no bidi, zero-width or control characters).
 - `--attach-doctor` adds the `agentnet doctor --json` output (which is content-free by
-  construction: check names, states, versions, relay origin, no paths under the home directory
-  beyond its own config dir, no peer names).
+  construction: check names, states, versions, relay origin, no peer names). Paths are
+  rewritten relative to `~` (the home directory itself would show the OS user name,
+  `C:\Users\<name>`), and the config directory is shown as `<config>`.
 - Before sending, the CLI prints exactly what will be sent and asks for confirmation on a TTY.
-  Without a TTY it needs `--yes`. **OD-P4-16**: whether an agent may pass `--yes` (recommended:
-  yes, and the agent snippet tells agents to show the human the text and never to include code,
-  secrets or other people's content).
-- Returns in < 2 s with `{"status":"queued"|"sent","id":"fb_…"}`; queued notes are sent on the
-  next connection; at most 5 per account per day (`rate_limited`).
+  Without a TTY it needs `--yes`. **OD-P4-16**: whether an agent may pass `--yes` (see the
+  plan; review 50 M10 adds option (c), agent drafts and a human sends).
+- Returns in < 2 s with `{"status":"sent","id":"fb_…"}` after `feedback_ok`. There is **no
+  local queue** (review 50 M10): the daemon has no table for one, and the only planned daemon
+  migration is 22. Without a relay connection the command fails with `relay_unavailable`
+  (exit 1) and prints the text back so nothing is lost. At most 5 per account per day
+  (`rate_limited`).
 - Works only on a relay with accounts. Elsewhere it prints the project's issue-tracker URL and
   exits 1 (`feedback_unavailable`).
 
@@ -42,7 +48,8 @@ stolen backup) cannot read it:
   picks it for backups too (one tool for the owner to learn).
 - Sent as control frame `{"op":"feedback","id":"fb_…","sealed":"<base64>"}` (≤ 16 KiB); the
   relay stores `feedback(id, account_id, team_id, received, sealed)` (relay migration R6) and
-  answers `feedback_ok`. Retention: until the owner exports it, at most 90 days.
+  answers `feedback_ok`. Retention: a note is deleted from the relay when it is exported, and
+  after 90 days whether or not it was exported (review 50 L17).
 - The owner reads notes offline: `relay admin feedback export > notes.bin` on the host, then
   `relay admin feedback open --key KEYFILE notes.bin` (or `age -d`) on their own machine. The
   private key never goes to the host.

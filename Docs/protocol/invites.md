@@ -47,19 +47,38 @@ may add a private `--note`).
 
 **OD-P4-6** chooses how members after the first join a billing team. Recommended:
 
-**(a) Admission by pairing.** When a `pair_redeem` succeeds at the relay (the lookup matched an
-outstanding code), and the **redeemer's** account has no billing team, while the **issuer's**
-account has one with a free seat, the relay adds the redeemer's account to the issuer's billing
-team and says so in the `pair_redeem` answer (`"admitted":"bt_…"`) and in the next `ready`.
-The relay already sees who redeems whose lookup, so this adds no new metadata. It makes a
-normal `agentnet team join <code>` (or `pair <code>`) the only step for every member after the
-first. If there is no free seat the pairing still proceeds, but the redeemer stays
-team-less and gets `error` `team_full` (ref = the pairing), so `team join` can report "the
-inviting team has no free seats on this relay".
+**(a) Admission by pairing, vouched by the issuer.** Admission happens only when the
+**issuer's daemon** has checked the redeemer's `tag_R` ([pairing.md](pairing.md)), i.e. when
+the redeemer has proved it knows the whole code, not just the lookup (review 50 H2):
 
-A pairing that later fails its MAC check (a wrong secret, a relay attack) has already admitted
-the account. Accepted: the redeemer had a valid lookup, which only the code holder has, and the
-billing team's contact (or the operator) can remove the account (below).
+1. The redeemer's `pair_redeem` succeeds at the relay (lookup matched). The relay remembers
+   `(issuer key, redeemer key)` for the pairing TTL (10 min), in memory.
+2. The issuer's daemon verifies `tag_R`. On success, and before it sends its own
+   `pair.confirm{tag_I}`, it sends the control frame
+   `{"op":"pair_admit","public_key":"<redeemer key>"}`. It sends it for every successful v2
+   pairing it issued (team invite or plain `pair`), only if the relay's `ready` lists
+   `accounts`.
+3. The relay accepts `pair_admit` only from a key for which step 1 recorded that redeemer
+   within the TTL, once per record. If the **redeemer's** account has no billing team and the
+   **issuer's** account has one with a free seat, it adds the redeemer's account to the
+   issuer's billing team (`via = pairing`) and sends the redeemer
+   `{"op":"admitted","team":"bt_…"}` and the new state in its next `ready`. With no free seat
+   the redeemer gets `error` `team_full` (ref = its pairing ref), and `team join` reports "the
+   inviting team has no free seats on this relay". Anything else is ignored silently.
+
+Because the issuer sends `pair_admit` before `tag_I` on the same connection, the relay has
+admitted the redeemer before the redeemer completes the pairing and sends `team.join`.
+
+Why not admit at `pair_redeem`: the relay's check there is only the 5-character lookup
+(25 bits, and an entry accepts up to 3 redemptions, `internal/relay/pairing.go:28`). Any bound
+account without a billing team could guess lookups (per-prefix and per-account limits slow
+this, but do not stop many accounts from many prefixes; GitHub accounts are free) and land in a
+stranger's billing team: past the invite gate, able to send mail to any bound key, and shown
+the team's member list with their GitHub logins. `tag_R` needs the 50-bit secret and cannot be
+tested offline.
+
+The relay learns nothing new: it already sees who redeemed whose lookup, and the pairing's
+`pair.confirm` envelopes. A hostile relay can admit anyone anyway (it runs the accounts).
 
 Alternatives: (b) separate **seat codes** the contact makes on the account page and hands out
 next to the team invite (two codes per person, breaks 4.9's one step); (c) no billing teams:
@@ -67,7 +86,8 @@ quota per account (simpler, but the plan's cap is per team and a team of 5 would
 quota).
 
 Seat management: the account page lists the billing team's members (display names) to every
-member; the **contact** can remove a member (frees the seat; that account becomes team-less;
+member (a privacy note item: joining a billing team shows your GitHub login or email to its
+other members); the **contact** can remove a member (frees the seat; that account becomes team-less;
 its keys are closed and must be admitted again). The operator can do everything with
 `relay admin team …`.
 
@@ -103,5 +123,9 @@ expire after 30 days; an unused code is replaced once.
   is contact of a new billing team; A runs `team invite`; B (logged in, team-less) runs `team
   join <code>`, is admitted and can send A a request; the 9th person gets `team_full` and
   cannot send mail.
+- A team-less account that redeems the right lookup with a wrong secret is **not** admitted
+  (the issuer never sends `pair_admit`); a `pair_admit` for a key that did not redeem this
+  issuer's lookup, a second `pair_admit` for the same record, or one after 10 minutes changes
+  nothing.
 - Single use, expiry, revoke, and the failure rate limit; `invite list` never prints a code.
 - The contact removes B: B's connection closes, B is team-less, the seat is free.
