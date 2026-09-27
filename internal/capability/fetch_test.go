@@ -95,30 +95,6 @@ func newFetchHarness(t *testing.T, be Backend, tweak func(*FetchConfig)) *fetchH
 
 func (h *fetchHarness) advance(d time.Duration) { h.clock.Add(int64(d)) }
 
-// waitAudited waits until the audit window of grant has accounted for n ops
-// (rows written plus ops suppressed). The server audits an op after sending its
-// response, so a caller that has its answer can still be ahead of the audit.
-func (h *fetchHarness) waitAudited(grant string, n int) {
-	h.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		a := h.srv.aud
-		a.mu.Lock()
-		got := 0
-		if w := a.wins[grant]; w != nil {
-			got = w.rows + int(w.ops)
-		}
-		a.mu.Unlock()
-		if got >= n {
-			return
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("audit accounted for %d ops of grant %s, want %d", got, grant, n)
-		}
-		time.Sleep(time.Millisecond)
-	}
-}
-
 func (h *fetchHarness) auditsOf(action string) []auditRow {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -129,24 +105,6 @@ func (h *fetchHarness) auditsOf(action string) []auditRow {
 		}
 	}
 	return out
-}
-
-// auditsOfEventually polls auditsOf until at least n rows landed. The
-// caller's response can arrive before the audit write for the same op
-// (fetch.go's run sends the response, then audits it), so a caller must not
-// assert on h.audits right after its own call returns.
-func (h *fetchHarness) auditsOfEventually(action string, n int) []auditRow {
-	h.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if rows := h.auditsOf(action); len(rows) >= n {
-			return rows
-		}
-		if time.Now().After(deadline) {
-			h.t.Fatalf("audit %q never reached %d rows: %v", action, n, h.auditsOf(action))
-		}
-		time.Sleep(time.Millisecond)
-	}
 }
 
 // issue signs and stores an active grant for the holder over h.root.
@@ -977,7 +935,6 @@ func TestFetchAuditRateLimitAndSummary(t *testing.T) {
 		}
 		h.advance(time.Second)
 	}
-	h.waitAudited(rec.ID, 70)
 	// 60 rows in the first minute, the rest suppressed
 	if n := len(h.auditsOf("grant.fetch")); n != auditRowsPerMinute {
 		t.Fatalf("grant.fetch rows = %d, want %d", n, auditRowsPerMinute)
@@ -1085,11 +1042,7 @@ func TestFetchAuditOpIsEnum(t *testing.T) {
 	h.write("a.txt", "x")
 	_, tok := h.issue("")
 	h.expectErr(tok, reqOpts{op: "customer-acme-secret-plan", path: "a.txt"}, ReasonMalformed)
-	// The op is rejected before a grant is matched, so the audit row lands
-	// under a peer-scoped window, not a grant one: poll for it directly
-	// rather than via waitAudited (grant-keyed). The response the caller
-	// sees can land before this run's own audit write (same class as INV-3).
-	rows := h.auditsOfEventually("grant.fetch", 1)
+	rows := h.auditsOf("grant.fetch")
 	if len(rows) != 1 || rows[0].Detail["op"] != "unknown" {
 		t.Fatalf("audit = %v", rows)
 	}

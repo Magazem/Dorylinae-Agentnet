@@ -343,15 +343,26 @@ func (s *FetchServer) run(j fetchJob) {
 		s.respondErr(ctx, j.peer, j.req.Req, j.reject)
 		return
 	}
-	rec, bytes, err := s.serve(ctx, j, done)
+	// Every op is audited before its last response is sent, never after: a
+	// peer that has its answer must find the audit row already written. audit
+	// writes at most one row per op, so a failed last send does not add one.
+	audited := false
+	audit := func(rec *Record, bytes int64, result string) {
+		if audited {
+			return
+		}
+		audited = true
+		s.auditOp(ctx, rec, j, bytes, result)
+	}
+	rec, bytes, err := s.serve(ctx, j, done, audit)
 	if err != nil {
 		code := FetchCode(err)
 		done()
+		audit(rec, bytes, code)
 		s.respondErr(ctx, j.peer, j.req.Req, code)
-		s.auditOp(ctx, rec, j, bytes, code)
 		return
 	}
-	s.auditOp(ctx, rec, j, bytes, "ok")
+	audit(rec, bytes, "ok") // serve has already audited each success; no-op
 }
 
 func (s *FetchServer) auditOp(ctx context.Context, rec *Record, j fetchJob, bytes int64, result string) {
@@ -372,8 +383,9 @@ func (s *FetchServer) auditOp(ctx context.Context, rec *Record, j fetchJob, byte
 // serve runs the checks and the operation. rec is non-nil once the grant row
 // was found and matched (so the audit row names a real grant). done frees the
 // job's peer and daemon slots; serve calls it, with the grant slot, right
-// before the last response.
-func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func()) (*Record, int64, error) {
+// before the last response. audit writes the op's audit row; serve calls it
+// with "ok" right before the last successful response.
+func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func(), audit func(*Record, int64, string)) (*Record, int64, error) {
 	r := j.req
 	// Shape: cheap, stateless.
 	ts, err := time.Parse(time.RFC3339, r.TS)
@@ -451,6 +463,7 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func()) (*Reco
 			return rec, 0, err
 		}
 		finish()
+		audit(rec, 0, "ok")
 		return rec, 0, wrapSend(s.respond(ctx, j.peer, respStat{Type: TypeFetchResp, Req: r.Req, OK: true, Entry: e, Commit: commit}))
 	case OpList:
 		entries, next, commit, err := be.List(ctx, *rec, rel, r.Cursor)
@@ -461,6 +474,7 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func()) (*Reco
 			entries = []Entry{}
 		}
 		finish()
+		audit(rec, 0, "ok")
 		return rec, 0, wrapSend(s.respond(ctx, j.peer, respList{Type: TypeFetchResp, Req: r.Req, OK: true, Entries: entries, Cursor: next, Commit: commit}))
 	}
 
@@ -475,6 +489,7 @@ func (s *FetchServer) serve(ctx context.Context, j fetchJob, done func()) (*Reco
 		s.addServed(rec.ID, int64(len(f.Data)), now)
 		if f.Index == f.Count-1 {
 			finish()
+			audit(rec, sent+int64(len(f.Data)), "ok")
 		}
 		if err := s.respond(ctx, j.peer, respRead{
 			Type: TypeFetchResp, Req: r.Req, OK: true, Frag: f.Index, Frags: f.Count, Size: f.Size,
