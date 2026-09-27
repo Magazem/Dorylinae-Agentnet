@@ -2,8 +2,8 @@
 // Docs/protocol/pairing.md (pairing v2, fingerprints) and
 // Docs/protocol/mail.md (mailbox announcements, sealed mail), the grant
 // vector of Docs/protocol/grant.md, the audit chain of Docs/protocol/audit.md,
-// the debate commitment of Docs/protocol/debate.md and the Decision of
-// Docs/protocol/decision.md.
+// the debate commitment of Docs/protocol/debate.md, the Decision of
+// Docs/protocol/decision.md and relay auth v2 of Docs/protocol/envelope.md.
 //
 // Pairing values are deterministic. HPKE sealing draws its ephemeral key from
 // crypto/rand, so every run prints a new mail payload; the published payload
@@ -28,8 +28,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -296,6 +299,64 @@ func main() {
 	printDebateVector(keyI, keyR)
 	fmt.Println("== decision (3.3a, decision.md §Vector)")
 	printDecisionVector(privI, privR, keyI, keyR)
+	fmt.Println("== relay auth v2 (4.0a, envelope.md §Relay auth v2 vector)")
+	printRelayAuthVector(privI, keyI)
+}
+
+// printRelayAuthVector prints Docs/protocol/envelope.md §Relay auth v2
+// vector: for each relay URL, its origin, the signed message and the
+// signature by key_I over nonce seq(0x80).
+func printRelayAuthVector(privI ed25519.PrivateKey, keyI string) {
+	nonce := seq(0x80)
+	fmt.Printf("seed        %x\n", privI.Seed())
+	fmt.Printf("key         %s\n", keyI)
+	fmt.Printf("nonce b64u  %s\n", b64u.EncodeToString(nonce))
+	for i, u := range []string{
+		"wss://Relay.Example.COM/v1/connect",
+		"wss://relay.example.com:443",
+		"wss://[2001:DB8::1]:8443/v1/connect",
+		"wss://relay.example.com.:8443",
+		"ws://127.0.0.1:8787",
+	} {
+		origin := relayOrigin(u)
+		msg := append([]byte("dorylinae-relay-auth-v2\n"), nonce...)
+		msg = binary.BigEndian.AppendUint16(msg, uint16(len(origin))) //nolint:gosec // short test origins
+		msg = append(msg, origin...)
+		sig := ed25519.Sign(privI, msg)
+		fmt.Printf("url         %s\norigin      %s\nmessage     %x\nsignature   %s\n", u, origin, msg, b64u.EncodeToString(sig))
+		if i == 0 {
+			frame, _ := json.Marshal(struct {
+				Op        string `json:"op"`
+				V         int    `json:"v"`
+				PublicKey string `json:"public_key"`
+				Signature string `json:"signature"`
+			}{"auth", 2, keyI, b64u.EncodeToString(sig)})
+			fmt.Printf("auth frame  %s\n", frame)
+		}
+	}
+}
+
+// relayOrigin is the origin rule of relay-hosted.md §1 for ASCII hosts:
+// lowercase scheme and host, no trailing dot, IPv6 in brackets, the default
+// port (wss 443, ws 80) omitted, no path.
+func relayOrigin(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		log.Fatal(err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	if (scheme == "wss" && port == "443") || (scheme == "ws" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host = net.JoinHostPort(strings.Trim(host, "[]"), port)
+	}
+	return scheme + "://" + host
 }
 
 // printDebateVector prints the session id and the commitment of

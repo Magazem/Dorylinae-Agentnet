@@ -4,14 +4,15 @@ Register `agentnetd` as a **per-user** service that starts at login, and remove 
 No administrator rights or `sudo` are needed on any platform.
 
 ```
-agentnetd install   [--home DIR] [--relay URL] [--dry-run]
+agentnetd install   [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]
 agentnetd uninstall [--home DIR] [--dry-run]
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--home DIR` | Config directory the service runs against (default `$DORYLINAE_HOME`, else the user config dir + `dorylinae`). It is baked into the service definition as `run --home DIR`, so the service does not depend on environment variables it will not inherit. |
-| `--relay URL` | (`install` only) Relay the service connects to, e.g. `wss://relay.example.com`. Default `$DORYLINAE_RELAY_URL`; empty means no relay. Baked into the definition as `run ... --relay URL`, for the same reason as `--home`: a service started at login does not inherit your shell's `DORYLINAE_RELAY_URL`. `--relay ""` overrides the variable. To change the relay, re-run `install`. |
+| `--relay URL` | (`install` only) Relay the service connects to, e.g. `wss://relay.example.com`. Default `$DORYLINAE_RELAY_URL`; empty means no relay. Baked into the definition as `run ... --relay URL`, for the same reason as `--home`: a service started at login does not inherit your shell's `DORYLINAE_RELAY_URL`. `--relay ""` overrides the variable. To change the relay, re-run `install`. The [relay URL rule](agentnetd.md#relay-url-rule) applies: `ws://` to a host that is not loopback is refused (exit 2), and `DORYLINAE_ALLOW_INSECURE_RELAY` is **not** honoured here, because the service would not inherit it. |
+| `--relay-ca FILE` | (`install` only) PEM CA certificate(s) for a `wss://` relay with a private or self-signed certificate. Checked (it must hold a certificate, else exit 2) and copied to `relay_ca.pem` in the config directory (mode 0600) before the service starts; `agentnetd run` uses that file whenever `--relay-ca` is not given, for the relay connection only, in addition to the system roots. Re-running `install` without `--relay-ca` keeps an existing `relay_ca.pem`; delete it to stop trusting that CA. `--dry-run` lists the copy without making it. |
 | `--dry-run` | Print every file that would be written and every command that would be run, then exit 0 without touching the machine (no audit event, no config directory created). |
 
 `install` also starts the daemon immediately; it does not wait for the next login. Re-running
@@ -21,7 +22,7 @@ definition, and succeeds when nothing is installed ("nothing to do").
 The service runs the binary that ran `install` (symlinks resolved): `agentnetd install` records
 that path, so move or rebuild the binary and re-run `install`.
 
-Exit codes: 0 success, 1 failure, 2 usage error.
+Exit codes: 0 success, 1 failure, 2 usage error (including a remote `ws://` relay and a bad `--relay-ca`).
 
 ## What each platform gets
 

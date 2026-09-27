@@ -174,7 +174,7 @@ func TestInstallHelpAndUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--help exit %d", code)
 	}
-	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--relay URL] [--dry-run]", "--relay", "--dry-run", "--home"} {
+	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]", "--relay", "--relay-ca", "--dry-run", "--home"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
@@ -191,10 +191,10 @@ func TestInstallRelayFlagAndEnv(t *testing.T) {
 	home, _, _ := setup(t)
 	t.Setenv(RelayEnv, "")
 
-	if code, _, errs := invoke(t, "install", "--home", home, "--relay", "ws://10.0.0.1:8787"); code != 0 {
+	if code, _, errs := invoke(t, "install", "--home", home, "--relay", "wss://10.0.0.1:8787"); code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
-	if lastSpec.Relay != "ws://10.0.0.1:8787" {
+	if lastSpec.Relay != "wss://10.0.0.1:8787" {
 		t.Errorf("--relay: spec relay = %q", lastSpec.Relay)
 	}
 

@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -136,6 +137,9 @@ type Options struct {
 	// RelayURL is the relay to keep a persistent connection to, e.g.
 	// ws://127.0.0.1:8787. Empty runs the daemon without a relay.
 	RelayURL string
+	// RelayRoots verifies a wss:// relay's certificate; nil uses the system
+	// roots (agentnetd --relay-ca adds a private CA).
+	RelayRoots *x509.CertPool
 	// MailboxKeys gives the own mailbox private keys (0.8c, 1.0b). Nil disables
 	// the mail receiver: mail envelopes are then ignored.
 	MailboxKeys mail.Keys
@@ -709,9 +713,10 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	// the ready callback never race their assignment.
 	var handleMail func(envelope.Envelope)
 	client, err = relayclient.New(relayclient.Config{
-		URL:    opts.RelayURL,
-		Signer: relayclient.NewKeystoreSigner(ks, pub),
-		Logger: opts.Logger,
+		URL:     opts.RelayURL,
+		Signer:  relayclient.NewKeystoreSigner(ks, pub),
+		Logger:  opts.Logger,
+		RootCAs: opts.RelayRoots,
 
 		OnControl: pairs.HandleControl,
 		OnEnvelope: func(e envelope.Envelope) {

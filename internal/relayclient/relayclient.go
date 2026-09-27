@@ -6,12 +6,16 @@ package relayclient
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net"
+	"net/http"
 	"net/url"
 	"slices"
 	"sync"
@@ -24,6 +28,12 @@ import (
 
 // ErrNotConnected is returned by Send while there is no authenticated connection.
 var ErrNotConnected = errors.New("relayclient: not connected to the relay")
+
+// ErrNoAuthV2 is the connection error when a relay at a non-loopback URL
+// does not offer relay auth v2. The client then signs nothing: a v1 signature
+// does not name the relay and could be replayed at another one
+// (Docs/protocol/relay-hosted.md §1, "Daemon rule, no downgrade").
+var ErrNoAuthV2 = errors.New("relayclient: relay does not support auth v2")
 
 // MailType is the envelope type of sealed mail, which bypasses the seen-set.
 const MailType = "mail"
@@ -60,6 +70,12 @@ type Config struct {
 	Logger *slog.Logger
 	// MinBackoff and MaxBackoff bound the reconnect delay. Defaults 500ms and 30s.
 	MinBackoff, MaxBackoff time.Duration
+	// RootCAs verifies a wss:// relay's certificate. Nil uses the system
+	// roots. See LoadRoots for adding a private CA (agentnetd --relay-ca).
+	RootCAs *x509.CertPool
+
+	// dialContext replaces the TCP dial (tests only, via export_test.go).
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // Client keeps one authenticated connection to a relay.
@@ -67,12 +83,19 @@ type Client struct {
 	cfg  Config
 	url  string
 	pub  ed25519.PublicKey
+	http *http.Client
 	log  *slog.Logger
 	mu   sync.Mutex
 	conn *websocket.Conn // non-nil only while authenticated
 	seen *seenSet        // envelopes already handed to OnEnvelope
 
 	features []string // from the latest ready frame; guarded by mu
+
+	// origin is the canonical origin of the configured URL, the value auth v2
+	// signs. loopback says whether its host is this machine, the only case
+	// in which a v1 signature is ever made.
+	origin   string
+	loopback bool
 }
 
 // New validates cfg and returns a Client. Call Run to connect.
@@ -87,13 +110,19 @@ func New(cfg Config) (*Client, error) {
 	if u.Path == "" || u.Path == "/" {
 		u.Path = envelope.ConnectPath
 	}
+	origin, err := envelope.OriginOf(u)
+	if err != nil {
+		return nil, fmt.Errorf("relayclient: relay URL %q: %w", cfg.URL, err)
+	}
 	if cfg.MinBackoff <= 0 {
 		cfg.MinBackoff = defaultMinBackoff
 	}
 	if cfg.MaxBackoff < cfg.MinBackoff {
 		cfg.MaxBackoff = max(defaultMaxBackoff, cfg.MinBackoff)
 	}
-	c := &Client{cfg: cfg, url: u.String(), pub: cfg.Signer.Public(), log: cfg.Logger, seen: newSeenSet(seenCapacity)}
+	c := &Client{cfg: cfg, url: u.String(), pub: cfg.Signer.Public(), log: cfg.Logger, seen: newSeenSet(seenCapacity),
+		origin: origin, loopback: envelope.IsLoopbackHost(u.Hostname())}
+	c.http = newHTTPClient(cfg, c.loopback)
 	if c.log == nil {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -170,7 +199,7 @@ func (c *Client) Run(ctx context.Context) error {
 // authed reports whether authentication completed.
 func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
-	conn, _, err := websocket.Dial(hctx, c.url, nil)
+	conn, _, err := websocket.Dial(hctx, c.url, &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // the library closes the handshake body
 	if err != nil {
 		cancel()
 		return false, fmt.Errorf("dial: %w", err)
@@ -221,7 +250,15 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (envelope.
 	if err != nil {
 		return envelope.Control{}, err
 	}
-	auth, err := envelope.SignAuth(c.pub, nonce, c.cfg.Signer.Sign)
+	var auth envelope.Control
+	switch authVersion(ch.Auth, c.loopback) {
+	case 2:
+		auth, err = envelope.SignAuthV2(c.pub, nonce, c.origin, c.cfg.Signer.Sign)
+	case 1:
+		auth, err = envelope.SignAuth(c.pub, nonce, c.cfg.Signer.Sign)
+	default:
+		return envelope.Control{}, ErrNoAuthV2
+	}
 	if err != nil {
 		return envelope.Control{}, fmt.Errorf("sign challenge: %w", err)
 	}
@@ -229,6 +266,98 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (envelope.
 		return envelope.Control{}, err
 	}
 	return readControl(ctx, conn, envelope.OpReady)
+}
+
+// authVersion picks the relay authentication version to answer a challenge
+// offering offered (nil: a relay that predates the list, v1 only), or 0 for
+// none. v2 whenever it is offered; v1 only when the relay URL is loopback.
+// A non-loopback URL never gets a v1 signature, whatever the challenge says:
+// a hostile relay could otherwise strip v2 from a challenge it forwards and
+// replay the v1 answer at the real relay.
+func authVersion(offered []string, loopback bool) int {
+	if slices.Contains(offered, envelope.AuthV2) {
+		return 2
+	}
+	if loopback && (len(offered) == 0 || slices.Contains(offered, envelope.AuthV1)) {
+		return 1
+	}
+	return 0
+}
+
+// newHTTPClient is the client for the WebSocket handshake: HTTP/1.1, the
+// configured roots, and no redirects. A redirect is a connection error, so
+// the origin the daemon signs is always the one it dialled. For a loopback
+// URL the peer must be a loopback address (see loopbackOnly).
+func newHTTPClient(cfg Config, loopback bool) *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.ForceAttemptHTTP2 = false
+	tr.TLSClientConfig = &tls.Config{RootCAs: cfg.RootCAs, MinVersion: tls.VersionTLS12}
+	if cfg.dialContext != nil {
+		tr.DialContext = cfg.dialContext
+	}
+	if loopback {
+		tr.DialContext = loopbackOnly(tr.DialContext)
+	}
+	return &http.Client{
+		Transport: tr,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("relay redirects are not followed")
+		},
+	}
+}
+
+// loopbackOnly wraps dial so that it fails unless the peer is a loopback
+// address (review 51 M1). A URL is classed loopback by its text, but a name
+// such as "localhost" or "127.0.0.1." is resolved by the hosts file or DNS,
+// and a loopback URL is allowed plain ws:// and a v1 signature, which does
+// not name the relay.
+func loopbackOnly(dial func(ctx context.Context, network, addr string) (net.Conn, error)) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if ta, ok := conn.RemoteAddr().(*net.TCPAddr); !ok || !ta.IP.IsLoopback() {
+			_ = conn.Close()
+			return nil, fmt.Errorf("relay %s is a loopback URL but the connection went to %s", addr, conn.RemoteAddr())
+		}
+		return conn, nil
+	}
+}
+
+// LoadRoots returns the system roots plus the certificates in pemCA, for a
+// relay behind a private or self-signed CA. It fails if pemCA holds no
+// certificate.
+func LoadRoots(pemCA []byte) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(pemCA) {
+		return nil, errors.New("relayclient: no PEM certificate found in the relay CA file")
+	}
+	return pool, nil
+}
+
+// CheckURL applies the daemon's relay URL rule (Docs/protocol/relay-hosted.md
+// §1): a ws:// URL must name a loopback host; a remote relay must use wss://.
+// allowInsecure (DORYLINAE_ALLOW_INSECURE_RELAY=1, LAN tests) lets a remote
+// ws:// URL through; insecure then reports that it did so, for a warning.
+func CheckURL(raw string, allowInsecure bool) (insecure bool, err error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+		return false, fmt.Errorf("relay URL must be ws:// or wss:// with a host, got %q", raw)
+	}
+	if _, err := envelope.OriginOf(u); err != nil {
+		return false, fmt.Errorf("relay URL %q: %w", raw, err)
+	}
+	if u.Scheme == "wss" || envelope.IsLoopbackHost(u.Hostname()) {
+		return false, nil
+	}
+	if !allowInsecure {
+		return false, fmt.Errorf("a remote relay must use wss:// (got %q)", raw)
+	}
+	return true, nil
 }
 
 // Features returns the optional features the relay advertised in its latest

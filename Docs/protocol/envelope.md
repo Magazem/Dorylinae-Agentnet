@@ -71,8 +71,14 @@ connection (WebSocket close code 1009).
 
 ## Connection and authentication
 
-Endpoint: `GET /v1/connect`, upgraded to WebSocket. Phase 0 runs the relay
-locally over plain `ws://`; TLS (`wss://`) arrives with the hosted relay.
+Endpoint: `GET /v1/connect`, upgraded to WebSocket. A loopback relay may use
+plain `ws://`; a remote one uses `wss://` (from Phase 4, ticket 4.0a: the daemon
+refuses `ws://` to a non-loopback host, see
+[relay-hosted.md](relay-hosted.md#daemon)). The daemon does not follow HTTP
+redirects on this request: a redirect is a connection error, so the origin it
+signs (below) is always the one it dialled. `GET /healthz` is the relay's
+unauthenticated health check (`200 {"ok":true,"version":"…"}`, or `503` when
+its database does not answer).
 
 ```
 daemon                                relay
@@ -86,35 +92,106 @@ daemon                                relay
 ### `challenge` (relay -> daemon)
 
 ```json
-{"op":"challenge","version":1,"nonce":"<base64url, 32 bytes>","expires":"2026-01-02T03:04:15Z"}
+{"op":"challenge","version":1,"nonce":"<base64url, 32 bytes>","expires":"2026-01-02T03:04:15Z","auth":["v1","v2"]}
 ```
 
 The nonce is 32 random bytes generated per connection and usable once, on that
 connection only. `expires` is informational; the relay enforces its own clock
 (default 10 seconds after issuing).
 
+`auth` (Phase 4, ticket 4.0a) lists the relay authentication versions the relay
+accepts on this connection: `"v2"` when it knows at least one of its own origins,
+`"v1"` unless it is a **public** relay without `--allow-auth-v1`
+([relay-hosted.md](relay-hosted.md#relay)). A challenge without `auth` comes
+from a relay that predates the list and accepts v1 only.
+
 ### `auth` (daemon -> relay)
 
+v2 (Phase 4):
+
 ```json
-{"op":"auth","public_key":"<key>","signature":"<base64url, 64 bytes>"}
+{"op":"auth","v":2,"public_key":"<key>","signature":"<base64url, 64 bytes>"}
 ```
 
 `signature` is an Ed25519 signature over the bytes
 
 ```
-"dorylinae-relay-auth-v1\n" || nonce
+"dorylinae-relay-auth-v2\n" || nonce(32) || u16be(len(origin)) || origin
 ```
 
-where `nonce` is the 32 decoded bytes. The domain prefix makes the signature
-useless in any other protocol context (agent cards use a different prefix).
-It must be the first frame the daemon sends.
+`origin` is the relay's origin as the daemon dialled it:
+`lowercase(scheme "://" host [":" port])` of the **configured** relay URL,
+with an IDN host in its ASCII (punycode) form, no trailing dot, IPv6 literals in
+brackets, the port omitted exactly when it is the scheme default (`wss` 443,
+`ws` 80), and no path, query or user info. So `wss://Relay.Example.COM:443/v1/connect`
+signs `wss://relay.example.com`. The relay accepts a v2 signature for any of its
+own origins (`relay --public-origin`, or its loopback names on a local relay).
+Naming the origin is what stops a hostile relay from forwarding another relay's
+challenge and logging in there as the daemon (relay-in-the-middle,
+[relay-hosted.md](relay-hosted.md#relay-authentication-v2-binds-the-relays-name)).
 
-The relay rejects the connection if the signature is invalid, the challenge has
-expired, the first frame is not `auth`, or nothing arrives in time. A
-signature captured from another connection is invalid because each connection
-has a fresh nonce. On rejection the relay sends an `error` frame with code
-`auth_failed` (the message never says which check failed), then closes with
-WebSocket close code 1008. Frames before authentication are limited to 4 KiB.
+v1 (Phase 0–3 daemons; no `v`, or `"v":1`):
+
+```json
+{"op":"auth","public_key":"<key>","signature":"<base64url, 64 bytes>"}
+```
+
+signed over `"dorylinae-relay-auth-v1\n" || nonce`. A v1 signature does not
+name the relay.
+
+In both versions `nonce` is the 32 decoded bytes, and the domain prefix makes
+the signature useless in any other protocol context (agent cards use a
+different prefix). `auth` must be the first frame the daemon sends.
+
+**Which version the daemon signs** (no downgrade): v2 whenever the challenge
+offers it. v1 only if the relay URL's host is loopback (`localhost`,
+`127.0.0.0/8`, `::1`) and the challenge has no `auth` list or lists `"v1"`.
+For any other URL the daemon signs nothing and the connection fails with
+"relay does not support auth v2", whatever the challenge offers: otherwise a
+hostile relay could strip `v2` from a challenge it forwards and replay the v1
+answer.
+
+The relay rejects the connection if the signature is invalid (for v2: made for
+none of its origins), the version was not offered, the challenge has expired,
+the first frame is not `auth`, or nothing arrives in time. A signature captured
+from another connection is invalid because each connection has a fresh nonce.
+On rejection the relay sends an `error` frame with code `auth_failed` (the
+message never says which check failed), then closes with WebSocket close code
+1008. One exception to the message rule: a **valid** v1 signature on a relay
+that requires v2 gets the message "this relay requires relay auth v2; update
+agentnet", and is not counted as a failed authentication. Frames before
+authentication are limited to 4 KiB.
+
+#### Relay auth v2 vector
+
+Key `key_I` of [pairing.md](pairing.md) (seed `00 01 … 1f`), nonce `80 81 … 9f`
+(`gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8`). Printed by
+`go run ./tools/specvectors`, recomputed independently by
+`go run ./tools/verifyvectors` (`vectors.json`, `relay_auth`), and checked
+against `internal/envelope` by its tests.
+
+| Configured URL | Origin | Signature (base64url) |
+|---|---|---|
+| `wss://Relay.Example.COM/v1/connect` | `wss://relay.example.com` | `VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw` |
+| `wss://relay.example.com:443` | `wss://relay.example.com` | same as above |
+| `wss://[2001:DB8::1]:8443/v1/connect` | `wss://[2001:db8::1]:8443` | `5HmkkA1Fv28kbJBDFqGq2ry7wnoY0ecNvWSk1GYfwuOEeiCFbKvb1KbKUq49sQ296o3g4SEa1vECrtQ_8r3eBw` |
+| `wss://relay.example.com.:8443` | `wss://relay.example.com:8443` | `ua_ZqQqx7gn0yhmCbj0o8KCMhqMPKfYk9dMb-BhVQ8cuWNMuHbN8B56qcpBn1cH3Qm63f7uynFx3trXnbIwMBw` |
+| `ws://127.0.0.1:8787` | `ws://127.0.0.1:8787` | `Qf-_-YXx26uqkjD1V4H3avV2LjGSgUQpIwR4RM4ql7vRMHWM73CNcy8wmnI2ZWJRsRU9SH5h8n4EyQ4gJqUKDg` |
+
+Signed message for the first row (hex):
+
+```
+646f72796c696e61652d72656c61792d617574682d76320a
+808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f
+0017
+7773733a2f2f72656c61792e6578616d706c652e636f6d
+```
+
+Auth frame for the first row:
+
+```json
+{"op":"auth","v":2,"public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","signature":"VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw"}
+```
 
 ### `ready` (relay -> daemon)
 

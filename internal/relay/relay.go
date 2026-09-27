@@ -71,6 +71,21 @@ type Options struct {
 	EphemeralPerMinute int
 	// EphemeralMaxBytes drops ephemeral frames larger than this. Default 8 KiB.
 	EphemeralMaxBytes int
+
+	// Relay authentication (Docs/protocol/relay-hosted.md §1, ticket 4.0a).
+	//
+	// Public marks a relay reachable from other machines, directly or through
+	// a proxy on the same host. A public relay requires auth v2 unless
+	// AllowAuthV1 is set, and needs at least one origin. cmd/relay derives it
+	// from the listen address and the TLS/proxy flags.
+	Public bool
+	// AllowAuthV1 keeps v1 auth on a public relay (a migration window). A
+	// relay that is not public always accepts v1.
+	AllowAuthV1 bool
+	// Origins are the relay's own origins (ws:// or wss:// URLs, any form
+	// envelope.Origin accepts). A v2 signature is accepted for any of them.
+	// Empty on a non-public relay offers v1 only.
+	Origins []string
 }
 
 // Server is an http.Handler serving the relay protocol.
@@ -83,6 +98,11 @@ type Server struct {
 	q      *queue
 	eph    *ephemeralLimiter
 	ephMax int
+
+	// Relay authentication: which versions the challenge offers, and the
+	// canonical origins a v2 signature may name. Fixed after Open.
+	authV1, authV2 bool
+	origins        []string
 
 	mu    sync.Mutex
 	conns map[string]*conn // keyed by wire public key
@@ -109,6 +129,9 @@ func Open(opts Options) (*Server, error) {
 	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}}
 	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
 	s.pairs.v1 = opts.AllowPairingV1
+	if err := s.setAuth(opts); err != nil {
+		return nil, err
+	}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -206,8 +229,13 @@ func (s *Server) Close() {
 	})
 }
 
-// ServeHTTP serves envelope.ConnectPath as a WebSocket endpoint.
+// ServeHTTP serves envelope.ConnectPath as a WebSocket endpoint and
+// HealthPath as the unauthenticated health check.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == HealthPath {
+		s.serveHealth(w, r)
+		return
+	}
 	if r.URL.Path != envelope.ConnectPath {
 		http.NotFound(w, r)
 		return
@@ -221,8 +249,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	c, err := s.authenticate(r.Context(), ws, clientPrefix(r.RemoteAddr))
 	if err != nil {
-		s.log.Warn("auth rejected", "event", "auth_failed")
-		_ = writeControl(r.Context(), ws, envelope.Control{Op: envelope.OpError, Code: envelope.CodeAuthFailed, Message: "authentication failed"})
+		msg := "authentication failed"
+		if errors.Is(err, envelope.ErrAuthV1Refused) {
+			// A valid v1 signature from an old daemon: not a failed
+			// authentication for any lockout, but still refused.
+			msg = err.Error()
+			s.log.Warn("auth rejected", "event", "auth_failed", "reason", "auth_v1_refused")
+		} else {
+			s.log.Warn("auth rejected", "event", "auth_failed")
+		}
+		_ = writeControl(r.Context(), ws, envelope.Control{Op: envelope.OpError, Code: envelope.CodeAuthFailed, Message: msg})
 		_ = ws.Close(websocket.StatusPolicyViolation, "authentication failed")
 		return
 	}
@@ -264,6 +300,7 @@ func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn, prefix st
 		Version: envelope.ProtocolVersion,
 		Nonce:   envelope.EncodeNonce(nonce),
 		Expires: issued.Add(s.ttl).UTC().Format(time.RFC3339),
+		Auth:    s.authOffer(),
 	})
 	if err != nil {
 		return nil, err
@@ -279,7 +316,7 @@ func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn, prefix st
 	if err != nil || f.Control == nil {
 		return nil, errors.New("first frame is not auth")
 	}
-	pub, err := envelope.VerifyAuth(*f.Control, nonce)
+	pub, err := s.verifyAuth(*f.Control, nonce)
 	if err != nil {
 		return nil, err
 	}

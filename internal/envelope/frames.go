@@ -67,10 +67,16 @@ const authDomain = "dorylinae-relay-auth-v1\n"
 
 // Control is any control frame; unused fields are omitted on the wire.
 type Control struct {
-	Op        string `json:"op"`
-	Version   int    `json:"version,omitempty"`
-	Nonce     string `json:"nonce,omitempty"`
-	Expires   string `json:"expires,omitempty"`
+	Op      string `json:"op"`
+	Version int    `json:"version,omitempty"`
+	Nonce   string `json:"nonce,omitempty"`
+	Expires string `json:"expires,omitempty"`
+	// Auth lists the relay authentication versions a challenge offers
+	// (AuthV1, AuthV2). Absent means v1 only.
+	Auth []string `json:"auth,omitempty"`
+	// V is the relay authentication version of an auth frame: 2 for v2,
+	// absent (0) for v1.
+	V         int    `json:"v,omitempty"`
 	PublicKey string `json:"public_key,omitempty"`
 	Signature string `json:"signature,omitempty"`
 	// Features lists the optional relay features a ready frame advertises. Older
@@ -139,19 +145,15 @@ func SignAuth(pub ed25519.PublicKey, nonce []byte, sign func([]byte) ([]byte, er
 	return Control{Op: OpAuth, PublicKey: KeyString(pub), Signature: b64.EncodeToString(sig)}, nil
 }
 
-// VerifyAuth checks an auth frame against the challenge nonce and returns the
-// authenticated public key.
+// VerifyAuth checks a v1 auth frame against the challenge nonce and returns
+// the authenticated public key. A v2 frame is checked with VerifyAuthV2.
 func VerifyAuth(c Control, nonce []byte) (ed25519.PublicKey, error) {
-	if c.Op != OpAuth {
-		return nil, errors.New("not an auth frame")
+	if c.Op != OpAuth || (c.V != 0 && c.V != 1) {
+		return nil, errors.New("not a v1 auth frame")
 	}
-	pub, err := ParseKey(c.PublicKey)
+	pub, sig, err := authParts(c)
 	if err != nil {
 		return nil, err
-	}
-	sig, err := b64.DecodeString(c.Signature)
-	if err != nil || len(sig) != ed25519.SignatureSize {
-		return nil, errors.New("malformed signature")
 	}
 	if !ed25519.Verify(pub, AuthMessage(nonce), sig) {
 		return nil, errors.New("signature does not verify")

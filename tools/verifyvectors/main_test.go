@@ -58,3 +58,21 @@ func TestDetectsDecisionMismatch(t *testing.T) {
 		t.Fatalf("decision mismatch not detected (%d failures):\n%s", n, out.String())
 	}
 }
+
+// Ticket 4.0a: the relay auth v2 checks run, and a corrupted signature is
+// reported as that case's failure.
+func TestDetectsRelayAuthMismatch(t *testing.T) {
+	var out bytes.Buffer
+	if n := run(&out, vectorsJSON); n != 0 || !strings.Contains(out.String(), "PASS relay_auth frame") ||
+		!strings.Contains(out.String(), "PASS relay_auth negative: case 0 signature fails as v1") {
+		t.Fatalf("relay auth checks did not run:\n%s", out.String())
+	}
+	bad := bytes.Replace(vectorsJSON, []byte(`"5HmkkA1F`), []byte(`"5HmkkA1G`), 1)
+	if bytes.Equal(bad, vectorsJSON) {
+		t.Fatal("test corruption did not apply")
+	}
+	out.Reset()
+	if n := run(&out, bad); n != 1 || !strings.Contains(out.String(), "FAIL relay_auth case 2") {
+		t.Fatalf("relay auth mismatch not detected (%d failures):\n%s", n, out.String())
+	}
+}

@@ -2,7 +2,8 @@
 // capability-grant, audit-chain, debate-commitment and Decision test vectors
 // published in Docs/protocol/pairing.md, Docs/protocol/mail.md,
 // Docs/protocol/grant.md, Docs/protocol/audit.md, Docs/protocol/debate.md and
-// Docs/protocol/decision.md (with the Decision's negative checks), and compares them with
+// Docs/protocol/decision.md (with the Decision's negative checks), and relay
+// auth v2 of Docs/protocol/envelope.md, and compares them with
 // the values in vectors.json (transcribed from those docs).
 //
 // It is deliberately self-contained: it uses only the Go standard library and
@@ -105,7 +106,8 @@ type vectors struct {
 		Position   string `json:"position"`
 		Commitment string `json:"commitment"`
 	} `json:"debate"`
-	Decision decisionVectors `json:"decision"`
+	Decision  decisionVectors  `json:"decision"`
+	RelayAuth relayAuthVectors `json:"relay_auth"`
 }
 
 // --- canonical JSON (agent-card.md §Canonical serialisation) ---
@@ -426,6 +428,7 @@ func run(w io.Writer, raw []byte) int {
 	auditChain(c, &v)
 	debateCommitment(c, &v)
 	decisionVector(c, &v)
+	relayAuth(c, &v)
 	return c.fail
 }
 

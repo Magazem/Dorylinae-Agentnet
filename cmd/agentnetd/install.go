@@ -61,9 +61,10 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 	fs.SetOutput(stderr)
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	dryRun := fs.Bool("dry-run", false, "print what would be written and run, then exit without changing anything")
-	relayURL := ""
+	relayURL, relayCA := "", ""
 	if install {
 		fs.StringVar(&relayURL, "relay", os.Getenv(RelayEnv), "relay WebSocket URL baked into the service, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
+		fs.StringVar(&relayCA, "relay-ca", "", "PEM CA certificate(s) for a wss:// relay with a private or self-signed certificate; copied to "+relayCAFile+" in the config directory")
 	}
 	fs.Usage = func() {
 		what := "Register agentnetd as a per-user service that starts at login (and start it now).\n" +
@@ -73,7 +74,7 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		}
 		usage := "[--home DIR] [--dry-run]"
 		if install {
-			usage = "[--home DIR] [--relay URL] [--dry-run]"
+			usage = "[--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]"
 		}
 		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  agentnetd %s %s\n\nFlags:\n", what, verb, usage)
 		fs.SetOutput(stdout)
@@ -91,11 +92,28 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		return 2
 	}
 
+	// The relay URL rule holds at install time too, without the insecure
+	// escape hatch: the service would not inherit it.
+	if _, err := checkRelayURL(relayURL, false); err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		return 2
+	}
+	var pemCA []byte
+	if relayCA != "" {
+		b, _, err := readRelayCA(relayCA)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+			return 2
+		}
+		pemCA = b
+	}
+
 	p, err := resolvePaths(*home)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
 	}
+	caPath := filepath.Join(p.Dir, relayCAFile)
 	deps, err := newServiceDeps()
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -116,12 +134,21 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 	if *dryRun {
 		_, _ = fmt.Fprintf(stdout, "dry run (%s): nothing was changed. Would do:\n", plan.Platform)
 		plan.Describe(stdout)
+		if pemCA != nil {
+			_, _ = fmt.Fprintf(stdout, "write %s (relay CA, mode 0600)\n", caPath)
+		}
 		return 0
 	}
 
 	if err := p.Ensure(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
+	}
+	if pemCA != nil { // before the service starts, so its first connection trusts the CA
+		if err := os.WriteFile(caPath, pemCA, 0o600); err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: store relay CA: %v\n", name, err)
+			return 1
+		}
 	}
 	res, err := plan.Apply(ctx, deps.runner)
 	if err != nil {

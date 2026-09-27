@@ -71,5 +71,43 @@
   "hash_hex": "6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede",
   "sig_initiator": "oU23UZtZYRFm7RVkDdqPfoFfL6ZFlJj8K4Xqq4ySy1EtDdeO58GEo148fZbERBYbW-75C5erU6AhqoDwiDBnAw",
   "sig_respondent": "xCdaoO0EujU6LbZJOgvIX_FvFlEikdlftxbUmUF9ef_1xTMrqScV_9UDGrsQu8aO_H7adF331lOzjs6PTJv-Cg"
+ },
+ "relay_auth": {
+  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "key": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "nonce_b64u": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8",
+  "cases": [
+   {
+    "url": "wss://Relay.Example.COM/v1/connect",
+    "origin": "wss://relay.example.com",
+    "message_hex": "646f72796c696e61652d72656c61792d617574682d76320a808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f00177773733a2f2f72656c61792e6578616d706c652e636f6d",
+    "signature_b64u": "VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw"
+   },
+   {
+    "url": "wss://relay.example.com:443",
+    "origin": "wss://relay.example.com",
+    "message_hex": "646f72796c696e61652d72656c61792d617574682d76320a808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f00177773733a2f2f72656c61792e6578616d706c652e636f6d",
+    "signature_b64u": "VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw"
+   },
+   {
+    "url": "wss://[2001:DB8::1]:8443/v1/connect",
+    "origin": "wss://[2001:db8::1]:8443",
+    "message_hex": "646f72796c696e61652d72656c61792d617574682d76320a808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f00187773733a2f2f5b323030313a6462383a3a315d3a38343433",
+    "signature_b64u": "5HmkkA1Fv28kbJBDFqGq2ry7wnoY0ecNvWSk1GYfwuOEeiCFbKvb1KbKUq49sQ296o3g4SEa1vECrtQ_8r3eBw"
+   },
+   {
+    "url": "wss://relay.example.com.:8443",
+    "origin": "wss://relay.example.com:8443",
+    "message_hex": "646f72796c696e61652d72656c61792d617574682d76320a808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f001c7773733a2f2f72656c61792e6578616d706c652e636f6d3a38343433",
+    "signature_b64u": "ua_ZqQqx7gn0yhmCbj0o8KCMhqMPKfYk9dMb-BhVQ8cuWNMuHbN8B56qcpBn1cH3Qm63f7uynFx3trXnbIwMBw"
+   },
+   {
+    "url": "ws://127.0.0.1:8787",
+    "origin": "ws://127.0.0.1:8787",
+    "message_hex": "646f72796c696e61652d72656c61792d617574682d76320a808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f001377733a2f2f3132372e302e302e313a38373837",
+    "signature_b64u": "Qf-_-YXx26uqkjD1V4H3avV2LjGSgUQpIwR4RM4ql7vRMHWM73CNcy8wmnI2ZWJRsRU9SH5h8n4EyQ4gJqUKDg"
+   }
+  ],
+  "auth_frame": "{\"op\":\"auth\",\"v\":2,\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"signature\":\"VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw\"}"
  }
 }

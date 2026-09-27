@@ -57,8 +57,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	relayURL := fs.String("relay", os.Getenv(RelayEnv), "relay WebSocket URL, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
 	logFile := fs.String("log-file", "", "append log output to this file instead of stderr, rotating at 1 MiB to PATH.1")
+	relayCA := fs.String("relay-ca", "", "PEM CA certificate(s) trusted for a wss:// relay, besides the system roots (default: "+relayCAFile+" in the config directory, if install stored one)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--log-file PATH] [--version]\n  %[2]s install [--home DIR] [--relay URL] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n  %[2]s stop [--home DIR]\n  %[2]s version [--json]\n\nFlags (run):\n", summary, name)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--relay-ca FILE] [--log-file PATH] [--version]\n  %[2]s install [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n  %[2]s stop [--home DIR]\n  %[2]s version [--json]\n\nFlags (run):\n", summary, name)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -74,10 +75,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	warning, err := checkRelayURL(*relayURL, os.Getenv(InsecureRelayEnv) == "1")
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		return 2
+	}
 	p, err := resolvePaths(*home)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
+	}
+	roots, err := relayRoots(p.Dir, *relayCA)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
+		return 2
 	}
 
 	ready := make(chan struct{})
@@ -96,7 +107,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		logOut = lf
 	}
 	logger := slog.New(slog.NewTextHandler(logOut, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, Logger: logger}); err != nil {
+	if warning != "" {
+		_, _ = fmt.Fprintf(stderr, "%s: %s\n", name, warning)
+		logger.Warn(warning, "event", "relay_insecure")
+	}
+	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, RelayRoots: roots, Logger: logger}); err != nil {
 		if errors.Is(err, ipc.ErrAlreadyRunning) {
 			if pid := runningPID(p.Endpoint); pid > 0 {
 				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s (pid %d)\n", name, p.Dir, pid)
