@@ -53,6 +53,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStop(args[1:], stdout, stderr)
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "identity":
 		return runIdentity(args[1:], stdout, stderr)
 	case "pair":
@@ -138,6 +140,7 @@ Usage:
 
 Commands:
   status    Show whether the daemon is running, its PID, uptime and outbox
+  doctor    Check this machine's AgentNet setup: identity, config, service, relay
   stop      Ask agentnetd to shut down cleanly and wait for it to exit
   version   Print version information (same as --version)
   identity  Print this agent's signed Agent Card
@@ -241,6 +244,21 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 		res.PID, up, res.Version, res.Outbox.Pending, res.Outbox.Queued, res.Outbox.Relayed,
 		res.Outbox.Delivered, res.Outbox.Failed, res.Outbox.Expired)
 	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, res.Presence.Relay)
+	if res.Relay != nil {
+		state := "disconnected"
+		if res.Relay.Connected {
+			state = "connected"
+		}
+		since := ""
+		if res.Relay.Since != nil {
+			since = " since " + *res.Relay.Since
+		}
+		lastErr := ""
+		if res.Relay.LastError != "" {
+			lastErr = " (last error: " + res.Relay.LastError + ")"
+		}
+		_, _ = fmt.Fprintf(stdout, "  relay:    %s, auth %s%s%s\n", state, res.Relay.Auth, since, lastErr)
+	}
 	if res.Team != nil {
 		printStatusTeam(stdout, res.Team)
 	}

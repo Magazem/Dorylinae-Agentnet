@@ -26,6 +26,23 @@ func relayState(client *relayclient.Client, relayURL string) string {
 	return "connected"
 }
 
+// relayStatus builds the "relay" object of "status --json" (4.4c). It is nil
+// when no relay is configured, matching relayState's "none".
+func relayStatus(client *relayclient.Client, relayURL string) *RelayStatus {
+	if relayURL == "" {
+		return nil
+	}
+	st := client.State()
+	since := st.Since
+	return &RelayStatus{
+		URL:       relayURL,
+		Connected: st.Connected,
+		Since:     formatStatusTime(&since),
+		LastError: st.LastError,
+		Auth:      envelope.AuthV2,
+	}
+}
+
 // presenceStatus builds the own-values "presence" object of "status"
 // (Docs/protocol/ipc.md §status), including the visibility mode (1.3).
 func presenceStatus(ctx context.Context, client *relayclient.Client, relayURL string, sender *presence.Sender, ts *team.Store) PresenceStatus {

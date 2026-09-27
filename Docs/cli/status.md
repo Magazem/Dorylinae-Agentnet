@@ -31,7 +31,11 @@ agentnetd running
   version: 0.0.0-dev
   outbox:  0 pending (0 queued, 0 relayed), 0 delivered, 0 failed, 0 expired
   presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-09-21T10:00:03Z
 ```
+
+The `relay:` line is omitted when no relay is configured; `presence`'s own `relay` field
+(`connected`/`disconnected`/`unsupported`/`none`) is unchanged (1.2c).
 
 `--json` also carries `git`: `"ok"` when `git.read` grants can be issued, or
 `"unsupported: <reason>"` when the resolved git is missing or older than 2.32 (D23,
@@ -79,6 +83,22 @@ flags), and with `--team` a `team` object whose `members[]` each carry `name`,
 `public_key`, `fingerprint`, `self`, `owner`, `trust`, `daemon_online`, `agent_active`,
 `human_present` (`true`, `false` or `null`), `last_seen`, `agent_last_active` and
 `human_last_present`. The exact shape is in [../protocol/ipc.md](../protocol/ipc.md#status).
+
+Ticket 4.4c adds `relay`, present whenever a relay is configured (`--relay` or
+`$DORYLINAE_RELAY_URL`):
+
+```json
+{"relay": {"url": "wss://relay.example.com/v1/connect", "connected": true, "since": "2026-09-21T10:00:03Z", "last_error": "", "auth": "v2"}}
+```
+
+`since` is when `connected` last changed (RFC 3339 UTC). `last_error` is the most recent
+connection error's message (content-free: a dial or handshake failure, never an envelope
+payload or a peer identity), empty before any failure. `auth` is always `"v2"`: the relay
+auth version this build of `agentnetd` speaks, not necessarily what any one connection
+negotiated (a loopback relay may still be answered with v1). `relay` is absent, not `null`,
+when no relay is configured. `agentnet doctor` (`Docs/cli/doctor.md`) reports this same
+state as its `relay` check, plus a clock-skew check the daemon does not otherwise expose.
+`account` is added by ticket 4.2c.
 
 Error (stdout, non-zero exit):
 

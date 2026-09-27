@@ -88,6 +88,91 @@ func TestDaemonConnectsToRelay(t *testing.T) {
 	}
 }
 
+// TestStatusReportsRelayState is the passing case (4.4c): once the daemon has
+// connected, "status --json" reports the relay's URL, connected=true, a
+// "since" timestamp and auth "v2".
+func TestStatusReportsRelayState(t *testing.T) {
+	srv := relay.New(relay.Options{})
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	p, opts := relayTestPaths(t)
+	relayURL := "ws" + strings.TrimPrefix(ts.URL, "http")
+	opts.RelayURL = relayURL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.RunWithOptions(ctx, p, ready, opts) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited early: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	var res daemon.StatusResult
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		cctx, ccancel := context.WithTimeout(ctx, 2*time.Second)
+		err := ipc.Call(cctx, p.Endpoint, "status", nil, &res)
+		ccancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Relay != nil && res.Relay.Connected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("relay never reported connected: %+v", res.Relay)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if res.Relay.URL != relayURL {
+		t.Errorf("Relay.URL = %q, want %q", res.Relay.URL, relayURL)
+	}
+	if res.Relay.Auth != "v2" {
+		t.Errorf("Relay.Auth = %q, want v2", res.Relay.Auth)
+	}
+	if res.Relay.Since == nil || *res.Relay.Since == "" {
+		t.Error("Relay.Since is empty while connected")
+	}
+	if res.Relay.LastError != "" {
+		t.Errorf("Relay.LastError = %q, want empty on a clean connect", res.Relay.LastError)
+	}
+}
+
+// TestStatusReportsNoRelayWhenUnconfigured is the failing case (4.4c): with no
+// --relay, "status" omits the relay object entirely.
+func TestStatusReportsNoRelayWhenUnconfigured(t *testing.T) {
+	p, opts := relayTestPaths(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- daemon.RunWithOptions(ctx, p, ready, opts) }()
+	select {
+	case <-ready:
+	case err := <-done:
+		t.Fatalf("daemon exited early: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon not ready")
+	}
+
+	var res daemon.StatusResult
+	cctx, ccancel := context.WithTimeout(ctx, 2*time.Second)
+	defer ccancel()
+	if err := ipc.Call(cctx, p.Endpoint, "status", nil, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Relay != nil {
+		t.Errorf("Relay = %+v, want nil with no relay configured", res.Relay)
+	}
+}
+
 func TestDaemonRejectsBadRelayURL(t *testing.T) {
 	p, opts := relayTestPaths(t)
 	opts.RelayURL = "http://127.0.0.1:1"

@@ -91,11 +91,31 @@ type Client struct {
 
 	features []string // from the latest ready frame; guarded by mu
 
+	// connSince is when the current Connected() value began (a connect or a
+	// disconnect), for status/doctor's "since" (Docs/review/49-phase4-tickets.md
+	// §CLI contracts). lastErr is the most recent connection error's message,
+	// content-free (a dial or handshake failure, never an envelope payload or
+	// a peer identity).
+	connSince time.Time
+	lastErr   string
+
 	// origin is the canonical origin of the configured URL, the value auth v2
 	// signs. loopback says whether its host is this machine, the only case
 	// in which a v1 signature is ever made.
 	origin   string
 	loopback bool
+}
+
+// State is relayclient's connection state, reported by "status" and "doctor"
+// (Docs/review/49-phase4-tickets.md §CLI contracts).
+type State struct {
+	// Connected is Client.Connected() at the time of the call.
+	Connected bool
+	// Since is when Connected last changed.
+	Since time.Time
+	// LastError is the most recent connection error's message, or "" before
+	// any failure.
+	LastError string
 }
 
 // New validates cfg and returns a Client. Call Run to connect.
@@ -121,7 +141,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.MaxBackoff = max(defaultMaxBackoff, cfg.MinBackoff)
 	}
 	c := &Client{cfg: cfg, url: u.String(), pub: cfg.Signer.Public(), log: cfg.Logger, seen: newSeenSet(seenCapacity),
-		origin: origin, loopback: envelope.IsLoopbackHost(u.Hostname())}
+		origin: origin, loopback: envelope.IsLoopbackHost(u.Hostname()), connSince: time.Now()}
 	c.http = newHTTPClient(cfg, c.loopback)
 	if c.log == nil {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -134,6 +154,13 @@ func (c *Client) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn != nil
+}
+
+// State returns the client's current connection state for status/doctor.
+func (c *Client) State() State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return State{Connected: c.conn != nil, Since: c.connSince, LastError: c.lastErr}
 }
 
 // Send validates and sends e. It does not wait for delivery: a relay refusal
@@ -184,6 +211,11 @@ func (c *Client) Run(ctx context.Context) error {
 		if authed {
 			delay = c.cfg.MinBackoff // a working connection resets the backoff
 		}
+		if err != nil {
+			c.mu.Lock()
+			c.lastErr = err.Error()
+			c.mu.Unlock()
+		}
 		wait := jitter(delay)
 		c.log.Warn("relay connection lost", "event", "relay_disconnect", "error", err, "retry_in", wait.Round(time.Millisecond), "connected_for", time.Since(start).Round(time.Millisecond))
 		select {
@@ -216,11 +248,13 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	c.mu.Lock()
 	c.conn = conn
 	c.features = ready.Features
+	c.connSince = time.Now()
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
 		c.features = nil
+		c.connSince = time.Now()
 		c.mu.Unlock()
 	}()
 	c.log.Info("relay connected", "event", "relay_connect")

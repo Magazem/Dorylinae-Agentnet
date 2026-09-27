@@ -50,6 +50,9 @@ type StatusResult struct {
 	Outbox mail.OutboxCounts `json:"outbox"`
 	// Presence is this daemon's own presence, Docs/protocol/ipc.md §status (1.2c).
 	Presence PresenceStatus `json:"presence"`
+	// Relay is the relay connection state (4.4c), nil when no relay is
+	// configured (Docs/cli/status.md).
+	Relay *RelayStatus `json:"relay,omitempty"`
 	// Team is the requested team's members and their presence, present only
 	// when the "team" param was given (Docs/protocol/ipc.md §status, 1.2c).
 	Team *StatusTeamResult `json:"team,omitempty"`
@@ -74,6 +77,18 @@ type PresenceStatus struct {
 	Relay        string `json:"relay"`
 	AgentActive  bool   `json:"agent_active"`
 	HumanPresent *bool  `json:"human_present"`
+}
+
+// RelayStatus is the "relay" object of "status --json" (4.4c;
+// Docs/review/49-phase4-tickets.md §CLI contracts). Auth is always "v2": the
+// version this daemon build speaks, not necessarily what a given connection
+// negotiated (a loopback relay may still be answered with v1, relayclient.go).
+type RelayStatus struct {
+	URL       string  `json:"url"`
+	Connected bool    `json:"connected"`
+	Since     *string `json:"since"`
+	LastError string  `json:"last_error,omitempty"`
+	Auth      string  `json:"auth"`
 }
 
 // TeamRef names a team without its full summary.
@@ -633,6 +648,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			Version:       version.Version,
 			Git:           gitStatus,
 			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender, teamStore),
+			Relay:         relayStatus(relayClient, opts.RelayURL),
 		}
 		if p.Team != "" {
 			tr, err := statusTeam(ctx, teamStore, peerStore, presenceStore, presenceSender, id.Card().Card.Name, relayClient, opts.RelayURL, p.Team)
