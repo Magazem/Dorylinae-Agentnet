@@ -1,7 +1,10 @@
 # 49: Phase 4 tickets (4.0 beta gate, 4.1–4.9: private beta operations)
 
-Status: **draft, reviewed** ([50-phase4-spec-review.md](50-phase4-spec-review.md): 0 C,
-3 H, 12 M fixed in place), **awaiting owner approval.** No code starts
+Status: **approved by the owner 2026-09-27 (D36 in HANDOFF): OD-P4-1..21 as recommended
+except OD-P4-7 (beta invite codes expire after 48 hours), OD-P4-12 (c) (wave 1 ships unsigned
+on Windows), OD-P4-16 (c) (an agent drafts, a human sends), OD-P4-19 (a)+(ii) (offline
+signing) and OD-P4-20 (decided during wave 1, before wave 2); adversarially reviewed
+([50-phase4-spec-review.md](50-phase4-spec-review.md): 0 C, 3 H, 12 M fixed in place).** No code starts
 before approval (HANDOFF rule 3). Specs:
 [relay-hosted.md](../protocol/relay-hosted.md) (TLS, relay auth v2, abuse and pairing limits,
 persistence, backup/restore, quotas, monitoring, what the relay learns),
@@ -10,11 +13,13 @@ persistence, backup/restore, quotas, monitoring, what the relay learns),
 contracts (`doctor`, `setup`, install) are in this plan ([§CLI contracts](#cli-contracts))
 and become `Docs/cli/*.md` in their tickets.
 
-> **Lead time warning (owner action NOW):** Windows code signing takes **4–6 weeks** from
-> application to a usable certificate (identity validation, and for OV certificates a hardware
-> token or cloud HSM that must ship or be provisioned). Ticket 4.4b cannot finish without it.
-> Apply as soon as OD-P4-12 is decided, before any Phase 4 code. An Apple developer account is
-> **not** needed (curl and Homebrew installs, HANDOFF §3).
+> **Windows code signing (D36: OD-P4-12 (c)):** wave 1 ships **unsigned** Windows builds with
+> the SmartScreen click-through documented. The owner is an individual in the EU/UK, so Azure
+> Artifact Signing (individuals: US/Canada only) is not available; the fallback when signing
+> is wanted is an OV certificate on a cloud HSM (e.g. Certum Cloud Code Signing, Individual),
+> **4–6 weeks** lead time. 4.4b builds the MSI and a signing step that is skipped when no
+> certificate is configured. An Apple developer account is **not** needed (curl and Homebrew
+> installs, HANDOFF §3).
 
 Every ticket follows the plan's exit criteria, as in Phases 1–3: acceptance tests are automated
 Go tests (or scripts in `tests/`); `go vet` and the linter pass (also `GOOS=linux`/`darwin`);
@@ -100,7 +105,7 @@ workers at once, HANDOFF §5).
 | 4.6b | Daemon report: migration 22, weekly builder from local tables, `telemetry_report`, `agentnet telemetry`, `TestTelemetryHasNoContent` | 4.6a | 22 | M | **yes** (privacy invariant) | Sonnet | 4.9a |
 | 4.7a | `agentnet feedback`: sealing to the compiled-in operator key, R6, export/open, limits; `CHANGELOG.md` + release-notes step | 4.3a | R6 | S | **yes** (with 4.6b) | Sonnet | 4.1c, 4.6a |
 | 4.4a | Release pipeline: tag-triggered build of all binaries for 3 OSes × amd64/arm64 (release builds without `testhooks`), SHA-256 sums **signed** (OD-P4-19), `install.sh` (verifies the signature as in [§install](#install-44)), Homebrew tap formula, version check in `ready` (`min_client`) | specs approved | — | M | **yes** (supply chain) | Opus (signature verification, D26) | 4.2a |
-| 4.4b | Windows: per-user MSI (OD-P4-13), code signing in CI, `agentnetd` runs **windowless at logon** (board todo), uninstall | 4.4a, 4.9a (its acceptance runs `setup`) + **certificate** | — | M | **yes** | Opus (OS-level) | any |
+| 4.4b | Windows: per-user MSI (OD-P4-13), code signing in CI, `agentnetd` runs **windowless at logon** (board todo), uninstall | 4.4a, 4.9a (its acceptance runs `setup`); certificate optional (D36) | — | M | **yes** | Opus (OS-level) | any |
 | 4.4c | `agentnet doctor` + relay state in `status` (board todo): checks of [§CLI contracts](#doctor) except `account` (added by 4.2c) | 4.0a | — | M | — | Sonnet | 4.0b, 4.4d |
 | 4.4d | Unix hardening checks: keychain and 0600 fallback verified on Linux and macOS, service install/uninstall run for real in CI (systemd user unit in a container with a user session; launchd on the macOS runner) (board todos) | specs approved | — | M | — | Sonnet | 4.0b, 4.4c |
 | 4.9a | `agentnet setup` (login, service install, default hosted relay, telemetry question, doctor), non-interactive and `--json` | 4.2c, 4.4c, 4.6b | — | M | — | Sonnet | 4.1b |
@@ -332,13 +337,16 @@ edited.
 
 ### 4.4a Release pipeline (review, R-4.4)
 
-- Files: `.github/workflows/release.yml` (on a tag; the owner authorises tags), `scripts/install.sh`,
-  a sums-signing step (key in a GitHub environment secret with required reviewer = owner),
+- Files: `.github/workflows/release.yml` (on a tag; the owner authorises tags; publishes a
+  **draft** release with `SHA256SUMS`), `scripts/install.sh`, a local signing script the owner
+  runs to sign `SHA256SUMS` offline and upload the signature before publishing (D36:
+  OD-P4-19 (ii); the key is never in GitHub),
   `packaging/homebrew/agentnet.rb` template, `Docs/cli/install.md`, `internal/envelope`
   (`ready.min_client`), tests (install.sh in a container against a local file server: good
   sums pass, a flipped byte and a bad signature fail, no sudo used).
 - Acceptance: a dry-run tag in a fork (or `workflow_dispatch` with `dry_run`) produces
-  artefacts for darwin/linux/windows × amd64/arm64, `SHA256SUMS` and its signature; Homebrew
+  artefacts for darwin/linux/windows × amd64/arm64 and `SHA256SUMS` in a draft release; the
+  signing script signs it with a test key and the result verifies in `install.sh`; Homebrew
   formula installs on the macOS runner.
 
 ### 4.4b Windows installer and windowless daemon (review, R-4.4)
@@ -350,7 +358,8 @@ edited.
 - Acceptance: on the Windows runner the MSI installs without elevation, `agentnet setup
   --non-interactive` works, the logon task shows no console window (checked by the process's
   subsystem / no conhost child), uninstall removes the task and binaries but keeps the config
-  dir; `signtool verify /pa` passes on MSI and exes.
+  dir; when a certificate is configured, `signtool verify /pa` passes on MSI and exes (none in
+  wave 1, D36).
 
 ### 4.4c doctor and relay state
 
@@ -415,8 +424,7 @@ edited.
 Owner checklist before the first invite is sent: G-4.0 signed; R-4.2, R-4.4, R-4.6 fixed;
 staging and production relays pass `doctor` from 3 OSes; restore drill done; privacy note and
 beta terms published (OD-P4-15); demo video recorded (plan: at the **start** of Phase 4,
-owner); Windows signed build available **or** the owner accepts unsigned Windows builds for
-wave 1 (SmartScreen warning documented); the owner's own team has used the hosted relay for a
+owner); unsigned Windows builds accepted for wave 1 (D36; SmartScreen warning documented); the owner's own team has used the hosted relay for a
 week.
 
 ## Owner-side work and lead times

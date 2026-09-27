@@ -23,7 +23,7 @@ connects to a peer or team".
 - Format: `BETA-` + 12 characters of Crockford base32 (60 bits), shown `BETA-XXXX-XXXX-XXXX`,
   normalised like pairing codes (case, `-`, aliases). Stored as SHA-256 of the normalised code.
 - Created by the operator on the relay host:
-  `relay admin invite create [--wave N] [--seats 8] [--expires 30d] [--note TEXT]` prints the
+  `relay admin invite create [--wave N] [--seats 8] [--expires 48h] [--note TEXT]` prints the
   code once. `relay admin invite list` shows ref, wave, seats, state, created, redeemed-at
   (never the code). `relay admin invite revoke <ref>`.
 - Single use. Expired or revoked codes answer `invite_invalid` (the message never says which).
@@ -107,7 +107,7 @@ started only after the beta gate (4.0), 4.1–4.4, 4.9 and the demo video; **wav
 at beta week 4 **after the outside security review's findings are fixed or documented** (plan
 4.8 "before wave two"); **wave 3** = 10 teams at week 6, so that the 30 invited teams of Gate 2
 have at least 6 weeks of use before weeks 9–12 are measured. 8 seats per billing team. Codes
-expire after 30 days; an unused code is replaced once.
+expire after **48 hours** (D36); the owner issues a new code on request.
 
 ## Relay storage (relay migration R3; `billing_*` tables are created in R2 with accounts)
 

@@ -26,8 +26,11 @@ paste a longer note uses the text argument or standard input on a TTY.
   rewritten relative to `~` (the home directory itself would show the OS user name,
   `C:\Users\<name>`), and the config directory is shown as `<config>`.
 - Before sending, the CLI prints exactly what will be sent and asks for confirmation on a TTY.
-  Without a TTY it needs `--yes`. **OD-P4-16**: whether an agent may pass `--yes` (see the
-  plan; review 50 M10 adds option (c), agent drafts and a human sends).
+  Without a TTY it needs `--yes`. **OD-P4-16 = (c)** (D36): `--yes` without a TTY only
+  **drafts** the note locally and prints it; nothing is sent. A human sends a draft with
+  `agentnet feedback send` on a TTY (shows the exact text, asks for confirmation) or from the
+  approval window. Where drafts are stored without a new daemon migration (e.g. an owner-only
+  file under the config directory) is specified in ticket 4.7a and checked in R-4.6.
 - Returns in < 2 s with `{"status":"sent","id":"fb_…"}` after `feedback_ok`. There is **no
   local queue** (review 50 M10): the daemon has no table for one, and the only planned daemon
   migration is 22. Without a relay connection the command fails with `relay_unavailable`
@@ -60,7 +63,9 @@ Audit on the daemon: `feedback.sent` with the id and byte count, never the text.
 
 - A note round-trips: send, export, open with the test key; the relay DB and logs never contain
   the plaintext (marker test).
-- Without a TTY and without `--yes`: refused, nothing queued. Over 4096 bytes, or with a bidi
+- Without a TTY and without `--yes`: refused, nothing queued. Without a TTY and with `--yes`:
+  a draft is saved and nothing reaches the relay; `feedback send` on a TTY sends it after
+  confirmation (D36). Over 4096 bytes, or with a bidi
   character: `bad_request`. The 6th note of a day: `rate_limited`.
 - A relay that sends a different "operator key" has no effect (the key is not read from the
   relay).
