@@ -385,12 +385,7 @@ func TestDoctorReportsRelayWhenDaemonRunning(t *testing.T) {
 	t.Cleanup(srv.Close)
 	relayURL := "ws" + strings.TrimPrefix(hs.URL, "http")
 
-	dir := t.TempDir()
-	t.Setenv(paths.HomeEnv, dir)
-	p, err := paths.In(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := shortHome(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

@@ -131,6 +131,24 @@ func (h *fetchHarness) auditsOf(action string) []auditRow {
 	return out
 }
 
+// auditsOfEventually polls auditsOf until at least n rows landed. The
+// caller's response can arrive before the audit write for the same op
+// (fetch.go's run sends the response, then audits it), so a caller must not
+// assert on h.audits right after its own call returns.
+func (h *fetchHarness) auditsOfEventually(action string, n int) []auditRow {
+	h.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if rows := h.auditsOf(action); len(rows) >= n {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("audit %q never reached %d rows: %v", action, n, h.auditsOf(action))
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // issue signs and stores an active grant for the holder over h.root.
 func (h *fetchHarness) issue(scope string) (Record, json.RawMessage) {
 	h.t.Helper()
@@ -1067,7 +1085,11 @@ func TestFetchAuditOpIsEnum(t *testing.T) {
 	h.write("a.txt", "x")
 	_, tok := h.issue("")
 	h.expectErr(tok, reqOpts{op: "customer-acme-secret-plan", path: "a.txt"}, ReasonMalformed)
-	rows := h.auditsOf("grant.fetch")
+	// The op is rejected before a grant is matched, so the audit row lands
+	// under a peer-scoped window, not a grant one: poll for it directly
+	// rather than via waitAudited (grant-keyed). The response the caller
+	// sees can land before this run's own audit write (same class as INV-3).
+	rows := h.auditsOfEventually("grant.fetch", 1)
 	if len(rows) != 1 || rows[0].Detail["op"] != "unknown" {
 		t.Fatalf("audit = %v", rows)
 	}
