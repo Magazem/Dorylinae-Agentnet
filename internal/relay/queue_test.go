@@ -272,7 +272,7 @@ func TestReconnectMidFlushRedeliversOnlyUnacked(t *testing.T) {
 }
 
 func TestBacklogStaysAheadOfLiveTraffic(t *testing.T) {
-	s, url := start(t, relay.Options{SendQueue: 8})
+	s, url := start(t, relay.Options{SendQueue: 8, KeyEnvelopesPerMinute: -1}) // 300 envelopes at once: past the per-key burst (4.0b)
 	a, b := newPeer(t), newPeer(t)
 	ca := rawAuthed(t, url, a)
 	const backlog, live = 150, 150

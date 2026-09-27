@@ -511,8 +511,11 @@ func (o *Outbox) HandleError(ef envelope.ErrorFrame) {
 	switch ef.Code {
 	case envelope.CodeBadEnvelope, envelope.CodeBadSender:
 		o.finish(ctx, ef.Ref, "", StateFailed, ef.Code)
-	case envelope.CodeQueueFull, envelope.CodeInternal, envelope.CodePeerOffline, envelope.CodePeerBusy:
-		// Temporary: back to queued and keep the backoff.
+	case envelope.CodeQueueFull, envelope.CodeInternal, envelope.CodePeerOffline, envelope.CodePeerBusy,
+		envelope.CodeRateLimited, envelope.CodeRelayFull:
+		// Temporary: back to queued and keep the backoff. rate_limited and
+		// relay_full are the relay's abuse limits (Docs/protocol/relay-hosted.md
+		// §2): retry later, like queue_full.
 		if _, err := o.DB.ExecContext(ctx,
 			`UPDATE outbox SET state = 'queued', updated = ? WHERE id = ? AND state = 'relayed'`,
 			stamp(o.now()), ef.Ref); err != nil {

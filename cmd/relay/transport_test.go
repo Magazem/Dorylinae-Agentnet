@@ -150,7 +150,7 @@ func TestTransportUsageErrors(t *testing.T) {
 // origin works.
 func TestLoopbackBehindProxyIsPublic(t *testing.T) {
 	for _, args := range [][]string{
-		{"--behind-proxy", "--public-origin", "wss://Relay.Example"},
+		{"--behind-proxy", "--client-ip-header", "Fly-Client-IP", "--trusted-proxy", "127.0.0.1", "--public-origin", "wss://Relay.Example"},
 		{"--public-origin", "wss://relay.example"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -183,7 +183,7 @@ func TestLoopbackBehindProxyIsPublic(t *testing.T) {
 }
 
 func TestAllowAuthV1OnPublicRelay(t *testing.T) {
-	addr, errb := startRelayLog(t, "--behind-proxy", "--public-origin", "wss://relay.example", "--allow-auth-v1")
+	addr, errb := startRelayLog(t, "--behind-proxy", "--client-ip-header", "Fly-Client-IP", "--trusted-proxy", "127.0.0.1", "--public-origin", "wss://relay.example", "--allow-auth-v1")
 	if !strings.Contains(errb.String(), "warning: --allow-auth-v1") {
 		t.Errorf("no warning at start: %s", errb.String())
 	}

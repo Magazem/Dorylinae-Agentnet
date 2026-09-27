@@ -51,6 +51,13 @@ const (
 	CodeQueueFull   = "queue_full"
 	CodeInternal    = "internal"
 
+	// Abuse limits, see Docs/protocol/relay-hosted.md §2. rate_limited
+	// refuses one envelope or control frame (ref names it), or a reconnect
+	// right after auth; relay_full refuses a connection after auth. Both mean
+	// retry later.
+	CodeRateLimited = "rate_limited"
+	CodeRelayFull   = "relay_full"
+
 	// Pairing failures, see Docs/protocol/pairing.md.
 	CodePairInvalid     = "pair_invalid"
 	CodePairRateLimited = "pair_rate_limited"

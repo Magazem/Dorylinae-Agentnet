@@ -216,10 +216,15 @@ After `ready`, the daemon sends envelope frames. For each one the relay:
 
 1. Parses the routing fields. Invalid: `error` frame `bad_envelope`, frame dropped.
 2. Checks `from` equals the authenticated key. Otherwise: `error` frame `bad_sender`, dropped.
-3. Looks `to` up in its in-memory registry. If the recipient is connected, has
-   no backlog and has room in its send buffer, forwards the original bytes to
-   that connection and stays silent.
-4. Otherwise (not connected, still receiving a backlog, or send buffer full)
+3. From ticket 4.0b, charges a non-ephemeral envelope to the sender's and its network
+   prefix's send rates ([relay-hosted.md §2](relay-hosted.md#2-abuse-limits-ticket-40b)).
+   Over either: `error` frame `rate_limited` (`ref` = the envelope id), dropped; the
+   connection stays open.
+4. Looks `to` up in its in-memory registry. If the recipient is connected, has
+   no backlog and has room in its send buffer (64 frames and, from 4.0b, 4 MiB, within
+   the relay-wide `--max-inflight`), forwards the original bytes to that connection and
+   stays silent.
+5. Otherwise (not connected, still receiving a backlog, or send buffer full)
    stores the envelope in the [offline queue](#offline-queue) and answers the
    sender with a `queued` frame. If the queue refuses it, an `error` frame
    `queue_full` (or `internal`) is sent instead and the envelope is dropped.
@@ -231,7 +236,9 @@ the same recipient are still queued.
 Errors on a single envelope never close the connection. A daemon that sends a
 control frame after `auth` other than `ack` and the pairing requests `pair_new`,
 `pair_redeem` and `pair_cancel` (see [pairing.md](pairing.md)) or a binary message has its
-connection closed with code 1008.
+connection closed with code 1008. From 4.0b control frames other than `ack` are limited to
+60 a minute per key: past it each gets `rate_limited` (`ref` = the frame's `ref`), and a key
+over the limit in three one-minute windows in a row is closed with 1008.
 
 ## Offline queue
 
@@ -277,11 +284,18 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   is never delivered, and a sweep (every minute by default) deletes it. The TTL
   counts from the time the relay queued it.
 - **Limits.** One recipient may have at most 1000 envelopes and 32 MiB
-  waiting (`Options.QueueMaxEnvelopes`, `Options.QueueMaxBytes`). Beyond that,
-  senders get `queue_full` and the envelope is dropped. The relay does not know
-  who is paired with whom, so any authenticated key can fill a recipient's
-  queue up to these limits; keys that are not paired with the recipient are
-  refused by the daemon's session layer, not by the relay.
+  waiting (`Options.QueueMaxEnvelopes`, `Options.QueueMaxBytes`). From ticket 4.0b
+  also: one sender may have at most 300 envelopes / 8 MiB waiting for one recipient,
+  2000 envelopes / 64 MiB for all recipients together, and the whole queue holds at
+  most 4 GiB (`--queue-max-total`); see
+  [relay-hosted.md §2](relay-hosted.md#offline-queue-m2). Beyond any of these,
+  the sender gets `queue_full` and the envelope is dropped. With under 1 GiB free
+  on the disk holding the queue file, new envelopes get `internal` ("relay storage
+  low"); acks and deletes still work. The relay does not know who is paired with
+  whom, so any authenticated key can queue for a recipient up to these limits; keys
+  that are not paired with the recipient are refused by the daemon's session layer,
+  not by the relay. The per-sender caps mean one key cannot fill a victim's queue
+  alone; many fresh keys still can on a relay without accounts (OD-P4-21).
 - **Slow recipients.** A connected peer whose send buffer is full no longer
   gets `peer_busy` and a dropped envelope: the envelope is queued behind the
   peer's backlog like an offline one.
@@ -298,7 +312,9 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
 A single SQLite table, `queue(seq, to_key, from_key, id, enqueued, frame)`,
 `seq` being an ever-increasing integer that defines delivery order, with a
 unique index on `(to_key, from_key, id)`. A relay process owns its database; do
-not share one file between relays.
+not share one file between relays. No cap check scans the table: the per-recipient
+and per-pair counts are index searches, and the per-sender and relay-wide totals are
+kept in memory, rebuilt by one scan at start-up and adjusted on add, ack and sweep.
 
 ### Frames
 
@@ -331,8 +347,10 @@ not share one file between relays.
 | `auth_failed` | Authentication rejected; connection is closed |
 | `bad_envelope` | Frame is not a valid envelope (bad JSON, missing or malformed field) |
 | `bad_sender` | `from` does not match the authenticated key |
-| `queue_full` | The recipient already has the maximum number of envelopes queued; envelope dropped |
-| `internal` | The relay could not store the envelope; dropped |
+| `queue_full` | A queue cap refused the envelope (the recipient's, this sender's for the recipient or overall, or the relay-wide total); envelope dropped |
+| `internal` | The relay could not store the envelope (message `relay storage low` when the disk is nearly full); dropped |
+| `rate_limited` | 4.0b: a send rate refused this envelope or control frame (`ref` names it; dropped, connection stays open), or, right after `auth` with no `ref`, the key reconnects too often (then close 1013). Retry later |
+| `relay_full` | 4.0b: right after `auth`, the relay is at its connection cap (`--max-conns`) or this network prefix at its distinct-key cap; close 1013. Retry later with the normal reconnect backoff |
 | `peer_offline` | Pairing only: the code's issuer is not connected. No longer used for envelopes |
 | `peer_busy` | No longer sent (see [Offline queue](#offline-queue)); pairing replies may still use it |
 | `pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `bad_pairing` | Pairing failures, see [pairing.md](pairing.md#errors) (`peer_offline` / `peer_busy` are also used there) |
@@ -343,13 +361,20 @@ The relay logs connection and routing events with abbreviated keys (first 8
 characters), `type`, `id` and byte counts, including `queue`, `queue_flush`
 and `queue_expire` events for the offline queue. It never logs `payload`, nor the
 raw frame. `internal/relay` has a test that fails if a payload marker appears in
-its log output.
+its log output. An abuse limit that refuses something logs `event=limit` with the limit
+name and an abbreviated key (`peer=`) or a /24 (/48 IPv6) prefix (`prefix=`), never an id
+or payload, at most once a minute per limit and subject (`suppressed_before` counts the
+repeats in between).
 
 ## Client behaviour (daemon)
 
 `internal/relayclient` holds one persistent connection. On any failure it
 reconnects with exponential backoff (500 ms doubling to 30 s, with jitter); the
-backoff resets once a connection has authenticated. Sending while disconnected
+backoff resets once a connection has authenticated. `relay_full` or `rate_limited`
+in place of `ready` is such a failure (the connection never became ready), so it is
+retried with the growing backoff. The mail outbox treats `rate_limited` and
+`relay_full` naming one of its rows like `queue_full`: back to queued, resent after
+its backoff ([mail.md](mail.md)). Sending while disconnected
 fails immediately with `ErrNotConnected`; nothing is buffered on the daemon side
 (the relay's [offline queue](#offline-queue) buffers for the *recipient*, not the sender).
 

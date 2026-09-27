@@ -61,10 +61,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	allowV1 := fs.Bool("allow-pairing-v1", false, "accept v1 pairing frames (relay-generated 10-character codes); default on for a relay that is not public, off for a public one")
 	var tf transportFlags
 	tf.register(fs)
+	var lf limitFlags
+	lf.register(fs)
 	metricsListen := fs.String("metrics-listen", "", "address for the operator metrics listener (Prometheus text on /metrics); empty disables it. Never the same listener as --listen")
 	securityJournal := fs.String("security-journal", "", "append-only file of content-free security events, for a later --replay-journal restore")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--metrics-listen HOST:PORT] [--security-journal PATH] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--metrics-listen HOST:PORT] [--security-journal PATH] [abuse limit flags, below] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -90,6 +92,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	public, err := tf.validate(loopErr == nil)
+	if err == nil {
+		err = lf.validate(tf.behindProxy)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 2
@@ -169,8 +174,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		level = slog.LevelInfo
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, AllowPairingV1: v1,
-		Public: public, AllowAuthV1: tf.allowAuthV1, Origins: origins, Journal: journal})
+	opts := relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, AllowPairingV1: v1,
+		Public: public, AllowAuthV1: tf.allowAuthV1, Origins: origins, Journal: journal}
+	lf.apply(&opts)
+	rs, err := relay.Open(opts)
 	if err != nil {
 		_ = ln.Close()
 		if metricsLn != nil {

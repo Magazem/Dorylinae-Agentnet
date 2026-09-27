@@ -15,7 +15,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -97,6 +100,78 @@ type Options struct {
 	// disables the journal; no event is written by this ticket, which only
 	// wires the mechanism for 4.2a/4.3a to use.
 	Journal *JournalWriter
+
+	// Abuse limits (Docs/protocol/relay-hosted.md §2, ticket 4.0b). Zero
+	// takes the spec default given for each; a negative value turns the
+	// limit off (tests only). A "prefix" is the client's /24 (IPv4) or /48
+	// (IPv6).
+	//
+	// UpgradesPerMinute and UpgradeBurst: new WebSocket upgrades per prefix
+	// (30/min, burst 60); past them HTTP 429 before the upgrade.
+	UpgradesPerMinute int
+	UpgradeBurst      int
+	// MaxConnsPerPrefix: concurrent connections per prefix (64), HTTP 429.
+	MaxConnsPerPrefix int
+	// AuthFailuresPerPrefix per AuthFailWindow (10 per 10 min): past them the
+	// prefix gets HTTP 429 for the rest of the window. A valid v1 signature
+	// refused by a v2-only relay does not count.
+	AuthFailuresPerPrefix int
+	AuthFailWindow        time.Duration
+	// MaxUnauthConns: connections still authenticating, relay-wide (256), HTTP 503.
+	MaxUnauthConns int
+	// MaxConns: authenticated connections, relay-wide (5000, --max-conns);
+	// past it error relay_full and close 1013.
+	MaxConns int
+	// MaxKeysPerPrefix: distinct authenticated keys connected from one
+	// prefix (64); past it relay_full and close 1013.
+	MaxKeysPerPrefix int
+	// PrefixEnvelopesPerMinute and PrefixBytesPerMinute: non-ephemeral
+	// envelopes sent by all keys of a prefix together (600/min, 64 MiB/min);
+	// past them error rate_limited.
+	PrefixEnvelopesPerMinute int
+	PrefixBytesPerMinute     int64
+	// KeyEnvelopesPerMinute, KeyEnvelopeBurst and KeyBytesPerMinute:
+	// non-ephemeral envelopes one key sends (120/min burst 240, 32 MiB/min);
+	// past them error rate_limited (ref = envelope id), the envelope is
+	// dropped and the connection stays open.
+	KeyEnvelopesPerMinute int
+	KeyEnvelopeBurst      int
+	KeyBytesPerMinute     int64
+	// ControlPerMinute: control frames other than ack one key sends (60/min);
+	// past it rate_limited, and 3 such minutes in a row close the connection (1008).
+	ControlPerMinute int
+	// ReconnectsPerMinute: authentications of one key (20/min); past it
+	// rate_limited right after auth and close 1013.
+	ReconnectsPerMinute int
+	// ConnBufferBytes: bytes waiting in one connection's outbound buffer
+	// (4 MiB, on top of SendQueue frames); past it envelopes take the queue path.
+	ConnBufferBytes int64
+	// MaxInflight: bytes waiting in every outbound buffer together (256 MiB,
+	// --max-inflight), queue batches read for delivery included; past it
+	// direct sends take the queue path. Frames being read from peers have a
+	// second budget of the same size; past it the reading connection is
+	// closed with 1013 (R-4.0 H1).
+	MaxInflight int64
+	// Offline queue caps on top of QueueMaxEnvelopes/QueueMaxBytes: per
+	// sender -> recipient (300, 8 MiB), per sender over all recipients
+	// (2000, 64 MiB) and relay-wide (4 GiB, --queue-max-total); past them
+	// queue_full. QueueMinFreeDisk (1 GiB): below it new envelopes get
+	// internal ("relay storage low"); acks still work. FreeDisk reports the
+	// free bytes of the file system holding a directory (default: the OS).
+	QueuePairMaxEnvelopes   int
+	QueuePairMaxBytes       int64
+	QueueSenderMaxEnvelopes int
+	QueueSenderMaxBytes     int64
+	QueueMaxTotal           int64
+	QueueMinFreeDisk        int64
+	FreeDisk                func(dir string) (uint64, error)
+
+	// ClientIPHeader names the header a trusted proxy puts the client IP in
+	// (e.g. Fly-Client-IP or X-Forwarded-For, whose last entry is used). It
+	// is honoured only on a Public relay and only when the TCP peer is in
+	// TrustedProxies; from any other peer the TCP address is used.
+	ClientIPHeader string
+	TrustedProxies []netip.Prefix
 }
 
 // Server is an http.Handler serving the relay protocol.
@@ -115,12 +190,24 @@ type Server struct {
 	authV1, authV2 bool
 	origins        []string
 
+	// Abuse limits and the client address rule (4.0b). Fixed after Open.
+	lim      *limits
+	public   bool
+	ipHeader string
+	trusted  []netip.Prefix
+
 	mu      sync.Mutex
 	conns   map[string]*conn // keyed by wire public key
 	closing bool             // Close has begun; no new drain may start (guarded by mu)
+	// authed counts admitted authenticated connections (MaxConns), and
+	// prefixKeys the connections of each key per prefix (MaxKeysPerPrefix).
+	// Both are guarded by mu.
+	authed     int
+	prefixKeys map[string]map[string]int
 
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
+	drainHeld atomic.Int64   // bytes queue drains have read and not yet put in an outbound buffer
 	stopSweep chan struct{}
 	sweepDone chan struct{}
 	closeOnce sync.Once
@@ -161,11 +248,15 @@ func New(opts Options) *Server {
 
 // Open returns a Server, opening (or creating) the offline queue database.
 func Open(opts Options) (*Server, error) {
-	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}, journal: opts.Journal}
+	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}, journal: opts.Journal,
+		prefixKeys: map[string]map[string]int{}, public: opts.Public, ipHeader: opts.ClientIPHeader, trusted: opts.TrustedProxies}
 	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
 	s.pairs.v1 = opts.AllowPairingV1
 	if err := s.setAuth(opts); err != nil {
 		return nil, err
+	}
+	if opts.ClientIPHeader != "" && len(opts.TrustedProxies) == 0 {
+		return nil, errors.New("a client IP header needs at least one trusted proxy")
 	}
 	if s.now == nil {
 		s.now = time.Now
@@ -199,9 +290,22 @@ func Open(opts Options) (*Server, error) {
 	}
 	s.eph = newEphemeralLimiter(opts.EphemeralPerMinute, s.now)
 	s.ephMax = opts.EphemeralMaxBytes
+	s.lim = newLimits(opts, s.now, s.log)
 	q, err := openQueue(opts.QueuePath, opts.QueueTTL, opts.QueueMaxEnvelopes, opts.QueueMaxBytes, s.now)
 	if err != nil {
 		return nil, err
+	}
+	q.lim = queueLimits{
+		pairCount:   orDefault(opts.QueuePairMaxEnvelopes, defaultQueuePairMaxEnvelopes),
+		pairBytes:   orDefault(opts.QueuePairMaxBytes, defaultQueuePairMaxBytes),
+		senderCount: orDefault(opts.QueueSenderMaxEnvelopes, defaultQueueSenderMaxEnvelopes),
+		senderBytes: orDefault(opts.QueueSenderMaxBytes, defaultQueueSenderMaxBytes),
+		totalBytes:  orDefault(opts.QueueMaxTotal, defaultQueueMaxTotal),
+		minFree:     orDefault(opts.QueueMinFreeDisk, defaultQueueMinFreeDisk),
+		freeDisk:    opts.FreeDisk,
+	}
+	if q.lim.freeDisk == nil {
+		q.lim.freeDisk = freeDiskSpace
 	}
 	s.q = q
 	s.stopSweep, s.sweepDone = make(chan struct{}), make(chan struct{})
@@ -286,22 +390,38 @@ func (s *Server) Close() {
 // ServeHTTP serves envelope.ConnectPath as a WebSocket endpoint and
 // HealthPath as the unauthenticated health check.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == HealthPath {
-		s.serveHealth(w, r)
-		return
-	}
-	if r.URL.Path != envelope.ConnectPath {
+	if r.URL.Path != HealthPath && r.URL.Path != envelope.ConnectPath {
 		http.NotFound(w, r)
 		return
 	}
+	prefix := clientPrefix(s.clientAddr(r))
+	if r.URL.Path == HealthPath {
+		if !s.lim.admitHealth(prefix) {
+			s.lim.hit(limitHealth, "prefix", prefix)
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, http.StatusText(http.StatusTooManyRequests), http.StatusTooManyRequests)
+			return
+		}
+		s.serveHealth(w, r)
+		return
+	}
+	if refused := s.lim.admitUpgrade(prefix); refused != nil {
+		s.lim.hit(refused.limit, "prefix", prefix)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, http.StatusText(refused.status), refused.status)
+		return
+	}
+	defer s.lim.release(prefix)
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
+		s.lim.authDone(prefix, false)
 		return // Accept has already replied
 	}
 	defer func() { _ = ws.CloseNow() }()
 	ws.SetReadLimit(envelope.MaxAuthFrameBytes)
 
-	c, err := s.authenticate(r.Context(), ws, clientPrefix(r.RemoteAddr))
+	c, err := s.authenticate(r.Context(), ws, prefix)
+	s.lim.authDone(prefix, err != nil && !errors.Is(err, envelope.ErrAuthV1Refused) && !errors.Is(err, errNoAnswer))
 	if err != nil {
 		msg := "authentication failed"
 		if errors.Is(err, envelope.ErrAuthV1Refused) {
@@ -316,14 +436,76 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = ws.Close(websocket.StatusPolicyViolation, "authentication failed")
 		return
 	}
+	if !s.lim.reconnect(c.key) {
+		s.lim.hit(limitReconnects, "peer", short(c.key))
+		s.refuseAfterAuth(r.Context(), ws, envelope.CodeRateLimited, "too many reconnects; retry later")
+		return
+	}
+	if limit := s.admit(c); limit != "" {
+		if limit == limitKeysPerPrefix {
+			s.lim.hit(limit, "prefix", prefix)
+		} else {
+			s.lim.hit(limit, "relay", "all")
+		}
+		s.refuseAfterAuth(r.Context(), ws, envelope.CodeRelayFull, "relay is full; retry later")
+		return
+	}
+	defer s.dismiss(c)
+	c.maxBytes, c.inflight = s.lim.connBuffer, &s.lim.inflight
 	ws.SetReadLimit(envelope.MaxFrameBytes)
 	s.serve(r.Context(), c)
+	c.release()
 }
 
-// clientPrefix groups a connecting client's remote address into a network
-// prefix for the per-prefix pairing limits: /24 for IPv4, /48 for IPv6
-// (Docs/protocol/relay-hosted.md). This reads the raw TCP peer address; a
-// relay behind a trusted proxy takes the real client IP instead (4.0b).
+// refuseAfterAuth answers an authenticated connection the relay will not
+// serve now with an error frame and close 1013 (try again later).
+func (s *Server) refuseAfterAuth(ctx context.Context, ws *websocket.Conn, code, msg string) {
+	_ = writeControl(ctx, ws, envelope.Control{Op: envelope.OpError, Code: code, Message: msg})
+	_ = ws.Close(websocket.StatusTryAgainLater, msg)
+}
+
+// admit counts c against MaxConns and MaxKeysPerPrefix, or returns the
+// name of the limit that refuses it. A key that is already connected
+// replaces its old connection, so it never counts as a new key or
+// connection against the caps. Every admitted c must be dismissed.
+func (s *Server) admit(c *conn) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, replacing := s.conns[c.key]
+	if !replacing && s.lim.maxConns > 0 && s.authed >= s.lim.maxConns {
+		return limitMaxConns
+	}
+	keys := s.prefixKeys[c.prefix]
+	if keys[c.key] == 0 && s.lim.maxKeysPerPrefix > 0 && len(keys) >= s.lim.maxKeysPerPrefix {
+		return limitKeysPerPrefix
+	}
+	if keys == nil {
+		keys = map[string]int{}
+		s.prefixKeys[c.prefix] = keys
+	}
+	keys[c.key]++
+	s.authed++
+	return ""
+}
+
+// dismiss undoes admit.
+func (s *Server) dismiss(c *conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authed--
+	keys := s.prefixKeys[c.prefix]
+	if keys[c.key]--; keys[c.key] <= 0 {
+		delete(keys, c.key)
+	}
+	if len(keys) == 0 {
+		delete(s.prefixKeys, c.prefix)
+	}
+}
+
+// clientPrefix groups a connecting client's address (host:port or a bare
+// IP) into a network prefix for the per-prefix limits: /24 for IPv4, /48 for
+// IPv6 (Docs/protocol/relay-hosted.md). ServeHTTP passes it clientAddr: the
+// TCP peer, or the client IP header of a trusted proxy (4.0b).
 func clientPrefix(remoteAddr string) string {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -338,6 +520,11 @@ func clientPrefix(remoteAddr string) string {
 	}
 	return ip.Mask(net.CIDRMask(48, 128)).String()
 }
+
+// errNoAnswer is a client that went away before answering its challenge.
+// It is not a failed authentication for the per-prefix lockout (4.0b): only
+// a wrong or late answer is.
+var errNoAnswer = errors.New("connection closed before auth")
 
 // authenticate runs the challenge/response and returns the registered-to-be connection.
 func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn, prefix string) (*conn, error) {
@@ -357,11 +544,14 @@ func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn, prefix st
 		Auth:    s.authOffer(),
 	})
 	if err != nil {
-		return nil, err
+		return nil, errNoAnswer
 	}
 	typ, frame, err := ws.Read(ctx)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, err // no answer within the challenge TTL: a failed authentication
+		}
+		return nil, errNoAnswer
 	}
 	if typ != websocket.MessageText || time.Since(issued) > s.ttl {
 		return nil, errors.New("expired or wrong frame type")
@@ -391,23 +581,75 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 
 	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}))
 	go c.writeLoop(ctx, cancel)
-	if s.drainStep(c) { // first batch inline so an idle queue is settled before we read
+	if s.drainStep(c, false) { // first batch inline so an idle queue is settled before we read
 		s.startDrain(c)
 	}
 
 	for {
-		typ, frame, err := c.ws.Read(ctx)
+		typ, frame, done, err := s.readFrame(ctx, c)
+		if errors.Is(err, errReadBudget) {
+			s.lim.hit(limitReading, "relay", "all")
+			_ = c.ws.Close(websocket.StatusTryAgainLater, "relay busy; retry later")
+			return
+		}
 		if err != nil {
 			s.log.Info("peer disconnected", "event", "disconnect", "peer", short(c.key))
 			return
 		}
 		if typ != websocket.MessageText {
+			done()
 			c.kick("binary frames are not allowed")
 			return
 		}
-		if !s.route(c, frame) {
+		ok := s.route(c, frame)
+		done()
+		if !ok {
 			c.kick("unexpected control frame")
 			return
+		}
+	}
+}
+
+// readChunk is the initial buffer of a frame being read, and its growth step.
+const readChunk = 4 << 10
+
+// errReadBudget is a frame that could not be read because the relay-wide
+// budget for frames being read is spent.
+var errReadBudget = errors.New("relay-wide read budget spent")
+
+// readFrame reads one message from c. Its buffer is charged, as it grows, to
+// a relay-wide budget of the MaxInflight size (counted apart from the
+// outbound one), so peers that start maximum-size frames and never finish
+// them cannot pin more memory than that together (R-4.0 H1). done uncharges
+// the frame; call it once the frame has been routed.
+func (s *Server) readFrame(ctx context.Context, c *conn) (websocket.MessageType, []byte, func(), error) {
+	typ, r, err := c.ws.Reader(ctx)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	var charged int64
+	done := func() { s.lim.reading.add(-charged); charged = 0 }
+	var buf []byte
+	for {
+		if len(buf) == cap(buf) {
+			// Double, but never past what the read limit lets a frame hold.
+			grown := slices.Grow(buf, max(1, min(max(cap(buf), readChunk), envelope.MaxFrameBytes+1-len(buf))))
+			delta := int64(cap(grown)) - charged
+			if !s.lim.reading.tryAdd(delta) {
+				done()
+				return 0, nil, nil, errReadBudget
+			}
+			charged += delta
+			buf = grown
+		}
+		n, err := r.Read(buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		if errors.Is(err, io.EOF) {
+			return typ, buf, done, nil
+		}
+		if err != nil {
+			done()
+			return 0, nil, nil, err
 		}
 	}
 }
@@ -421,6 +663,18 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 		return true
 	}
 	if f.Control != nil {
+		if f.Control.Op != envelope.OpAck {
+			ok, closeConn := s.lim.controlAllowed(sender.key)
+			if !ok {
+				s.lim.hit(limitControl, "peer", short(sender.key))
+				s.reject(sender, envelope.CodeRateLimited, "too many control frames; slow down", f.Control.Ref)
+				if closeConn {
+					s.lim.hit(limitControlClose, "peer", short(sender.key))
+					go sender.flushThenKick("control frame rate exceeded")
+				}
+				return true
+			}
+		}
 		return s.handleControl(sender, f.Control)
 	}
 	h, err := envelope.ParseHeader(frame)
@@ -436,6 +690,15 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 		s.routeEphemeral(sender, h, frame)
 		return true
 	}
+	if limit := s.lim.sendAllowed(sender.key, sender.prefix, len(frame)); limit != "" {
+		if limit == limitPrefixEnvs || limit == limitPrefixBytes {
+			s.lim.hit(limit, "prefix", sender.prefix)
+		} else {
+			s.lim.hit(limit, "peer", short(sender.key))
+		}
+		s.reject(sender, envelope.CodeRateLimited, "sending too fast; retry later", h.ID)
+		return true
+	}
 	s.mu.Lock()
 	dst := s.conns[h.To]
 	s.mu.Unlock()
@@ -447,6 +710,9 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 	case directSent:
 		s.log.Info("routed", "event", "route", "from", short(h.From), "to", short(h.To), "type", h.Type, "id", h.ID, "bytes", len(frame))
 	case directBusy, directDraining:
+		if res == directBusy {
+			s.busyLimit(dst, len(frame))
+		}
 		// A recipient that is slow, offline or still receiving its backlog gets
 		// the envelope through the queue, behind everything queued before it.
 		s.enqueue(sender, h, frame)
@@ -457,10 +723,17 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 // enqueue stores an envelope for a peer that is offline, slow or still
 // receiving its backlog, and tells the sender it was queued.
 func (s *Server) enqueue(sender *conn, h envelope.Header, frame []byte) {
-	switch err := s.q.add(h, frame); {
-	case errors.Is(err, errQueueFull):
+	err := s.q.add(h, frame)
+	var full *queueFullError
+	switch {
+	case errors.As(err, &full):
+		s.lim.hit(full.limit, "peer", short(h.From))
 		s.log.Info("dropped", "event", "drop", "reason", envelope.CodeQueueFull, "from", short(h.From), "to", short(h.To), "type", h.Type, "id", h.ID, "bytes", len(frame))
 		s.reject(sender, envelope.CodeQueueFull, "recipient's offline queue is full", h.ID)
+		return
+	case errors.Is(err, errStorageLow):
+		s.lim.hit(limitQueueDisk, "relay", "all")
+		s.reject(sender, envelope.CodeInternal, "relay storage low", h.ID)
 		return
 	case err != nil:
 		s.log.Warn("queue failed", "event", "queue_error", "op", "add", "error", err)
@@ -475,6 +748,17 @@ func (s *Server) enqueue(sender *conn, h envelope.Header, frame []byte) {
 	s.mu.Unlock()
 	if dst != nil {
 		s.arm(dst)
+	}
+}
+
+// busyLimit logs which byte cap sent an envelope for dst down the queue
+// path, if one did (a buffer full by frame count is not a 4.0b limit).
+func (s *Server) busyLimit(dst *conn, n int) {
+	switch {
+	case s.lim.inflight.max > 0 && s.lim.inflight.used.Load()+int64(n) > s.lim.inflight.max:
+		s.lim.hit(limitInflight, "relay", "all")
+	case dst.maxBytes > 0 && dst.buffered()+int64(n) > dst.maxBytes:
+		s.lim.hit(limitConnBuffer, "peer", short(dst.key))
 	}
 }
 
@@ -503,7 +787,7 @@ func (s *Server) startDrain(c *conn) bool {
 	s.drainWG.Add(1)
 	go func() {
 		defer s.drainWG.Done()
-		for s.drainStep(c) {
+		for s.drainStep(c, true) {
 		}
 	}()
 	return true
@@ -513,9 +797,21 @@ func (s *Server) startDrain(c *conn) bool {
 // When the queue is empty it switches c back to direct forwarding; that check
 // and the switch happen under c.mu, so an envelope is either seen here or
 // forwarded directly after everything queued ahead of it.
-func (s *Server) drainStep(c *conn) bool {
+//
+// The batch is charged to the relay-wide MaxInflight budget before it is read
+// from the database, and waits for room in c's buffer (ConnBufferBytes) and
+// in that budget first (review 50 M2, R-4.0 H1): a drain to a peer that
+// stops reading never holds frames the budget does not count. With wait
+// false (the inline first batch) it does not wait for room; it then reports
+// true so that the drain goroutine waits instead of the read loop.
+func (s *Server) drainStep(c *conn, wait bool) bool {
+	if !c.reserve(c.ctx, drainReserve, wait) {
+		return !wait
+	}
+	reserved := int64(drainReserve)
+	defer func() { c.inflight.add(-reserved) }() // what the batch did not use
 	c.mu.Lock()
-	rows, err := s.q.next(c.key, c.cursor, drainBatch)
+	rows, err := s.q.next(c.key, c.cursor, drainBatch, drainBatchBytes)
 	if err != nil {
 		c.mu.Unlock()
 		s.log.Warn("queue failed", "event", "queue_error", "op", "next", "peer", short(c.key), "error", err)
@@ -529,16 +825,26 @@ func (s *Server) drainStep(c *conn) bool {
 	}
 	c.cursor = rows[len(rows)-1].seq
 	c.mu.Unlock()
+	var held int64
 	for _, r := range rows {
-		select {
-		case c.out <- r.frame:
-		case <-c.ctx.Done():
+		held += int64(len(r.frame))
+	}
+	s.drainHeld.Add(held)
+	defer func() { s.drainHeld.Add(-held) }()
+	for _, r := range rows {
+		if !c.sendReserved(c.ctx, r.frame, &reserved) {
 			return false
 		}
+		held -= int64(len(r.frame))
+		s.drainHeld.Add(-int64(len(r.frame)))
 	}
 	s.log.Info("delivered from queue", "event", "queue_flush", "peer", short(c.key), "count", len(rows))
 	return true
 }
+
+// drainReserve is what one queue batch may hold in memory: next stops once a
+// batch reaches drainBatchBytes, so at most one frame more.
+const drainReserve = drainBatchBytes + envelope.MaxFrameBytes
 
 func (s *Server) reject(to *conn, code, msg, ref string) {
 	to.send(control(envelope.Control{Op: envelope.OpError, Code: code, Message: msg, Ref: ref}))
