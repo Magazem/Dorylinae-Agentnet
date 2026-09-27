@@ -29,8 +29,8 @@ paste a longer note uses the text argument or standard input on a TTY.
   Without a TTY it needs `--yes`. **OD-P4-16 = (c)** (D36): `--yes` without a TTY only
   **drafts** the note locally and prints it; nothing is sent. A human sends a draft with
   `agentnet feedback send` on a TTY (shows the exact text, asks for confirmation) or from the
-  approval window. Where drafts are stored without a new daemon migration (e.g. an owner-only
-  file under the config directory) is specified in ticket 4.7a and checked in R-4.6.
+  approval window. Drafts are stored as owner-only files under the config directory (no daemon
+  migration; owner-approved, D36); ticket 4.7a gives the details and R-4.6 checks them.
 - Returns in < 2 s with `{"status":"sent","id":"fb_…"}` after `feedback_ok`. There is **no
   local queue** (review 50 M10): the daemon has no table for one, and the only planned daemon
   migration is 22. Without a relay connection the command fails with `relay_unavailable`
