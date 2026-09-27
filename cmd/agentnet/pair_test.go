@@ -347,7 +347,7 @@ func storedMailboxKeys(t *testing.T, n *testNode, key string) []string {
 }
 
 func TestPairBadCardRejected(t *testing.T) {
-	srv := relay.New(relay.Options{})
+	srv := relay.New(relay.Options{AllowPairingV1: true})
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 	url := "ws" + strings.TrimPrefix(ts.URL, "http")

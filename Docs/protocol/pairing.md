@@ -184,6 +184,27 @@ once) would let one key test every lookup for existence without touching the red
 limiter. The relay also holds at most 10000 entries in total (v1 and v2); past that
 `pair_new` gets `pair_limit`. An honest issuer sends at most 4 `pair_new` per pairing.
 
+### Per-prefix limits (review-08b L5)
+
+Keys are free, so the per-key limits above do not by themselves stop a Sybil attacker who
+spreads the same abuse over many keys. A second, per-prefix layer sits on top of them,
+grouping keys by the connecting client's network (`/24` for IPv4, `/48` for IPv6; see
+[relay-hosted.md §2](relay-hosted.md#2-abuse-limits-ticket-40b) for the abuse-limit prefix
+and `--behind-proxy`/`--client-ip-header`/`--trusted-proxy`, which also apply here on a
+relay behind a trusted proxy):
+
+| Limit | Default | On excess |
+|---|---|---|
+| `pair_new` (v1 and v2, any outcome) per prefix | 20 / 10 min | `pair_rate_limited` |
+| Failed `pair_redeem` per prefix | 10 / min | `pair_rate_limited` |
+| Outstanding codes (v1 and v2 together) per prefix | 50 | `pair_limit` |
+
+These do not change pairing's cryptographic security (guessing a lookup gains nothing
+without the 50-bit secret); they only bound denial-of-service work. A key from a different
+prefix is never affected by another prefix's limiters. `PairMaxCodes` (10000, relay-wide)
+stays as the global backstop above both layers. Accounts (4.2) add a third, per-account
+layer on top of this one; see relay-hosted.md.
+
 ### `pair_code` (relay → daemon)
 
 ```json
@@ -440,9 +461,11 @@ because only the first 20 characters (100 of 256 bits) are used.
 
 - **Relay:** `--allow-pairing-v1` enables the v1 frames: `pair_new` without `lookup` (the
   relay generates a 10-character code and replies `pair_code{code}`), and `pair_redeem` with
-  `code` (single use, deleted on redemption). Default: **on** when the relay listens only on
-  loopback, **off** otherwise (`--allow-non-loopback`), and off everywhere from 4.1. With
-  the flag off, both v1 frames get `pair_v1_disabled`.
+  `code` (single use, deleted on redemption). `cmd/relay`'s flag default: **on** when the
+  relay listens only on loopback, **off** otherwise (`--allow-non-loopback`), and off
+  everywhere from 4.1. With the flag off, both v1 frames get `pair_v1_disabled`. The
+  `internal/relay` library default (`Options{}`, i.e. `AllowPairingV1` unset) is **off**
+  (review-08b L1); `cmd/relay` always sets it explicitly from the flag.
 - **Daemon:** always issues v2 codes. It redeems a 10-character code only with
   `agentnet pair --v1 <code>`, and stores the result as `trust=relay` with an empty
   `mailbox_keys`. A v1 peer has no mailbox key, so sending mail to it fails with

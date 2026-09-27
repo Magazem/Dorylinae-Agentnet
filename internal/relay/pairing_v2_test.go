@@ -195,7 +195,7 @@ func TestPairV2BadRequests(t *testing.T) {
 }
 
 func TestPairV2SharesOutstandingLimitWithV1(t *testing.T) {
-	_, url := start(t, relay.Options{Now: newClock().Now})
+	_, url := start(t, relay.Options{Now: newClock().Now, AllowPairingV1: true})
 	a := newPeer(t)
 	ca := rawAuthed(t, url, a)
 	for _, l := range []string{"AAAAA", "BBBBB", "CCCCC"} {
@@ -208,8 +208,9 @@ func TestPairV2SharesOutstandingLimitWithV1(t *testing.T) {
 }
 
 func TestPairV1DisabledRefusedAndEnabledAccepted(t *testing.T) {
-	// Disabled: both v1 frames get pair_v1_disabled and touch no state.
-	srv, url := start(t, relay.Options{Now: newClock().Now, DisablePairingV1: true, PairFailLimit: 1})
+	// Disabled: both v1 frames get pair_v1_disabled and touch no state. This is
+	// also the Options zero value (review-08b L1).
+	srv, url := start(t, relay.Options{Now: newClock().Now, PairFailLimit: 1})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 	send(t, ca, envelope.Control{Op: envelope.OpPairNew, Card: cardFor(a, "c"), Ref: "n"})
@@ -230,8 +231,8 @@ func TestPairV1DisabledRefusedAndEnabledAccepted(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 
-	// Enabled (the Options zero value): v1 still works end to end.
-	_, url2 := start(t, relay.Options{Now: newClock().Now})
+	// Enabled explicitly: v1 still works end to end.
+	_, url2 := start(t, relay.Options{Now: newClock().Now, AllowPairingV1: true})
 	a2, b2 := newPeer(t), newPeer(t)
 	ca2, cb2 := rawAuthed(t, url2, a2), rawAuthed(t, url2, b2)
 	code := issue(t, ca2, a2, "n")
@@ -339,7 +340,7 @@ func TestPairV2NewIsRateLimited(t *testing.T) {
 }
 
 func TestPairRelayWideCodeCap(t *testing.T) {
-	_, url := start(t, relay.Options{Now: newClock().Now, PairMaxCodes: 2})
+	_, url := start(t, relay.Options{Now: newClock().Now, PairMaxCodes: 2, AllowPairingV1: true})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 	issueV2(t, ca, a, "AAAAA", "1")

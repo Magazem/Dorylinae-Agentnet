@@ -17,7 +17,7 @@ func TestDirectEphemeralLeavesHalfBufferForMail(t *testing.T) {
 	// cap=8, half=4: directEphemeral checks occupancy before enqueueing, so it
 	// admits while occupancy is at most half (5 sends: 0,1,2,3,4 all <=4), and
 	// refuses once occupancy exceeds half (the 6th call, at occupancy 5).
-	c := newConn(nil, "k", 8)
+	c := newConn(nil, "k", 8, "")
 	for i := range 5 {
 		if !c.directEphemeral([]byte("p")) {
 			t.Fatalf("ephemeral frame %d refused with the buffer at most half full", i)
@@ -37,7 +37,7 @@ func TestDirectEphemeralLeavesHalfBufferForMail(t *testing.T) {
 // Senders racing on the half-full check must not push the buffer past half+1.
 func TestDirectEphemeralConcurrentStaysAtHalf(t *testing.T) {
 	for range 200 {
-		c := newConn(nil, "k", 64)
+		c := newConn(nil, "k", 64, "")
 		var wg sync.WaitGroup
 		start := make(chan struct{})
 		for range 64 {
@@ -81,7 +81,7 @@ func testFrame(t *testing.T, from, to, typ, id string, payload []byte) []byte {
 func TestPresenceFloodDoesNotPushMailToQueue(t *testing.T) {
 	s := New(Options{SendQueue: 64, EphemeralPerMinute: 1 << 20})
 	t.Cleanup(s.Close)
-	rcpt := newConn(nil, testKey(t), 64)
+	rcpt := newConn(nil, testKey(t), 64, "")
 	rcpt.draining = false
 	rcpt.ctx = t.Context()
 	s.register(rcpt)
@@ -89,10 +89,10 @@ func TestPresenceFloodDoesNotPushMailToQueue(t *testing.T) {
 	const senders, perSender, mails = 32, 200, 30 // 30 mail <= 64 - 33
 	floods := make([]*conn, senders)
 	for i := range floods {
-		floods[i] = newConn(nil, testKey(t), 16)
+		floods[i] = newConn(nil, testKey(t), 16, "")
 		s.register(floods[i])
 	}
-	mailer := newConn(nil, testKey(t), mails+1)
+	mailer := newConn(nil, testKey(t), mails+1, "")
 	s.register(mailer)
 	// The fake conns have no WebSocket, so Close must not see them.
 	t.Cleanup(func() {

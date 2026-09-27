@@ -15,7 +15,10 @@ import (
 type conn struct {
 	ws  *websocket.Conn
 	key string
-	out chan []byte
+	// prefix groups the connecting client's network for the per-prefix
+	// pairing (and future abuse) limits: /24 for IPv4, /48 for IPv6.
+	prefix string
+	out    chan []byte
 
 	// mu guards draining and cursor. While draining, envelopes for this peer go
 	// through the offline queue instead of straight to out, which keeps them
@@ -31,8 +34,8 @@ type conn struct {
 	ephMu sync.Mutex
 }
 
-func newConn(ws *websocket.Conn, key string, queue int) *conn {
-	return &conn{ws: ws, key: key, out: make(chan []byte, queue), draining: true}
+func newConn(ws *websocket.Conn, key string, queue int, prefix string) *conn {
+	return &conn{ws: ws, key: key, prefix: prefix, out: make(chan []byte, queue), draining: true}
 }
 
 type directResult int

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -49,10 +50,11 @@ type Options struct {
 	// PairMaxCodes caps the pairing codes outstanding on the whole relay; past
 	// it pair_new gets pair_limit. Default 10000.
 	PairMaxCodes int
-	// DisablePairingV1 refuses the v1 pairing frames (pair_new without lookup,
-	// pair_redeem with code) with pair_v1_disabled. The zero value keeps v1 on;
-	// cmd/relay sets it from --allow-pairing-v1.
-	DisablePairingV1 bool
+	// AllowPairingV1 accepts the v1 pairing frames (pair_new without lookup,
+	// pair_redeem with code). The zero value keeps v1 OFF (review-08b L1);
+	// cmd/relay sets it explicitly from --allow-pairing-v1. Without it, both
+	// v1 frames get pair_v1_disabled.
+	AllowPairingV1 bool
 	// QueuePath is the SQLite file holding envelopes queued for offline peers.
 	// Empty keeps the queue in memory: it works, but is lost when the relay stops.
 	QueuePath string
@@ -106,7 +108,7 @@ func New(opts Options) *Server {
 func Open(opts Options) (*Server, error) {
 	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}}
 	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
-	s.pairs.v1 = !opts.DisablePairingV1
+	s.pairs.v1 = opts.AllowPairingV1
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -217,7 +219,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = ws.CloseNow() }()
 	ws.SetReadLimit(envelope.MaxAuthFrameBytes)
 
-	c, err := s.authenticate(r.Context(), ws)
+	c, err := s.authenticate(r.Context(), ws, clientPrefix(r.RemoteAddr))
 	if err != nil {
 		s.log.Warn("auth rejected", "event", "auth_failed")
 		_ = writeControl(r.Context(), ws, envelope.Control{Op: envelope.OpError, Code: envelope.CodeAuthFailed, Message: "authentication failed"})
@@ -228,8 +230,27 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.serve(r.Context(), c)
 }
 
+// clientPrefix groups a connecting client's remote address into a network
+// prefix for the per-prefix pairing limits: /24 for IPv4, /48 for IPv6
+// (Docs/protocol/relay-hosted.md). This reads the raw TCP peer address; a
+// relay behind a trusted proxy takes the real client IP instead (4.0b).
+func clientPrefix(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.Mask(net.CIDRMask(24, 32)).String()
+	}
+	return ip.Mask(net.CIDRMask(48, 128)).String()
+}
+
 // authenticate runs the challenge/response and returns the registered-to-be connection.
-func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn) (*conn, error) {
+func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn, prefix string) (*conn, error) {
 	nonce := make([]byte, envelope.NonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
@@ -262,7 +283,7 @@ func (s *Server) authenticate(ctx context.Context, ws *websocket.Conn) (*conn, e
 	if err != nil {
 		return nil, err
 	}
-	return newConn(ws, envelope.KeyString(pub), s.queue), nil
+	return newConn(ws, envelope.KeyString(pub), s.queue, prefix), nil
 }
 
 // serve registers c, tells it it is ready, and forwards its envelopes until it disconnects.

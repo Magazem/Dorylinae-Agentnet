@@ -75,7 +75,7 @@ func expectError(t *testing.T, c *websocket.Conn, code, ref string) {
 
 func TestPairIssueAndRedeemExchangesCards(t *testing.T) {
 	clock := newClock()
-	srv, url := start(t, relay.Options{Now: clock.Now})
+	srv, url := start(t, relay.Options{Now: clock.Now, AllowPairingV1: true})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 
@@ -110,7 +110,7 @@ func TestPairIssueAndRedeemExchangesCards(t *testing.T) {
 }
 
 func TestPairCodeIsSingleUse(t *testing.T) {
-	_, url := start(t, relay.Options{Now: newClock().Now})
+	_, url := start(t, relay.Options{Now: newClock().Now, AllowPairingV1: true})
 	a, b, c := newPeer(t), newPeer(t), newPeer(t)
 	ca, cb, cc := rawAuthed(t, url, a), rawAuthed(t, url, b), rawAuthed(t, url, c)
 
@@ -128,7 +128,7 @@ func TestPairCodeIsSingleUse(t *testing.T) {
 
 func TestPairCodeExpires(t *testing.T) {
 	clock := newClock()
-	_, url := start(t, relay.Options{Now: clock.Now})
+	_, url := start(t, relay.Options{Now: clock.Now, AllowPairingV1: true})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 
@@ -147,7 +147,7 @@ func TestPairCodeExpires(t *testing.T) {
 
 func TestPairBruteForceIsRateLimited(t *testing.T) {
 	clock := newClock()
-	srv, url := start(t, relay.Options{Now: clock.Now, PairFailLimit: 3, PairFailWindow: time.Minute})
+	srv, url := start(t, relay.Options{Now: clock.Now, PairFailLimit: 3, PairFailWindow: time.Minute, AllowPairingV1: true})
 	a, b, other := newPeer(t), newPeer(t), newPeer(t)
 	ca, cb, co := rawAuthed(t, url, a), rawAuthed(t, url, b), rawAuthed(t, url, other)
 	code := issue(t, ca, a, "")
@@ -176,7 +176,7 @@ func TestPairBruteForceIsRateLimited(t *testing.T) {
 }
 
 func TestPairMalformedCodeCountsAsFailure(t *testing.T) {
-	_, url := start(t, relay.Options{Now: newClock().Now, PairFailLimit: 1})
+	_, url := start(t, relay.Options{Now: newClock().Now, PairFailLimit: 1, AllowPairingV1: true})
 	b := newPeer(t)
 	cb := rawAuthed(t, url, b)
 	redeem(t, cb, b, "not a code!", "1")
@@ -186,7 +186,7 @@ func TestPairMalformedCodeCountsAsFailure(t *testing.T) {
 }
 
 func TestPairRedeemDoesNotConsumeWhenIssuerOffline(t *testing.T) {
-	srv, url := start(t, relay.Options{Now: newClock().Now})
+	srv, url := start(t, relay.Options{Now: newClock().Now, AllowPairingV1: true})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 	code := issue(t, ca, a, "")
@@ -215,7 +215,7 @@ func TestPairRedeemDoesNotConsumeWhenIssuerOffline(t *testing.T) {
 }
 
 func TestPairRejectsBadRequests(t *testing.T) {
-	_, url := start(t, relay.Options{Now: newClock().Now})
+	_, url := start(t, relay.Options{Now: newClock().Now, AllowPairingV1: true})
 	a := newPeer(t)
 	ca := rawAuthed(t, url, a)
 
@@ -240,7 +240,7 @@ func TestPairRejectsBadRequests(t *testing.T) {
 
 func TestPairOutstandingCodeLimit(t *testing.T) {
 	clock := newClock()
-	_, url := start(t, relay.Options{Now: clock.Now})
+	_, url := start(t, relay.Options{Now: clock.Now, AllowPairingV1: true})
 	a := newPeer(t)
 	ca := rawAuthed(t, url, a)
 	for i := 0; i < 5; i++ {
@@ -264,7 +264,7 @@ func TestOtherControlFramesStillCloseConnection(t *testing.T) {
 
 func TestPairLogsHoldNoCodesOrCards(t *testing.T) {
 	var buf syncBuffer
-	_, url := start(t, relay.Options{Logger: slog.New(slog.NewTextHandler(&buf, nil)), PairFailLimit: 1})
+	_, url := start(t, relay.Options{Logger: slog.New(slog.NewTextHandler(&buf, nil)), PairFailLimit: 1, AllowPairingV1: true})
 	a, b := newPeer(t), newPeer(t)
 	ca, cb := rawAuthed(t, url, a), rawAuthed(t, url, b)
 	send(t, ca, envelope.Control{Op: envelope.OpPairNew, Card: cardFor(a, "SECRETCARDNAME"), Ref: "n"})

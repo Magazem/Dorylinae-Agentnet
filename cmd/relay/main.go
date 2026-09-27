@@ -110,7 +110,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		level = slog.LevelInfo
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
-	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, DisablePairingV1: !v1})
+	rs, err := relay.Open(relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, AllowPairingV1: v1})
 	if err != nil {
 		_ = ln.Close()
 		_, _ = fmt.Fprintf(stderr, "%s: cannot open offline queue %s: %v\n", name, dbPath, err)

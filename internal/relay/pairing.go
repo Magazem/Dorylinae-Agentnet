@@ -29,6 +29,16 @@ const (
 	pairReasonInvalid       = "invalid"
 	pairReasonRateLimited   = "rate_limited"
 	pairReasonIssuerAbsent  = "issuer_offline"
+
+	// Per-prefix limits (review-08b L5, Docs/protocol/relay-hosted.md), a
+	// Sybil defence layered on top of the per-key limits above: many keys
+	// sharing one network prefix are bounded together. Fixed, not
+	// configurable via Options (unlike the per-key limits, which predate
+	// the hosted relay and are still tuned by tests).
+	maxOutstandingPerPrefix     = 50
+	maxPairNewPerPrefixWindow   = 20
+	pairNewPrefixWindow         = 10 * time.Minute
+	maxFailedRedeemPerPrefixWin = 10
 )
 
 // PairStats are the relay's pairing counters. They hold no codes or cards.
@@ -44,6 +54,7 @@ type PairStats struct {
 type pairEntry struct {
 	issuer    string // wire public key
 	issuerRef string
+	prefix    string // issuer's network prefix, for the per-prefix outstanding cap
 	card      json.RawMessage
 	expires   time.Time
 
@@ -68,6 +79,12 @@ type pairings struct {
 	newLim limiter
 	v1     bool // v1 frames enabled
 
+	// Per-prefix counterparts of lim and newLim (review-08b L5): many keys
+	// sharing one network prefix are bounded together, on top of the per-key
+	// limits above.
+	limPrefix    limiter
+	newLimPrefix limiter
+
 	issued, redeemed, invalid, limited, taken atomic.Uint64
 }
 
@@ -85,11 +102,13 @@ func newPairings(ttl time.Duration, maxCodes, failLimit int, failWindow time.Dur
 		failWindow = defaultPairFailWindow
 	}
 	return &pairings{
-		ttl:      ttl,
-		maxCodes: maxCodes,
-		entries:  map[[sha256.Size]byte]*pairEntry{},
-		lim:      limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
-		newLim:   limiter{limit: maxPairNewV2PerWindow, window: failWindow, buckets: map[string]*bucket{}},
+		ttl:          ttl,
+		maxCodes:     maxCodes,
+		entries:      map[[sha256.Size]byte]*pairEntry{},
+		lim:          limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
+		newLim:       limiter{limit: maxPairNewV2PerWindow, window: failWindow, buckets: map[string]*bucket{}},
+		limPrefix:    limiter{limit: maxFailedRedeemPerPrefixWin, window: defaultPairFailWindow, buckets: map[string]*bucket{}},
+		newLimPrefix: limiter{limit: maxPairNewPerPrefixWindow, window: pairNewPrefixWindow, buckets: map[string]*bucket{}},
 	}
 }
 
@@ -195,22 +214,40 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 			s.reject(c, envelope.CodePairRateLimited, "too many pairing requests; try again later", ctl.Ref)
 			return
 		}
+		if !p.newLimPrefix.allow(c.prefix, now) {
+			p.limited.Add(1)
+			s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "scope", "prefix")
+			s.reject(c, envelope.CodePairRateLimited, "too many pairing requests from this network; try again later", ctl.Ref)
+			return
+		}
 		p.newLim.fail(c.key, now)
+		p.newLimPrefix.fail(c.prefix, now)
 	}
 
 	p.mu.Lock()
-	outstanding := 0
+	outstanding, outstandingPrefix := 0, 0
 	for h, e := range p.entries {
 		switch {
 		case !now.Before(e.expires):
 			delete(p.entries, h)
-		case e.issuer == c.key:
-			outstanding++
+		default:
+			if e.issuer == c.key {
+				outstanding++
+			}
+			if e.prefix == c.prefix {
+				outstandingPrefix++
+			}
 		}
 	}
 	if outstanding >= maxOutstandingPerKey {
 		p.mu.Unlock()
 		s.reject(c, envelope.CodePairLimit, "too many outstanding pairing codes", ctl.Ref)
+		return
+	}
+	if outstandingPrefix >= maxOutstandingPerPrefix {
+		p.mu.Unlock()
+		s.log.Info("pairing issue refused", "event", pairEventFail, "reason", "prefix_limit")
+		s.reject(c, envelope.CodePairLimit, "too many outstanding pairing codes from this network", ctl.Ref)
 		return
 	}
 	if len(p.entries) >= p.maxCodes {
@@ -230,7 +267,7 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 		}
 		expires := now.Add(p.ttl)
 		p.entries[h] = &pairEntry{
-			issuer: c.key, issuerRef: ctl.Ref, expires: expires, v2: true,
+			issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, expires: expires, v2: true,
 			card: append(json.RawMessage(nil), ctl.Card...), mbox: append(json.RawMessage(nil), ctl.Mbox...),
 		}
 		p.mu.Unlock()
@@ -253,7 +290,7 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 		}
 	}
 	expires := now.Add(p.ttl)
-	p.entries[h] = &pairEntry{issuer: c.key, issuerRef: ctl.Ref, card: append(json.RawMessage(nil), ctl.Card...), expires: expires}
+	p.entries[h] = &pairEntry{issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, card: append(json.RawMessage(nil), ctl.Card...), expires: expires}
 	p.mu.Unlock()
 
 	p.issued.Add(1)
@@ -290,9 +327,16 @@ func (s *Server) pairRedeem(c *conn, ctl *envelope.Control) {
 		s.reject(c, envelope.CodePairRateLimited, "too many failed pairing attempts; try again later", ctl.Ref)
 		return
 	}
+	if !p.limPrefix.allow(c.prefix, now) {
+		p.limited.Add(1)
+		s.log.Info("pairing redemption refused", "event", pairEventFail, "reason", pairReasonRateLimited, "scope", "prefix")
+		s.reject(c, envelope.CodePairRateLimited, "too many failed pairing attempts from this network; try again later", ctl.Ref)
+		return
+	}
 
 	invalid := func() {
 		p.lim.fail(c.key, now)
+		p.limPrefix.fail(c.prefix, now)
 		p.invalid.Add(1)
 		s.log.Info("pairing redemption failed", "event", pairEventFail, "reason", pairReasonInvalid, "peer", short(c.key))
 		s.reject(c, envelope.CodePairInvalid, "pairing code is invalid, expired or already used", ctl.Ref)
