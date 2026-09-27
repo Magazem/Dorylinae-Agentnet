@@ -872,8 +872,14 @@ func TestLimitUnfinishedFramesShareReadBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	expectQueued(t, readControl(t, ca), "a-1")
-	if n := e.s.Reading(); n != 0 {
-		t.Fatalf("%d bytes still counted as being read after the frame was routed", n)
+	// The reply is sent from inside route, before serve uncharges the frame,
+	// so the sender can see it first: poll for the uncharge.
+	deadline = time.Now().Add(wait)
+	for e.s.Reading() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d bytes still counted as being read after the frame was routed", e.s.Reading())
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	e.logged("max_inflight_read", "relay=all")
 }
