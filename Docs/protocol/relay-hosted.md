@@ -1,9 +1,10 @@
 # Hosted relay: TLS, abuse limits, quotas, operations
 
-Status: **draft** (Phase 4 spec, tickets 4.0a–4.0d and 4.1a–4.1c in
-[../review/49-phase4-tickets.md](../review/49-phase4-tickets.md)). Not approved; no code
-starts before the owner approves (HANDOFF rule 3). Open choices are marked **OD-P4-n** and
-listed in the ticket plan.
+Status: **approved by the owner 2026-09-27 (D36 in HANDOFF)** (Phase 4 spec, tickets 4.0a–4.0d
+and 4.1a–4.1c in [../review/49-phase4-tickets.md](../review/49-phase4-tickets.md); adversarially
+reviewed in [50-phase4-spec-review.md](../review/50-phase4-spec-review.md)). OD-P4-n choices for
+this document are recorded in the ticket plan, not open, except OD-P4-20 (outside review
+timing), decided during wave 1.
 
 This document changes the relay of [envelope.md](envelope.md) so that it can run on a public
 address for invited beta teams. It covers two things:

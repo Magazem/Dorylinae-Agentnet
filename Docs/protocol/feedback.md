@@ -1,7 +1,8 @@
 # Feedback notes
 
-Status: **draft** (Phase 4 spec, ticket 4.7a in
-[../review/49-phase4-tickets.md](../review/49-phase4-tickets.md)). Not approved.
+Status: **approved by the owner 2026-09-27 (D36 in HANDOFF)** (Phase 4 spec, ticket 4.7a in
+[../review/49-phase4-tickets.md](../review/49-phase4-tickets.md); adversarially reviewed in
+[50-phase4-spec-review.md](../review/50-phase4-spec-review.md)).
 
 Plan 4.7: "`agentnet feedback "..."` sends a note to you; a weekly 20-minute call with two
 teams; a public changelog. Acceptance: every beta week ships one release with a changelog

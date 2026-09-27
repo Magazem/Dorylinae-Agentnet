@@ -1,8 +1,10 @@
 # Telemetry (minimal, content-free)
 
-Status: **draft** (Phase 4 spec, tickets 4.6a–4.6b in
-[../review/49-phase4-tickets.md](../review/49-phase4-tickets.md)). Not approved. Open
-choices are **OD-P4-n**.
+Status: **approved by the owner 2026-09-27 (D36 in HANDOFF)** (Phase 4 spec, tickets 4.6a–4.6b
+in [../review/49-phase4-tickets.md](../review/49-phase4-tickets.md); adversarially reviewed in
+[50-phase4-spec-review.md](../review/50-phase4-spec-review.md)). OD-P4-n choices for this
+document are recorded in the ticket plan, not open, except OD-P4-20 (outside review timing),
+decided during wave 1.
 
 Plan 4.6: "Relay-side counts only: connections, envelopes routed, queue depth, requests by type
 and urgency, accept and decline counts, time to accept. No content, no briefs. Opt-out flag.

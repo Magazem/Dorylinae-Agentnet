@@ -1,8 +1,10 @@
 # Accounts on the hosted relay
 
-Status: **draft** (Phase 4 spec, tickets 4.2a–4.2c in
-[../review/49-phase4-tickets.md](../review/49-phase4-tickets.md)). Not approved. Open
-choices are **OD-P4-n**.
+Status: **approved by the owner 2026-09-27 (D36 in HANDOFF)** (Phase 4 spec, tickets 4.2a–4.2c
+in [../review/49-phase4-tickets.md](../review/49-phase4-tickets.md); adversarially reviewed in
+[50-phase4-spec-review.md](../review/50-phase4-spec-review.md)). OD-P4-n choices for this
+document are recorded in the ticket plan, not open, except OD-P4-20 (outside review timing),
+decided during wave 1.
 
 Plan 4.2: "Email plus magic link, or GitHub OAuth, to bind a daemon identity to a person and
 enforce the cap. No passwords stored. Acceptance: a daemon cannot connect to the hosted relay
