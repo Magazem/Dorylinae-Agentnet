@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
+
+// drainCloseTimeout bounds how long drainClose waits for a connection's own
+// outbound buffer to empty before closing it anyway.
+const drainCloseTimeout = 5 * time.Second
 
 // conn is one authenticated daemon connection. Writes go through a bounded
 // queue and a single writer goroutine so a slow peer cannot stall a sender.
@@ -86,6 +91,28 @@ func (c *conn) send(frame []byte) bool {
 // kick closes the connection with a policy-violation status.
 func (c *conn) kick(reason string) {
 	_ = c.ws.Close(websocket.StatusPolicyViolation, reason)
+}
+
+// drainClose waits, up to drainCloseTimeout, for c's outbound buffer to empty
+// so a frame already accepted for direct delivery is actually written before
+// the connection closes, then closes it with "going away". Used by Close's
+// SIGTERM drain, not by kick (a protocol violation should not wait).
+func (c *conn) drainClose(reason string) {
+	deadline := time.NewTimer(drainCloseTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for len(c.out) > 0 {
+		select {
+		case <-deadline.C:
+			goto closeNow
+		case <-c.ctx.Done():
+			goto closeNow
+		case <-ticker.C:
+		}
+	}
+closeNow:
+	_ = c.ws.Close(websocket.StatusGoingAway, reason)
 }
 
 func (c *conn) writeLoop(ctx context.Context, stop context.CancelFunc) {

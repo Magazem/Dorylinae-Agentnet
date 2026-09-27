@@ -27,6 +27,10 @@ const (
 	defaultChallengeTTL = 10 * time.Second
 	defaultSendQueue    = 64
 	writeTimeout        = 10 * time.Second
+	// drainWaitTimeout bounds how long Close waits for in-flight queue
+	// drains before disconnecting everyone anyway (Docs/protocol/relay-hosted.md
+	// §3: "graceful shutdown on SIGTERM waits up to 10 s for writes").
+	drainWaitTimeout = 10 * time.Second
 )
 
 // Options tune a Server. The zero value is what cmd/relay uses.
@@ -86,6 +90,13 @@ type Options struct {
 	// envelope.Origin accepts). A v2 signature is accepted for any of them.
 	// Empty on a non-public relay offers v1 only.
 	Origins []string
+
+	// Journal receives content-free security events (unbind, account_delete,
+	// suspend/unsuspend, invite_redeem/invite_revoke, team_remove) for
+	// --replay-journal to restore after a backup. Nil (the zero value)
+	// disables the journal; no event is written by this ticket, which only
+	// wires the mechanism for 4.2a/4.3a to use.
+	Journal *JournalWriter
 }
 
 // Server is an http.Handler serving the relay protocol.
@@ -107,9 +118,32 @@ type Server struct {
 	mu    sync.Mutex
 	conns map[string]*conn // keyed by wire public key
 
+	journal   *JournalWriter
+	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
 	stopSweep chan struct{}
 	sweepDone chan struct{}
 	closeOnce sync.Once
+}
+
+// Journal returns the security journal writer configured by Options.Journal,
+// or nil if none was configured. Extension point for 4.2a/4.3a.
+func (s *Server) Journal() *JournalWriter { return s.journal }
+
+// Stats is a snapshot of relay state for the operator metrics endpoint
+// (Docs/protocol/relay-hosted.md §5); it carries no per-key or per-account data.
+type Stats struct {
+	Connections int
+	QueueRows   int64
+	QueueBytes  int64
+}
+
+// Stats reports current connections and offline-queue occupancy.
+func (s *Server) Stats() (Stats, error) {
+	s.mu.Lock()
+	n := len(s.conns)
+	s.mu.Unlock()
+	rows, bytes, err := s.q.stats()
+	return Stats{Connections: n, QueueRows: rows, QueueBytes: bytes}, err
 }
 
 // New returns a Server with an in-memory offline queue, ignoring
@@ -126,7 +160,7 @@ func New(opts Options) *Server {
 
 // Open returns a Server, opening (or creating) the offline queue database.
 func Open(opts Options) (*Server, error) {
-	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}}
+	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}, journal: opts.Journal}
 	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
 	s.pairs.v1 = opts.AllowPairingV1
 	if err := s.setAuth(opts); err != nil {
@@ -213,16 +247,30 @@ func (s *Server) Connected(key string) bool {
 	return ok
 }
 
-// Close disconnects every peer (WebSocket status "going away") and closes the
-// offline queue. HTTP servers do not track hijacked connections, so call this
-// on shutdown after http.Server.Shutdown.
+// Close waits for every in-flight queue drain to finish sending, then
+// disconnects each peer (WebSocket status "going away", itself waiting for
+// that peer's own outbound buffer to flush) before closing the offline
+// queue. HTTP servers do not track hijacked connections, so call this on
+// shutdown after http.Server.Shutdown; together they are the SIGTERM drain
+// (Docs/protocol/relay-hosted.md §3 "Restart without loss").
 func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.stopSweep)
 		<-s.sweepDone
+		drained := make(chan struct{})
+		go func() { s.drainWG.Wait(); close(drained) }()
+		select {
+		case <-drained:
+		case <-time.After(drainWaitTimeout):
+		}
 		s.mu.Lock()
 		for _, c := range s.conns {
-			go func() { _ = c.ws.Close(websocket.StatusGoingAway, "relay shutting down") }()
+			// The close handshake itself (coder/websocket waits up to 5s to
+			// write it and 5s for the peer's reply) runs in the background,
+			// as before: Close must not block on a peer that stopped
+			// reading. drainClose only waits for this connection's own
+			// outbound buffer to flush first.
+			go func(c *conn) { c.drainClose("relay shutting down") }(c)
 		}
 		s.mu.Unlock()
 		_ = s.q.close()
@@ -436,7 +484,10 @@ func (s *Server) arm(c *conn) {
 }
 
 // drain delivers c's queued envelopes, oldest first, until none are left.
+// Close waits for this to finish before disconnecting anyone.
 func (s *Server) drain(c *conn) {
+	s.drainWG.Add(1)
+	defer s.drainWG.Done()
 	for s.drainStep(c) {
 	}
 }
