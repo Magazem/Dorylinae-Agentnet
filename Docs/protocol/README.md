@@ -28,7 +28,7 @@ directory **before** the ticket that implements it starts.
 - [experience.md](experience.md): the private per-session experience record (ticket 3.7, draft)
 - [relay-hosted.md](relay-hosted.md): Phase 4 public relay: TLS, relay auth v2 (origin-bound), abuse and pairing limits (the D17 beta gate), persistence, backup/restore, quotas, monitoring, what the hosted relay learns (tickets 4.0a–d, 4.1a–c, draft)
 - [accounts.md](accounts.md): accounts on the hosted relay: device-flow binding of a key to a GitHub user or email, account states, revocation, web security, cap enforcement without content (tickets 4.2a–c, draft)
-- [invites.md](invites.md): beta invite codes, billing teams, seats (admission by pairing), waitlist, waves (tickets 4.3a–b, draft)
+- [invites.md](invites.md): beta invite codes, quota groups, seats (admission by pairing), waitlist, waves (tickets 4.3a–b, draft)
 - [telemetry.md](telemetry.md): relay counters and the weekly daemon report: closed integer schema, defaults, section 9 mapping (tickets 4.6a–b, draft)
 - [feedback.md](feedback.md): `agentnet feedback`, sealed to the operator's offline key (ticket 4.7a, draft)
 - [../cli/ping.md](../cli/ping.md): `agentnet ping` flags, exit codes, pending/poll behaviour and `--json` output (ticket 0.6)

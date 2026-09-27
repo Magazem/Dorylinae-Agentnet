@@ -17,9 +17,9 @@ without a bound account."
   Self-hosted relays default to `--accounts off` and behave as in Phase 3 (with the 4.0 limits).
 - A **binding** links one daemon identity key to one account. An account has at most **4**
   bound keys (laptop, desktop, an own-device helper, a spare).
-- A **billing team** is the relay's unit for quotas and invites ([invites.md](invites.md)). It
+- A **quota group** is the relay's unit for quotas and invites ([invites.md](invites.md)). It
   is **not** a daemon team: it has no roster signature, no names the peers see, and grants
-  no trust. An account belongs to at most one billing team in the beta.
+  no trust. An account belongs to at most one quota group in the beta.
 
 **Invariant: an account grants no trust between peers.** Trust still comes only from pairing
 ([pairing.md](pairing.md)) and team introductions ([team.md](team.md)). Two keys bound to the
@@ -38,15 +38,15 @@ on a relay with accounts, `ready` carries the key's account state:
 
 ```json
 {"op":"ready","public_key":"<key>","features":["ephemeral","accounts"],
- "account":{"state":"bound","id":"acc_7Q…","display":"@octocat","team":"bt_3K…"}}
+ "account":{"state":"bound","id":"acc_7Q…","display":"@octocat","group":"qg_3K…"}}
 ```
 
 | `state` | Meaning | Allowed after `ready` |
 |---|---|---|
 | `unbound` | The key is not bound | `bind_start`, `bind_poll`, `bind_cancel` only. Every other frame → `error` `account_required` (the connection stays open for binding). Nothing is delivered to it, nothing is queued for it from others' point of view (senders get `account_required`) |
-| `bound` without a billing team (`team` absent) | A person who logged in but is not on an invited team | Binding frames, `pair_redeem` (to join a team, [invites.md](invites.md#seats-admission-by-pairing)), `pair.confirm` envelopes, `ack`, `invite_redeem`. Mail and presence → `account_required` |
-| `bound` with a billing team | Normal member | Everything in [envelope.md](envelope.md), within the limits and quota |
-| `suspended` | Operator suspended the account, or its billing team | Nothing; `ready` is followed by `error` `account_suspended` and close 1008 |
+| `bound` without a quota group (`group` absent) | A person who logged in but is not on an invited group | Binding frames, `pair_redeem` (to join a team, [invites.md](invites.md#seats-admission-by-pairing)), `pair.confirm` envelopes, `ack`, `invite_redeem`. Mail and presence → `account_required` |
+| `bound` with a quota group | Normal member | Everything in [envelope.md](envelope.md), within the limits and quota |
+| `suspended` | Operator suspended the account, or its quota group | Nothing; `ready` is followed by `error` `account_suspended` and close 1008 |
 
 An `unbound` connection is still subject to every per-prefix and per-key limit, and at most
 **16 unbound connections per prefix** are kept open (they exist only to bind; the oldest is
@@ -56,9 +56,9 @@ unbound connection per member until each confirms in the browser (review 50 M5).
 ### Who may send to whom
 
 On an accounts relay an envelope is routed (directly or through the queue) only if **both**
-`from` and `to` are bound keys of **active** accounts, both with a billing team, except
+`from` and `to` are bound keys of **active** accounts, both with a quota group, except
 `pair.confirm`, which only needs both keys bound. Any bound member may send to any other
-bound member, across billing teams: daemon teams can span billing teams (a member of two
+bound member, across quota groups: daemon teams can span quota groups (a member of two
 teams, introductions), and the relay must not need the daemon team graph. Abuse between bound
 accounts is bounded by the per-pair queue caps and rate limits and, ultimately, by the invite
 gate (every account comes through an invite).
@@ -160,9 +160,9 @@ bound to your account; check `agentnet status`", so a victim of device-code phis
 
 ## Account page (minimal)
 
-Signed in, a person sees: their account (GitHub login or email), their billing team and its
+Signed in, a person sees: their account (GitHub login or email), their quota group and its
 seats, their bound keys (fingerprint, device label, OS, bound at, last connected **day**), and
-three actions: **Unbind** a key, **Leave billing team**, **Delete account**. There is no
+three actions: **Unbind** a key, **Leave quota group**, **Delete account**. There is no
 profile, avatar or settings beyond this.
 
 ## Revocation
@@ -171,8 +171,8 @@ profile, avatar or settings beyond this.
 |---|---|
 | Unbind a key (page, `agentnet logout`, or operator) | The binding row is deleted; the key's live connection gets `error` `account_revoked` and close 1008; the key is `unbound` on its next connect. Envelopes already queued for it stay until the TTL (a re-bind gets them; they are ciphertext) |
 | `agentnet logout` | Sends `unbind` for **its own key** only, then clears the local account state. Needs no browser |
-| Delete account | All bindings removed, account row deleted, the email / GitHub id removed. If it was the last member of its billing team, the team is closed. Counters already aggregated per billing team stay (they carry no account id) |
-| Suspend (operator) | `relay admin account suspend <acc>` or `… team suspend <bt>`; live connections closed; reversible |
+| Delete account | All bindings removed, account row deleted, the email / GitHub id removed. If it was the last member of its quota group, the group is closed. Counters already aggregated per quota group stay (they carry no account id) |
+| Suspend (operator) | `relay admin account suspend <acc>` or `… group suspend <qg>`; live connections closed; reversible |
 | Lost device | Unbind it from the account page on another device (or sign in in any browser). This does **not** remove it from anyone's peers: that is `agentnet peers remove` / `team remove` on the peers' side, as today |
 
 A stolen laptop whose key is still bound can keep using the relay until unbound; unbinding
@@ -181,7 +181,7 @@ stops relay access at once, and peers must still remove its key (documented in
 
 ## Enforcing the cap without seeing content
 
-The relay charges each routed envelope to the **sender's account's billing team**
+The relay charges each routed envelope to the **sender's account's quota group**
 ([relay-hosted.md §4](relay-hosted.md#4-quotas-ticket-41c)). It needs only `from` (already
 authenticated), the size, and the binding table. It never needs a kind, a team id from the
 envelope, or a request count. Presence (ephemeral) is not charged.
@@ -193,11 +193,11 @@ envelope, or a request count. Presence (ephemeral) is not charged.
   `agentnet login --wait [--timeout 600]` polls `bind_poll` every `interval` and returns when
   bound, denied or expired (exit 0 / 1 / 4).
 - CLI `agentnet login [--no-browser] [--wait] [--json]`, `agentnet logout [--json]`; the
-  account (display, billing team, state) in `agentnet status` and `doctor`. `login` opens the
+  account (display, quota group, state) in `agentnet status` and `doctor`. `login` opens the
   browser with the OS opener unless `--no-browser` or no desktop session; it always prints the
   URL, code and fingerprint.
 - Local state lives in the existing `settings` table (keys `account.state`,
-  `account.display`, `account.team`, `account.relay_origin`): **no daemon migration**. The
+  `account.display`, `account.group`, `account.relay_origin`): **no daemon migration**. The
   state is a cache for display; the relay is authoritative.
 - A daemon whose relay says `unbound` keeps running (IPC, local data, loopback use) and shows
   "not logged in to <relay>; run agentnet login" in `status`, `doctor` and on every CLI call
@@ -210,11 +210,11 @@ envelope, or a request count. Presence (ephemeral) is not charged.
 
 | Table | Columns |
 |---|---|
-| `accounts` | `id` (random `acc_…`), `provider` (`github`/`email`), `subject` (GitHub numeric id, or the normalised email), `display` (`@login` or the email), `state`, `created`, `team_id` NULL |
+| `accounts` | `id` (random `acc_…`), `provider` (`github`/`email`), `subject` (GitHub numeric id, or the normalised email), `display` (`@login` or the email), `state`, `created`, `group_id` NULL |
 | `account_keys` | `key` PRIMARY KEY, `account_id`, `device`, `os`, `bound_at`, `last_day` (UTC date only) |
 | `bind_requests` | `ref`, `key`, `code_hash`, `device`, `os`, `created`, `expires`, `state`, `account_id` NULL |
 | `web_sessions` | `id_hash`, `account_id` NULL, `csrf`, `created`, `expires`, `oauth_state_hash` NULL |
-| `billing_teams`, `billing_members` | see [invites.md](invites.md#relay-storage-relay-migration-r3-billing_-tables-are-created-in-r2-with-accounts) |
+| `quota_groups`, `quota_group_members` | see [invites.md](invites.md#relay-storage-relay-migration-r3-quota_-tables-are-created-in-r2-with-accounts) |
 
 `subject` is unique per provider. The same person signing in with GitHub and with email gets
 two accounts (no linking in the beta).

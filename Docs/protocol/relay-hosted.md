@@ -311,20 +311,20 @@ payloads are sealed). It must count something it can see. **OD-P4-5** chooses th
 | Option | Unit | 300 means | Pros | Cons |
 |---|---|---|---|---|
 | (a) | **Device-day**: a bound key that authenticates at least once in a UTC day | ~5 people × 2 devices × 30 days | Needs no new data; trivially explainable | Not about usage at all; an always-on daemon uses its day even when idle |
-| (b) | **Mail volume**: non-ephemeral envelopes routed per billing team per month, cap = 300 × 100 = **30 000** envelopes and 3 GiB | ~300 request round trips including acks, key rotations and session mail | Tracks real relay cost; seen by the relay already (D7) | "Session" becomes an approximation users can't see directly |
+| (b) | **Mail volume**: non-ephemeral envelopes routed per quota group per month, cap = 300 × 100 = **30 000** envelopes and 3 GiB | ~300 request round trips including acks, key rotations and session mail | Tracks real relay cost; seen by the relay already (D7) | "Session" becomes an approximation users can't see directly |
 | (c) | **Daemon-reported** work sessions, sent in the telemetry report | Exactly the plan's words | Precise | Trusts the client (a modified daemon under-reports), and needs per-kind telemetry, which the user can switch off |
 
-**Recommendation: (b)** with a **soft cap** during the private beta: at 80 % the team's
+**Recommendation: (b)** with a **soft cap** during the private beta: at 80 % the quota group's
 bound accounts get a daily `quota_warning` control frame (the daemon shows it in `status`,
-`doctor` and a desktop notification once a day); at 100 % the operator is alerted and the team
-is **not** cut off in wave 1 (cost at 10 teams is negligible, and a hard stop would destroy the
+`doctor` and a desktop notification once a day); at 100 % the operator is alerted and the quota
+group is **not** cut off in wave 1 (cost at 10 teams is negligible, and a hard stop would destroy the
 very usage the beta measures). A hard cap (`quota_exceeded`: new mail refused, acks, pairing and
 presence still work) is implemented behind `--quota-mode hard` and switched on only by owner
 decision. The 7-day queue TTL is the existing `--queue-ttl 168h`.
 
-Counting is **per billing team** ([invites.md](invites.md#billing-teams)): each envelope is
-charged to the **sender's** account's billing team. Counters are monthly (UTC calendar month),
-stored as `quota_usage(team_id, month, envelopes, bytes)`, and reset by month key, not by a job.
+Counting is **per quota group** ([invites.md](invites.md#quota-groups)): each envelope is
+charged to the **sender's** account's quota group. Counters are monthly (UTC calendar month),
+stored as `quota_usage(group_id, month, envelopes, bytes)`, and reset by month key, not by a job.
 
 ## 5. Monitoring and operations (tickets 4.1a, 4.1b)
 
@@ -352,7 +352,7 @@ it is new **except the account binding**, which is the one real privacy change o
 |---|---|---|
 | Who each key belongs to (email or GitHub login) | Account binding (4.2) | **New.** Before 4.2 keys were pseudonymous. The communication graph below becomes a graph of named people |
 | Communication graph: which keys send mail / presence to which, when, how much | Routing (`from`, `to`, sizes, timing) | Existing; inherent to a relay |
-| Team membership, approximately | Presence fan-out + billing-team membership | Existing (presence.md) plus billing teams (new) |
+| Team membership, approximately | Presence fan-out + quota-group membership | Existing (presence.md) plus quota groups (new) |
 | When a daemon is online, including when it is invisible to peers | Connections | Existing |
 | That a pairing happened between two keys, and when | `pair_*` frames and `pair.confirm` | Existing; never the code secret |
 | Client IP addresses | TCP / proxy header | Needed for limits; kept in memory for limits, and in logs for at most 14 days |

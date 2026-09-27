@@ -16,7 +16,7 @@ So there are exactly two sources, and nothing else leaves a machine:
 
 | Source | What | Default | Can be turned off by |
 |---|---|---|---|
-| **Relay counters** (4.6a) | What the relay already sees, aggregated per billing team per UTC day | Always on at the hosted relay (it is how the operator runs the service and enforces the quota) | Nobody individually; documented in the privacy note. The plan's "opt-out flag" is read as the daemon report's switch, not the relay's; the owner confirms that reading with OD-P4-8 |
+| **Relay counters** (4.6a) | What the relay already sees, aggregated per quota group per UTC day | Always on at the hosted relay (it is how the operator runs the service and enforces the quota) | Nobody individually; documented in the privacy note. The plan's "opt-out flag" is read as the daemon report's switch, not the relay's; the owner confirms that reading with OD-P4-8 |
 | **Daemon report** (4.6b) | A fixed set of weekly counters computed from the local database | **OD-P4-8** | The user: `agentnet telemetry off` |
 
 ## Rules for both
@@ -26,7 +26,7 @@ So there are exactly two sources, and nothing else leaves a machine:
    strings outside the enums → the whole report is refused (`bad_report`). A future bug cannot
    smuggle a title into a counter without a schema change, which this document then has to
    list.
-2. **No per-person rows at the operator.** Counters are stored per billing team, never per
+2. **No per-person rows at the operator.** Counters are stored per quota group, never per
    key or account. (With 2–5 people a team counter is still close to personal data: see
    [Privacy](#privacy).)
 3. **No ids of requests, sessions, peers, grants, files or teams** ever appear.
@@ -35,23 +35,23 @@ So there are exactly two sources, and nothing else leaves a machine:
 
 ## Relay counters (ticket 4.6a, relay migration R5)
 
-`telemetry_daily(team_id, day, name, value)`, one row per counter per billing team per UTC day,
+`telemetry_daily(group_id, day, name, value)`, one row per counter per quota group per UTC day,
 updated in memory and flushed every minute (a crash loses at most a minute of counts).
 
 | Name | Meaning |
 |---|---|
-| `keys_active` | Distinct bound keys of the team that authenticated that day |
-| `accounts_active` | Distinct accounts of the team with an authenticated key that day |
+| `keys_active` | Distinct bound keys of the group that authenticated that day |
+| `accounts_active` | Distinct accounts of the group with an authenticated key that day |
 | `connections` | Successful authentications |
-| `mail_direct`, `mail_queued` | Non-ephemeral envelopes sent by the team's keys, forwarded directly / through the queue |
+| `mail_direct`, `mail_queued` | Non-ephemeral envelopes sent by the group's keys, forwarded directly / through the queue |
 | `mail_bytes` | Their total size |
-| `queue_expired` | Envelopes addressed to the team's keys that expired unread |
-| `queue_depth_max` | Largest number of envelopes waiting for any one key of the team that day |
-| `refused_rate`, `refused_queue_full`, `refused_quota` | Refusals by cause for the team's keys |
-| `pairings` | Successful `pair_redeem` where the redeemer or issuer is in the team |
+| `queue_expired` | Envelopes addressed to the group's keys that expired unread |
+| `queue_depth_max` | Largest number of envelopes waiting for any one key of the group that day |
+| `refused_rate`, `refused_queue_full`, `refused_quota` | Refusals by cause for the group's keys |
+| `pairings` | Successful `pair_redeem` where the redeemer or issuer is in the group |
 | `binds` | Keys bound that day |
 
-Relay-wide operator metrics (no team label) are in
+Relay-wide operator metrics (no group label) are in
 [relay-hosted.md §5](relay-hosted.md#5-monitoring-and-operations-tickets-41a-41b).
 
 ## Daemon report (ticket 4.6b, daemon migration 22)
@@ -63,7 +63,7 @@ Relay-wide operator metrics (no team label) are in
   timing reveals less). Missed weeks are not back-filled.
 - Sent as a control frame on the authenticated connection:
   `{"op":"telemetry_report","report":{…}}` → `{"op":"telemetry_ok"}` or `error` `bad_report`.
-  The relay adds it to the sender's billing team's weekly totals (`telemetry_weekly(team_id,
+  The relay adds it to the sender's quota group's weekly totals (`telemetry_weekly(group_id,
   week, name, value)`) and **does not keep the individual report** (no per-key rows of
   values). Only on a relay with accounts that lists `telemetry` in `ready`; the daemon never
   sends it anywhere else.
@@ -132,7 +132,7 @@ real weight of OD-P4-8.
 
 ## Dashboard
 
-**OD-P4-10**: (a) `relay admin stats [--week W] [--team bt_…] [--csv]` on the host prints the
+**OD-P4-10**: (a) `relay admin stats [--week W] [--group qg_…] [--csv]` on the host prints the
 section 9 table and the four weekly numbers (active teams, requests per team, accept rate,
 install failures); the owner copies the CSV into a sheet; no web dashboard; (b) a static HTML
 page generated by the same command; (c) a hosted dashboard service (sends data to another
@@ -142,7 +142,7 @@ counters kept until **90 days after the beta ends**, then deleted.
 ## Privacy
 
 - Per-team counters for teams of 2–5 people let the operator infer individual behaviour
-  ("someone on team X sent 3 blocking requests on Tuesday"). A billing team with **one**
+  ("someone on team X sent 3 blocking requests on Tuesday"). A quota group with **one**
   active member (the contact before anyone else joins, or a team whose others stopped) has
   per-person counters outright; so does a week in which only one member sends a report. No
   k-anonymity threshold is applied, because Gate 2 needs per-team numbers for small teams.

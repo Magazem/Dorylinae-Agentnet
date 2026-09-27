@@ -18,8 +18,8 @@ worktree. There are no Critical findings. There are 3 High findings, all fixed i
 - **H1.** A relay behind a same-host proxy listens on loopback, so it would have accepted
   auth v1 and pairing v1. On top of that, the daemon's "no v1" rule covered only a missing
   `auth` list. Together these left the relay-in-the-middle open.
-- **H2.** Billing-team admission was granted on a 25-bit lookup match. That bypasses the
-  invite gate and shows a stranger the team's GitHub logins.
+- **H2.** Quota-group admission was granted on a 25-bit lookup match. That bypasses the
+  invite gate and shows a stranger the group's GitHub logins.
 - **H3.** The CLI would have handed a relay-chosen login URL to the OS opener. A hostile
   relay could then launch any registered protocol handler.
 
@@ -104,14 +104,14 @@ only the code holder has".
 
 **Attack.** At the relay, `pair_redeem` checks only the 5-character lookup (25 bits,
 `pairing.go:296-321`). A v2 entry accepts up to **3** redemptions (`pairing.go:28`). Any
-bound, team-less account can therefore do the following:
+bound, group-less account can therefore do the following:
 
 1. Grind lookups. The limits are 10/min per prefix and a per-account limit, but GitHub
    accounts and cloud prefixes are cheap.
-2. On a hit, it is admitted to a stranger's billing team, even though its `tag_R` then fails.
+2. On a hit, it is admitted to a stranger's quota group, even though its `tag_R` then fails.
 3. It is past the invite gate, the only abuse gate on the hosted relay. It can now mail any
-   bound key and spend that team's quota.
-4. The account page shows it the team's members by GitHub login or email.
+   bound key and spend that group's quota.
+4. The account page shows it the group's members by GitHub login or email.
 
 An honest invitee can also be followed by two strangers on the same entry.
 
@@ -168,7 +168,7 @@ reaching an OS-level action).
 | M6 | relay-hosted.md §3 Restore | A restore also rewinds **security state**: a stolen laptop's unbound key is bound again, an erased account reappears, a suspension is lifted, and a redeemed single-use invite is open again. The spec discussed only envelopes | An off-host, content-free **security journal** (unbind, delete, suspend, invite redeem/revoke, team remove), same 14-day retention as the logs, replayed by `relay restore --replay-journal`. The restore drill checks it. The journal writer is in 4.1a, and events are wired by 4.2a/4.3a |
 | M7 | 4.2a "test hook standing in for the confirm page"; 4.9b "staging relay with fake OAuth / test OAuth hook" | An auth bypass on a public host. If the hook is a flag or route in the shipped binary, anyone can bind any key without a browser. "Staging" was not defined as separate from production | Hooks and the fake provider are compiled only under the `testhooks` build tag. A test asserts that the release configuration lacks them, and 4.1b asserts it for the production image. Staging shares no database, domain, OAuth app or operator key with production and shows a banner (accounts.md, 49) |
 | M8 | 49 §install; OD-P4-19 ("simplest to verify in a POSIX shell with no extra tool beyond a small verifier"); 4.4a signing key "in a GitHub environment secret" | (1) A POSIX shell cannot verify Ed25519. Stock macOS has LibreSSL, which has no Ed25519 in `pkeyutl`. minisign's default signature is over a BLAKE2b prehash. The promised check was not implementable without a verifier the script would have to download. (2) With the key in a GitHub environment gated by the owner's own approval, a takeover of the owner's GitHub account can sign, so the signature adds nothing against top risk 2. (3) There was no rollback protection | Plain Ed25519 over `SHA256SUMS`, verified by OpenSSL ≥ 3, else minisign, else **stop** and print the Homebrew and manual path; never an unsigned fallback. `SHA256SUMS` names the version, and the script refuses versions below an embedded minimum. There is an honest statement of what curl-pipe-sh protects. OD-P4-19 is amended with key custody, and offline signing on a draft release is recommended. 4.4a moves to Opus (D26) |
-| M9 | telemetry.md daemon report; relay-hosted.md "What the hosted relay learns" | (1) The daemon resends when `telemetry_ok` is lost, and the relay adds every report, so weeks are double-counted and Gate 2 numbers are inflated. (2) "No per-person rows" hid that a one-member billing team has per-person counters, and that the relay sees each report on the sender's connection. (3) relay-hosted.md called the report "opt-out-able", contradicting OD-P4-8's recommendation | `telemetry_seen(HMAC(key), week)` holds no values, is pruned after 3 weeks, and makes a repeat a no-op; weeks other than the previous or current one are refused. Privacy text covers one-member teams, per-key visibility during intake and no k-anonymity threshold. The wording now follows OD-P4-8 |
+| M9 | telemetry.md daemon report; relay-hosted.md "What the hosted relay learns" | (1) The daemon resends when `telemetry_ok` is lost, and the relay adds every report, so weeks are double-counted and Gate 2 numbers are inflated. (2) "No per-person rows" hid that a one-member quota group has per-person counters, and that the relay sees each report on the sender's connection. (3) relay-hosted.md called the report "opt-out-able", contradicting OD-P4-8's recommendation | `telemetry_seen(HMAC(key), week)` holds no values, is pruned after 3 weeks, and makes a repeat a no-op; weeks other than the previous or current one are refused. Privacy text covers one-member teams, per-key visibility during intake and no k-anonymity threshold. The wording now follows OD-P4-8 |
 | M10 | feedback.md | (1) `--file PATH` lets an agent send any readable file (a key, `.env`) with one flag. (2) "queued notes are sent on the next connection" needs daemon storage, but no migration exists (only 22 is planned). (3) `--attach-doctor` carried paths whose home directory shows the OS user name. (4) OD-P4-16's recommendation ignored agents steered by content they read | `--file` is removed. There is no local queue: the command fails with `relay_unavailable` and echoes the text back. doctor paths are shown relative to `~` and `<config>`. OD-P4-16 gains option (c) (agent drafts, human sends) and a risk note, not decided |
 | M11 | 49 waves and dependencies | P4-6 ran 4.9a in parallel with 4.6b, which it depends on. 4.4c's `account` check predates accounts. 4.4b's acceptance runs `setup` but did not depend on 4.9a. 4.6a parses untrusted reports but had no review. R4–R6 are built in parallel with no merge order | Waves rebuilt (P4-6: 4.6b ∥ 4.1b ∥ 4.3b; P4-7: 4.9a ∥ 4.4b; P4-8: 4.9b ∥ 4.5a; at most 3 workers each). 4.4c no longer has the `account` check. 4.4b depends on 4.9a. 4.6a is reviewed in R-4.6, and R-4.2 includes 4.2c. Merge order: 4.1c, 4.6a, 4.7a |
 | M12 | relay-hosted.md §1 Daemon ("`wss://` uses the system roots"); 4.0d test "self-signed cert on loopback" | Self-hosters with a self-signed or LAN-CA certificate had no supported way in: Go ignores `SSL_CERT_FILE` on Windows and macOS. The only way out was the insecure `ws://` escape hatch, which the gate is meant to retire. 4.0d's own acceptance test could not pass as written | `agentnetd install --relay-ca FILE` (config `relay_ca`), used for the relay connection only. `setup --relay-ca`. doctor shows which roots are in use. 4.0a acceptance covers it |
@@ -219,7 +219,7 @@ reaching an OS-level action).
   and so `trust=relay`, is off on a public relay after H1, and D17's "untrusted whoever runs
   it" is kept. The operator can mis-bind keys or lie about account state, but can gain
   neither content nor peer trust.
-- **Quota.** Counting the sender's billing team from `from`, size and the binding table needs
+- **Quota.** Counting the sender's quota group from `from`, size and the binding table needs
   no content. The soft cap is an alert, not an enforcement hole: hard mode exists behind a
   flag.
 - **Telemetry schema.** Its enums match `request.md` (types `review`/`task`/`question`, plus

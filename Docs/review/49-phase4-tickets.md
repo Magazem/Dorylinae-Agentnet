@@ -69,7 +69,7 @@ opens a database at the previous relay version with rows in it and migrates):
 | # | Name | Tables | Ticket |
 |---|---|---|---|
 | R1 | `relay_base` | `relay_migrations`; adopts the existing `queue` table unchanged (old queue files keep their envelopes); adds index `queue_by_sender (from_key, enqueued)` for the 4.0b caps (review 50 M3) | 4.1a |
-| R2 | `accounts` | `accounts`, `account_keys`, `bind_requests`, `web_sessions`, `billing_teams`, `billing_members` | 4.2a |
+| R2 | `accounts` | `accounts`, `account_keys`, `bind_requests`, `web_sessions`, `quota_groups`, `quota_group_members` | 4.2a |
 | R3 | `beta_invites` | `beta_invites` | 4.3a |
 | R4 | `quota_usage` | `quota_usage` | 4.1c |
 | R5 | `telemetry` | `telemetry_daily`, `telemetry_weekly` | 4.6a |
@@ -99,8 +99,8 @@ workers at once, HANDOFF §5).
 | 4.2a | Accounts core (relay): R2, `--accounts`, account states in `ready`, `bind_*` frames, bound-only routing, revocation, suspension, admin CLI (`relay admin account …`), per-account pairing limits | G-4.0, 4.1a | R2 | L | **yes** | Opus | 4.4a |
 | 4.2b | Web login: GitHub OAuth (and/or magic link per OD-P4-2), login / code / confirm / account pages, cookies, CSRF, CSP, rate limits | 4.2a | — | L | **yes** | Opus | 4.2c, 4.3a |
 | 4.2c | Daemon + CLI: `account_*` IPC, `agentnet login/logout`, account in `status`, `account_required` errors with hints, audit; relay-supplied `url` checked before the OS opener, relay strings sanitised (review 50 H3) | 4.2a | — | M | **yes** (R-4.2: untrusted relay input reaches the OS opener) | Opus | 4.2b, 4.3a |
-| 4.3a | Beta invites and billing teams: R3, `invite_redeem`, `relay admin invite/team`, admission by pairing vouched by the issuer (`pair_admit`, OD-P4-6, review 50 H2), seats, contact removal, `--invite` on `login` | 4.2a | R3 | M | **yes** (authorization) | Opus (authorization, D26) | 4.2b, 4.2c |
-| 4.1c | Quotas: R4, charge per sender's billing team, soft mode + `quota_warning`, hard mode behind a flag, daemon display | 4.3a | R4 | S | — | Sonnet | 4.6a, 4.7a |
+| 4.3a | Beta invites and quota groups: R3, `invite_redeem`, `relay admin invite/group`, admission by pairing vouched by the issuer (`pair_admit`, OD-P4-6, review 50 H2), seats, contact removal, `--invite` on `login` | 4.2a | R3 | M | **yes** (authorization) | Opus (authorization, D26) | 4.2b, 4.2c |
+| 4.1c | Quotas: R4, charge per sender's quota group, soft mode + `quota_warning`, hard mode behind a flag, daemon display | 4.3a | R4 | S | — | Sonnet | 4.6a, 4.7a |
 | 4.6a | Relay telemetry counters: R5, daily counters, weekly totals intake (strict parser of untrusted reports, once per key and week), `relay admin stats` | 4.3a | R5 | M | **yes** (R-4.6: parses untrusted input) | Sonnet | 4.1c, 4.7a |
 | 4.6b | Daemon report: migration 22, weekly builder from local tables, `telemetry_report`, `agentnet telemetry`, `TestTelemetryHasNoContent` | 4.6a | 22 | M | **yes** (privacy invariant) | Sonnet | 4.9a |
 | 4.7a | `agentnet feedback`: sealing to the compiled-in operator key, R6, export/open, limits; `CHANGELOG.md` + release-notes step | 4.3a | R6 | S | **yes** (with 4.6b) | Sonnet | 4.1c, 4.6a |
@@ -163,7 +163,7 @@ reads the `challenge` (auth versions offered, clock) and closes; `account` is `s
 | `service` | Installed (task/unit/agent present), running, points at this binary and home |
 | `socket` | IPC reachable within 1 s; path length under the OS limit (macOS 104) |
 | `relay` | URL scheme rule, TCP + TLS reachable, which roots (system or `relay_ca`), `challenge` offers auth v2; from the daemon: `connected` since, last error code |
-| `account` | From the daemon: bound / unbound / suspended; billing team; quota state (added by 4.2c) |
+| `account` | From the daemon: bound / unbound / suspended; quota group; quota state (added by 4.2c) |
 | `git` | Git ≥ 2.32 (D23) or `warn` |
 | `clock` | Local clock within 2 min of the relay's (from `challenge.expires`) |
 
@@ -302,11 +302,11 @@ edited.
   `account_required` with a hint; `logout` unbinds only its own key; audit rows carry the
   account id, never the display.
 
-### 4.3a Invites and billing teams (review)
+### 4.3a Invites and quota groups (review)
 
-- Files: `internal/relay` (R3, invites, billing teams, admission in `pairRedeem`, `team_full`),
-  `cmd/relay` (`admin invite|team`), `internal/daemon` + `cmd/agentnet` (`login --invite`,
-  `team join` reports `team_full`), `Docs/cli/team.md`, tests.
+- Files: `internal/relay` (R3, invites, quota groups, admission in `pairRedeem`, `group_full`),
+  `cmd/relay` (`admin invite|group`), `internal/daemon` + `cmd/agentnet` (`login --invite`,
+  `team join` reports `group_full`), `Docs/cli/team.md`, tests.
 - Acceptance: invites.md acceptance lines, on the CI matrix (plan 4.3: macOS, Linux, Windows),
   including the wrong-secret redeemer that is **not** admitted and the forged `pair_admit`.
   Files also: `internal/daemon` pairing issuer (`pair_admit` after `tag_R`).
@@ -478,11 +478,11 @@ signing certificate, the outside review and the owner's time.
 3. **New web attack surface.** OAuth, sessions, CSRF and a device-flow page are the first web
    code in the project. Device-code phishing can bind an attacker's key to a victim's account
    (mitigated by the typed code and fingerprint page, and bounded: an account grants no peer
-   trust, only quota and billing-team admission). The CLI must not pass a relay-chosen login
-   URL to the OS opener unchecked (review 50 H3), and billing-team admission must be vouched
+   trust, only quota and quota-group admission). The CLI must not pass a relay-chosen login
+   URL to the OS opener unchecked (review 50 H3), and quota-group admission must be vouched
    by the issuer's daemon, not granted on a lookup match (review 50 H2). A web bug that allows binding any key to any
-   account would let an attacker spend quotas, occupy seats and get admitted to teams' billing
-   teams, still without reading content.
+   account would let an attacker spend quotas, occupy seats and get admitted to others' quota
+   groups, still without reading content.
 4. **Relay compromise = denial of service plus metadata, and the relay is now a single point.**
    A compromised relay cannot read or forge mail and cannot MITM pairing v2, but it can drop
    everything, delay selectively, delete queued mail, lie about account state, and (before
@@ -508,9 +508,9 @@ signing certificate, the outside review and the owner's time.
 | OD-P4-2 | Account provider | (a) GitHub OAuth only; (b) email magic link only; (c) both | **(a)** (plan §10): every target user has GitHub, no email infrastructure (sender domain, SPF/DKIM, deliverability, a provider seeing addresses), no scopes requested. Add (b) only if a wave-1 tester lacks GitHub |
 | OD-P4-3 | Where TLS ends on the hosted relay | (a) platform/proxy termination + `--behind-proxy` with the platform's client-IP header; (b) TLS in the relay binary (ACME), TCP passthrough | **(a)** on Fly.io (simplest, platform certificates); **(b)** on Hetzner (no extra proxy). Both are implemented in 4.0a for self-hosters. Note that under (a) the platform's proxy sees routing metadata in the clear; it already could via the host |
 | OD-P4-4 | Pin the relay's TLS key in daemons | (a) no pinning (system roots); (b) pin the hosted relay's public key | **(a)**: content never depends on TLS; pinning adds rotation outages. Revisit if metadata protection against a CA-level attacker becomes a goal |
-| OD-P4-5 | Unit of the "300 relay sessions per team per month" cap | (a) device-days; (b) mail envelopes (30 000 / 3 GiB per billing team per month); (c) daemon-reported sessions | **(b), soft cap** (warn at 80 %, alert at 100 %, no cut-off in the beta; hard mode behind a flag for later). See relay-hosted.md §4 |
-| OD-P4-6 | How members after the first join a billing team | (a) admission by pairing (a team invite from a member admits the redeemer); (b) separate seat codes; (c) no billing teams, per-account quota | **(a)**: keeps plan 4.9's single `team join` step and adds no new metadata |
-| OD-P4-7 | Waves and seats | wave sizes, spacing, seats per billing team | **10 / 10 / 10 teams**; wave 2 at beta week 4 **after 4.8 findings are fixed** (plan), wave 3 at week 6; **8 seats**; codes expire after 30 days |
+| OD-P4-5 | Unit of the "300 relay sessions per team per month" cap | (a) device-days; (b) mail envelopes (30 000 / 3 GiB per quota group per month); (c) daemon-reported sessions | **(b), soft cap** (warn at 80 %, alert at 100 %, no cut-off in the beta; hard mode behind a flag for later). See relay-hosted.md §4 |
+| OD-P4-6 | How members after the first join a quota group | (a) admission by pairing (a team invite from a member admits the redeemer); (b) separate seat codes; (c) no quota groups, per-account quota | **(a)**: keeps plan 4.9's single `team join` step and adds no new metadata |
+| OD-P4-7 | Waves and seats | wave sizes, spacing, seats per quota group | **10 / 10 / 10 teams**; wave 2 at beta week 4 **after 4.8 findings are fixed** (plan), wave 3 at week 6; **8 seats**; codes expire after 30 days |
 | OD-P4-8 | Daemon telemetry report default | (a) opt-in: interactive setup asks, non-interactive requires `--telemetry on|off`; (b) on by default with disclosure and `telemetry off` (the plan's "opt-out flag"); (c) off, never asked | **(a)**. The plan note and D7 say per-kind counts reach the dashboard only "by opt-in reporting"; opt-in is the defensible basis for EU testers; the beta invitation asks teams to turn it on, because Gate 2 needs it (telemetry.md table). Relay counters stay on (operational, documented) |
 | OD-P4-9 | Waitlist | (a) external form; (b) a page on the relay; (c) a GitHub issue template | **(a)** (no new relay attack surface; privacy note on the form) |
 | OD-P4-10 | Dashboard and telemetry retention | (a) `relay admin stats` CLI + CSV; (b) static HTML; (c) hosted dashboard service | **(a)**; keep counters until 90 days after the beta, then delete |
@@ -544,8 +544,8 @@ invites; the "grantor sees holder fetch activity" feature; review Lows in 07–4
 ## Conflicts and interpretations found while writing
 
 1. **"300 relay sessions per team per month"** cannot be counted by the relay as written: it
-   sees neither teams (`team` is `""` on the wire) nor sessions (sealed mail). Hence billing
-   teams and OD-P4-5.
+   sees neither teams (`team` is `""` on the wire) nor sessions (sealed mail). Hence quota
+   groups and OD-P4-5.
 2. **Plan 4.6 says "relay-side counts only … requests by type and urgency … opt-out flag";** D7
    and the plan's own note say per-kind counts are daemon-side and reach the dashboard only by
    **opt-in**. This plan follows D7 (daemon report) and puts the default to the owner (OD-P4-8).
@@ -567,4 +567,4 @@ invites; the "grantor sees holder fetch activity" feature; review Lows in 07–4
 8. **Plan 4.1 "TLS"** is in the gate (4.0a), not in 4.1, because D17 makes it a precondition
    for any non-loopback relay, including a self-hosted one.
 9. **Team invites vs beta invites:** two different codes; invites.md keeps them apart and makes
-   the team invite also admit to the billing team, so 4.9 stays one command per member.
+   the team invite also admit to the quota group, so 4.9 stays one command per member.
