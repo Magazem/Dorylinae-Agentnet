@@ -55,16 +55,23 @@ func TestFileRefusesBroadPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("mode bits do not apply on Windows")
 	}
-	path := filepath.Join(testutil.TempDir(t), "identity.key")
-	f := keystore.NewFile(path)
-	if err := f.Set(secret); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o644); err != nil { //nolint:gosec // deliberately too permissive
-		t.Fatal(err)
-	}
-	if _, err := f.Get(); err == nil || errors.Is(err, keystore.ErrNotFound) {
-		t.Fatalf("expected a permissions error, got %v", err)
+	// 0640 is group-readable only, 0604 is world-readable only, 0644 is both:
+	// the check must reject any group or other access bit, not just the
+	// common "wide open" case.
+	for _, mode := range []os.FileMode{0o640, 0o604, 0o644} {
+		t.Run(mode.String(), func(t *testing.T) {
+			path := filepath.Join(testutil.TempDir(t), "identity.key")
+			f := keystore.NewFile(path)
+			if err := f.Set(secret); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, mode); err != nil { //nolint:gosec // deliberately too permissive, that is what this test checks
+				t.Fatal(err)
+			}
+			if _, err := f.Get(); err == nil || errors.Is(err, keystore.ErrNotFound) {
+				t.Fatalf("mode %v: expected a permissions error, got %v", mode, err)
+			}
+		})
 	}
 }
 
@@ -101,6 +108,11 @@ func TestKeychainPreferredWhenAvailable(t *testing.T) {
 	}
 }
 
+// TestFileFallbackWhenKeychainUnavailable simulates the Secret Service (or
+// any keychain backend) being absent - the case that only Windows exercised
+// for real, since a keychain is always present there - and checks the file
+// fallback's actual permission bits, not just that OwnerOnly's looser check
+// (no group/other bits at all) accepted them.
 func TestFileFallbackWhenKeychainUnavailable(t *testing.T) {
 	keyring.MockInitWithError(errors.New("no secret service"))
 	dir := testutil.TempDir(t)
@@ -113,6 +125,15 @@ func TestFileFallbackWhenKeychainUnavailable(t *testing.T) {
 	}
 	if err := keystore.OwnerOnly(fpath); err != nil {
 		t.Fatalf("fallback file not restricted: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(fpath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Fatalf("fallback file mode = %v, want exactly 0600", fi.Mode().Perm())
+		}
 	}
 	got, backend, err := s.Load()
 	if err != nil || backend != "file" || !bytes.Equal(got, secret) {

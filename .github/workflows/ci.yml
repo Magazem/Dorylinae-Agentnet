@@ -55,6 +55,103 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.13.2
+
+  # 4.4d: a real install/start/stop/uninstall of the per-user service on the
+  # two OSes that were never exercised by hand (systemd user unit on Linux,
+  # launchd agent on macOS). See tests/phase4-manual.md for what even this
+  # cannot cover (a real interactive login, a reboot, a locked keychain).
+  unix-service:
+    name: unix service install (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build agentnet and agentnetd
+        run: go build -trimpath -o bin/ ./cmd/agentnet ./cmd/agentnetd
+      # ubuntu-latest has no login session, so systemd never starts a user
+      # manager for the runner account; enable-linger starts one without a
+      # login (the standard way to get a working `systemctl --user` in CI).
+      - name: Enable a systemd user session (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$(whoami)"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+      - name: Wait for the systemd user manager to come up (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          for i in $(seq 1 20); do
+            if systemctl --user daemon-reload 2>/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::systemd --user manager never became ready"
+          exit 1
+      # The installed daemon must never touch a real keychain in CI: on Linux
+      # there is no Secret Service to hang on (that path is what
+      # internal/keystore's own tests cover), and on macOS an unattended
+      # keychain write would leave state behind. set-environment/setenv reach
+      # the units this job's `install` step is about to start.
+      - name: Force the file keystore for the installed service
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            systemctl --user set-environment DORYLINAE_KEYSTORE=file
+          else
+            launchctl setenv DORYLINAE_KEYSTORE file
+          fi
+      - name: Install, start, check, stop, uninstall and confirm cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DORYLINAE_HOME="$RUNNER_TEMP/agentnetd-home"
+
+          ./bin/agentnetd install --home "$DORYLINAE_HOME"
+
+          up=""
+          for i in $(seq 1 40); do
+            if ./bin/agentnet status >/dev/null 2>&1; then up=1; break; fi
+            sleep 0.5
+          done
+          [ -n "$up" ] || { echo "::error::agentnetd did not come up as a service within 20s"; exit 1; }
+          ./bin/agentnet status
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            test -f "$HOME/.config/systemd/user/agentnetd.service"
+            systemctl --user is-active agentnetd.service
+          else
+            test -f "$HOME/Library/LaunchAgents/dev.dorylinae.agentnetd.plist"
+            launchctl print "gui/$(id -u)/dev.dorylinae.agentnetd" >/dev/null
+          fi
+
+          ./bin/agentnetd stop
+
+          down=""
+          for i in $(seq 1 40); do
+            if ! ./bin/agentnet status >/dev/null 2>&1; then down=1; break; fi
+            sleep 0.5
+          done
+          [ -n "$down" ] || { echo "::error::agentnetd was still reachable 20s after stop"; exit 1; }
+
+          ./bin/agentnetd uninstall --home "$DORYLINAE_HOME"
+
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            test ! -f "$HOME/.config/systemd/user/agentnetd.service"
+            if systemctl --user list-unit-files 2>/dev/null | grep -q '^agentnetd\.service'; then
+              echo "::error::agentnetd.service is still known to systemd --user after uninstall"
+              exit 1
+            fi
+          else
+            test ! -f "$HOME/Library/LaunchAgents/dev.dorylinae.agentnetd.plist"
+            if launchctl print "gui/$(id -u)/dev.dorylinae.agentnetd" >/dev/null 2>&1; then
+              echo "::error::the launchd job is still loaded after uninstall"
+              exit 1
+            fi
+          fi
+
   build:
     needs: [test, race, lint]
     strategy:
