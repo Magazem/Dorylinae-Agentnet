@@ -592,14 +592,16 @@ func (s *Store) apply(ctx context.Context, m migration) (err error) {
 		return err
 	}
 	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return err
-	}
 	defer func() {
 		if err != nil {
+			// Also after a failed BEGIN: the driver can report a cancelled
+			// ctx after BEGIN took effect (INV-5, as in audit.Append).
 			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
 	}()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
 	var current int
 	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM migrations`).Scan(&current); err != nil {
 		return err

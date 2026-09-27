@@ -65,16 +65,19 @@ func (l *Log) Append(ctx context.Context, actor, action string, detail any) (err
 		return fmt.Errorf("audit: append %s: %w", action, err)
 	}
 	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return fmt.Errorf("audit: append %s: begin: %w", action, err)
-	}
 	defer func() {
 		if err != nil {
 			// Background: a cancelled ctx must not leave the pooled
-			// connection inside a transaction.
+			// connection inside a transaction. This covers a failed BEGIN
+			// too: the driver can report a cancellation after BEGIN already
+			// took effect (INV-5); with no transaction open, ROLLBACK is a
+			// harmless error.
 			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
 	}()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("audit: append %s: begin: %w", action, err)
+	}
 	if err = appendChained(ctx, conn, actor, action, raw); err != nil {
 		return err
 	}

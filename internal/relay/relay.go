@@ -115,8 +115,9 @@ type Server struct {
 	authV1, authV2 bool
 	origins        []string
 
-	mu    sync.Mutex
-	conns map[string]*conn // keyed by wire public key
+	mu      sync.Mutex
+	conns   map[string]*conn // keyed by wire public key
+	closing bool             // Close has begun; no new drain may start (guarded by mu)
 
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
@@ -257,6 +258,11 @@ func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.stopSweep)
 		<-s.sweepDone
+		// Under mu, so every drainWG.Add in startDrain happens before this
+		// Wait or not at all (sync.WaitGroup forbids Add racing with Wait).
+		s.mu.Lock()
+		s.closing = true
+		s.mu.Unlock()
 		drained := make(chan struct{})
 		go func() { s.drainWG.Wait(); close(drained) }()
 		select {
@@ -386,7 +392,7 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}))
 	go c.writeLoop(ctx, cancel)
 	if s.drainStep(c) { // first batch inline so an idle queue is settled before we read
-		go s.drain(c)
+		s.startDrain(c)
 	}
 
 	for {
@@ -479,17 +485,28 @@ func (s *Server) arm(c *conn) {
 	c.draining = true
 	c.mu.Unlock()
 	if start {
-		go s.drain(c)
+		s.startDrain(c)
 	}
 }
 
-// drain delivers c's queued envelopes, oldest first, until none are left.
-// Close waits for this to finish before disconnecting anyone.
-func (s *Server) drain(c *conn) {
-	s.drainWG.Add(1)
-	defer s.drainWG.Done()
-	for s.drainStep(c) {
+// startDrain starts a goroutine delivering c's queued envelopes, oldest
+// first, until none are left, and reports whether it did. Close waits for
+// these before disconnecting anyone, so the drain is counted in drainWG
+// before the goroutine exists; once Close has begun none is started (the
+// relay is going away and c with it).
+func (s *Server) startDrain(c *conn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
 	}
+	s.drainWG.Add(1)
+	go func() {
+		defer s.drainWG.Done()
+		for s.drainStep(c) {
+		}
+	}()
+	return true
 }
 
 // drainStep sends one batch of c's queue and reports whether more may remain.
