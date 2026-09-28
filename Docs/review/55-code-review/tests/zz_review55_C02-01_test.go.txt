@@ -1,0 +1,78 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 C02-01: `restore --replay-journal` uses the --from file's mtime as
+// the backup time. A backup that was downloaded/decrypted (a new file) has an
+// mtime after every journal entry, so the unbind made after the backup is
+// silently not replayed.
+func TestReview55C02_01ReplayUsesFileMtime(t *testing.T) {
+	dir := testutil.TempDir(t)
+	db := filepath.Join(dir, "r.db")
+	_, stop := startRelay(t, "--db", db)
+	stop()
+
+	w, err := sql.Open("sqlite", "file:"+db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	if _, err := w.Exec(`INSERT INTO accounts (id, provider, subject, display, created) VALUES ('acc_x','email','s','d',0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Exec(`INSERT INTO account_keys (key, account_id, device, os, bound_at) VALUES (?, 'acc_x', 'dev', 'os', 0)`, key); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+
+	backup := filepath.Join(dir, "backup.db")
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"backup", "--db", db, "--out", backup}, &out, &errb); code != 0 {
+		t.Fatalf("backup: %s", errb.String())
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	// The key is unbound after the backup (a stolen laptop): journaled.
+	journal := filepath.Join(dir, "journal.jsonl")
+	line, _ := json.Marshal(relay.JournalEntry{Time: time.Now().UTC(), Event: "unbind", Fields: map[string]string{"account": "acc_x", "key": key[:8]}})
+	if err := os.WriteFile(journal, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+
+	// Off-host flow: the backup is downloaded and decrypted into a new file.
+	downloaded := filepath.Join(dir, "downloaded.db")
+	src, _ := os.Open(backup)
+	dst, _ := os.Create(downloaded)
+	_, _ = io.Copy(dst, src)
+	_ = src.Close()
+	_ = dst.Close()
+
+	restored := filepath.Join(dir, "restored.db")
+	out.Reset()
+	errb.Reset()
+	if code := run(context.Background(), []string{"restore", "--from", downloaded, "--db", restored, "--replay-journal", journal}, &out, &errb); code != 0 {
+		t.Fatalf("restore: %s", errb.String())
+	}
+	t.Logf("restore stdout: %q", out.String())
+	r, _ := sql.Open("sqlite", "file:"+restored)
+	var n int
+	_ = r.QueryRow(`SELECT COUNT(*) FROM account_keys WHERE account_id = 'acc_x'`).Scan(&n)
+	_ = r.Close()
+	if n != 0 {
+		t.Fatalf("C02-01: key unbound after the backup is bound again after restore --replay-journal (rows=%d)", n)
+	}
+}
