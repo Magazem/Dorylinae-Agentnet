@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check changed files against the sensitive-path list
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             // Keep this list in sync with what actually needs extra review
