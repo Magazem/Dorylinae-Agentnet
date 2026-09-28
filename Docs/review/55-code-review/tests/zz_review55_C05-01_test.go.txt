@@ -1,0 +1,54 @@
+package mailbox_test
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"errors"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/zalando/go-keyring"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mailbox"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 C05-01: in "auto" mode a keychain that is merely unavailable
+// (locked, timed out) is treated as "private key not found", so the current
+// key is replaced although its secret still exists.
+func TestReview55KeychainOutageRotates(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	db := newDB(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// Identity key in the file backend (it fell back at first run), mailbox keys in "auto".
+	idks := keystore.New(keystore.NewFile(filepath.Join(dir, "identity.key")))
+	if _, _, err := idks.Save(priv.Seed()); err != nil {
+		t.Fatal(err)
+	}
+	sign := relayclient.NewKeystoreSigner(idks, pub).Sign
+	k := mailbox.New(dir, "auto", pub, sign, func() time.Time { return now })
+	if err := k.Attach(context.Background(), db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	pushes := 0
+	k.OnRotate(func([]byte) { pushes++ })
+	a, err := k.Announcement()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Hour)
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	ann, err := k.Rotate(context.Background())
+	t.Logf("Rotate during outage: new announcement=%v err=%v pushes=%d live=%d", ann != nil, err, pushes, liveCount(t, db))
+	b, _ := k.Announcement()
+	if string(a) != string(b) {
+		t.Errorf("C05-01: key rotated because the keychain was unavailable (pushes=%d)", pushes)
+	}
+	keyring.MockInit()
+}
