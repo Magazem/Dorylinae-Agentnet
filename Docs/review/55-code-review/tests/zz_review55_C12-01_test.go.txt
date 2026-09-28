@@ -1,0 +1,53 @@
+package approval
+
+// Review 55, C12-01: List keeps a rows cursor open on the single pooled
+// SQLite connection (store.Open: SetMaxOpenConns(1)) and calls windowState,
+// which takes s.mu, for each row. Create (and confirm, sweep, ...) take s.mu
+// first and then query the DB. The two orders deadlock in desktop mode.
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestReview55_C12_01_ListDeadlocksWithCreate(t *testing.T) {
+	s, _, _, _ := newWindowTestStore(t, nil)
+	ctx := context.Background()
+	for i := 0; i < MaxPending; i++ {
+		if _, err := s.Create(ctx, KindGrant, "g-x", "summary", Action{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	done := make(chan struct{})
+	stop := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = s.List(ctx)
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = s.Create(ctx, KindGrant, "g-y", "summary", Action{}) // ErrLimit after a DB read under s.mu
+		}
+	}()
+	time.Sleep(3 * time.Second)
+	close(stop)
+	select {
+	case <-done:
+		t.Log("no deadlock observed")
+	case <-time.After(5 * time.Second):
+		t.Fatal("DEADLOCK: List blocked on s.mu while holding the only DB connection; Create holds s.mu waiting for the connection")
+	}
+}
