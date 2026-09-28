@@ -43,6 +43,45 @@ func runFail(t *testing.T, want string, args ...string) {
 	}
 }
 
+// placeholderInstallSh returns scripts/install.sh with both key assignments put
+// back to the unreleased placeholders, whatever key the repo file embeds.
+func placeholderInstallSh(t *testing.T) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	if len(pemLine.FindAllStringIndex(s, -1)) != 1 || len(minisignLine.FindAllStringIndex(s, -1)) != 1 {
+		t.Fatal("install.sh: expected exactly one PEM and one minisign key assignment")
+	}
+	s = pemLine.ReplaceAllLiteralString(s, "AGENTNET_PUBKEY_PEM='REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM'")
+	s = minisignLine.ReplaceAllLiteralString(s, "AGENTNET_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE_MINISIGN_PUBKEY'")
+	return []byte(s)
+}
+
+// The repo's install.sh must carry a real release key (both encodings of the
+// same key), never the placeholders.
+func TestRepoInstallShHasRealKey(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The script's own guard mentions the placeholders, so look at the
+	// assignments only.
+	if strings.Contains(string(raw), "_PUBKEY_PEM='REPLACE_WITH_RELEASE") ||
+		strings.Contains(string(raw), "_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE") {
+		t.Fatal("scripts/install.sh still holds a REPLACE_WITH_RELEASE placeholder")
+	}
+	pub, mpub, err := installShKey(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mpub != minisignPublic(pub) {
+		t.Fatal("scripts/install.sh: the minisign key is not the same key as the PEM key")
+	}
+}
+
 func TestKeygenSignVerifyEmbed(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "release.key")
@@ -59,11 +98,8 @@ func TestKeygenSignVerifyEmbed(t *testing.T) {
 	runFail(t, "exists", "sign", "-key", key, sums) // no silent overwrite
 	runOK(t, "sign", "-key", key, "-force", sums)
 
-	// embed into a copy of the real install.sh and verify against it.
-	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	// embed into a placeholder copy of install.sh and verify against it.
+	script := placeholderInstallSh(t)
 	placeholder := filepath.Join(dir, "placeholder.sh")
 	if err := os.WriteFile(placeholder, script, 0o600); err != nil { //nolint:gosec // test temp dir
 		t.Fatal(err)

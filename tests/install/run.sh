@@ -83,7 +83,25 @@ sed "s/^AGENTNET_MIN_VERSION='.*'\$/AGENTNET_MIN_VERSION='$version'/" "$work/ins
 mv "$work/install.sh.tmp" "$work/install.sh"
 grep -q "^AGENTNET_MIN_VERSION='$version'\$" "$work/install.sh" || { echo "run.sh: could not set the test minimum" >&2; exit 1; }
 sign verify -install-sh "$work/install.sh" "$srv/good/SHA256SUMS"
-cp "$root/scripts/install.sh" "$work/install-placeholder.sh"
+# The repo's install.sh carries the real release key, so build the unreleased
+# fixture by putting both key assignments back to their placeholders (the PEM
+# value spans several lines).
+awk -v q="'" '
+skip { if (index($0, q)) skip = 0; next }
+index($0, "AGENTNET_PUBKEY_PEM=" q) == 1 {
+	print "AGENTNET_PUBKEY_PEM=" q "REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM" q
+	rest = substr($0, length("AGENTNET_PUBKEY_PEM=" q) + 1)
+	if (!index(rest, q)) skip = 1
+	next
+}
+index($0, "AGENTNET_MINISIGN_PUBKEY=" q) == 1 { print "AGENTNET_MINISIGN_PUBKEY=" q "REPLACE_WITH_RELEASE_MINISIGN_PUBKEY" q; next }
+{ print }
+' "$root/scripts/install.sh" >"$work/install-placeholder.sh"
+grep -q "^AGENTNET_PUBKEY_PEM='REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM'\$" "$work/install-placeholder.sh" &&
+	grep -q "^AGENTNET_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE_MINISIGN_PUBKEY'\$" "$work/install-placeholder.sh" &&
+	! grep -q 'BEGIN PUBLIC KEY' "$work/install-placeholder.sh" ||
+	{ echo "run.sh: could not build the placeholder install.sh" >&2; exit 1; }
+chmod 755 "$work/install-placeholder.sh"
 rm -f "$work/test.key"
 
 # The linux archive this container will pick (amd64 or arm64, like the host).
