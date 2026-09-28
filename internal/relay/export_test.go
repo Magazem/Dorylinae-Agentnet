@@ -41,3 +41,38 @@ func (s *Server) Reading() int64 { return s.lim.reading.used.Load() }
 // DrainHeld reports the bytes queue drains have read from the database and
 // not yet put into an outbound buffer (R-4.0 H1).
 func (s *Server) DrainHeld() int64 { return s.drainHeld.Load() }
+
+// SetGroupForTest puts account acc in quota group group, creating the group
+// (active, 8 seats) if needed; "" takes it out of any group. Ticket 4.3a
+// builds the real ways into a group.
+func (s *Server) SetGroupForTest(acc, group string) error {
+	ctx, cancel := opCtx()
+	defer cancel()
+	now := s.now().UnixMilli()
+	var err error
+	if group != "" {
+		_, err = s.q.db.ExecContext(ctx, `INSERT OR IGNORE INTO quota_groups (id, seats, created) VALUES (?, 8, ?)`, group, now)
+	}
+	if err == nil {
+		_, err = s.q.db.ExecContext(ctx, `UPDATE accounts SET group_id = NULLIF(?, '') WHERE id = ?`, group, acc)
+	}
+	s.accountsChanged()
+	return err
+}
+
+// BindKeyForTest binds key to account acc directly, as a confirmed bind would.
+func (s *Server) BindKeyForTest(key, acc string) error {
+	ctx, cancel := opCtx()
+	defer cancel()
+	_, err := s.q.db.ExecContext(ctx, `INSERT INTO account_keys (key, account_id, device, os, bound_at) VALUES (?, ?, 'test', 'linux', ?)`,
+		key, acc, s.now().UnixMilli())
+	s.accountsChanged()
+	return err
+}
+
+// FillAccountPairNewForTest counts n pair_new of account acc today (the per-account day limit).
+func (s *Server) FillAccountPairNewForTest(acc string, n int) {
+	for range n {
+		s.pairs.newLimAccount.fail(acc, s.now())
+	}
+}

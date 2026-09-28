@@ -52,7 +52,7 @@ func TestReplayJournalSkipsUnregisteredEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	jw := relay.NewJournalWriter(f)
-	if err := jw.Append("unbind", map[string]string{"account": "acc-1"}); err != nil {
+	if err := jw.Append("team_remove", map[string]string{"group": "qg-1"}); err != nil { // 4.3a registers it; unbind is 4.2a's
 		t.Fatal(err)
 	}
 	if err := jw.Append("invite_redeem", map[string]string{"invite": "inv-1"}); err != nil {

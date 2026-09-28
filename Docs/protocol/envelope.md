@@ -205,6 +205,13 @@ most half full, regardless of backlog. Otherwise they are dropped silently: no `
 `error`, never stored. The recipient does not `ack` them, and `relayclient` hands them up
 without the seen-set. Rate limit: 600 per minute per sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
 
+From Phase 4 (4.2a) a relay started with `--accounts github|email|both` adds the feature
+`accounts` and an `account` member with the key's account state (`unbound`, `bound`,
+`suspended`). Such a relay routes an envelope only between bound keys of active accounts,
+serves the binding frames `bind_start`, `bind_poll`, `bind_cancel` and `unbind`, and sends
+`account_changed`; everything about it is in [accounts.md](accounts.md). A daemon sends
+those frames only when `ready` lists `accounts`.
+
 ### One connection per key
 
 If a key connects while it already has a live connection, the new connection
@@ -235,8 +242,11 @@ the same recipient are still queued.
 
 Errors on a single envelope never close the connection. A daemon that sends a
 control frame after `auth` other than `ack` and the pairing requests `pair_new`,
-`pair_redeem` and `pair_cancel` (see [pairing.md](pairing.md)) or a binary message has its
-connection closed with code 1008. From 4.0b control frames other than `ack` are limited to
+`pair_redeem` and `pair_cancel` (see [pairing.md](pairing.md)), and on a relay with accounts
+the binding frames of [accounts.md](accounts.md), or a binary message has its
+connection closed with code 1008. On a relay with accounts, a frame or envelope the key's
+account state does not allow gets `account_required` instead and the connection stays open
+([accounts.md](accounts.md#relay-states-of-a-connection)). From 4.0b control frames other than `ack` are limited to
 60 a minute per key: past it each gets `rate_limited` (`ref` = the frame's `ref`), and a key
 over the limit in three one-minute windows in a row is closed with 1008.
 
@@ -354,6 +364,7 @@ kept in memory, rebuilt by one scan at start-up and adjusted on add, ack and swe
 | `peer_offline` | Pairing only: the code's issuer is not connected. No longer used for envelopes |
 | `peer_busy` | No longer sent (see [Offline queue](#offline-queue)); pairing replies may still use it |
 | `pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `bad_pairing` | Pairing failures, see [pairing.md](pairing.md#errors) (`peer_offline` / `peer_busy` are also used there) |
+| `account_required`, `account_suspended`, `account_revoked`, `already_bound`, `bind_expired`, `bind_denied` | 4.2a, relays with accounts only: see [accounts.md](accounts.md). `account_suspended` and `account_revoked` are followed by close 1008 |
 
 ## Logging rule
 

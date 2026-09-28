@@ -55,6 +55,7 @@ type pairEntry struct {
 	issuer    string // wire public key
 	issuerRef string
 	prefix    string // issuer's network prefix, for the per-prefix outstanding cap
+	account   string // issuer's account on a relay with accounts, for the per-account cap
 	card      json.RawMessage
 	expires   time.Time
 
@@ -84,6 +85,9 @@ type pairings struct {
 	// limits above.
 	limPrefix    limiter
 	newLimPrefix limiter
+	// newLimAccount counts every pair_new of an account per day on a relay
+	// with accounts (relay-hosted.md §2 L5).
+	newLimAccount limiter
 
 	issued, redeemed, invalid, limited, taken atomic.Uint64
 }
@@ -102,13 +106,14 @@ func newPairings(ttl time.Duration, maxCodes, failLimit int, failWindow time.Dur
 		failWindow = defaultPairFailWindow
 	}
 	return &pairings{
-		ttl:          ttl,
-		maxCodes:     maxCodes,
-		entries:      map[[sha256.Size]byte]*pairEntry{},
-		lim:          limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
-		newLim:       limiter{limit: maxPairNewV2PerWindow, window: failWindow, buckets: map[string]*bucket{}},
-		limPrefix:    limiter{limit: maxFailedRedeemPerPrefixWin, window: defaultPairFailWindow, buckets: map[string]*bucket{}},
-		newLimPrefix: limiter{limit: maxPairNewPerPrefixWindow, window: pairNewPrefixWindow, buckets: map[string]*bucket{}},
+		ttl:           ttl,
+		maxCodes:      maxCodes,
+		entries:       map[[sha256.Size]byte]*pairEntry{},
+		lim:           limiter{limit: failLimit, window: failWindow, buckets: map[string]*bucket{}},
+		newLim:        limiter{limit: maxPairNewV2PerWindow, window: failWindow, buckets: map[string]*bucket{}},
+		limPrefix:     limiter{limit: maxFailedRedeemPerPrefixWin, window: defaultPairFailWindow, buckets: map[string]*bucket{}},
+		newLimPrefix:  limiter{limit: maxPairNewPerPrefixWindow, window: pairNewPrefixWindow, buckets: map[string]*bucket{}},
+		newLimAccount: limiter{limit: maxPairNewPerAccountDay, window: pairAccountWindow, buckets: map[string]*bucket{}},
 	}
 }
 
@@ -134,7 +139,15 @@ func (s *Server) PairStats() PairStats {
 // handleControl serves a control frame from an authenticated peer. It returns
 // false if the frame is not a permitted request and the connection must close.
 func (s *Server) handleControl(c *conn, ctl *envelope.Control) bool {
+	if s.acct != nil && !s.accountAllows(c, ctl.Op, ctl.Ref) {
+		return true
+	}
 	switch ctl.Op {
+	case envelope.OpBindStart, envelope.OpBindPoll, envelope.OpBindCancel, envelope.OpUnbind:
+		if s.acct == nil {
+			return false // not advertised: an unexpected control frame, as before accounts
+		}
+		s.handleAccountOp(c, ctl)
 	case envelope.OpPairNew:
 		s.pairNew(c, ctl)
 	case envelope.OpPairRedeem:
@@ -207,6 +220,21 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 	p := s.pairs
 	now := s.now()
 
+	account := ""
+	if s.acct != nil {
+		b, _ := s.acct.state(c.key) // accountAllows let only a bound key with a quota group through
+		account = b.account
+	}
+	if account != "" {
+		if !p.newLimAccount.allow(account, now) {
+			p.limited.Add(1)
+			s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "scope", "account")
+			s.reject(c, envelope.CodePairRateLimited, "too many pairing codes from this account today; try again tomorrow", ctl.Ref)
+			return
+		}
+		p.newLimAccount.fail(account, now)
+	}
+
 	if lookup != "" {
 		if !p.newLim.allow(c.key, now) {
 			p.limited.Add(1)
@@ -225,7 +253,7 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 	}
 
 	p.mu.Lock()
-	outstanding, outstandingPrefix := 0, 0
+	outstanding, outstandingPrefix, outstandingAccount := 0, 0, 0
 	for h, e := range p.entries {
 		switch {
 		case !now.Before(e.expires):
@@ -237,7 +265,16 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 			if e.prefix == c.prefix {
 				outstandingPrefix++
 			}
+			if account != "" && e.account == account {
+				outstandingAccount++
+			}
 		}
+	}
+	if outstandingAccount >= maxOutstandingPerAccount {
+		p.mu.Unlock()
+		s.log.Info("pairing issue refused", "event", pairEventFail, "reason", "account_limit")
+		s.reject(c, envelope.CodePairLimit, "too many outstanding pairing codes for this account", ctl.Ref)
+		return
 	}
 	if outstanding >= maxOutstandingPerKey {
 		p.mu.Unlock()
@@ -267,7 +304,7 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 		}
 		expires := now.Add(p.ttl)
 		p.entries[h] = &pairEntry{
-			issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, expires: expires, v2: true,
+			issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, account: account, expires: expires, v2: true,
 			card: append(json.RawMessage(nil), ctl.Card...), mbox: append(json.RawMessage(nil), ctl.Mbox...),
 		}
 		p.mu.Unlock()
@@ -290,7 +327,7 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 		}
 	}
 	expires := now.Add(p.ttl)
-	p.entries[h] = &pairEntry{issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, card: append(json.RawMessage(nil), ctl.Card...), expires: expires}
+	p.entries[h] = &pairEntry{issuer: c.key, issuerRef: ctl.Ref, prefix: c.prefix, account: account, card: append(json.RawMessage(nil), ctl.Card...), expires: expires}
 	p.mu.Unlock()
 
 	p.issued.Add(1)

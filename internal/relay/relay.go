@@ -101,6 +101,16 @@ type Options struct {
 	// wires the mechanism for 4.2a/4.3a to use.
 	Journal *JournalWriter
 
+	// Accounts (Docs/protocol/accounts.md, ticket 4.2a). Accounts is the
+	// sign-in mode: "" or AccountsOff (the default) serve every key as
+	// before; AccountsGitHub, AccountsEmail or AccountsBoth require a bound
+	// account, advertise the "accounts" feature and carry the key's account
+	// state in ready. LoginURL is the fixed login page bind_pending names;
+	// BindPollInterval the minimum time between bind_poll frames (default 5 s).
+	Accounts         string
+	LoginURL         string
+	BindPollInterval time.Duration
+
 	// Abuse limits (Docs/protocol/relay-hosted.md §2, ticket 4.0b). Zero
 	// takes the spec default given for each; a negative value turns the
 	// limit off (tests only). A "prefix" is the client's /24 (IPv4) or /48
@@ -204,6 +214,12 @@ type Server struct {
 	// Both are guarded by mu.
 	authed     int
 	prefixKeys map[string]map[string]int
+	// unbound lists each prefix's unbound connections, oldest first, on a
+	// relay with accounts (guarded by mu).
+	unbound map[string][]*conn
+
+	// acct is the account state; nil on a relay without accounts.
+	acct *accounts
 
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
@@ -249,7 +265,7 @@ func New(opts Options) *Server {
 // Open returns a Server, opening (or creating) the offline queue database.
 func Open(opts Options) (*Server, error) {
 	s := &Server{log: opts.Logger, ttl: opts.ChallengeTTL, queue: opts.SendQueue, now: opts.Now, conns: map[string]*conn{}, journal: opts.Journal,
-		prefixKeys: map[string]map[string]int{}, public: opts.Public, ipHeader: opts.ClientIPHeader, trusted: opts.TrustedProxies}
+		prefixKeys: map[string]map[string]int{}, unbound: map[string][]*conn{}, public: opts.Public, ipHeader: opts.ClientIPHeader, trusted: opts.TrustedProxies}
 	s.pairs = newPairings(opts.PairTTL, opts.PairMaxCodes, opts.PairFailLimit, opts.PairFailWindow)
 	s.pairs.v1 = opts.AllowPairingV1
 	if err := s.setAuth(opts); err != nil {
@@ -308,6 +324,18 @@ func Open(opts Options) (*Server, error) {
 		q.lim.freeDisk = freeDiskSpace
 	}
 	s.q = q
+	if opts.Accounts != "" && opts.Accounts != AccountsOff {
+		if s.acct, err = newAccounts(opts, q, opts.Journal, s.now); err != nil {
+			_ = q.close()
+			return nil, err
+		}
+		s.acct.stop, s.acct.done = make(chan struct{}), make(chan struct{})
+		if opts.QueuePath != "" { // only a file database can be changed by relay admin
+			go s.watchAccounts()
+		} else {
+			close(s.acct.done)
+		}
+	}
 	s.stopSweep, s.sweepDone = make(chan struct{}), make(chan struct{})
 	go s.sweepLoop(opts.SweepInterval)
 	return s, nil
@@ -332,6 +360,11 @@ func (s *Server) sweepLoop(every time.Duration) {
 // The relay also does this periodically.
 func (s *Server) Sweep() (int64, error) {
 	n, err := s.q.sweep()
+	if s.acct != nil {
+		if perr := s.acct.store.prune(); perr != nil {
+			s.log.Warn("accounts failed", "event", "accounts_error", "op", "prune", "error", perr)
+		}
+	}
 	switch {
 	case err != nil:
 		s.log.Warn("queue sweep failed", "event", "queue_error", "op", "sweep", "error", err)
@@ -362,6 +395,10 @@ func (s *Server) Close() {
 	s.closeOnce.Do(func() {
 		close(s.stopSweep)
 		<-s.sweepDone
+		if s.acct != nil {
+			close(s.acct.stop)
+			<-s.acct.done
+		}
 		// Under mu, so every drainWG.Add in startDrain happens before this
 		// Wait or not at all (sync.WaitGroup forbids Add racing with Wait).
 		s.mu.Lock()
@@ -573,16 +610,38 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	defer cancel()
 
 	c.ctx = ctx
-	if old := s.register(c); old != nil {
+	old, evict, bound, suspended := s.register(c)
+	if suspended {
+		// Docs/protocol/accounts.md: ready, then account_suspended and close 1008.
+		s.log.Info("account closed connection", "event", "account_close", "reason", envelope.CodeAccountSuspended, "peer", short(c.key))
+		_ = writeControl(ctx, c.ws, s.readyFor(c))
+		_ = writeControl(ctx, c.ws, envelope.Control{Op: envelope.OpError, Code: envelope.CodeAccountSuspended, Message: "the account is suspended"})
+		_ = c.ws.Close(websocket.StatusPolicyViolation, envelope.CodeAccountSuspended)
+		return
+	}
+	if old != nil {
 		go old.kick("replaced") // Close waits for the peer's reply; don't stall the new connection
+	}
+	if evict != nil {
+		s.lim.hit(limitUnboundPerPrefix, "prefix", evict.prefix)
+		go func() {
+			_ = evict.ws.Close(websocket.StatusTryAgainLater, "too many unbound connections from this network")
+		}()
 	}
 	defer s.unregister(c)
 	s.log.Info("peer connected", "event", "connect", "peer", short(c.key))
 
-	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}))
+	c.send(control(s.readyFor(c)))
 	go c.writeLoop(ctx, cancel)
-	if s.drainStep(c, false) { // first batch inline so an idle queue is settled before we read
-		s.startDrain(c)
+	// On a relay with accounts nothing is delivered to an unbound key: its
+	// queue waits (for a re-bind) until accountsChanged sees it bound.
+	if bound {
+		if s.acct != nil {
+			s.touchAccountKey(c.key)
+		}
+		if s.drainStep(c, false) { // first batch inline so an idle queue is settled before we read
+			s.startDrain(c)
+		}
 	}
 
 	for {
@@ -697,6 +756,9 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 			s.lim.hit(limit, "peer", short(sender.key))
 		}
 		s.reject(sender, envelope.CodeRateLimited, "sending too fast; retry later", h.ID)
+		return true
+	}
+	if !s.accountRoutes(sender, h) {
 		return true
 	}
 	s.mu.Lock()
@@ -850,17 +912,42 @@ func (s *Server) reject(to *conn, code, msg, ref string) {
 	to.send(control(envelope.Control{Op: envelope.OpError, Code: code, Message: msg, Ref: ref}))
 }
 
-func (s *Server) register(c *conn) (old *conn) {
+// register makes c the connection of its key and returns the one it
+// replaces. On a relay with accounts it also records c's account state in
+// the same step (so accountsChanged sees each connection either before or
+// after, never half set up): bound reports whether c may receive now, and
+// evict is the oldest unbound connection of c's prefix if c is unbound and
+// the prefix is over its cap. Without accounts bound is always true. A key
+// of a suspended account is not registered at all (suspended true): the
+// check and the registration are one step, so a suspension committed at the
+// same time is either seen here or by accountsChanged afterwards.
+func (s *Server) register(c *conn) (old, evict *conn, bound, suspended bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var b binding
+	var ok bool
+	if s.acct != nil {
+		if b, ok = s.acct.state(c.key); ok && b.suspended {
+			return nil, nil, false, true
+		}
+	}
 	old = s.conns[c.key]
 	s.conns[c.key] = c
-	return old
+	if s.acct == nil {
+		return old, nil, true, false
+	}
+	c.acctInit = true
+	if ok {
+		c.acctSeen = b.account
+		return old, nil, true, false
+	}
+	return old, s.listUnbound(c), false, false
 }
 
 func (s *Server) unregister(c *conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.unlistUnbound(c)
 	if s.conns[c.key] == c {
 		delete(s.conns, c.key)
 	}

@@ -49,6 +49,16 @@ type conn struct {
 	maxBytes int64
 	inflight *budget
 	space    chan struct{}
+
+	// Account state on a relay with accounts, guarded by Server.mu.
+	// acctInit is set once register has recorded the state; acctSeen is the
+	// account the connection was last seen bound to ("" while unbound);
+	// acctClosing marks a connection being closed for revocation or
+	// suspension; unboundListed that it is in Server.unbound.
+	acctInit      bool
+	acctSeen      string
+	acctClosing   bool
+	unboundListed bool
 }
 
 // newConn returns a connection with no byte cap and a private budget; the
@@ -256,11 +266,16 @@ func (c *conn) kick(reason string) {
 // flushThenKick gives the frames already in c's buffer (such as the error
 // explaining why) up to a second to be written, then kicks c.
 func (c *conn) flushThenKick(reason string) {
-	deadline := time.Now().Add(time.Second)
+	c.flushThenClose(websocket.StatusPolicyViolation, reason, time.Second)
+}
+
+// flushThenClose is flushThenKick with the close status and wait given.
+func (c *conn) flushThenClose(status websocket.StatusCode, reason string, wait time.Duration) {
+	deadline := time.Now().Add(wait)
 	for c.buffered() > 0 && time.Now().Before(deadline) && c.ctx.Err() == nil { // uncounted only once written
 		time.Sleep(5 * time.Millisecond)
 	}
-	c.kick(reason)
+	_ = c.ws.Close(status, reason)
 }
 
 // drainClose waits, up to drainCloseTimeout, for c's outbound buffer to empty

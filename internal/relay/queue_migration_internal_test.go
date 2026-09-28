@@ -44,7 +44,7 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 	defer func() { _ = q2.close() }()
 	var count int
-	if err := q2.db.QueryRow(`SELECT COUNT(*) FROM relay_migrations`).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("relay_migrations rows = %d, %v; want exactly 1 (R1 applied once)", count, err)
+	if err := q2.db.QueryRow(`SELECT COUNT(*) FROM relay_migrations`).Scan(&count); err != nil || count != len(relayMigrations) {
+		t.Fatalf("relay_migrations rows = %d, %v; want %d (each migration applied once)", count, err, len(relayMigrations))
 	}
 }

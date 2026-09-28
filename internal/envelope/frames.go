@@ -25,6 +25,16 @@ const (
 	OpPairRedeem = "pair_redeem"
 	OpPairPeer   = "pair_peer"
 	OpPairCancel = "pair_cancel"
+
+	// Account ops on a relay with accounts, see Docs/protocol/accounts.md. A
+	// daemon sends them only when ready lists FeatureAccounts.
+	OpBindStart      = "bind_start"
+	OpBindPending    = "bind_pending"
+	OpBindPoll       = "bind_poll"
+	OpBindDone       = "bind_done"
+	OpBindCancel     = "bind_cancel"
+	OpUnbind         = "unbind"
+	OpAccountChanged = "account_changed"
 )
 
 // ProtocolVersion is the relay protocol version.
@@ -33,6 +43,15 @@ const ProtocolVersion = 1
 // FeatureEphemeral is the ready feature that says the relay forwards ephemeral
 // envelope types without queueing them (Docs/protocol/presence.md).
 const FeatureEphemeral = "ephemeral"
+
+// FeatureAccounts is the ready feature of a relay that requires a bound
+// account (Docs/protocol/accounts.md); its ready carries Account.
+const FeatureAccounts = "accounts"
+
+// TypePairConfirm is the envelope type of the pairing confirmation
+// (Docs/protocol/pairing.md). On a relay with accounts it is the one type a
+// bound key without a quota group may send and receive.
+const TypePairConfirm = "pair.confirm"
 
 // TypePresence is the ephemeral envelope type of presence heartbeats.
 const TypePresence = "presence"
@@ -57,6 +76,18 @@ const (
 	// retry later.
 	CodeRateLimited = "rate_limited"
 	CodeRelayFull   = "relay_full"
+
+	// Accounts, see Docs/protocol/accounts.md. account_required refuses a
+	// frame or envelope the key's account state does not allow (or, to a
+	// sender, a recipient that may not receive it); account_suspended and
+	// account_revoked come before close 1008; already_bound answers
+	// bind_start from a bound key; bind_expired and bind_denied end a bind.
+	CodeAccountRequired  = "account_required"
+	CodeAccountSuspended = "account_suspended"
+	CodeAccountRevoked   = "account_revoked"
+	CodeAlreadyBound     = "already_bound"
+	CodeBindExpired      = "bind_expired"
+	CodeBindDenied       = "bind_denied"
 
 	// Pairing failures, see Docs/protocol/pairing.md.
 	CodePairInvalid     = "pair_invalid"
@@ -100,6 +131,35 @@ type Control struct {
 	Card json.RawMessage `json:"card,omitempty"`
 	// Mbox is an opaque signed mailbox key announcement carried by v2 pairing frames.
 	Mbox json.RawMessage `json:"mbox,omitempty"`
+
+	// Account is the key's account state in ready and bind_done on a relay
+	// with accounts (Docs/protocol/accounts.md).
+	Account *Account `json:"account,omitempty"`
+	// Device and OS label a bind_start for the confirm page.
+	Device string `json:"device,omitempty"`
+	OS     string `json:"os,omitempty"`
+	// UserCode, URL and Interval are the bind_pending fields: the code the
+	// human types (XXXX-XXXX), the fixed login page, and the minimum seconds
+	// between bind_poll frames.
+	UserCode string `json:"user_code,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Interval int    `json:"interval,omitempty"`
+}
+
+// Account states carried in Account.State.
+const (
+	AccountUnbound   = "unbound"
+	AccountBound     = "bound"
+	AccountSuspended = "suspended"
+)
+
+// Account is the account state of a key: State, and for a bound key the
+// account id, its display (@login or the email) and its quota group, if any.
+type Account struct {
+	State   string `json:"state"`
+	ID      string `json:"id,omitempty"`
+	Display string `json:"display,omitempty"`
+	Group   string `json:"group,omitempty"`
 }
 
 // ErrorFrame is the decoded form of an error control frame.

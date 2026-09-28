@@ -86,6 +86,9 @@ func (s *Server) routeEphemeral(sender *conn, h envelope.Header, frame []byte) {
 	if !ok || len(frame) > s.ephMax {
 		return
 	}
+	if !s.accountRoutes(sender, h) {
+		return
+	}
 	s.mu.Lock()
 	dst := s.conns[h.To]
 	s.mu.Unlock()

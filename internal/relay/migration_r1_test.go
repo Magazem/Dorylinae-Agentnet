@@ -84,8 +84,8 @@ func TestR1OpensPreMigrationQueueWithEnvelopesIntact(t *testing.T) {
 	}
 	defer func() { _ = raw2.Close() }()
 	var version int
-	if err := raw2.QueryRow(`SELECT MAX(version) FROM relay_migrations`).Scan(&version); err != nil || version != 1 {
-		t.Fatalf("relay_migrations version = %d, %v; want 1", version, err)
+	if err := raw2.QueryRow(`SELECT MAX(version) FROM relay_migrations`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("relay_migrations version = %d, %v; want 2 (R1, then R2 accounts)", version, err)
 	}
 	var idxCount int
 	if err := raw2.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'queue_by_sender'`).Scan(&idxCount); err != nil || idxCount != 1 {

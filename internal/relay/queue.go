@@ -125,26 +125,17 @@ CREATE INDEX IF NOT EXISTS queue_by_recipient ON queue (to_key, seq);
 CREATE INDEX IF NOT EXISTS queue_by_age ON queue (enqueued);
 CREATE INDEX IF NOT EXISTS queue_by_sender ON queue (from_key, enqueued);
 `},
+	{2, "R2_accounts", relayMigrationR2},
 }
 
 // openQueue opens the SQLite relay database at path; "" means a private
 // in-memory database that does not survive the process.
 func openQueue(path string, ttl time.Duration, maxCount int, maxBytes int64, now func() time.Time) (*queue, error) {
-	dsn := "file::memory:?_pragma=busy_timeout(5000)&_pragma=secure_delete(1)"
-	if path != "" {
-		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)"
-	}
-	db, err := sql.Open("sqlite", dsn)
+	db, err := openRelayDB(path)
 	if err != nil {
-		return nil, fmt.Errorf("open queue database: %w", err)
-	}
-	// One connection: serialises access, and keeps an in-memory database private and whole.
-	db.SetMaxOpenConns(1)
-	q := &queue{db: db, path: path, ttl: ttl, maxCount: maxCount, maxBytes: maxBytes, now: now, senders: map[string]*usage{}}
-	if err := q.migrate(); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
+	q := &queue{db: db, path: path, ttl: ttl, maxCount: maxCount, maxBytes: maxBytes, now: now, senders: map[string]*usage{}}
 	if err := q.rebuildTotals(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -210,11 +201,32 @@ func (q *queue) storageLow() bool {
 	return q.diskLow
 }
 
-// migrate applies every relay migration not yet recorded in relay_migrations.
-func (q *queue) migrate() error {
+// openRelayDB opens the SQLite relay database at path ("" is a private
+// in-memory database that does not survive the process) and applies every
+// pending relay migration. The relay and `relay admin` both open it this way.
+func openRelayDB(path string) (*sql.DB, error) {
+	dsn := "file::memory:?_pragma=busy_timeout(5000)&_pragma=secure_delete(1)"
+	if path != "" {
+		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)"
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open queue database: %w", err)
+	}
+	// One connection: serialises access, and keeps an in-memory database private and whole.
+	db.SetMaxOpenConns(1)
+	if err := migrateDB(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+// migrateDB applies every relay migration not yet recorded in relay_migrations.
+func migrateDB(db *sql.DB) error {
 	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
 	defer cancel()
-	if _, err := q.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS relay_migrations (
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS relay_migrations (
 	version    INTEGER PRIMARY KEY,
 	name       TEXT NOT NULL,
 	applied_at TEXT NOT NULL
@@ -222,17 +234,17 @@ func (q *queue) migrate() error {
 		return fmt.Errorf("create relay_migrations table: %w", err)
 	}
 	var current int
-	if err := q.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM relay_migrations`).Scan(&current); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM relay_migrations`).Scan(&current); err != nil {
 		return fmt.Errorf("read relay schema version: %w", err)
 	}
 	if current > len(relayMigrations) {
 		return fmt.Errorf("relay database schema version %d is newer than this binary (%d)", current, len(relayMigrations))
 	}
 	for _, m := range relayMigrations[current:] {
-		if _, err := q.db.ExecContext(ctx, m.sql); err != nil {
+		if _, err := db.ExecContext(ctx, m.sql); err != nil {
 			return fmt.Errorf("relay migration %d (%s): %w", m.version, m.name, err)
 		}
-		if _, err := q.db.ExecContext(ctx,
+		if _, err := db.ExecContext(ctx,
 			`INSERT INTO relay_migrations (version, name, applied_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 			m.version, m.name); err != nil {
 			return fmt.Errorf("record relay migration %d: %w", m.version, err)

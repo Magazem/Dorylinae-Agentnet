@@ -74,6 +74,9 @@ const (
 	limitQueueRecipient = "queue_recipient"
 	limitQueueTotal     = "queue_total"
 	limitQueueDisk      = "queue_disk"
+	// Accounts (4.2a): an unbound connection closed because its prefix
+	// opened more than maxUnboundPerPrefix.
+	limitUnboundPerPrefix = "unbound_per_prefix"
 )
 
 // orDefault returns v, def when v is 0, or 0 (off) when v is negative.

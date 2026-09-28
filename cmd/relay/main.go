@@ -47,6 +47,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return runBackup(args[1:], stdout, stderr)
 		case "restore":
 			return runRestore(args[1:], stdout, stderr)
+		case "admin":
+			return runAdmin(args[1:], stdout, stderr)
 		}
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
@@ -65,8 +67,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	lf.register(fs)
 	metricsListen := fs.String("metrics-listen", "", "address for the operator metrics listener (Prometheus text on /metrics); empty disables it. Never the same listener as --listen")
 	securityJournal := fs.String("security-journal", "", "append-only file of content-free security events, for a later --replay-journal restore")
+	accountsMode := fs.String("accounts", relay.AccountsOff, "require a bound account to use the relay: off, github, email or both (Docs/protocol/accounts.md)")
+	hooks := registerTestHooks(fs)
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--metrics-listen HOST:PORT] [--security-journal PATH] [abuse limit flags, below] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--accounts off|github|email|both] [--metrics-listen HOST:PORT] [--security-journal PATH] [abuse limit flags, below] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n  %s admin account|group ... (%s admin for details)\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -104,6 +108,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "allow-pairing-v1" })
 	if !explicit {
 		v1 = !public // review 50 H1: "public", not the listen address
+	}
+	switch *accountsMode {
+	case relay.AccountsOff, relay.AccountsGitHub, relay.AccountsEmail, relay.AccountsBoth:
+	default:
+		_, _ = fmt.Fprintf(stderr, "%s: --accounts must be off, github, email or both\n", name)
+		return 2
 	}
 	if *queueTTL <= 0 {
 		_, _ = fmt.Fprintf(stderr, "%s: --queue-ttl must be positive\n", name)
@@ -175,7 +185,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 	opts := relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, AllowPairingV1: v1,
-		Public: public, AllowAuthV1: tf.allowAuthV1, Origins: origins, Journal: journal}
+		Public: public, AllowAuthV1: tf.allowAuthV1, Origins: origins, Journal: journal,
+		Accounts: *accountsMode, LoginURL: loginURL(origins)}
 	lf.apply(&opts)
 	rs, err := relay.Open(opts)
 	if err != nil {
@@ -186,9 +197,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "%s: cannot open offline queue %s: %v\n", name, dbPath, err)
 		return 1
 	}
-	srv := newHTTPServer(rs)
+	srv := newHTTPServer(hooks.wrap(rs, rs, stderr))
 	_, _ = fmt.Fprintf(stderr, "%s listening on %s; Ctrl+C to stop\n", name, ln.Addr())
-	_, _ = fmt.Fprintf(stderr, "public: %s; origins: %s\n", yesNo(public), strings.Join(origins, " "))
+	_, _ = fmt.Fprintf(stderr, "public: %s; origins: %s; accounts: %s\n", yesNo(public), strings.Join(origins, " "), *accountsMode)
 	if public && tf.allowAuthV1 {
 		_, _ = fmt.Fprintf(stderr, "%s: warning: --allow-auth-v1: this public relay accepts relay auth v1, which does not name the relay; remove it once every daemon is updated\n", name)
 	}
@@ -314,4 +325,13 @@ func requireLoopback(addr string) error {
 		return nil
 	}
 	return fmt.Errorf("--listen %q is not a loopback address; use 127.0.0.1, or pass --allow-non-loopback with TLS (--tls-cert/--tls-key, --acme-domain or --behind-proxy)", addr)
+}
+
+// loginURL is the fixed login page bind_pending names: the first origin's
+// https:// (http:// for ws://) address plus /login.
+func loginURL(origins []string) string {
+	if len(origins) == 0 {
+		return ""
+	}
+	return relay.LoginURLFromOrigin(origins[0])
 }
