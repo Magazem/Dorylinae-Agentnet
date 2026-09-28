@@ -45,8 +45,10 @@ set -eu
 # Both lines hold the SAME Ed25519 public key: PEM for OpenSSL, base64 for
 # minisign. `go run ./tools/releasesign verify -install-sh scripts/install.sh
 # SHA256SUMS` checks that they match and that a signed SHA256SUMS verifies.
-AGENTNET_PUBKEY_PEM='REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM'
-AGENTNET_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE_MINISIGN_PUBKEY'
+AGENTNET_PUBKEY_PEM='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAyhZFHV5rVAwlTA0TKpCjlN/5oZjW9GgPPzZSoUFGu1M=
+-----END PUBLIC KEY-----'
+AGENTNET_MINISIGN_PUBKEY='RWRcNKizncDFysoWRR1ea1QMJUwNEyqQo5Tf+aGY1vRoDz82UqFBRrtT'
 
 # The oldest release this script installs. Raise it when a release must never
 # be installed again (a rollback to it would reopen a fixed hole).
