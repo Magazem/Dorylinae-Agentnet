@@ -8,6 +8,11 @@
 # The owner signs SHA256SUMS locally (tools/releasesign), uploads the two
 # signature files to the draft, and publishes it by hand.
 #
+# The `draft` job runs under the `release` GitHub Actions environment, which
+# requires the owner's approval before it starts (build/test/sums/install-sh/
+# homebrew run unattended; only `draft`, which owns contents: write and
+# creates the pre-release, pauses for review). This applies to dry runs too.
+#
 # Triggers:
 #   - a pushed tag vX.Y.Z (the owner authorises tags): a draft named vX.Y.Z;
 #   - workflow_dispatch with dry_run=true: a draft PRE-release named
@@ -272,6 +277,7 @@ jobs:
   draft:
     needs: [meta, test, sums, install-sh, homebrew]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     steps:
