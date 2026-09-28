@@ -1,0 +1,44 @@
+package relay
+
+import (
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+)
+
+type failWriter struct{ n int }
+
+func (f *failWriter) Write(p []byte) (int, error) { f.n++; return 0, errors.New("disk full") }
+
+// C03-04: the database change commits before the journal append. When the
+// append fails, a daemon's unbind leaves the relay's cache saying "bound"
+// (accountsChanged is skipped) and the retry finds no row, so the unbind is
+// never journaled.
+func TestReview55C03_04UnbindJournalFailure(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	fw := &failWriter{}
+	s := New(Options{Now: func() time.Time { return now }, Accounts: AccountsGitHub, Journal: NewJournalWriter(fw)})
+	t.Cleanup(s.Close)
+	acc, err := s.EnsureAccount("github", "1", "@x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := testKey(t)
+	if err := s.BindKeyForTest(key, acc); err != nil {
+		t.Fatal(err)
+	}
+	c := newConn(nil, key, 16, "198.51.100.0")
+	s.handleControl(c, &envelope.Control{Op: envelope.OpUnbind})
+	var n int
+	_ = s.q.db.QueryRow(`SELECT COUNT(*) FROM account_keys WHERE key = ?`, key).Scan(&n)
+	_, cached := s.acct.state(key)
+	t.Logf("after unbind #1: rows=%d cachedBound=%v journalWrites=%d reply=%s", n, cached, fw.n, <-c.out)
+	s.handleControl(c, &envelope.Control{Op: envelope.OpUnbind})
+	_, cached2 := s.acct.state(key)
+	t.Logf("after retry: cachedBound=%v journalWrites=%d", cached2, fw.n)
+	if n != 0 || !cached || fw.n != 1 {
+		t.Fatalf("not reproduced")
+	}
+}
