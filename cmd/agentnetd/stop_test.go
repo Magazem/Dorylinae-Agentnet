@@ -66,7 +66,7 @@ func runningDaemon(t *testing.T) (home string, wait func() error) {
 	t.Cleanup(func() {
 		cancel()
 		waited := make(chan struct{})
-		go func() { wait(); close(waited) }()
+		go func() { _ = wait(); close(waited) }()
 		select {
 		case <-waited:
 		case <-time.After(10 * time.Second):
