@@ -1,0 +1,68 @@
+package capability
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+)
+
+// C10-01: suppressed grant.fetch ops (beyond 60 per minute) are only summarised
+// by the flusher; Close stops it without a final flush, so they are never audited.
+func TestReview55C10_01CloseDropsSummary(t *testing.T) {
+	var mu sync.Mutex
+	var actions []string
+	s := NewFetchServer(FetchConfig{
+		FlushInterval: time.Hour,
+		Audit: func(_ context.Context, action string, _ map[string]any) {
+			mu.Lock()
+			actions = append(actions, action)
+			mu.Unlock()
+		},
+	})
+	now := time.Now()
+	for i := 0; i < 100; i++ {
+		s.aud.record(context.Background(), now, "g-1", "peer", OpRead, 262144, "ok")
+	}
+	s.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	rows, sums := 0, 0
+	for _, a := range actions {
+		switch a {
+		case "grant.fetch":
+			rows++
+		case "grant.fetch_summary":
+			sums++
+		}
+	}
+	t.Logf("100 reads served: %d grant.fetch rows, %d summaries after Close", rows, sums)
+	if rows+sums < 61 || sums == 0 {
+		t.Errorf("40 served reads left no audit trace (rows=%d summaries=%d)", rows, sums)
+	}
+}
+
+// C10-02: the 24 h byte budget is a fixed window: a full budget just before the
+// window ends and another right after it are both admitted.
+func TestReview55C10_02ByteBudgetFixedWindow(t *testing.T) {
+	s := NewFetchServer(FetchConfig{})
+	defer s.Close()
+	t0 := time.Now()
+	s.addServed("g-1", defaultBytesPer24h-1, t0)
+	late := t0.Add(24*time.Hour - time.Second)
+	rel, err := s.admit("g-1", late)
+	if err != nil {
+		t.Fatalf("admit before the budget was used: %v", err)
+	}
+	rel()
+	s.addServed("g-1", 1, late) // budget now exactly used, within the window
+	after := t0.Add(24 * time.Hour)
+	rel, err = s.admit("g-1", after)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	rel()
+	s.addServed("g-1", defaultBytesPer24h, after)
+	t.Logf("served %d MiB between %s and %s", (2*defaultBytesPer24h)>>20, t0.Format(time.TimeOnly), after.Format(time.TimeOnly))
+	t.Errorf("fixed window: %d MiB served within 24 h + 1 s (budget %d MiB)", (2*defaultBytesPer24h)>>20, defaultBytesPer24h>>20)
+}
