@@ -5,7 +5,9 @@ except OD-P4-7 (beta invite codes expire after 48 hours), OD-P4-12 (c) (wave 1 s
 on Windows), OD-P4-16 (c) (an agent drafts, a human sends), OD-P4-19 (a)+(ii) (offline
 signing) and OD-P4-20 (decided during wave 1, before wave 2); adversarially reviewed
 ([50-phase4-spec-review.md](50-phase4-spec-review.md): 0 C, 3 H, 12 M fixed in place).** No code starts
-before approval (HANDOFF rule 3). Specs:
+before approval (HANDOFF rule 3). **OD-P4-1 was changed by D37 (2026-09-28): relay hosting is
+Hetzner Cloud, not Fly.io (see the OD-P4-1 row below and [HANDOFF.md](../orchestration/HANDOFF.md)).**
+Specs:
 [relay-hosted.md](../protocol/relay-hosted.md) (TLS, relay auth v2, abuse and pairing limits,
 persistence, backup/restore, quotas, monitoring, what the relay learns),
 [accounts.md](../protocol/accounts.md), [invites.md](../protocol/invites.md),
@@ -386,10 +388,11 @@ edited.
 
 ### 4.1b Deploy (review of the config)
 
-- Files: `deploy/` (Dockerfile, `fly.toml` or `compose.yml` + Caddy/systemd per OD-P4-1/3),
-  `scripts/backup.sh` (online backup → age → upload), `Docs/ops/relay-runbook.md` (deploy,
-  rollback, restore, rotate the OAuth secret, suspend a team, incident checklist),
-  `tests/phase4-manual.md`.
+- Files: `deploy/` (`compose.yml` or a systemd unit for the relay binary, plus Caddy for TLS,
+  on a plain Hetzner VM per OD-P4-1/3 — no provider-specific services; a firewall config and
+  unattended OS security-update config), `scripts/backup.sh` (online backup → age → upload),
+  `Docs/ops/relay-runbook.md` (deploy, rollback, restore, rotate the OAuth secret, suspend a
+  team, incident checklist), `tests/phase4-manual.md`.
 - Acceptance: a staging deploy (the owner creates the accounts) passes `doctor` from all three
   OSes; the production image is built without `testhooks` and a test fails if the hook route
   answers; staging and production share no database, domain, OAuth app or operator key; the backup job's latest file restores into a scratch relay (manual drill recorded);
@@ -445,8 +448,7 @@ week.
 
 | Item | Estimate |
 |---|---|
-| Relay on Fly.io (1 shared-CPU machine, 256–512 MB, 1–3 GB volume) | ~3–8 USD / month |
-| Relay on Hetzner Cloud (smallest shared x86/Arm VM, IPv4, snapshots) | ~4–7 EUR / month |
+| Relay on Hetzner Cloud (small shared x86/Arm VM, >= 512 MB, EU location, IPv4, snapshots) | flat monthly price in EUR — check current price at purchase; no autostop/idle-billing concern (unlike Fly.io, D37) |
 | Backup object storage (a few GB) | < 1 USD / month |
 | Domain | ~10–20 USD / year |
 | Uptime monitor | free tier |
@@ -504,9 +506,9 @@ signing certificate, the outside review and the owner's time.
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| OD-P4-1 | Relay hosting and backup location | (a) Fly.io (platform TLS, Fly volume, managed deploys); (b) Hetzner Cloud VM (own TLS, own OS patching); backups in a different provider/region either way | **(a) Fly.io for the beta** (plan §10): least operations work for a ~10 h/week owner; the binary is identical, so moving to Hetzner later is a DNS change plus a DB copy. Choose (b) if cost or EU-only hosting matters more than ops time; Hetzner is cheaper and gives full control. Backups: an object store at another provider |
+| OD-P4-1 | Relay hosting and backup location | (a) Fly.io (platform TLS, Fly volume, managed deploys); (b) Hetzner Cloud VM (own TLS, own OS patching); backups in a different provider/region either way | **(b) Hetzner Cloud VM, EU location (D37, 2026-09-28; supersedes D36's Fly.io: Fly has no spending cap/billing alerts)**. Backups: an object store at another provider |
 | OD-P4-2 | Account provider | (a) GitHub OAuth only; (b) email magic link only; (c) both | **(a)** (plan §10): every target user has GitHub, no email infrastructure (sender domain, SPF/DKIM, deliverability, a provider seeing addresses), no scopes requested. Add (b) only if a wave-1 tester lacks GitHub |
-| OD-P4-3 | Where TLS ends on the hosted relay | (a) platform/proxy termination + `--behind-proxy` with the platform's client-IP header; (b) TLS in the relay binary (ACME), TCP passthrough | **(a)** on Fly.io (simplest, platform certificates); **(b)** on Hetzner (no extra proxy). Both are implemented in 4.0a for self-hosters. Note that under (a) the platform's proxy sees routing metadata in the clear; it already could via the host |
+| OD-P4-3 | Where TLS ends on the hosted relay | (a) platform/proxy termination + `--behind-proxy` with the platform's client-IP header; (b) TLS in the relay binary (ACME), TCP passthrough | **(a)**, via a local Caddy reverse proxy on the same Hetzner VM (D37): Caddy holds the TLS cert (ACME) and forwards to the relay over loopback with `--behind-proxy --client-ip-header X-Forwarded-For --trusted-proxy 127.0.0.1`. Option (b) (TLS in the relay binary, TCP passthrough, no proxy) stays available for self-hosters who skip a reverse proxy. Both are implemented in 4.0a for self-hosters. Note that under (a) the local Caddy process sees routing metadata in the clear before forwarding to the relay on the same host; unlike a platform-run proxy, no third party sees it |
 | OD-P4-4 | Pin the relay's TLS key in daemons | (a) no pinning (system roots); (b) pin the hosted relay's public key | **(a)**: content never depends on TLS; pinning adds rotation outages. Revisit if metadata protection against a CA-level attacker becomes a goal |
 | OD-P4-5 | Unit of the "300 relay sessions per team per month" cap | (a) device-days; (b) mail envelopes (30 000 / 3 GiB per quota group per month); (c) daemon-reported sessions | **(b), soft cap** (warn at 80 %, alert at 100 %, no cut-off in the beta; hard mode behind a flag for later). See relay-hosted.md §4 |
 | OD-P4-6 | How members after the first join a quota group | (a) admission by pairing (a team invite from a member admits the redeemer); (b) separate seat codes; (c) no quota groups, per-account quota | **(a)**: keeps plan 4.9's single `team join` step and adds no new metadata |
