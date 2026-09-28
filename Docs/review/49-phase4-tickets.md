@@ -7,6 +7,9 @@ signing) and OD-P4-20 (decided during wave 1, before wave 2); adversarially revi
 ([50-phase4-spec-review.md](50-phase4-spec-review.md): 0 C, 3 H, 12 M fixed in place).** No code starts
 before approval (HANDOFF rule 3). **OD-P4-1 was changed by D37 (2026-09-28): relay hosting is
 Hetzner Cloud, not Fly.io (see the OD-P4-1 row below and [HANDOFF.md](../orchestration/HANDOFF.md)).**
+**OD-P4-20 was changed by D41 (2026-09-28): the outside security review moves to before public
+launch, not before wave 2 (cost-saving; see the OD-P4-20 row below, the beta ships without an
+independent outside review, and [HANDOFF.md](../orchestration/HANDOFF.md)).**
 Specs:
 [relay-hosted.md](../protocol/relay-hosted.md) (TLS, relay auth v2, abuse and pairing limits,
 persistence, backup/restore, quotas, monitoring, what the relay learns),
@@ -140,7 +143,7 @@ integers and a sealed note); 4.1b deploy config; 4.8b, 4.8c.
 | P4-5 | 4.1c ∥ 4.6a ∥ 4.7a (all Sonnet) | merge order 4.1c, 4.6a, 4.7a (R4, R5, R6) |
 | P4-6 | 4.6b (Sonnet) ∥ 4.1b (Sonnet) ∥ 4.3b (Lite) | 4.9a depends on 4.6b, so it is not in this wave (review 50 M11) |
 | P4-7 | 4.9a (Sonnet) ∥ 4.4b (Opus, when the certificate is there) | then R-4.6, R-4.4 |
-| P4-8 | 4.9b ∥ 4.5a | then 4.P; 4.8a–c run during beta weeks 1–3, before wave 2 |
+| P4-8 | 4.9b ∥ 4.5a | then 4.P; 4.8b and 4.8c run during beta weeks 1–3; 4.8a (the outside-review pack) is no longer needed before wave 2 — it is built before public launch, ahead of the outside review (D41) |
 
 ## CLI contracts
 
@@ -441,7 +444,7 @@ week.
 | Operator age/HPKE key pair for backups and feedback, kept offline with a backup copy | 1 hour | 4.1b, 4.7a |
 | Release-signing key (OD-P4-19) | 1 hour | 4.4a |
 | Privacy note and beta terms (OD-P4-15) | 1–2 weeks with review | wave 1 |
-| Outside security reviewer (OD-P4-20) | 2–6 weeks to book | before wave 2 |
+| Outside security reviewer (OD-P4-20) | 2–6 weeks to book | before public launch (D41; moved from before wave 2) |
 | Demo video (plan) | — | start of Phase 4 |
 
 ## Cost estimates (approximate; check current prices at purchase)
@@ -512,7 +515,7 @@ signing certificate, the outside review and the owner's time.
 | OD-P4-4 | Pin the relay's TLS key in daemons | (a) no pinning (system roots); (b) pin the hosted relay's public key | **(a)**: content never depends on TLS; pinning adds rotation outages. Revisit if metadata protection against a CA-level attacker becomes a goal |
 | OD-P4-5 | Unit of the "300 relay sessions per team per month" cap | (a) device-days; (b) mail envelopes (30 000 / 3 GiB per quota group per month); (c) daemon-reported sessions | **(b), soft cap** (warn at 80 %, alert at 100 %, no cut-off in the beta; hard mode behind a flag for later). See relay-hosted.md §4 |
 | OD-P4-6 | How members after the first join a quota group | (a) admission by pairing (a team invite from a member admits the redeemer); (b) separate seat codes; (c) no quota groups, per-account quota | **(a)**: keeps plan 4.9's single `team join` step and adds no new metadata |
-| OD-P4-7 | Waves and seats | wave sizes, spacing, seats per quota group | **10 / 10 / 10 teams**; wave 2 at beta week 4 **after 4.8 findings are fixed** (plan), wave 3 at week 6; **8 seats**; codes expire after 30 days |
+| OD-P4-7 | Waves and seats | wave sizes, spacing, seats per quota group | **10 / 10 / 10 teams**; wave 2 at beta week 4, wave 3 at week 6 (the previous "after 4.8 findings are fixed" gate no longer applies: the outside review that would produce those findings moved to before public launch, D41); **8 seats**; codes expire after 30 days |
 | OD-P4-8 | Daemon telemetry report default | (a) opt-in: interactive setup asks, non-interactive requires `--telemetry on|off`; (b) on by default with disclosure and `telemetry off` (the plan's "opt-out flag"); (c) off, never asked | **(a)**. The plan note and D7 say per-kind counts reach the dashboard only "by opt-in reporting"; opt-in is the defensible basis for EU testers; the beta invitation asks teams to turn it on, because Gate 2 needs it (telemetry.md table). Relay counters stay on (operational, documented) |
 | OD-P4-9 | Waitlist | (a) external form; (b) a page on the relay; (c) a GitHub issue template | **(a)** (no new relay attack surface; privacy note on the form) |
 | OD-P4-10 | Dashboard and telemetry retention | (a) `relay admin stats` CLI + CSV; (b) static HTML; (c) hosted dashboard service | **(a)**; keep counters until 90 days after the beta, then delete |
@@ -523,10 +526,10 @@ signing certificate, the outside review and the owner's time.
 | OD-P4-15 | Privacy note, beta terms, legal review | (a) short privacy note + beta terms drafted in 4.5a, owner reviews; (b) the same plus a paid legal review; who is the data controller | **The owner decides** (not a technical call). At minimum: what is collected (accounts, IPs in logs ≤ 14 days, counters, feedback), why, retention, deletion on request, the processors (host, object storage, GitHub/email provider), the controller's contact. A legal review is advisable if testers are in the EU |
 | OD-P4-16 | May an agent send feedback with `--yes` | (a) yes, with snippet guidance; (b) no, TTY confirmation only; (c) an agent's `feedback --yes` only drafts the note locally, and a human sends it with `agentnet feedback send` (TTY) or from the approval window (added by review 50 M10) | **(a)** by the author: agents are first-class users; the snippet tells them to show the human the text first. Review 50: an agent steered by a prompt it read (a peer's result, a web page) can send up to 5 × 4 KiB a day of whatever it holds to the operator without a human seeing it; the text reaches only the operator's offline key, so this is a tester-privacy issue, not an exfiltration channel to an attacker. (c) keeps the agent path with a human in the loop at the cost of one step |
 | OD-P4-17 | Local content retention before the beta (OD-P3-8 (c) and "the other content tables") | (a) no automatic deletion in the beta, documented; (b) 365-day retention for experience records, requests, results, debates | **(a)** for the beta (users' own machines; deletion adds risk of losing records people rely on); document it in known limitations; decide (b) from beta feedback |
-| OD-P4-18 | OS user-presence for approvals (OD-P3-12 → "Phase 4, before 4.8") | (a) ticket 4.8b before wave 2; (b) defer past the beta | **(a)**, off by default: it strengthens the approval gate the outside review will examine. Needs a short spec addition first |
+| OD-P4-18 | OS user-presence for approvals (OD-P3-12 → "Phase 4, before 4.8") | (a) ticket 4.8b before wave 2; (b) defer past the beta | **(a)**, off by default: it strengthens the approval gate that a later review (the outside review, now scheduled before public launch, D41) will examine. Needs a short spec addition first |
 | OD-P4-19 | Release artefact signing, and where the key lives | (a) plain Ed25519 over `SHA256SUMS` (verified by OpenSSL ≥ 3 or minisign, [§install](#install-44)), public key embedded in `install.sh` and docs; (b) Sigstore cosign keyless; (c) checksums only. Key custody: (i) in a GitHub environment secret with the owner as required reviewer; (ii) offline on the owner's machine: CI publishes a **draft** release with `SHA256SUMS`, the owner signs locally and uploads the signature, then publishes | **(a)**, and review 50 M8 recommends **(ii)**: with (i) whoever takes over the owner's GitHub account can approve the environment and sign, so the signature adds nothing against the largest risk (top risk 2); (ii) costs the owner one command per release. A POSIX shell cannot verify any signature unaided; (b) needs cosign on the tester's machine |
 | OD-P4-21 | Queue flooding on self-hosted relays **without** accounts (new, review 50 M1) | (a) accept and document: a stranger who knows a victim's key and uses many keys can fill the victim's offline queue (delay, not loss; outbox resends), and many keys can fill the relay-wide queue; (b) recipient-declared senders: the daemon sends the relay the keys of its peers (`queue_allow`), and the relay queues only from those for that recipient (the relay already sees this graph from routing); (c) a key allowlist file for self-hosted relays (`--allow-keys`) | **(a) for the beta** (self-hosted relays serve a known group, and the attacker needs the victim's key), listed in known limitations; (b) if a self-hoster reports abuse. Not needed on the hosted relay (accounts) |
-| OD-P4-20 | Outside security review | scope, reviewer, budget | **Scope: grant issuance/enforcement and the sensitive-grant rule (plan), plus relay auth v2, accounts/web and the installer.** Book early (2–6 weeks); the owner chooses and pays |
+| OD-P4-20 | Outside security review | scope, reviewer, budget | **Scope: grant issuance/enforcement and the sensitive-grant rule (plan), plus relay auth v2, accounts/web and the installer.** Moved to before public launch (cost-saving, D41, 2026-09-28); the owner does their own compliance/security check before then. May be revisited with traction/user funding |
 
 ## Phase 3 and backlog leftovers
 

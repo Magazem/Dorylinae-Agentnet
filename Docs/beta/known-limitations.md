@@ -7,6 +7,15 @@ us: that is how we decide what to change first. The Phase 1 decisions behind the
 Phase 3 ones in
 [../review/42-phase3-tickets.md](../review/42-phase3-tickets.md#owner-decisions-needed).
 
+## Security review
+
+- **This private beta has not had an independent outside security review.** The outside
+  review (OD-P4-20) is scheduled before public launch, not before the beta; the owner does
+  their own compliance/security check before then. This is a cost-saving choice and may be
+  revisited if the project gets traction and users are willing to fund a reviewer. The beta
+  is invite-only, and testers are told this plainly in the beta invitation / privacy note
+  (ticket 4.5a).
+
 ## Teams
 
 - **One owner per team, no admins.** Only the person who created a team can invite, remove
