@@ -44,8 +44,9 @@ non-https mirror; for tests).
 **What this protects against, honestly.** The script is served from `dorylinae.net`, so
 whoever controls that domain or its host controls the embedded key and every
 `curl | sh` install. The signature protects against a swap of the release files on
-GitHub (a leaked token, a compromised CI step), because the signing key is kept offline and
-is never in GitHub.
+GitHub after the maintainer signed them (a leaked token, a later compromised workflow),
+because the signing key is kept offline and is never in GitHub. It cannot catch a build
+that was already bad when the maintainer signed its `SHA256SUMS`.
 
 ## macOS and Linux: Homebrew
 

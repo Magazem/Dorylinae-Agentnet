@@ -11,7 +11,10 @@
 # Triggers:
 #   - a pushed tag vX.Y.Z (the owner authorises tags): a draft named vX.Y.Z;
 #   - workflow_dispatch with dry_run=true: a draft PRE-release named
-#     dry-run-<run id> for version `version` (default 0.1.0). A draft does not
+#     dry-run-<run id> for version `version`, which must be 0.0.Z (default
+#     0.0.1): below install.sh's AGENTNET_MIN_VERSION, so a dry run's
+#     SHA256SUMS can never be installed even if the real key signed it by
+#     mistake (review 53 M1). Sign dry runs with a TEST key. A draft does not
 #     create its git tag (GitHub creates it only when a draft is published),
 #     so a dry run leaves exactly: that draft release with 6 archives +
 #     SHA256SUMS, and this run's workflow artifacts (kept 7 days). Delete the
@@ -30,9 +33,9 @@ on:
         default: true
         required: true
       version:
-        description: "Version the dry-run artefacts carry (X.Y.Z)"
+        description: "Version the dry-run artefacts carry (0.0.Z: below install.sh's minimum)"
         type: string
-        default: "0.1.0"
+        default: "0.0.1"
         required: true
 
 permissions:
@@ -73,6 +76,10 @@ jobs:
             fi
             version=$IN_VERSION
             printf '%s\n' "$version" | grep -Eq "$re" || { echo "::error::version must be X.Y.Z"; exit 1; }
+            case $version in
+            0.0.*) ;;
+            *) echo "::error::a dry-run version must be 0.0.Z (below install.sh's AGENTNET_MIN_VERSION), got $version"; exit 1 ;;
+            esac
             tag=dry-run-$RUN_ID
             dry_run=true
           fi
@@ -83,6 +90,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -99,6 +108,8 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -160,6 +171,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -191,6 +204,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -211,6 +226,8 @@ jobs:
       HOMEBREW_NO_ANALYTICS: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: release-files
@@ -256,16 +273,18 @@ jobs:
           if [ "$DRY_RUN" = true ]; then
             title="DRY RUN $VERSION (do not publish; delete when checked)"
             extra=--prerelease
+            key="<a TEST key; never sign a dry run with the release key>"
           else
             title="agentnet $VERSION"
             extra=
+            key="<offline key>"
           fi
           cat > notes.md <<EOF
           Built from $SHA. **Unsigned until the owner signs it; do not publish before that.**
 
           Owner steps (Docs/ops/release-signing.md):
           1. \`gh release download $TAG -p SHA256SUMS\`
-          2. \`go run ./tools/releasesign sign -key <offline key> SHA256SUMS\`
+          2. \`go run ./tools/releasesign sign -key $key SHA256SUMS\`
           3. \`go run ./tools/releasesign verify -install-sh scripts/install.sh SHA256SUMS\`
           4. \`gh release upload $TAG SHA256SUMS.sig SHA256SUMS.minisig\`
           5. Publish the draft; render the Homebrew formula from the verified SHA256SUMS.

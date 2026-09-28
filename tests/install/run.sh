@@ -49,13 +49,39 @@ if [ $# -ge 1 ]; then
 else
 	fake_release "$srv/good" 1.2.3
 fi
-fake_release "$srv/old" 0.0.9
+version=$(sed -n '1s/^.\{64\}  agentnet_\([0-9.]*\)_.*/\1/p' "$srv/good/SHA256SUMS")
+case $version in
+'' | 0.0.0) echo "run.sh: the release under test must name a version above 0.0.0" >&2; exit 1 ;;
+esac
+echo "$version" >"$work/version"
+fake_release "$srv/old" 0.0.0
 
 sign keygen -out "$work/test.key" >/dev/null
 sign keygen -out "$work/other.key" >/dev/null
 sign sign -key "$work/test.key" "$srv/good/SHA256SUMS" >/dev/null
 sign sign -key "$work/test.key" "$srv/old/SHA256SUMS" >/dev/null
+# symlink: correctly signed, but the linux archives' agentnet is a symlink
+# (to /etc/passwd) and they carry an extra file; only the two regular
+# binaries may ever be installed (review 53 L2).
+mkdir -p "$srv/symlink"
+fake_release "$srv/symlink" "$version"
+mkdir "$work/sl"
+ln -s /etc/passwd "$work/sl/agentnet"
+printf '#!/bin/sh\necho agentnetd\n' >"$work/sl/agentnetd"
+printf 'x\n' >"$work/sl/extra"
+chmod 755 "$work/sl/agentnetd"
+for a in amd64 arm64; do
+	tar -czf "$srv/symlink/agentnet_${version}_linux_$a.tar.gz" -C "$work/sl" agentnet agentnetd extra
+done
+(cd "$srv/symlink" && sha256sum agentnet_* | LC_ALL=C sort -k2 >SHA256SUMS)
+sign sign -key "$work/test.key" "$srv/symlink/SHA256SUMS" >/dev/null
 sign embed -key "$work/test.key" -in "$root/scripts/install.sh" -out "$work/install.sh" >/dev/null
+# The test copy's minimum is the release under test, so a dry run's 0.0.Z
+# (release.yml keeps those below the real minimum, review 53 M1) installs
+# here, and 0.0.0 is the refused rollback.
+sed "s/^AGENTNET_MIN_VERSION='.*'\$/AGENTNET_MIN_VERSION='$version'/" "$work/install.sh" >"$work/install.sh.tmp"
+mv "$work/install.sh.tmp" "$work/install.sh"
+grep -q "^AGENTNET_MIN_VERSION='$version'\$" "$work/install.sh" || { echo "run.sh: could not set the test minimum" >&2; exit 1; }
 sign verify -install-sh "$work/install.sh" "$srv/good/SHA256SUMS"
 cp "$root/scripts/install.sh" "$work/install-placeholder.sh"
 rm -f "$work/test.key"
@@ -65,8 +91,6 @@ case $(uname -m) in
 aarch64 | arm64) arch=arm64 ;;
 *) arch=amd64 ;;
 esac
-version=$(sed -n '1s/^.\{64\}  agentnet_\([0-9.]*\)_.*/\1/p' "$srv/good/SHA256SUMS")
-echo "$version" >"$work/version"
 
 # badarchive: a valid signed SHA256SUMS, one flipped byte in the archive.
 cp "$srv/good"/* "$srv/badarchive/"
