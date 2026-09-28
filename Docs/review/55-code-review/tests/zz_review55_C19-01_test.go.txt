@@ -1,0 +1,47 @@
+package ipc_test
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+)
+
+// Review 55 C19-01: inbox_list views carry the full brief (up to 16384
+// bytes). 64 pending requests from one paired peer, each with a maximal
+// brief, make the inbox_list response exceed the 1 MiB IPC line, so the
+// client (agentnet inbox) fails.
+func TestReview55C19_01InboxListOverLine(t *testing.T) {
+	p := shortHome(t)
+	ln, err := ipc.Listen(p.Endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := ipc.NewServer()
+	srv.Handle("inbox_list", func(context.Context, json.RawMessage) (any, error) {
+		var res daemon.RequestListResult
+		for i := 0; i < 64; i++ {
+			res.Requests = append(res.Requests, daemon.RequestView{
+				ID: "r-0123456789abcdef0123456789abcdef", Direction: "in", Type: "task",
+				Title: "t", Brief: strings.Repeat("a", 16384), State: "pending",
+			})
+		}
+		return res, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+	var out daemon.RequestListResult
+	err = ipc.Call(cctx, p.Endpoint, "inbox_list", map[string]any{}, &out)
+	t.Logf("inbox_list with 64 x 16 KiB briefs: err=%v, got %d views", err, len(out.Requests))
+	if err == nil {
+		t.Fatal("expected the 1 MiB line limit to fail the call")
+	}
+}
