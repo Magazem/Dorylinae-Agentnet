@@ -1,0 +1,52 @@
+package relayclient_test
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+)
+
+// Review 55 C04-01: a hostile relay answers the upgrade with an error frame
+// whose message holds terminal escapes and ~1 MiB of text; State().LastError
+// (shown by `agentnet status` and `doctor`) keeps it raw and unbounded.
+func TestReview55C04_01_RelayErrorTextReachesLastError(t *testing.T) {
+	_, priv := newKey(t)
+	msg := "\x1b]8;;https://evil.example/\x1b\\click\x1b]8;;\x1b\\\x1b[2K\rrelay: connected" + strings.Repeat("A", 1000*1000)
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		raw, _ := json.Marshal(map[string]string{"op": "error", "code": "internal\x1b[31m", "message": msg})
+		_ = conn.Write(r.Context(), websocket.MessageText, raw)
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer hs.Close()
+
+	c, err := relayclient.New(relayclient.Config{
+		URL:        "ws" + strings.TrimPrefix(hs.URL, "http"),
+		Signer:     relayclient.NewKeySigner(priv),
+		MinBackoff: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+	eventually(t, "LastError", func() bool { return c.State().LastError != "" })
+	le := c.State().LastError
+	t.Logf("LastError length %d, contains ESC: %v", len(le), strings.ContainsRune(le, 0x1b))
+	if strings.ContainsRune(le, 0x1b) || len(le) > 4096 {
+		t.Fatalf("relay-supplied text reaches LastError raw (len %d)", len(le))
+	}
+}
