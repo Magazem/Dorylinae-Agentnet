@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 const (
@@ -172,6 +174,12 @@ type Options struct {
 	// TrustedProxies; from any other peer the TCP address is used.
 	ClientIPHeader string
 	TrustedProxies []netip.Prefix
+
+	// MinClient is the oldest daemon release ("MAJOR.MINOR.PATCH") this
+	// relay supports, sent as ready.min_client (ticket 4.4a). Advisory: it
+	// never refuses a connection. Empty sends none; anything else must be a
+	// release version or Open fails.
+	MinClient string
 }
 
 // Server is an http.Handler serving the relay protocol.
@@ -204,6 +212,8 @@ type Server struct {
 	// Both are guarded by mu.
 	authed     int
 	prefixKeys map[string]map[string]int
+
+	minClient string // ready.min_client; fixed after Open
 
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
@@ -254,6 +264,12 @@ func Open(opts Options) (*Server, error) {
 	s.pairs.v1 = opts.AllowPairingV1
 	if err := s.setAuth(opts); err != nil {
 		return nil, err
+	}
+	if opts.MinClient != "" {
+		if _, ok := version.ParseRelease(opts.MinClient); !ok {
+			return nil, fmt.Errorf("min client version %q is not MAJOR.MINOR.PATCH", opts.MinClient)
+		}
+		s.minClient = opts.MinClient
 	}
 	if opts.ClientIPHeader != "" && len(opts.TrustedProxies) == 0 {
 		return nil, errors.New("a client IP header needs at least one trusted proxy")
@@ -579,7 +595,7 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	defer s.unregister(c)
 	s.log.Info("peer connected", "event", "connect", "peer", short(c.key))
 
-	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}))
+	c.send(control(envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}, MinClient: s.minClient}))
 	go c.writeLoop(ctx, cancel)
 	if s.drainStep(c, false) { // first batch inline so an idle queue is settled before we read
 		s.startDrain(c)

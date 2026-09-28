@@ -258,6 +258,9 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 			lastErr = " (last error: " + res.Relay.LastError + ")"
 		}
 		_, _ = fmt.Fprintf(stdout, "  relay:    %s, auth %s%s%s\n", state, res.Relay.Auth, since, lastErr)
+		if meets, ok := version.MeetsMinimum(res.Version, res.Relay.MinClient); ok && !meets {
+			_, _ = fmt.Fprintf(stdout, "  upgrade:  this version is older than the relay's minimum %s; install the latest release\n", res.Relay.MinClient)
+		}
 	}
 	if res.Team != nil {
 		printStatusTeam(stdout, res.Team)

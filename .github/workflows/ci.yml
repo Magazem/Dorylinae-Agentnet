@@ -152,6 +152,20 @@ jobs:
             fi
           fi
 
+  # 4.4a: install.sh in a clean Ubuntu container, as a non-root user, against
+  # a local file server, with fake release files signed by a throwaway test
+  # key (good sums pass; flipped bytes, a wrong key and old versions fail;
+  # sudo is never invoked). release.yml runs the same test on real artefacts.
+  install-sh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: shellcheck scripts/install.sh tests/install/run.sh tests/install/cases.sh packaging/homebrew/render.sh
+      - run: sh tests/install/run.sh
+
   build:
     needs: [test, race, lint]
     strategy:

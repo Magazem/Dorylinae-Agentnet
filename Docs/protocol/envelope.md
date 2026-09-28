@@ -205,6 +205,16 @@ most half full, regardless of backlog. Otherwise they are dropped silently: no `
 `error`, never stored. The recipient does not `ack` them, and `relayclient` hands them up
 without the seen-set. Rate limit: 600 per minute per sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
 
+From Phase 4 (ticket 4.4a) the relay may add `"min_client": "MAJOR.MINOR.PATCH"`, the
+oldest daemon release it supports (`relay --min-client`). It is **advisory**: the relay
+never refuses a connection because of it, and the daemon keeps the connection. A daemon
+keeps the value only if it is exactly `MAJOR.MINOR.PATCH` (decimal, no leading zeros; the
+text comes from the relay, so anything else is dropped, never logged or shown). If its own
+version is a release older than it, the daemon logs a warning, and `status` / `doctor`
+report it ([../cli/status.md](../cli/status.md), [../cli/doctor.md](../cli/doctor.md)). A dev
+build (not `MAJOR.MINOR.PATCH`) is not compared: `doctor` warns that it cannot tell. Absent
+means no minimum; older daemons ignore the member.
+
 ### One connection per key
 
 If a key connects while it already has a live connection, the new connection

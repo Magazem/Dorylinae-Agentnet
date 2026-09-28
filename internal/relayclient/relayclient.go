@@ -24,6 +24,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 // ErrNotConnected is returned by Send while there is no authenticated connection.
@@ -90,6 +91,10 @@ type Client struct {
 	seen *seenSet        // envelopes already handed to OnEnvelope
 
 	features []string // from the latest ready frame; guarded by mu
+	// minClient is ready.min_client from the latest ready frame ("" for
+	// none); guarded by mu. Kept after a disconnect: it is what the relay
+	// last said, for status/doctor.
+	minClient string
 
 	// connSince is when the current Connected() value began (a connect or a
 	// disconnect), for status/doctor's "since" (Docs/review/49-phase4-tickets.md
@@ -116,6 +121,10 @@ type State struct {
 	// LastError is the most recent connection error's message, or "" before
 	// any failure.
 	LastError string
+	// MinClient is the relay's ready.min_client, as last received ("" when
+	// the relay sent none or never answered). Untrusted relay text: it is
+	// only ever reported if it parses as a release version.
+	MinClient string
 }
 
 // New validates cfg and returns a Client. Call Run to connect.
@@ -160,7 +169,7 @@ func (c *Client) Connected() bool {
 func (c *Client) State() State {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return State{Connected: c.conn != nil, Since: c.connSince, LastError: c.lastErr}
+	return State{Connected: c.conn != nil, Since: c.connSince, LastError: c.lastErr, MinClient: c.minClient}
 }
 
 // Send validates and sends e. It does not wait for delivery: a relay refusal
@@ -248,8 +257,16 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	c.mu.Lock()
 	c.conn = conn
 	c.features = ready.Features
+	c.minClient = validMinClient(ready.MinClient)
 	c.connSince = time.Now()
+	minClient := c.minClient
 	c.mu.Unlock()
+	if minClient != "" {
+		if meets, ok := version.MeetsMinimum(version.Version, minClient); ok && !meets {
+			c.log.Warn("this agentnetd is older than the relay's minimum supported version; please upgrade",
+				"event", "relay_min_client", "version", version.Version, "min_client", minClient)
+		}
+	}
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
@@ -300,6 +317,16 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) (envelope.
 		return envelope.Control{}, err
 	}
 	return readControl(ctx, conn, envelope.OpReady)
+}
+
+// validMinClient returns s if it is a release version (MAJOR.MINOR.PATCH),
+// else "": ready.min_client is relay-supplied text and reaches logs, status
+// and doctor output, so anything else is dropped rather than shown.
+func validMinClient(s string) string {
+	if _, ok := version.ParseRelease(s); !ok {
+		return ""
+	}
+	return s
 }
 
 // authVersion picks the relay authentication version to answer a challenge

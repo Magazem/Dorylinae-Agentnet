@@ -172,7 +172,7 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 	exe, _ := siblingDaemonPath()
 
 	return []doctorCheck{
-		checkBinary(up, res.Version),
+		checkBinary(up, res.Version, relayMinClient(res)),
 		checkConfig(p),
 		checkKeychain(p),
 		checkService(ctx, run, exe, p.Dir, up),
@@ -193,18 +193,47 @@ func queryStatus(ctx context.Context, p paths.Paths) (res daemon.StatusResult, u
 	return res, ipc.Call(cctx, p.Endpoint, "status", nil, &res) == nil
 }
 
-// checkBinary compares agentnet's and agentnetd's versions. min_client (the
-// relay's `ready` frame) is an extension point for ticket 4.4a.
-func checkBinary(daemonUp bool, daemonVersion string) doctorCheck {
+// checkBinary compares agentnet's and agentnetd's versions, then checks
+// them against min_client, the oldest release the relay's `ready` frame
+// says it supports (4.4a; empty: none, or the daemon is not connected yet).
+func checkBinary(daemonUp bool, daemonVersion, minClient string) doctorCheck {
+	return checkBinaryFor(version.Version, daemonUp, daemonVersion, minClient)
+}
+
+// relayMinClient is the relay's ready.min_client as the daemon reported it
+// in status, or "" when there is none.
+func relayMinClient(res daemon.StatusResult) string {
+	if res.Relay == nil {
+		return ""
+	}
+	return res.Relay.MinClient
+}
+
+// checkBinaryFor is checkBinary with this CLI's version injected, for tests.
+func checkBinaryFor(cliVersion string, daemonUp bool, daemonVersion, minClient string) doctorCheck {
 	if !daemonUp {
 		return doctorCheck{ID: "binary", State: doctorSkip, Detail: "agentnetd is not running: cannot compare versions"}
 	}
-	if daemonVersion != version.Version {
+	if daemonVersion != cliVersion {
 		return doctorCheck{ID: "binary", State: doctorFail,
 			Detail: "agentnet and agentnetd report different versions",
 			Fix:    "reinstall so the CLI and the daemon come from the same release"}
 	}
-	return doctorCheck{ID: "binary", State: doctorOK, Detail: "agentnet and agentnetd versions match"}
+	if minClient == "" {
+		return doctorCheck{ID: "binary", State: doctorOK, Detail: "agentnet and agentnetd versions match"}
+	}
+	meets, ok := version.MeetsMinimum(daemonVersion, minClient)
+	switch {
+	case !ok:
+		return doctorCheck{ID: "binary", State: doctorWarn,
+			Detail: "versions match; this is not a release build, so the relay's minimum " + minClient + " cannot be compared",
+			Fix:    "install a release build (see Docs/cli/install.md)"}
+	case !meets:
+		return doctorCheck{ID: "binary", State: doctorFail,
+			Detail: "version " + daemonVersion + " is older than the relay's minimum supported version " + minClient,
+			Fix:    "upgrade agentnet and agentnetd to the latest release (see Docs/cli/install.md)"}
+	}
+	return doctorCheck{ID: "binary", State: doctorOK, Detail: "agentnet and agentnetd versions match and meet the relay's minimum " + minClient}
 }
 
 // checkConfig is the existing D24/L11 owner-only check (internal/device),
