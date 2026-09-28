@@ -1,0 +1,41 @@
+package peers_test
+
+// Review 55, finding C06-01 (temporary; never merged). Shows that Argon2id
+// derivations outlive their pairing: 40 redemptions that fail at once (no
+// relay connection) leave ~40 derivations of 64 MiB each running together,
+// well past the 16-pending bound.
+
+import (
+	"context"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+)
+
+func TestReview55C06_01_KDFOutlivesSession(t *testing.T) {
+	e := newEnv(t, time.Second)
+	e.send.err = relayclient.ErrNotConnected
+	before := runtime.NumGoroutine()
+	const n = 40
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		code, err := peers.NewCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.m.Redeem(context.Background(), code, false); err == nil {
+			t.Fatal("redeem succeeded without a relay")
+		}
+	}
+	elapsed := time.Since(start)
+	extra := runtime.NumGoroutine() - before
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	t.Logf("%d failed redemptions in %v; %d extra goroutines still running; HeapSys=%d MiB", n, elapsed, extra, ms.HeapSys>>20)
+	if extra > 16 {
+		t.Errorf("C06-01 confirmed: %d derivations run concurrently after their sessions ended (bound is 16)", extra)
+	}
+}
