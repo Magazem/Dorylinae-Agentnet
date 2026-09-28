@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -41,23 +42,24 @@ func runAdmin(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dbPath := fs.String("db", "", "SQLite file holding the relay database (default: relay-queue.db in the config directory)")
 	journalPath := fs.String("security-journal", "", "append-only file of content-free security events (the relay's --security-journal)")
-	// Flags may come before or after the one positional argument.
-	if err := fs.Parse(args[2:]); err != nil {
+	// Flags may come before or after the one positional argument, and the
+	// argument (an identity key or account/group id) may itself start with
+	// '-' (base64url keys: about 1 in 64 do) without being mistaken for a
+	// flag; "--" still works to mark the rest of the args as positional.
+	pos, err := parseInterspersed(fs, args[2:])
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
 	var target string
-	if fs.NArg() > 0 {
-		target = fs.Arg(0)
-		if err := fs.Parse(fs.Args()[1:]); err != nil {
-			return 2
-		}
-		if fs.NArg() > 0 {
-			_, _ = fmt.Fprintf(stderr, "%s admin: unexpected argument %q\n", name, fs.Arg(0))
-			return 2
-		}
+	if len(pos) > 0 {
+		target = pos[0]
+	}
+	if len(pos) > 1 {
+		_, _ = fmt.Fprintf(stderr, "%s admin: unexpected argument %q\n", name, pos[1])
+		return 2
 	}
 	wantTarget := noun != "account" || verb != "list"
 	known := map[string]bool{"account list": true, "account show": true, "account suspend": true, "account unsuspend": true,
@@ -155,4 +157,71 @@ func dash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+// parseInterspersed parses flags that may appear before, after or mixed in
+// with positional arguments, and returns the positional arguments in order.
+//
+// A token is treated as a flag when it names one of fs's defined flags (or
+// -h/-help/--help). A token that starts with '-' but is not a defined flag
+// is still positional if it decodes as a base64url identity key: identity
+// keys are base64url, so about 1 in 64 of them start with '-' and would
+// otherwise be mistaken for a flag (Docs/cli/relay.md). Any other
+// unrecognized '-'-prefixed token is left for fs.Parse to reject, the same
+// as an actual flag typo. "--" still works too: everything after it is
+// positional, whatever it looks like.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	names := map[string]bool{"-h": true, "--h": true, "-help": true, "--help": true}
+	boolFlags := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		names["-"+f.Name] = true
+		names["--"+f.Name] = true
+		if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+			boolFlags["-"+f.Name] = true
+			boolFlags["--"+f.Name] = true
+		}
+	})
+
+	var pos, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...) //nolint:gosec // i < len(args) by the loop condition, so i+1 <= len(args): always in range
+			break
+		}
+		fname, hasValue := a, false
+		if eq := strings.IndexByte(a, '='); eq >= 0 {
+			fname, hasValue = a[:eq], true
+		}
+		switch {
+		case a == "-":
+			pos = append(pos, a)
+		case strings.HasPrefix(a, "-") && names[fname]:
+			flagArgs = append(flagArgs, a)
+			if !hasValue && !boolFlags[fname] && i+1 < len(args) {
+				i++
+				flagArgs = append(flagArgs, args[i])
+			}
+		case strings.HasPrefix(a, "-") && looksLikeKey(a):
+			pos = append(pos, a)
+		case strings.HasPrefix(a, "-"):
+			// Not a defined flag and not a key-shaped value: let fs.Parse
+			// reject it, the same as it would reject an actual typo.
+			flagArgs = append(flagArgs, a)
+		default:
+			pos = append(pos, a)
+		}
+	}
+	if err := fs.Parse(flagArgs); err != nil {
+		return nil, err
+	}
+	return pos, nil
+}
+
+// looksLikeKey reports whether s decodes as a base64url identity key, so a
+// leading '-' that came from key bytes (not a flag) can still be accepted
+// as a positional argument without "--".
+func looksLikeKey(s string) bool {
+	_, err := envelope.ParseKey(s)
+	return err == nil
 }
