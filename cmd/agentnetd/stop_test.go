@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,7 +37,15 @@ func TestStopNotRunning(t *testing.T) {
 // runningDaemon starts a real daemon in-process (the harness used by
 // cmd/agentnet's TestStatusRunning) so the CLI's own run() can be exercised
 // against a live endpoint: a second instance for the same home, and stop.
-func runningDaemon(t *testing.T) (home string, done chan error) {
+//
+// wait blocks until daemon.Run has actually returned (closed its store,
+// released its IPC endpoint) and returns its error; it is safe to call from
+// both the test body and the registered cleanup, since only the first call
+// reads from the underlying channel. The cleanup always calls it, so a test
+// never returns (and lets TempDir's RemoveAll run) while the daemon still
+// holds files open under home - that race caused "directory not empty"
+// cleanup failures on macOS, where (unlike Windows) TempDir does not retry.
+func runningDaemon(t *testing.T) (home string, wait func() error) {
 	t.Helper()
 	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
 	home = filepath.Join(testutil.TempDir(t), "home")
@@ -45,13 +54,25 @@ func runningDaemon(t *testing.T) (home string, done chan error) {
 		t.Fatal(err)
 	}
 	ready := make(chan struct{})
-	done = make(chan error, 1)
+	done := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { done <- daemon.Run(ctx, p, ready) }()
-	// cancel is enough to unblock daemon.Run if a test ends without already
-	// having stopped it; a test that stops it itself drains done on its own,
-	// so this cleanup must not also try (the channel only ever sends once).
-	t.Cleanup(cancel)
+	var once sync.Once
+	var werr error
+	wait = func() error {
+		once.Do(func() { werr = <-done })
+		return werr
+	}
+	t.Cleanup(func() {
+		cancel()
+		waited := make(chan struct{})
+		go func() { wait(); close(waited) }()
+		select {
+		case <-waited:
+		case <-time.After(10 * time.Second):
+			t.Error("daemon did not stop")
+		}
+	})
 	select {
 	case <-ready:
 	case err := <-done:
@@ -59,7 +80,7 @@ func runningDaemon(t *testing.T) (home string, done chan error) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("daemon not ready")
 	}
-	return home, done
+	return home, wait
 }
 
 func TestSecondInstanceReportsClearError(t *testing.T) {
@@ -75,14 +96,16 @@ func TestSecondInstanceReportsClearError(t *testing.T) {
 }
 
 func TestStopStopsDaemon(t *testing.T) {
-	home, done := runningDaemon(t)
+	home, wait := runningDaemon(t)
 
 	code, out, errs := invoke(t, "stop", "--home", home)
 	if code != 0 || !strings.Contains(out, "stopped") {
 		t.Fatalf("stop: code %d, out %q, stderr %q", code, out, errs)
 	}
+	waited := make(chan error, 1)
+	go func() { waited <- wait() }()
 	select {
-	case err := <-done:
+	case err := <-waited:
 		if err != nil {
 			t.Fatalf("daemon exited with error: %v", err)
 		}

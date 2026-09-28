@@ -66,6 +66,7 @@ func consultTeam(t *testing.T) (a, b *testNode) {
 		_, out, _ = cli(t, b, "pair", "--status", joined.PairingID, "--json")
 		_ = json.Unmarshal([]byte(out), &joined)
 	}
+	rosterDeadline := time.Now().Add(10 * time.Second) // fresh budget: the join-poll loop above may have used most of `deadline` already
 	for _, n := range []*testNode{a, b} {
 		for {
 			_, out, _ = cli(t, n, "team", "show", created.Team.ID, "--json")
@@ -73,7 +74,7 @@ func consultTeam(t *testing.T) (a, b *testNode) {
 			if err := json.Unmarshal([]byte(out), &show); err == nil && show.OK && len(show.Team.Members) == 2 {
 				break
 			}
-			if time.Now().After(deadline) {
+			if time.Now().After(rosterDeadline) {
 				t.Fatalf("a node never saw the roster: %q", out)
 			}
 			time.Sleep(20 * time.Millisecond)

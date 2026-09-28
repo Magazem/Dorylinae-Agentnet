@@ -70,6 +70,7 @@ func TestVersionCommand(t *testing.T) {
 // foreground and its one startup line, naming Ctrl+C, goes to stderr, not
 // stdout.
 func TestStartupLineOnStderr(t *testing.T) {
+	t.Setenv("DORYLINAE_HOME", testutil.TempDir(t)) // keep the default queue database out of the real config dir
 	var out, errb syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
@@ -105,6 +106,7 @@ func TestUsageErrors(t *testing.T) {
 // that cancels it and asserts a clean exit.
 func startRelay(t *testing.T, args ...string) (url string, stop func()) {
 	t.Helper()
+	t.Setenv("DORYLINAE_HOME", testutil.TempDir(t)) // guard: keep the default queue database out of the real config dir even if a caller forgets --db
 	var out, errb syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
