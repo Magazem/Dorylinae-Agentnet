@@ -40,6 +40,7 @@ func relayStatus(client *relayclient.Client, relayURL string) *RelayStatus {
 		Since:     formatStatusTime(&since),
 		LastError: st.LastError,
 		Auth:      envelope.AuthV2,
+		MinClient: st.MinClient,
 	}
 }
 

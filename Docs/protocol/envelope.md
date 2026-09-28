@@ -212,6 +212,16 @@ serves the binding frames `bind_start`, `bind_poll`, `bind_cancel` and `unbind`,
 `account_changed`; everything about it is in [accounts.md](accounts.md). A daemon sends
 those frames only when `ready` lists `accounts`.
 
+From Phase 4 (ticket 4.4a) the relay may add `"min_client": "MAJOR.MINOR.PATCH"`, the
+oldest daemon release it supports (`relay --min-client`). It is **advisory**: the relay
+never refuses a connection because of it, and the daemon keeps the connection. A daemon
+keeps the value only if it is exactly `MAJOR.MINOR.PATCH` (decimal, no leading zeros; the
+text comes from the relay, so anything else is dropped, never logged or shown). If its own
+version is a release older than it, the daemon logs a warning, and `status` / `doctor`
+report it ([../cli/status.md](../cli/status.md), [../cli/doctor.md](../cli/doctor.md)). A dev
+build (not `MAJOR.MINOR.PATCH`) is not compared: `doctor` warns that it cannot tell. Absent
+means no minimum; older daemons ignore the member.
+
 ### One connection per key
 
 If a key connects while it already has a live connection, the new connection

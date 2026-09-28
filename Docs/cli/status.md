@@ -98,6 +98,12 @@ auth version this build of `agentnetd` speaks, not necessarily what any one conn
 negotiated (a loopback relay may still be answered with v1). `relay` is absent, not `null`,
 when no relay is configured. `agentnet doctor` (`Docs/cli/doctor.md`) reports this same
 state as its `relay` check, plus a clock-skew check the daemon does not otherwise expose.
+
+Ticket 4.4a adds `min_client` to `relay` when the relay's `ready` frame carried one: the
+oldest release (`MAJOR.MINOR.PATCH`) the relay supports. It is omitted when the relay sent
+none, or sent something that is not a release version. When this `agentnetd` is a release
+older than it, human `status` prints an `upgrade:` line and `doctor`'s `binary` check fails.
+The connection itself is kept: the minimum is advisory.
 `account` is added by ticket 4.2c.
 
 Error (stdout, non-zero exit):

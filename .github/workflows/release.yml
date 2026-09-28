@@ -1,0 +1,278 @@
+# Release pipeline (ticket 4.4a; D36 OD-P4-19 (a)+(ii); Docs/ops/release-signing.md).
+#
+# It builds agentnet, agentnetd and relay for darwin/linux/windows x
+# amd64/arm64 (never with the `testhooks` build tag), writes SHA256SUMS
+# naming the version, tests install.sh and the Homebrew formula against those
+# exact files, and publishes a DRAFT GitHub release. It never publishes a
+# release and never signs: the release key is offline and never in GitHub.
+# The owner signs SHA256SUMS locally (tools/releasesign), uploads the two
+# signature files to the draft, and publishes it by hand.
+#
+# Triggers:
+#   - a pushed tag vX.Y.Z (the owner authorises tags): a draft named vX.Y.Z;
+#   - workflow_dispatch with dry_run=true: a draft PRE-release named
+#     dry-run-<run id> for version `version` (default 0.1.0). A draft does not
+#     create its git tag (GitHub creates it only when a draft is published),
+#     so a dry run leaves exactly: that draft release with 6 archives +
+#     SHA256SUMS, and this run's workflow artifacts (kept 7 days). Delete the
+#     draft when done. dry_run=false is refused: real releases come from tags.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (must stay true; real releases come from a pushed vX.Y.Z tag)"
+        type: boolean
+        default: true
+        required: true
+      version:
+        description: "Version the dry-run artefacts carry (X.Y.Z)"
+        type: string
+        default: "0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.m.outputs.version }}
+      tag: ${{ steps.m.outputs.tag }}
+      dry_run: ${{ steps.m.outputs.dry_run }}
+    steps:
+      - id: m
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
+          IN_VERSION: ${{ inputs.version }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          re='^(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$'
+          if [ "$EVENT" = push ]; then
+            version=${REF_NAME#v}
+            tag=$REF_NAME
+            dry_run=false
+            if [ "v$version" != "$REF_NAME" ] || ! printf '%s\n' "$version" | grep -Eq "$re"; then
+              echo "::error::tag $REF_NAME is not vX.Y.Z"; exit 1
+            fi
+          else
+            if [ "$IN_DRY_RUN" != true ]; then
+              echo "::error::workflow_dispatch only does dry runs; push a vX.Y.Z tag for a real release"; exit 1
+            fi
+            version=$IN_VERSION
+            printf '%s\n' "$version" | grep -Eq "$re" || { echo "::error::version must be X.Y.Z"; exit 1; }
+            tag=dry-run-$RUN_ID
+            dry_run=true
+          fi
+          { echo "version=$version"; echo "tag=$tag"; echo "dry_run=$dry_run"; } >> "$GITHUB_OUTPUT"
+          echo "version=$version tag=$tag dry_run=$dry_run"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./... -count=1 -timeout 20m
+
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build (release configuration, no build tags)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          GOFLAGS: ""
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -eu
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/Magazem/Dorylinae-Agentnet/internal/version.Version=$VERSION" \
+            -o stage/ ./cmd/agentnet ./cmd/agentnetd ./cmd/relay
+      - name: Check the binaries carry the version and no testhooks tag
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -eu
+          for f in stage/*; do
+            info=$(go version -m "$f")
+            if printf '%s\n' "$info" | grep -E '^\s+build\s+-tags=' ; then
+              if printf '%s\n' "$info" | grep -E '^\s+build\s+-tags=.*testhooks'; then
+                echo "::error::$f was built with the testhooks tag"; exit 1
+              fi
+              echo "::error::$f was built with build tags; release builds use none"; exit 1
+            fi
+            printf '%s\n' "$info" | grep -F -- "internal/version.Version=$VERSION" >/dev/null ||
+              { echo "::error::$f does not carry version $VERSION"; exit 1; }
+          done
+      - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -eu
+          cp LICENSE README.md stage/
+          mkdir dist
+          name=agentnet_${VERSION}_${GOOS}_${GOARCH}
+          if [ "$GOOS" = windows ]; then
+            (cd stage && zip -q -X "../dist/$name.zip" agentnet.exe agentnetd.exe relay.exe LICENSE README.md)
+          else
+            tar --sort=name --owner=0 --group=0 --numeric-owner --mtime=@0 \
+              -czf "dist/$name.tar.gz" -C stage agentnet agentnetd relay LICENSE README.md
+          fi
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  sums:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+      - name: Write and check SHA256SUMS
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -eu
+          (cd dist && sha256sum agentnet_* | LC_ALL=C sort -k2 > SHA256SUMS)
+          cat dist/SHA256SUMS
+          got=$(go run ./tools/releasesign check dist/SHA256SUMS)
+          [ "$got" = "$VERSION" ] || { echo "::error::SHA256SUMS names $got, want $VERSION"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  # install.sh against the real linux archive, signed here with a throwaway
+  # TEST key that never leaves this job (its signatures are not uploaded).
+  install-sh:
+    needs: [meta, sums]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+      - run: shellcheck scripts/install.sh tests/install/run.sh tests/install/cases.sh packaging/homebrew/render.sh
+      - run: sh tests/install/run.sh dist
+
+  # The formula, rendered from this run's SHA256SUMS with file:// URLs,
+  # installs from a local tap on the macOS runner and passes `brew test`.
+  homebrew:
+    needs: [meta, sums]
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_ANALYTICS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+      - name: Install the formula from a local tap
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -eu
+          brew tap-new --no-git local/agentnet-ci
+          tap=$(brew --repository)/Library/Taps/local/homebrew-agentnet-ci
+          sh packaging/homebrew/render.sh "$VERSION" dist/SHA256SUMS "file://$PWD/dist" > "$tap/Formula/agentnet.rb"
+          cat "$tap/Formula/agentnet.rb"
+          brew install --formula local/agentnet-ci/agentnet
+          agentnet --version | grep -F "$VERSION"
+          brew test local/agentnet-ci/agentnet
+          brew uninstall --formula local/agentnet-ci/agentnet
+          brew untap local/agentnet-ci
+
+  draft:
+    needs: [meta, test, sums, install-sh, homebrew]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: dist/
+      - name: Publish a DRAFT release (never a published one)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          DRY_RUN: ${{ needs.meta.outputs.dry_run }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release named $TAG already exists; refusing to touch it"; exit 1
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            title="DRY RUN $VERSION (do not publish; delete when checked)"
+            extra=--prerelease
+          else
+            title="agentnet $VERSION"
+            extra=
+          fi
+          cat > notes.md <<EOF
+          Built from $SHA. **Unsigned until the owner signs it; do not publish before that.**
+
+          Owner steps (Docs/ops/release-signing.md):
+          1. \`gh release download $TAG -p SHA256SUMS\`
+          2. \`go run ./tools/releasesign sign -key <offline key> SHA256SUMS\`
+          3. \`go run ./tools/releasesign verify -install-sh scripts/install.sh SHA256SUMS\`
+          4. \`gh release upload $TAG SHA256SUMS.sig SHA256SUMS.minisig\`
+          5. Publish the draft; render the Homebrew formula from the verified SHA256SUMS.
+          EOF
+          # shellcheck disable=SC2086 # $extra is empty or one flag
+          gh release create "$TAG" --draft $extra --target "$SHA" --title "$title" --notes-file notes.md \
+            dist/agentnet_* dist/SHA256SUMS
+          gh release view "$TAG" --json isDraft,tagName,assets --jq '{isDraft, tagName, assets: [.assets[].name]}'
+          [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ] ||
+            { echo "::error::release $TAG is not a draft"; exit 1; }

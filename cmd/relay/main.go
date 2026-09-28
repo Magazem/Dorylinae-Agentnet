@@ -66,11 +66,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var lf limitFlags
 	lf.register(fs)
 	metricsListen := fs.String("metrics-listen", "", "address for the operator metrics listener (Prometheus text on /metrics); empty disables it. Never the same listener as --listen")
+	minClient := fs.String("min-client", "", "oldest daemon release (MAJOR.MINOR.PATCH) this relay supports, sent to daemons as ready.min_client; advisory, never refuses a connection. Empty sends none")
 	securityJournal := fs.String("security-journal", "", "append-only file of content-free security events, for a later --replay-journal restore")
 	accountsMode := fs.String("accounts", relay.AccountsOff, "require a bound account to use the relay: off, github, email or both (Docs/protocol/accounts.md)")
 	hooks := registerTestHooks(fs)
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--accounts off|github|email|both] [--metrics-listen HOST:PORT] [--security-journal PATH] [abuse limit flags, below] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n  %s admin account|group ... (%s admin for details)\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %s [--listen HOST:PORT] [--allow-non-loopback] [--tls-cert FILE --tls-key FILE | --acme-domain NAME | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...] [--public-origin URL]... [--allow-auth-v1] [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]] [--accounts off|github|email|both] [--metrics-listen HOST:PORT] [--security-journal PATH] [--min-client VERSION] [abuse limit flags, below] [--verbose] [--version]\n  %s version [--json]\n  %s backup --db PATH --out FILE\n  %s restore --from FILE --db PATH [--force] [--replay-journal PATH]\n  %s admin account|group ... (%s admin for details)\n\nDaemons connect to ws://HOST:PORT%s (wss:// with TLS); %s is the unauthenticated health check.\nThe relay never reads or logs envelope payloads.\n\nFlags:\n", summary, name, name, name, name, name, name, envelope.ConnectPath, relay.HealthPath)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
@@ -114,6 +115,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	default:
 		_, _ = fmt.Fprintf(stderr, "%s: --accounts must be off, github, email or both\n", name)
 		return 2
+	}
+	if *minClient != "" {
+		if _, ok := version.ParseRelease(*minClient); !ok {
+			_, _ = fmt.Fprintf(stderr, "%s: --min-client must be MAJOR.MINOR.PATCH, got %q\n", name, *minClient)
+			return 2
+		}
 	}
 	if *queueTTL <= 0 {
 		_, _ = fmt.Fprintf(stderr, "%s: --queue-ttl must be positive\n", name)
@@ -186,7 +193,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level}))
 	opts := relay.Options{Logger: logger, QueuePath: dbPath, QueueTTL: *queueTTL, AllowPairingV1: v1,
 		Public: public, AllowAuthV1: tf.allowAuthV1, Origins: origins, Journal: journal,
-		Accounts: *accountsMode, LoginURL: loginURL(origins)}
+		Accounts: *accountsMode, LoginURL: loginURL(origins), MinClient: *minClient}
 	lf.apply(&opts)
 	rs, err := relay.Open(opts)
 	if err != nil {

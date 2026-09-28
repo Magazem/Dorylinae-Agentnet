@@ -19,7 +19,7 @@ relay [--listen HOST:PORT] [--allow-non-loopback]
        | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...]
       [--public-origin URL]... [--allow-auth-v1]
       [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]]
-      [abuse limit flags, see below] [--verbose] [--version]
+      [--min-client VERSION] [abuse limit flags, see below] [--verbose] [--version]
 relay version [--json]
 ```
 
@@ -37,6 +37,7 @@ relay version [--json]
 | `--queue-db PATH` | `relay-queue.db` in the config dir (`$DORYLINAE_HOME`, else the OS user config dir + `dorylinae`) | SQLite file for envelopes queued for offline peers. Created, with its directory, if missing. If it cannot be opened the relay exits 1 with a message |
 | `--queue-ttl DURATION` | `168h` (7 days) | How long an envelope waits for its recipient before it is dropped. Must be positive |
 | `--allow-pairing-v1` | on for a relay that is not public, off for a public one | Accept the v1 pairing frames (`pair_new` without `lookup`, `pair_redeem` with `code`). With it off they get `pair_v1_disabled`. Pass `--allow-pairing-v1=false` to turn it off on a relay that is not public. v2 pairing (lookup only, entry kept until `pair_cancel`, expiry or 3 redemptions) is always on. See [../protocol/pairing.md](../protocol/pairing.md#v1-compatibility) |
+| `--min-client VERSION` | none | The oldest daemon release (`MAJOR.MINOR.PATCH`) this relay supports, sent to every daemon as `ready.min_client` (ticket 4.4a). Advisory: no connection is refused; an older daemon logs a warning, `agentnet status` prints an `upgrade:` line and `agentnet doctor` fails its `binary` check. Anything but `MAJOR.MINOR.PATCH` is a usage error |
 | Abuse limits | see below | Ticket 4.0b; every limit has a flag |
 | `--verbose` | off | Also log every connect, disconnect and routed envelope (routing metadata only: abbreviated keys, `type`, `id`, byte counts) |
 | `--version` | | Print the version and exit |
@@ -138,7 +139,7 @@ example rejected authentication) appear. Logs never contain payloads or raw fram
 |------|---------|
 | 0 | Stopped cleanly (SIGINT/SIGTERM) or `--help`/`--version` |
 | 1 | Could not listen, could not open the offline queue, could not load `--tls-cert`/`--tls-key`, or the server failed |
-| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` or without TLS, `--tls-cert` without `--tls-key`, more than one of the TLS options, a TLS option without `--public-origin`, a malformed `--public-origin`, a non-positive `--queue-ttl`, `--behind-proxy` without `--client-ip-header`, `--client-ip-header` without `--behind-proxy` or without a `--trusted-proxy`, a malformed `--trusted-proxy`, or a limit flag that is not positive |
+| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` or without TLS, `--tls-cert` without `--tls-key`, more than one of the TLS options, a TLS option without `--public-origin`, a malformed `--public-origin`, a non-positive `--queue-ttl`, `--behind-proxy` without `--client-ip-header`, `--client-ip-header` without `--behind-proxy` or without a `--trusted-proxy`, a malformed `--trusted-proxy`, a `--min-client` that is not `MAJOR.MINOR.PATCH`, or a limit flag that is not positive |
 
 The relay has no `--json` output.
 
