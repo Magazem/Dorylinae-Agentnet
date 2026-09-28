@@ -302,7 +302,7 @@ mkdir "$tmp/x"
 # Only the two binaries, and only as regular files (review 53 L2).
 tar -xzf "$tmp/$archive" -C "$tmp/x" agentnet agentnetd || die "cannot unpack agentnet and agentnetd from $archive"
 for b in agentnet agentnetd; do
-	[ -f "$tmp/x/$b" ] && [ ! -h "$tmp/x/$b" ] || die "$archive has no regular file $b"
+	if [ ! -f "$tmp/x/$b" ] || [ -h "$tmp/x/$b" ]; then die "$archive has no regular file $b"; fi
 done
 
 mkdir -p "$install_dir" || die "cannot create $install_dir"
