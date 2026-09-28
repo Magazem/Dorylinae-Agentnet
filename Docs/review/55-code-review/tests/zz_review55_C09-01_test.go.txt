@@ -1,0 +1,52 @@
+package capability
+
+import (
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+)
+
+// Review 55 C09-01: the holder's grant-mail apply (internal/daemon/grant_kinds.go:51)
+// re-serialises the token with json.Marshal, which escapes '<' '>' '&' (and
+// U+2028/9) into 6 bytes. A valid token whose canonical form is within
+// MaxTokenBytes then fails Verify step 1 at the holder.
+func TestReview55C09_01_MarshalExpandsToken(t *testing.T) {
+	seed := make([]byte, 32)
+	priv := ed25519.NewKeyFromSeed(seed)
+	hseed := make([]byte, 32)
+	hseed[0] = 1
+	hpriv := ed25519.NewKeyFromSeed(hseed)
+	enc := base64.RawURLEncoding
+	iss := enc.EncodeToString(priv.Public().(ed25519.PublicKey))
+	aud := enc.EncodeToString(hpriv.Public().(ed25519.PublicKey))
+	nbf := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
+	g := Grant{V: 1, ID: "g-00112233445566778899aabbccddeeff", Iss: iss, Aud: aud,
+		Session: "s-36375782ceb6baea9cee4d4273dfb035", Action: ActionFSRead,
+		Resource: Resource{Kind: KindFS, Label: "docs-3f2a"},
+		Scope:    "R&D/" + strings.Repeat("a&b", 250), Nbf: nbf, Exp: nbf.Add(2 * time.Hour), Sensitive: true}
+	tok, err := Sign(priv, g)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	wire, _ := Canonical(tok)
+	gen, err := agentcard.ParseStrict(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(gen) // what grant_kinds.go:51 does
+	p := VerifyParams{Role: RoleHolder, Self: aud, Counterparty: iss, Now: nbf.Add(time.Hour),
+		SessionOpen: func(string, string, string) (bool, bool) { return true, true }}
+	if _, err := Verify(wire, p); err != nil {
+		t.Fatalf("canonical wire (%d bytes) must verify: %v", len(wire), err)
+	}
+	_, err = Verify(raw, p)
+	t.Logf("canonical %d bytes, json.Marshal %d bytes, Verify(marshalled) = %v", len(wire), len(raw), err)
+	if err == nil {
+		t.Fatalf("expected the re-marshalled token to be rejected")
+	}
+}
