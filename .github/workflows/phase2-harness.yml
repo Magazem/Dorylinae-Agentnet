@@ -32,7 +32,7 @@ jobs:
         run: powershell -File tests/harness/phase2-agents.ps1 -Harness standin
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: harness-logs-${{ matrix.os }}
           path: |
