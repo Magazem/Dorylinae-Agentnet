@@ -114,6 +114,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      # The version is NOT checked with `go version -m`: with -trimpath, cmd/go
+      # leaves -ldflags out of the embedded build info (go.dev/issue/52372;
+      # cmd/go/internal/load setBuildInfo), so there is no `build -ldflags=...`
+      # line on ANY GOOS/GOARCH. The first dry run (run 36455126989) failed on
+      # darwin/arm64 only because fail-fast cancelled the other five first.
+      # Grepping the binary for the bare string is no check either: an
+      # unversioned build already contains "0.0.1". Instead tools/binversion
+      # reads the value of the Version symbol. -s strips the symbol table, so
+      # verify/ holds a copy linked with the SAME $x minus -s; the shipped
+      # stage/ binaries stay stripped. Where the runner can execute them
+      # (linux/amd64), the shipped binaries' --version is checked as well.
       - name: Build (release configuration, no build tags)
         env:
           GOOS: ${{ matrix.goos }}
@@ -123,11 +134,13 @@ jobs:
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -eu
-          go build -trimpath \
-            -ldflags "-s -w -X github.com/Magazem/Dorylinae-Agentnet/internal/version.Version=$VERSION" \
-            -o stage/ ./cmd/agentnet ./cmd/agentnetd ./cmd/relay
+          x="-X github.com/Magazem/Dorylinae-Agentnet/internal/version.Version=$VERSION"
+          go build -trimpath -ldflags "-s -w $x" -o stage/ ./cmd/agentnet ./cmd/agentnetd ./cmd/relay
+          go build -trimpath -ldflags "-w $x" -o verify/ ./cmd/agentnet ./cmd/agentnetd ./cmd/relay
       - name: Check the binaries carry the version and no testhooks tag
         env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ needs.meta.outputs.version }}
         run: |
           set -eu
@@ -139,9 +152,18 @@ jobs:
               fi
               echo "::error::$f was built with build tags; release builds use none"; exit 1
             fi
-            printf '%s\n' "$info" | grep -F -- "internal/version.Version=$VERSION" >/dev/null ||
-              { echo "::error::$f does not carry version $VERSION"; exit 1; }
           done
+          GOOS= GOARCH= go build -o "$RUNNER_TEMP/binversion" ./tools/binversion
+          for f in verify/*; do
+            got=$("$RUNNER_TEMP/binversion" "$f")
+            [ "$got" = "$VERSION" ] || { echo "::error::$(basename "$f") carries version '$got', want $VERSION"; exit 1; }
+          done
+          if [ "$GOOS/$GOARCH" = linux/amd64 ]; then
+            for f in stage/*; do
+              "$f" --version | grep -Fx "$(basename "$f") $VERSION" >/dev/null ||
+                { echo "::error::$f --version does not print $VERSION"; exit 1; }
+            done
+          fi
       - name: Package
         env:
           GOOS: ${{ matrix.goos }}
