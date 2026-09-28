@@ -527,7 +527,7 @@ func (s *Server) accountOp(op func(*accountStore) error) error {
 
 // readyFor builds c's ready frame.
 func (s *Server) readyFor(c *conn) envelope.Control {
-	r := envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}}
+	r := envelope.Control{Op: envelope.OpReady, PublicKey: c.key, Features: []string{envelope.FeatureEphemeral}, MinClient: s.minClient}
 	if s.acct != nil {
 		r.Features = append(r.Features, envelope.FeatureAccounts)
 		r.Account = s.acct.info(c.key)

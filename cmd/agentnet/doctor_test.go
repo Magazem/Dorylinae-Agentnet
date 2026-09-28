@@ -28,23 +28,48 @@ import (
 // --- checkBinary ---
 
 func TestCheckBinaryPass(t *testing.T) {
-	got := checkBinary(true, versionForTest())
+	got := checkBinary(true, versionForTest(), "")
 	if got.State != doctorOK {
 		t.Fatalf("state = %q, want ok: %+v", got.State, got)
 	}
 }
 
 func TestCheckBinaryFailOnMismatch(t *testing.T) {
-	got := checkBinary(true, versionForTest()+"-other")
+	got := checkBinary(true, versionForTest()+"-other", "")
 	if got.State != doctorFail {
 		t.Fatalf("state = %q, want fail: %+v", got.State, got)
 	}
 }
 
 func TestCheckBinarySkipsWithoutDaemon(t *testing.T) {
-	got := checkBinary(false, "")
+	got := checkBinary(false, "", "")
 	if got.State != doctorSkip {
 		t.Fatalf("state = %q, want skip: %+v", got.State, got)
+	}
+}
+
+func TestCheckBinaryMinClient(t *testing.T) {
+	tests := []struct {
+		name, v, min string
+		want         string
+	}{
+		{"no minimum", "1.2.3", "", doctorOK},
+		{"meets", "1.2.3", "1.2.3", doctorOK},
+		{"newer", "1.10.0", "1.9.0", doctorOK},
+		{"older", "1.2.2", "1.2.3", doctorFail},
+		{"dev build", "0.0.0-dev+abc", "1.0.0", doctorWarn},
+	}
+	for _, tc := range tests {
+		got := checkBinaryFor(tc.v, true, tc.v, tc.min)
+		if got.State != tc.want {
+			t.Errorf("%s: state = %q, want %q: %+v", tc.name, got.State, tc.want, got)
+		}
+	}
+	if got := relayMinClient(daemon.StatusResult{Relay: &daemon.RelayStatus{MinClient: "1.2.3"}}); got != "1.2.3" {
+		t.Errorf("relayMinClient = %q", got)
+	}
+	if got := relayMinClient(daemon.StatusResult{}); got != "" {
+		t.Errorf("relayMinClient without relay = %q", got)
 	}
 }
 

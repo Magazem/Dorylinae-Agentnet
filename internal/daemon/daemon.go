@@ -89,6 +89,9 @@ type RelayStatus struct {
 	Since     *string `json:"since"`
 	LastError string  `json:"last_error,omitempty"`
 	Auth      string  `json:"auth"`
+	// MinClient is the relay's ready.min_client (4.4a): the oldest release
+	// it supports. Omitted when the relay sent none.
+	MinClient string `json:"min_client,omitempty"`
 }
 
 // TeamRef names a team without its full summary.

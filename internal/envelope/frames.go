@@ -120,7 +120,12 @@ type Control struct {
 	// Features lists the optional relay features a ready frame advertises. Older
 	// clients ignore the member.
 	Features []string `json:"features,omitempty"`
-	Code     string   `json:"code,omitempty"`
+	// MinClient is the oldest daemon release ("MAJOR.MINOR.PATCH") a ready
+	// frame says the relay supports (ticket 4.4a). Advisory: the daemon
+	// keeps its connection, logs a warning and reports it in status/doctor.
+	// Absent means no minimum.
+	MinClient string `json:"min_client,omitempty"`
+	Code      string `json:"code,omitempty"`
 	// Lookup is the 5-character v2 pairing lookup. It is not the secret half.
 	Lookup  string `json:"lookup,omitempty"`
 	Message string `json:"message,omitempty"`
