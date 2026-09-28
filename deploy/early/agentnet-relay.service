@@ -1,0 +1,66 @@
+# systemd unit for the early private relay (ticket 4.1p, Docs/ops/early-relay-deploy.md).
+# Installed as /etc/systemd/system/agentnet-relay.service by setup.sh.
+#
+# Sizing from review 52 M2 (Docs/review/52-4.0-r40-review.md) for a 512 MB-class VM:
+#   --max-conns 2000, --max-inflight 48MiB, GOMEMLIMIT=400MiB;
+#   --queue-max-total 1GiB, --queue-min-free-disk 512MiB (fit a 2-3 GB volume; see the runbook).
+# No --accounts: accounts stay off (the flag's default) until the beta.
+
+[Unit]
+Description=AgentNet relay (early private relay, relay.dorylinae.net)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentnet-relay
+Group=agentnet-relay
+Environment=GOMEMLIMIT=400MiB
+ExecStart=/opt/agentnet-relay/relay \
+    --listen 127.0.0.1:8787 \
+    --behind-proxy \
+    --public-origin wss://relay.dorylinae.net \
+    --client-ip-header X-Forwarded-For \
+    --trusted-proxy 127.0.0.1 \
+    --db /var/lib/agentnet-relay/relay.db \
+    --metrics-listen 127.0.0.1:9787 \
+    --max-conns 2000 \
+    --max-inflight 48MiB \
+    --queue-max-total 1GiB \
+    --queue-min-free-disk 512MiB
+Restart=on-failure
+RestartSec=5
+# The relay drains for up to 5 s on SIGTERM (cmd/relay/main.go shutdownWindow).
+TimeoutStopSec=20
+# 2000 authenticated + 256 unauthenticated connections need more than the usual 1024.
+LimitNOFILE=8192
+
+# /var/lib/agentnet-relay, owned by the service user, mode 0700.
+StateDirectory=agentnet-relay
+StateDirectoryMode=0700
+UMask=0077
+
+# Sandboxing: the relay only needs its state directory and the network.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

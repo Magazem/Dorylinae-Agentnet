@@ -1,2 +1,3 @@
 *.sh text eol=lf
 internal/decision/testdata/*.golden.md text eol=lf
+deploy/early/* text eol=lf

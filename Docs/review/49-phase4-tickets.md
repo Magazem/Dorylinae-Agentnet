@@ -115,6 +115,7 @@ workers at once, HANDOFF §5).
 | 4.4d | Unix hardening checks: keychain and 0600 fallback verified on Linux and macOS, service install/uninstall run for real in CI (systemd user unit in a container with a user session; launchd on the macOS runner) (board todos) | specs approved | — | M | — | Sonnet | 4.0b, 4.4c |
 | 4.9a | `agentnet setup` (login, service install, default hosted relay, telemetry question, doctor), non-interactive and `--json` | 4.2c, 4.4c, 4.6b | — | M | — | Sonnet | 4.1b |
 | 4.1b | Deploy: container image, host config (OD-P4-1/3), DNS + TLS, daily encrypted backup job to object storage, uptime monitor, alerts, `Docs/ops/relay-runbook.md`, `tests/phase4-manual.md` (restore drill on the real host) | 4.1a, 4.2a, 4.3a, G-4.0 | — | M | **yes** (deployment config) | Sonnet | 4.9a |
+| 4.1p | Early private relay (D40): the existing relay binary on one Hetzner VM at `relay.dorylinae.net` for the owner's own team only; Caddy + systemd + firewall/SSH/auto-update templates, runbook. **Strict subset of 4.1b**: no accounts, no backups, no monitor | G-4.0, 4.0a–c, 4.1a | — | S | yes (config, before the owner deploys) | Opus | any |
 | 4.9b | Clean-machine runs: CI job per OS from a fresh user profile (download release artefact → install → `setup --non-interactive` against a staging relay with fake OAuth → `team join` → first request); an agent-driven run from the quickstart only (harness, one real Claude run, owner OK needed) | 4.9a, 4.4a, 4.1b | — | M | — | Sonnet | 4.5a |
 | 4.5a | Docs: quickstart, "tell your agent" page with CLAUDE.md / AGENTS.md / Hermes snippets, privacy note draft (OD-P4-15), per-command pages checked against `--help` by a test (`TestCLIDocsMatchHelp`) | 4.9a | — | M | — | Lite | 4.9b |
 | 4.3b | Waitlist (OD-P4-9) and wave runbook (`Docs/ops/beta-waves.md`: making codes, sending them, weekly call rota, what to watch) | 4.3a | — | S | — | Lite | 4.5a |
@@ -400,6 +401,36 @@ edited.
   OSes; the production image is built without `testhooks` and a test fails if the hook route
   answers; staging and production share no database, domain, OAuth app or operator key; the backup job's latest file restores into a scratch relay (manual drill recorded);
   the container runs as non-root with a read-only root filesystem except the volume.
+
+### 4.1p Early private relay (review of the config)
+
+- Why: D40 (owner-approved after G-4.0/D38). The owner's own daemon team uses a real hosted
+  relay before the beta. The binary is unchanged: it is what 4.0a/4.0b/4.0c/4.1a built.
+- Scope, a **strict subset of 4.1b**: one Hetzner VM (D37), Debian, Caddy terminating TLS for
+  `relay.dorylinae.net` (D39) with ACME and proxying to the relay on `127.0.0.1` (OD-P4-3 (a)),
+  a systemd unit (non-root user, `--behind-proxy --client-ip-header X-Forwarded-For
+  --trusted-proxy 127.0.0.1`, `--metrics-listen` on loopback, review-52 M2 sizing:
+  `--max-conns 2000 --max-inflight 48MiB`, `GOMEMLIMIT=400MiB`, `--queue-max-total 1GiB
+  --queue-min-free-disk 512MiB`), and the host baseline (ufw 22+443 only, key-only SSH,
+  fail2ban, unattended security upgrades, 14-day journal).
+- **Out of scope** (stays in 4.1b/4.2b/4.3a): `--accounts` (not passed, so off), OAuth,
+  invites, container image, **backups** (no operator key yet, OD-P4-11), uptime monitor and
+  alerts, staging, and the full runbook (rollback, OAuth secret rotation, team suspension).
+- **No backups:** queued envelopes are lost if the VM is lost. Mail is only delayed (the
+  outbox resends until the app ack); queued non-mail envelopes are lost. This is acceptable
+  for the owner's own team, and **must be closed by 4.1b before any beta tester's traffic
+  reaches the host**.
+- Later: the same host is upgraded in place for the beta (`--accounts`, the OAuth callback
+  already on `https://relay.dorylinae.net/`, 4.1b backups and monitoring). It is not
+  replaced.
+- Files: `deploy/early/` (`Caddyfile`, `agentnet-relay.service`, `setup.sh`),
+  `Docs/ops/early-relay-deploy.md`, `.gitattributes` (LF for `deploy/early/*`).
+- Acceptance (run by the owner, runbook step 7): `curl https://relay.dorylinae.net/healthz`
+  returns 200 with a valid certificate. From outside, `/metrics` is 404 and ports 8787, 9787,
+  2019 and 80 do not answer. `agentnet doctor` shows `relay ok` (auth v2) from the owner's
+  machines. Two paired daemons exchange a ping and a request, including once through the
+  offline queue. The relay log shows `public: yes; origins: wss://relay.dorylinae.net;
+  accounts: off`.
 
 ### 4.9b Clean-machine runs
 

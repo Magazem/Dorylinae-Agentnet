@@ -1,0 +1,35 @@
+# Caddy for the early private relay (ticket 4.1p, Docs/ops/early-relay-deploy.md).
+# Installed as /etc/caddy/Caddyfile by setup.sh.
+#
+# Caddy holds the TLS certificate for relay.dorylinae.net (Let's Encrypt, automatic)
+# and forwards to the relay on loopback (OD-P4-3 (a), D37). The relay listens on
+# 127.0.0.1:8787 only and is started with --behind-proxy --client-ip-header
+# X-Forwarded-For --trusted-proxy 127.0.0.1 (agentnet-relay.service).
+#
+# Caddy ignores X-Forwarded-For sent by clients (no trusted_proxies here) and sets it
+# to the client's address, so the last entry the relay reads is always the real client.
+
+{
+	# Optional: a contact address for Let's Encrypt expiry notices.
+	# email you@example.com
+}
+
+relay.dorylinae.net {
+	# Only 443 is open in the firewall, so use the TLS-ALPN-01 challenge on 443 and do
+	# not wait for HTTP-01 on port 80 to time out.
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+
+	# The relay serves exactly these two paths (internal/relay/relay.go). Everything
+	# else stops here. /metrics is never on this listener: it is on 127.0.0.1:9787.
+	@relay path /v1/connect /healthz
+	handle @relay {
+		reverse_proxy 127.0.0.1:8787
+	}
+	handle {
+		respond 404
+	}
+}
