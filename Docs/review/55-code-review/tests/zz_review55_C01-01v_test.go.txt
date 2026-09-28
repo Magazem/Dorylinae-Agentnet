@@ -1,0 +1,69 @@
+package relay_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
+)
+
+// Review 55 C01-01 (verifier): same as the reviewer test, default 600/min ephemeral limit.
+// Review 55 C01-01: presence (ephemeral) frames to non-reading recipients are
+// charged to the relay-wide --max-inflight budget but never refused by it, so
+// an attacker's own keys can spend the whole budget; every direct mail send on
+// the relay then takes the queue path and queue drains wait for budget.
+func TestReview55C01_01VerifyDefaultEphemeralLimit(t *testing.T) {
+	const budget = 512 << 10
+	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+
+	// Victims: two honest peers on another network, both reading.
+	va, vb := newPeer(t), newPeer(t)
+	cva := e.authed(va, "10.9.0.1")
+	cvb := e.authed(vb, "10.9.0.2")
+	waitDrained(t, e.s, va.key)
+	waitDrained(t, e.s, vb.key)
+
+	// Attacker: 4 recipient keys that never read, one sender key.
+	atk := newPeer(t)
+	ca := e.authed(atk, "10.1.0.1")
+	var sinks []peer
+	for i := range 4 {
+		r := newPeer(t)
+		e.authed(r, fmt.Sprintf("10.1.0.%d", i+2)) // never read from
+		waitDrained(t, e.s, r.key)
+		sinks = append(sinks, r)
+	}
+	body := payload(5500) // frame stays under the 8 KiB ephemeral cap
+	deadline := time.Now().Add(8 * time.Second)
+	for i := 0; e.s.Inflight() <= budget && time.Now().Before(deadline); i++ {
+		r := sinks[i%len(sinks)]
+		writeFrame(t, ca, ca2(atk, r.key, fmt.Sprintf("p%d", i), body))
+		if i%64 == 63 {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if n := e.s.Inflight(); n <= budget {
+		t.Fatalf("attacker could not spend the budget: in-flight %d, budget %d", n, budget)
+	}
+	t.Logf("in-flight %d bytes > budget %d, all from presence frames", e.s.Inflight(), budget)
+
+	// An honest small mail between two reading victims is no longer forwarded
+	// directly: it is queued, and the drain waits for budget.
+	writeFrame(t, cva, []byte(mustJSON(va.env(vb.key, "honest-1", payload(200)))))
+	got := readControl(t, cva)
+	if got.Op != envelope.OpQueued {
+		t.Fatalf("honest mail: got %+v, want it forwarded directly (no reply)", got)
+	}
+	t.Logf("honest mail between two online, reading peers got %q", got.Op)
+	// And it is not delivered while the attacker holds the budget.
+	rctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, frame, err := cvb.Read(rctx); err == nil {
+		t.Fatalf("delivered anyway: %.80s", frame)
+	}
+	t.Logf("not delivered within 2 s; queued for vb: %d", func() int { n, _ := e.s.Queued(vb.key); return n }())
+}
+
