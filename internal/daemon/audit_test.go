@@ -119,6 +119,14 @@ func TestAuditListSessionView(t *testing.T) {
 	g2 := e.grant(t, sid2, "fs.read", qDir(t), false)
 	e.result(t, sid1, qMarkerResult("V1"))
 	e.waitState(t, sid1, "quarantined")
+	// The state row and its ws.result_in audit row are written by two
+	// separate statements inside mail.Receiver.Handle (the state inside
+	// applyResult's tx, the audit row after commit in afterResult), so a
+	// reader can see "quarantined" before the row lands - the same
+	// apply-then-audit ordering every other e2e test here polls for
+	// (e.g. session_human_test.go's "ws.release audit", session_quarantine_test.go's
+	// "ws.orphan audit"). Poll instead of asserting immediately.
+	harnessWait(t, "sid1's ws.result_in audit row", func() bool { return auditHas(e.a, "ws.result_in") })
 
 	mentions := func(evs []audit.Entry, ids ...string) bool {
 		for _, ev := range evs {
