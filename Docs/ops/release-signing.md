@@ -63,7 +63,13 @@ agentnet-release.key -rawin -in SHA256SUMS -out check.sig` produces the same byt
 ## Dry run
 
 `Actions → Release → Run workflow` with `dry_run` ticked and a `version` (default
-`0.1.0`) creates only a draft **pre-release** named `dry-run-<run id>` with the six
-archives and `SHA256SUMS`, plus the run's workflow artifacts (kept 7 days). A draft does
-not create a git tag. Delete the draft afterwards (`gh release delete dry-run-<run id>`).
+`0.0.1`; it must be `0.0.Z`) creates only a draft **pre-release** named `dry-run-<run id>`
+with the six archives and `SHA256SUMS`, plus the run's workflow artifacts (kept 7 days). A
+draft does not create a git tag. Delete the draft afterwards (`gh release delete dry-run-<run id>`).
 `dry_run` unticked is refused.
+
+Sign a dry run only with a **test** key (`keygen -out test.key`, `embed` into a copy of
+`install.sh`), never with the release key. A dry run can be started from any branch, so its
+binaries are unreviewed; a signature is valid for ever, for whatever bytes it covers. That is
+why dry-run versions are `0.0.Z`: below `AGENTNET_MIN_VERSION`, so `install.sh` refuses them
+even if one were signed with the real key by mistake (review 53 M1).

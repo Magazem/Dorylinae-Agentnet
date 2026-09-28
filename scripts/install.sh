@@ -17,8 +17,10 @@
 #
 # What this protects against, honestly: whoever controls the domain serving
 # this script controls the key embedded in it. The signature protects against
-# a swap of the release files on GitHub (a leaked token, a compromised CI
-# step), because the signing key is kept offline and never in GitHub.
+# a swap of the release files on GitHub after the owner signed them (a leaked
+# token, a later compromised workflow), because the signing key is kept
+# offline and never in GitHub. It cannot catch a build that was already bad
+# when the owner signed its SHA256SUMS.
 #
 # Environment (all optional):
 #   AGENTNET_VERSION       install this X.Y.Z instead of the latest release
@@ -53,6 +55,11 @@ AGENTNET_MIN_VERSION='0.1.0'
 
 REPO='Magazem/Dorylinae-Agentnet'
 TAP_CMD='brew install magazem/tap/agentnet'
+
+# Everything below runs from main, called on the last line: `curl | sh` feeds
+# the script to sh as it downloads, so a transfer cut short must define
+# functions only and run nothing (review 53 L1).
+main() {
 
 say() { printf '%s\n' "$*"; }
 die() {
@@ -210,12 +217,16 @@ if command -v curl >/dev/null 2>&1; then
 		fi
 	}
 elif command -v wget >/dev/null 2>&1; then
+	# GNU wget can refuse TLS < 1.2 (its --https-only binds only recursive
+	# downloads, not redirects); BusyBox wget has neither option. Transport
+	# is defence in depth: the signature check below is what counts.
+	wget_tls=
+	if [ -z "$insecure" ] && wget --version 2>/dev/null | grep -q 'GNU Wget'; then
+		wget_tls=--secure-protocol=TLSv1_2
+	fi
 	fetch() {
-		if [ -n "$insecure" ]; then
-			wget -q -O "$2" "$1"
-		else
-			wget -q --https-only -O "$2" "$1"
-		fi
+		# shellcheck disable=SC2086 # $wget_tls is empty or one flag
+		wget -q $wget_tls -O "$2" "$1"
 	}
 else
 	die "needs curl or wget"
@@ -288,9 +299,10 @@ got_sum=$(sha256_of "$tmp/$archive")
 [ "$got_sum" = "$want_sum" ] || die "$archive SHA-256 mismatch (expected $want_sum, got $got_sum); refusing"
 
 mkdir "$tmp/x"
-tar -xzf "$tmp/$archive" -C "$tmp/x" || die "cannot unpack $archive"
+# Only the two binaries, and only as regular files (review 53 L2).
+tar -xzf "$tmp/$archive" -C "$tmp/x" agentnet agentnetd || die "cannot unpack agentnet and agentnetd from $archive"
 for b in agentnet agentnetd; do
-	[ -f "$tmp/x/$b" ] || die "$archive has no $b"
+	[ -f "$tmp/x/$b" ] && [ ! -h "$tmp/x/$b" ] || die "$archive has no regular file $b"
 done
 
 mkdir -p "$install_dir" || die "cannot create $install_dir"
@@ -307,3 +319,6 @@ case :${PATH:-}: in
 *) say "Note: $install_dir is not on your PATH. Add it, e.g.: export PATH=\"$install_dir:\$PATH\"" ;;
 esac
 say "Next: agentnet setup"
+}
+
+main "$@"

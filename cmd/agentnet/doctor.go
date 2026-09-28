@@ -219,7 +219,10 @@ func checkBinaryFor(cliVersion string, daemonUp bool, daemonVersion, minClient s
 			Detail: "agentnet and agentnetd report different versions",
 			Fix:    "reinstall so the CLI and the daemon come from the same release"}
 	}
-	if minClient == "" {
+	// min_client is relay text relayed by the daemon, which drops anything
+	// that is not a release version; check again rather than print it
+	// (review 53 L4).
+	if _, ok := version.ParseRelease(minClient); !ok {
 		return doctorCheck{ID: "binary", State: doctorOK, Detail: "agentnet and agentnetd versions match"}
 	}
 	meets, ok := version.MeetsMinimum(daemonVersion, minClient)

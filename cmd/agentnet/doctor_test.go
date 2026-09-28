@@ -58,6 +58,7 @@ func TestCheckBinaryMinClient(t *testing.T) {
 		{"newer", "1.10.0", "1.9.0", doctorOK},
 		{"older", "1.2.2", "1.2.3", doctorFail},
 		{"dev build", "0.0.0-dev+abc", "1.0.0", doctorWarn},
+		{"junk minimum", "1.2.3", "9.9.9\x1b[2J", doctorOK},
 	}
 	for _, tc := range tests {
 		got := checkBinaryFor(tc.v, true, tc.v, tc.min)

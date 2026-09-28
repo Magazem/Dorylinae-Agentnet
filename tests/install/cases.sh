@@ -74,7 +74,7 @@ check wrong-key-openssl fail "signature check FAILED" "$d/9" "$PATH_OSSL" "$U/wr
 check wrong-key-minisign fail "signature check FAILED" "$d/10" "$PATH_MINI" "$U/wrongkey"
 check signed-but-too-old fail "rollback" "$d/11" "$PATH_OSSL" "$U/old"
 check asked-other-version fail "asked for 99.0.0" "$d/12" "$PATH_OSSL" "$U/good" --version 99.0.0
-check asked-too-old fail "older than the oldest" "$d/13" "$PATH_OSSL" "$U/old" --version 0.0.9
+check asked-too-old fail "older than the oldest" "$d/13" "$PATH_OSSL" "$U/old" --version 0.0.0
 check asked-this-version ok "Installed agentnet $V" "$d/14" "$PATH_OSSL" "$U/good" --version "$V"
 check upgrade-in-place ok "Installed agentnet $V" "$d/2" "$PATH_OSSL" "$U/good"
 out=$(env PATH="$PATH_OSSL" AGENTNET_DOWNLOAD_URL="$U/good" AGENTNET_INSTALL_DIR="$d/15" sh "$T/install.sh" 2>&1)
@@ -85,6 +85,25 @@ case $rc:$out in
 *"must be https"*) echo "ok   $n http-url-without-opt-in" ;;
 *) echo "FAIL $n http-url-without-opt-in: $out"; fails=$((fails + 1)) ;;
 esac
+check symlink-in-archive fail "no regular file agentnet" "$d/16" "$PATH_OSSL" "$U/symlink"
+# A `curl | sh` cut short runs nothing (review 53 L1): every prefix of the
+# script, piped to sh, installs nothing and leaves no install dir.
+n=$((n + 1))
+total=$(wc -l <"$T/install.sh")
+bad=
+i=1
+while [ "$i" -lt "$total" ]; do
+	head -n "$i" "$T/install.sh" | env PATH="$PATH_OSSL" AGENTNET_ALLOW_INSECURE_URL=1 \
+		AGENTNET_DOWNLOAD_URL="$U/good" AGENTNET_INSTALL_DIR="$d/17" sh >/dev/null 2>&1
+	[ -e "$d/17" ] && { bad="$bad $i"; rm -rf "$d/17"; }
+	i=$((i + 1))
+done
+if [ -z "$bad" ]; then
+	echo "ok   $n truncated-script-runs-nothing ($total prefixes)"
+else
+	echo "FAIL $n truncated-script-runs-nothing: prefixes of$bad lines installed something"
+	fails=$((fails + 1))
+fi
 # The default install dir is ~/.local/bin (no --dir, no AGENTNET_INSTALL_DIR).
 n=$((n + 1))
 if env PATH="$PATH_OSSL" AGENTNET_ALLOW_INSECURE_URL=1 AGENTNET_DOWNLOAD_URL="$U/good" sh "$T/install.sh" >/dev/null 2>&1 &&
