@@ -382,9 +382,18 @@ func fingerprintOf(key string) string {
 	return fp
 }
 
+// maxVerifyReason caps the runes of a failure reason in the human output.
+const maxVerifyReason = 200
+
 func printDecisionVerifyHuman(w io.Writer, res decision.Result) {
 	if !res.Valid {
-		_, _ = fmt.Fprintf(w, "invalid at step %d: %s\n", res.Step, decision.Visible(res.Reason, false))
+		// The reason can carry file-controlled text: escape it, and cap it so
+		// a run of spaces cannot soft-wrap a fake verdict onto its own row.
+		reason := []rune(decision.Visible(res.Reason, false))
+		if len(reason) > maxVerifyReason {
+			reason = append(reason[:maxVerifyReason], '…')
+		}
+		_, _ = fmt.Fprintf(w, "invalid at step %d: %s\n", res.Step, string(reason))
 		return
 	}
 	status := "valid, signed by " + strings.Join(res.SignedBy, " and ")

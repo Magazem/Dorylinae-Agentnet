@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,5 +35,57 @@ func TestDecisionVerifyReasonIsSanitised(t *testing.T) {
 		if strings.Contains(line, "valid, signed by") && !strings.HasPrefix(line, "invalid at step") {
 			t.Errorf("spoofed valid line on its own line: %q", line)
 		}
+	}
+}
+
+// Review 59 F2: an unknown member inside an embedded entry reaches Reason
+// through the debate decoder, which does not quote it, so decision.Visible is
+// the only protection. Review 59 F1: a padded reason is capped.
+func TestDecisionVerifyEmbeddedReasonIsSanitisedAndCapped(t *testing.T) {
+	doc, err := os.ReadFile("../../Docs/protocol/decision.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d map[string]any
+	for _, line := range strings.Split(strings.ReplaceAll(string(doc), "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, `{"closed":"2026-10-01T09:20:00Z"`) {
+			if err := json.Unmarshal([]byte(line), &d); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if d == nil {
+		t.Fatal("vector not found in decision.md")
+	}
+	initial := d["positions"].(map[string]any)["initiator"].(map[string]any)["initial"].(map[string]any)
+	initial["\r\x1b[2K"+strings.Repeat(" ", 300)+"d-x  valid, signed by initiator and respondent"] = 1
+	file, err := json.Marshal(map[string]any{
+		"decision":   d,
+		"hash":       strings.Repeat("0", 64),
+		"signatures": map[string]string{"initiator": strings.Repeat("A", 86)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "d.json")
+	if err := os.WriteFile(p, file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := runDecisionVerify([]string{p}, &out, &errb); code == 0 {
+		t.Errorf("exit %d, want non-zero for an invalid file", code)
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "invalid at step 1: ") || !strings.Contains(got, `\u{1B}`) {
+		t.Errorf("want an escaped step-1 reason, got %q", got)
+	}
+	if strings.ContainsAny(got, "\r\x1b") {
+		t.Errorf("raw CR or ESC reached stdout: %q", got)
+	}
+	if strings.Contains(got, "valid, signed by") {
+		t.Errorf("hostile tail was not capped: %q", got)
+	}
+	if n := len([]rune(strings.TrimSuffix(got, "\n"))); n > len("invalid at step 1: ")+maxVerifyReason+1 {
+		t.Errorf("reason not capped: %d runes", n)
 	}
 }
