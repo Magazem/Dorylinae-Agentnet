@@ -6,6 +6,9 @@ Status: **draft** for Phase 2 (tickets 2.2a and 2.2d, [../review/23-phase2-ticke
 Used by grants ([grant.md](grant.md)), the sensitive-grant release
 ([work-session.md](work-session.md#quarantine-24)), `accept-result --human`, and the
 own-device link and scope ([device.md](device.md)). Change this document first.
+Review 55 ticket **R55-F5** (draft, pending the adversarial review and the owner's approval of
+OD-R55F5-1..10) adds [Approval summaries](#approval-summaries-r55-f5): one builder, the contents per
+kind, one sanitising rule and a hard length limit.
 
 ## Why
 
@@ -29,9 +32,10 @@ On a headless machine the daemon's own terminal takes the place of the window
 | A prompt-injected local agent that uses AgentNet's interface (IPC, CLI) | Issue a grant, release a quarantine, link a device or widen a helper scope without the human | It cannot submit a code: no IPC method or CLI command takes one. Codes are read only from the daemon's own approval window (desktop) or the daemon's own stdin (terminal mode). It cannot see the code either: the code is never in an IPC result, a CLI output, the audit log, the daemon log, a webhook, SQLite (not even a hash: the check value lives only in the daemon's memory), any process's argument list or a file. Rate limits and the daily wrong-code cap still apply ([Object](#object)) |
 | The same agent showing a **fake** approval window or chat prompt | Phish the code from the human | A captured code is useless: the agent has nowhere to submit it. The notification tells the human to type the code only into the AgentNet window with the matching id ([Spoofing](#spoofing-and-stray-input)) |
 | Another local OS user | Read the code as it passes to the notifier | The code never appears in a process's argument list (world-readable through `/proc` and `ps`); it reaches the notifier in-process (Linux) or through the environment (macOS, Windows), which only the same user can read ([Delivering the code](#delivering-the-code)). On Linux the approval window's title and summary (never the code) are in the dialog's argv; this is accepted (OQ-2.2d-1, [The approval window](#the-approval-window)) |
-| A remote peer | Trigger approvals to annoy or to phish the human | Only local IPC callers create approvals; a peer's mail never does. The notification names the **local** action and the **peer's name and fingerprint** |
+| A remote peer | Trigger approvals to annoy or to phish the human, or pass as another peer (a twin name, a decoy code in its name) | Only local IPC callers create approvals; a peer's mail never does. The notification and the window name the **local** action, the **peer's cleaned name and its fingerprint**, computed by the daemon from the key the action binds to ([Approval summaries](#approval-summaries-r55-f5)) |
 | Malware running as the user | Anything | **Out of scope.** It can read the screen, the keystore file fallback and the database. The approval is a gate against confused-deputy agents, not a sandbox |
 | A human approving without reading | A too-broad grant | The notification and the approval window state action, resource, peer and expiry in plain words |
+| A prompt-injected local agent that asks for more than the human meant (a whole repository instead of a folder, `--public`, a 90-day policy, a twin-named peer, the wrong session, a command hidden after a long argument) | Get the broad action approved under a text that looks like the benign one (review 55 R55-005, R55-007) | Every summary is built by one builder from the object that will be performed and states every field that decides what is approved, the fingerprint included; a summary that does not fit the window is refused, never cut; the confirm transaction re-derives the text and rejects the approval if it no longer matches ([Approval summaries](#approval-summaries-r55-f5)) |
 
 **Boundary, stated plainly.** The approval stops an agent that acts through AgentNet's own
 interface. It does **not** stop an agent that runs arbitrary programs as the user and sets
@@ -116,7 +120,9 @@ peer text (review 26, N4) away from the place the real one is shown.
 
 (Ticket 2.2d, D19.) For every approval in desktop mode the daemon starts a small dialog
 process of its own on the user's desktop. The dialog shows the short tag, the kind, the
-summary (action, resource, peer name and fingerprint, expiry) and a 6-digit input box, with
+summary **in full** (built as in [Approval summaries](#approval-summaries-r55-f5): action,
+resource, peer name and fingerprint, expiry, and the other fields of its kind) and a 6-digit
+input box, with
 **Approve** and **Reject** buttons. The human's answer comes back to the daemon over the
 dialog's **stdout pipe**, which only the daemon holds. Nothing else can submit a code.
 
@@ -130,6 +136,14 @@ Common rules, all platforms:
   `DORYLINAE_DEBUG` selects a different program, script or answer source: tests swap the
   runner only inside Go test code. A desktop-mode daemon **never reads its stdin**
   (review 29, M6).
+- **The summary is shown as built (R55-F5).** The window adds only the fixed sentence about
+  where the code is. It never cleans, collapses, escapes (beyond what its own toolkit needs to
+  show the text literally, [Display-safe output](#display-safe-output)) or cuts the summary.
+  Today's `windowText` runs `notify.Clean(summary, 4096)`, which both cuts (C14-02) and
+  collapses the double spaces inside a quoted argv; that is removed. Instead the window checks
+  that the summary is display-safe and at most `MaxWindowSummary` code points, and if not it
+  does not open (not ready, so `approval_unavailable`), a fail-closed backstop that a correct
+  handler never reaches.
 - **Answer format.** The dialog writes one line to stdout and exits: `approve <digits>`,
   `reject` or `dismiss`. The daemon reads at most 256 bytes. Anything else counts as
   `dismiss`. An `approve` whose value is not exactly 6 ASCII digits is **not** counted as a
@@ -205,14 +219,272 @@ notification centre." (review 29, L5)
   Windows also drops input for 1 s and has no default buttons. On macOS and Linux the dialogs
   cannot do this, and the code is the only guard.
 
+## Approval summaries (R55-F5)
+
+(Review 55: R55-005 = C11-01, C11-06, C12-02, T8-01, T8-02; R55-007 = C14-02; R55-066 = T11-02;
+R55-122 = T6b-02; R55-148 = T6b-11. Owner decision D44, review-55 §6 D9.) The window and the
+notification are the only channel a local agent cannot write to, so the summary is the whole
+of what the human approves. Review 55 found that most kinds named only a random label, an
+opaque session id or the peer's self-chosen name, never its key; that grants and policies left
+out scope, branch, `public`, `until` and the fingerprint; that grant summaries carried the raw
+card name; that a decoy code split by a zero-width character survived; and that a scope summary
+of up to 16384 bytes was cut at 4096 code points in every window, so a command placed last was
+approved unseen. This section is normative for all seven kinds and replaces every per-handler
+summary.
+
+### One builder
+
+- **One builder.** Every summary is produced by one builder (for example
+  `approvaltext.Build(facts)`; the package and names are the implementer's choice) from a
+  typed **facts** value per kind ([Contents per kind](#contents-per-kind)). No handler formats a
+  summary itself. The builder is a pure function: the same facts give the same bytes. It reads
+  no clock, locale, time zone, environment or database.
+- **Facts come from the object that will be performed, never from IPC params.** A handler
+  first builds what it will store or perform (the grant record, the policy, the link intent,
+  the resolved scope, the prepared constraint, the session row), then derives the facts from
+  that object and from the `peers` row of its key. So the text cannot describe something other
+  than what Perform does. (Today `grant_create` formats `p.Action` and `label` next to a
+  separately built token; the grant summary is the one place where they could drift.)
+  **For `grant`, what Perform sends is the token signed at Create** (grant.md §Issuance step
+  6), not the row. So the grant's facts are taken from that signed token, decoded back from
+  the exact bytes Perform will send (action, label, branch, scope, `sensitive`, `nbf`, `exp`,
+  audience, session), plus the one local-only field, the resolved path, from the row. The
+  Precondition first requires the stored row to agree with the token on every shared field
+  (review 58a, M3).
+- **The path is the identity-resolved path.** A grant's or policy's path fact is the path
+  that grant.md §Issuance step 3 resolves and stores (R55-F7: symbolic links, and on Windows
+  junctions, mount points, `subst` and 8.3 names, resolved from an open handle), never the
+  spelling the agent passed. The existing `recheckResource` at confirm requires the path to
+  still resolve to it, so a folder swapped for a link while the approval waits is rejected.
+- **Precondition compares.** At confirm, inside the confirm transaction, each kind's
+  Precondition, after its existing state checks:
+  1. re-derives the facts from the tables of record: the stored row (grant, policy, link
+     intent, session); for the two kinds whose waiting object lives only in memory
+     (`device_scope`, `debate_constraint`), the captured object plus the current `peers` row;
+  2. requires them equal to the facts captured at Create, field by field (times compared as
+     instants);
+  3. requires `Build(facts)` to equal `approvals.summary`, read in the same transaction, byte
+     for byte.
+
+  Any difference rejects the approval, reason `precondition`, with the message "the request
+  changed after it was shown; start it again". This turns review 46 H2's "the human approves
+  what the window shows" into a checked property. Facts that can change while an approval
+  waits: the peer's name (a roster update or re-pairing; OD-R55F5-5) and, for release and
+  accept-result, the round, which the `seq` check already binds. A fact that depends on time
+  (the release's rule-2 reason, "a sensitive grant in another session in the last 7 days") is
+  evaluated against the approval's stored `created` instant, both at Create and at confirm, so
+  the comparison stays deterministic and the builder stays free of any clock.
+- **The summary holds no secret and no quarantined content.** `approvals.summary` is returned
+  by `approval_list` to any local caller, the agent included. So no summary ever contains a
+  code, a token, or the content of a quarantined (or not yet accepted) result: only its
+  status and sizes.
+
+### Length
+
+- The builder's output is at most **`MaxWindowSummary` = 4096 code points**
+  (`notify.MaxWindowSummary`, unchanged). The window's fixed sentence about where the code is
+  comes on top and is not counted. 4096 code points are at most 16 KiB of UTF-8, which fits the
+  Windows window's environment variable (base64 of UTF-16, at most about 22 000 characters,
+  under the 32 767-character limit) and a Linux argv string (128 KiB).
+- **Refused at the IPC layer, never cut.** A handler whose summary would be longer refuses the
+  call before anything is stored and before any approval exists: `bad_scope` (field `scope`)
+  for `device_scope_set`, which replaces device.md's 16384-byte limit, and `bad_request`
+  naming the field that made it long for every other kind (for example "resource: too long to
+  show in full in the approval window"). Nothing is cut anywhere: not by the builder, the
+  approval store, the window, terminal mode or `approval_list`. The OS may shorten a
+  notification body. The window is the authoritative view, and the notification says so
+  ("Type this code only into the AgentNet approval window …").
+- **Backstops that fail closed.** `approval.Store.Create` refuses a summary that is longer or
+  not [display-safe](#display-safe-output) (an internal error, so the method fails and nothing
+  is stored), and the window refuses to open for such a text ([The approval
+  window](#the-approval-window)). A correct handler never reaches either. They exist so that a
+  missed check refuses instead of cutting (C14-02).
+- **Not cut is not the same as seen (review 58a, M1).** The Windows window shows about 1000
+  characters in its 490×200 box and scrolls for the rest, so a command placed after a
+  3000-character argument is still below the fold. And `display dialog` and zenity `--entry`
+  may not scroll at all. So:
+  - every summary puts what decides the approval **before** any long, agent-chosen field. For
+    `device_scope`, the count and the names of all commands come first
+    ([Contents per kind](#contents-per-kind)), so a command hidden below the fold is still
+    named at the top;
+  - every summary ends with its fixed "Confirm only if …" sentence, so a text whose end the
+    human cannot see is visibly unfinished;
+  - the manual check (review 58 M1, M2) confirms on Windows, macOS and Linux that a
+    4096-code-point summary can be read to its end and that the buttons and the code box stay
+    on screen. If a platform fails, F6 changes that platform's window (OD-R55F5-10). The limit
+    stays one number for all platforms, because the text must be the same everywhere.
+
+### Sanitising: one character rule, two renderings
+
+One predicate, `hidden(r)`, shared by the builder, `device.DisplayQuote` and
+`decision.Visible`. The decision output does not change: this is exactly its set, and review 46
+H1's. It is true for:
+
+- C0 and C1 controls (U+0000–U+001F, U+007F–U+009F);
+- format characters (`unicode.Cf`): the bidi controls (U+200E, U+200F, U+202A–U+202E,
+  U+2066–U+2069), the zero-width characters U+200B–U+200D, the word joiner U+2060, U+FEFF and
+  the tag characters U+E0000–U+E007F, among others;
+- U+2028 and U+2029;
+- variation selectors (`unicode.Variation_Selector`);
+- the other default-ignorable code points (`unicode.Other_Default_Ignorable_Code_Point`: U+034F,
+  the Hangul fillers U+115F, U+1160, U+3164, U+FFA0, …);
+- every space separator (`Zs`) other than U+0020, and U+2800;
+- any rune that is not `unicode.IsGraphic`, except U+0020.
+
+Invalid UTF-8 is decoded as U+FFFD before anything else.
+
+**Name rendering, `displayName(s)`**, for text that only identifies: the peer's card name and a
+team name. The binding is the fingerprint, not the name, so the name may be changed to make it
+safe.
+1. Every hidden rune that renders as space (controls, U+2028/U+2029, `Zs`, U+2800) becomes
+   U+0020. Every other hidden rune is **removed**, so that `4​8​2​9​1​3` (zero-width spaces)
+   reads as `482913` for step 3 (R55-066).
+2. Runs of spaces collapse to one, and the text is trimmed.
+3. **Stacked marks.** After each base character at most **2** combining marks (`Mn`, `Me`)
+   are kept; the rest are removed. A long stack of marks is drawn above or below its line and
+   can cover the neighbouring text, the fingerprint included (review 58a, M4).
+4. **Long digit runs.** A digit run is a maximal sequence of runes of category `N` (`Nd`, `Nl`,
+   `No`: ASCII, fullwidth, superscript, circled and mathematical digits). Between two of its
+   numbers there may be **up to 3** separator runes (spaces, `P*` or `S*`), so `4 - 8 - 2 - 9 -
+   1 - 3` counts as one run (review 58a, L3). Combining marks directly after a number are part
+   of it. A run of **6 or more** numbers is replaced by one `…`. This is today's
+   `stripLongDigits` (review 26 N4, review 36 L2), made to see through invisible characters,
+   combining marks, non-decimal digits and spaced-out digits. The zenity octal form
+   `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
+5. **Fingerprint-shaped text** (OD-R55F5-9). A run of **2 or more** groups of 4 characters of
+   the fingerprint alphabet (case-insensitive), separated by single spaces or `-`, and any
+   run of 8 or more such characters with no separator that holds both a digit and a letter,
+   are replaced by one `…`. A peer cannot then put the fingerprint of the device it
+   impersonates into its own name (review 58a, H1).
+6. An empty result becomes `(no name)`.
+
+The name is **not cut**: the card rules already cap it at 128 code points (OD-R55F5-4). The
+40-code-point cut of notify.md stays for ordinary notifications only.
+
+**Exact rendering, `displayQuote(s)`**, for text the human must be able to check exactly: paths,
+branch, scope, the label, argv, env names, the request title and the constraint text. This is
+review 40's `DisplayQuote`: a JSON string in double quotes in which every hidden rune (and U+FFFD
+from invalid bytes) is escaped as `\uXXXX`, as a surrogate pair above U+FFFF. It now uses the
+full `hidden` set; today it misses the variation selectors, the default-ignorable code points,
+`Zs` and U+2800. It also escapes every combining mark after the 2nd in a row on one base
+character (the stacked-marks rule of `displayName`, but escaped rather than removed, so the
+value stays exact). It does **not** HTML-escape: `<`, `>` and `&` are shown as themselves, not
+as `<`, `>` and `&` as `json.Marshal` writes them today (an encoder with
+`SetEscapeHTML(false)`; review 58a, L1). Digits are **kept**: removing them would show a
+different path from the one approved. A decoy code in such a field is the terminal-mode
+residual of OD-R55F5-6. Letters of right-to-left scripts are kept too (they are real names);
+they can visually reorder the digits and punctuation next to them inside the quotes, but
+cannot hide or add a character.
+
+**The fingerprint** is `fp(key)` of [pairing.md](pairing.md#fingerprints), computed by the
+daemon from the key the action binds to. It is never taken from an IPC parameter or a card.
+It is shown **in full: 20 characters (100 bits) in the grouped form of `agentnet identity`**,
+five groups of four separated by single spaces, 24 characters in all, for example `2ED9 TGVE
+R471 63MC C451` (OD-R55F5-1). It does not go through `displayName`. Its alphabet cannot
+carry a hidden rune. Running `displayName` over it would turn digit groups such as `R471 6385`
+into `…` and destroy the value being compared. A peer can generate keys until its fingerprint
+holds digit groups, but that decoy is only a random guess at a 6-digit code (the window never
+shows the code). Its cost is at most wasted attempts in terminal mode, the residual of
+OD-R55F5-6. A peer always appears as
+
+`peer XXXX XXXX XXXX XXXX XXXX named <displayQuote(displayName(name))>`
+
+written `<peer>` below. A key that is no longer in `peers` (the release of a session whose peer
+was removed) shows as `peer XXXX XXXX XXXX XXXX XXXX (no longer paired)`.
+
+**Why the fingerprint comes first and the name is quoted (review 58a, H1, M2, L2).**
+- *Fingerprint in the name.* With the name first and unquoted, a peer named
+  `Desktop (fingerprint 2ED9 TGVE R471 63MC C451)`, which is the real desktop's fingerprint,
+  would show the right fingerprint before its own. A human who compares "the fingerprint"
+  would then link the twin. Now the real fingerprint is always the first one, right after the
+  fixed word `peer`. The name is inside quotes that it cannot close (`displayQuote` escapes
+  `"`), and fingerprint-shaped text in it is blanked (`displayName` step 5).
+- *Right-to-left names.* A Hebrew or Arabic letter just before the fingerprint would make the
+  bidi algorithm move its leading digits. Fixed English text (strong left-to-right) now
+  precedes the fingerprint, and the name only follows it.
+- *zenity before F6.* zenity decodes `\` escapes in its text (R55-025), so a name such as
+  `Bob\0` would cut the Linux window right after the name, fingerprint included.
+  `displayQuote` writes `\` as `\\`, which zenity decodes back to `\`, so no name can cut the
+  window, even before F6 lands.
+
+**Fixed text** in the builder is constant ASCII English.
+
+### Display-safe output
+
+The builder's output is **display-safe**:
+- it is valid UTF-8;
+- it contains no `hidden` rune except U+0020, and so no line break;
+- it is one line of at most `MaxWindowSummary` code points.
+
+`Store.Create` and the window check this ([Length](#length)). The output may contain characters
+that mean something to a renderer, such as `\ " & < > _ % $`. Every renderer must show them
+**literally**:
+- the Windows window sets `Label.Text` and the scrolling box's `.Text`, which is literal;
+- the macOS window reads the text through `system attribute`, which is literal;
+- the terminal line and `agentnet approve --list` are literal;
+- **Linux zenity/kdialog is ticket R55-F6.** zenity passes `--text` through GLib
+  `g_strcompress`, so a `\` escape becomes a NUL, a newline or any byte, and `--entry` uses a
+  mnemonic label, so `_` is consumed (review 55 R55-025 / T11-01; approval.md's Linux row below
+  is wrong on this). F6 escapes for zenity's real parser. The builder gives F6 a fixed
+  contract: one display-safe line in which `\` and `_` can occur (in `displayQuote` output,
+  paths and argv). Until F6 lands, the Linux window does not meet this section for text that
+  contains `\` or `_`: zenity shows `\\` as `\`, `\"` as `"` and `‮` as `u202e`, and eats
+  one `_`. Every piece of peer or agent text in a summary is `displayQuote` output, whose `\`
+  is always doubled, so none of this can cut the window or add a line; it only misshows
+  characters. F6 must land in the same release as F5 (review 58a, M2).
+- **macOS before F6** (R55-203): `system attribute` may decode the text in a legacy encoding,
+  so non-ASCII letters in names and paths can show garbled. The fingerprint and the fixed
+  text are ASCII and are not affected.
+
+### Contents per kind
+
+Common notation:
+- `<peer>`: as above.
+- `<q(x)>`: `displayQuote(x)`.
+- `<utc(t)>`: the instant `t` in UTC, to the minute, as `2026-09-29 18:45 UTC` (OD-R55F5-3).
+- `<dur(d)>`: a duration in whole units, largest first, with at most two units: `30 min`,
+  `2 h`, `1 h 30 min`, `7 d`, `2 d 4 h`. It is computed from two stored instants, never from
+  "now", so the text does not change while the approval waits.
+
+Every field listed as a fact is in the summary. The templates below are the exact wording
+(`[…]` = only when the fact is present).
+
+| Kind | Facts (from the object of record) | Summary |
+|---|---|---|
+| `grant` | grant id; action; peer key, name; resolved path; label; branch (`git.read`); scope; sensitive; `nbf`, `exp`; session id; the session's request type and title | `Grant <action> to <peer> on <q(path)> (label <q(label)>)[, branch <q(branch)>], <scope part>, for <dur(exp−nbf)> until <utc(exp)>, in session <sid> (your <type> request <q(title)>). <sensitivity part> Confirm only if you asked for exactly this.` Scope part: `only <q(scope)> inside it`, or `the whole folder` (`fs.read`), or `the whole repository` (`git.read`). Sensitivity part: sensitive → `Sensitive: results of this session stay quarantined until you release them.`; public → `PUBLIC: you state this repository is public; results of this session are NOT quarantined.` |
+| `grant_policy` | policy id; action; peer key, name; resolved path; branch; scope; public; `max_expires_s`; `created`, `until` | `Allow grants with no further question until <utc(until)> (<dur(until−created)>): <action> to <peer> on <q(path)>[, branch <q(branch)>], <scope part>, each grant for at most <dur(max)>, <sensitivity part>. Confirm only if you asked for exactly this.` Scope part: `only paths inside <q(scope)>`, or `any path in it`. Sensitivity part: not public → `sensitive grants only (results quarantined)`; public → `PUBLIC grants only: results are NOT quarantined`. |
+| `release` | session id; peer key, name; request id, type, title; round; `seq`; result `status`, `result_bytes`, `output_bytes`, artifact count; the number K of sensitive grants ever active in the session | `Release the quarantined result of <peer> for your <type> request <q(title)> (session <sid>, round <n>): status <status>, <result_bytes> bytes, <output_bytes> bytes of output, <a> artifact(s). Your agent will then be able to read it. <reason> Confirm only if you mean to release this result.` Reason: K > 0 → `This session had K sensitive grant(s).`; K = 0 → `This peer held a sensitive grant in another session in the last 7 days.` Never the result's summary, output, notes or artifacts ([One builder](#one-builder)) |
+| `accept_result` | as `release`, without K | `Accept the result of <peer> for your <type> request <q(title)> (session <sid>, round <n>): status <status>, <result_bytes> bytes, <output_bytes> bytes of output, <a> artifact(s). This closes the request as accepted. Confirm only if you checked this result.` (OD-R55F5-8) |
+| `device_link` | link intent id; peer key, name; role | `Link this device as the <role> of <peer>. <role part> Compare all five groups of this fingerprint with what 'agentnet identity' shows on the other device. Confirm only if all of them match and you started this on both devices.` Role part: helper → `That device will be able to run, on this device, the commands of a scope you set later.`; controller → `This device will be able to ask that device to run the commands of its scope.` (D9 as decided in D44: the human **compares**; nothing is typed.) |
+| `device_scope` | peer key, name; the resolved scope (types, repos, commands with resolved argv, env names, timeouts, expires) | `Let <peer> run <N> command(s) (<name>, <name>, …) on this device until <utc(expires)>, for <types> requests:` then per command ` [<name>] in <q(dir)> runs <argv as a JSON array of q()> (timeout <n> s[, env <names>]);`, then ` Confirm only if you set this scope yourself.` (today's text, with the command count and names first (review 58a, M1), the fingerprint added and the expiry in UTC). Command names, types and env names are ASCII by device.md's rules and need no quoting |
+| `debate_constraint` | debate session id; peer key, name; constraint id; text | `Add a human constraint to the debate <sid> with <peer>: <q(text)>. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.` (today's text, with the fingerprint added) |
+
+Notes:
+- **Grant with a matching policy.** No approval, so no summary. The policy's own summary
+  stated everything it allows.
+- **Where the text goes.** The builder's output is the window's summary, the notification body
+  (followed by the fixed sentence), the terminal-mode line, `approvals.summary`, and so
+  `approval_list` and `agentnet approve --list`. It is the same text everywhere.
+- **`release` and the session view.** The session view's `grants` is filled
+  ([work-session.md §IPC](work-session.md#ipc), R55-122), so a human who runs `agentnet session
+  <id>` before releasing sees which grants made the result quarantined.
+- **Confusable names.** A name made of look-alike letters (Cyrillic `а` in `desktop`) passes
+  `displayName`. The fingerprint is the control, which is why every kind shows it, first.
+- **Residual: partial comparison.** A peer can generate keys until the first and last groups
+  of its fingerprint match the target's (8 characters, about 2⁴⁰ tries, hours on one GPU). Only
+  a human who compares all five groups defeats that, so the `device_link` text says "all five
+  groups" (OD-R55F5-1).
+
 ## Flow
 
 1. An IPC method that needs approval (for example `grant_create`) validates everything
    first, stores the action as `pending_approval` and creates the approval. Desktop mode
    opens the [approval window](#the-approval-window) and then shows the notification with the
    code. Terminal mode writes both to the daemon's stderr ([Headless machines](#headless-machines)).
-   Peer-supplied text in the summary goes through `notify.Clean`
-   ([notify.md](notify.md#text-and-sanitising)).
+   The summary comes from the one builder, and peer- or agent-supplied text in it follows
+   [Sanitising](#sanitising-one-character-rule-two-renderings) (R55-F5; this replaces the plain
+   `notify.Clean` rule, which missed zero-width decoys and was not applied to grants). A
+   summary longer than `MaxWindowSummary` is refused here, before anything is stored.
 2. The method returns at once: `{"approval": {"id", "kind", "summary", "expires",
    "state": "pending"}}`. The CLI prints `Approval a-012345 pending: approve it in the
    AgentNet window on your desktop (code in the notification)`, or in terminal mode `… on
@@ -224,7 +496,9 @@ notification centre." (review 29, L5)
    is still `open` and the peer still paired and allowed by D5; for a release: still
    `quarantined` in the same round; for a device link: no conflicting link appeared), and
    performs the waiting action. A precondition that no longer holds sets the waiting object
-   `rejected`/dropped (reason `precondition`). A wrong code uses one attempt. An expired
+   `rejected`/dropped (reason `precondition`). Every kind's precondition also re-derives the
+   summary's facts and text and requires them unchanged
+   ([Precondition compares](#one-builder)). A wrong code uses one attempt. An expired
    approval cannot be confirmed. The human learns the outcome from the window or the terminal
    ([The approval window](#the-approval-window), Outcome).
 4. Reject in the window, `reject <id>` on the daemon's terminal, or `agentnet approve
@@ -266,7 +540,11 @@ machine needs a different channel. Phase 2 offers exactly one, chosen at install
   `AgentNet approval a-012345: <summary>. Code 482913. Type "a-012345 <code>" to approve or
   "reject a-012345" to reject.` It reads lines of at most 128 bytes. `<tag> <code>` confirms
   and `reject <tag>` rejects, where `<tag>` is the full id or a prefix of at least `a-` + 6
-  hex (an ambiguous prefix is refused with a message and uses no attempt). The outcome ("approved", "wrong
+  hex (an ambiguous prefix is refused with a message and uses no attempt). A `<code>` that
+  is not exactly 6 ASCII digits is **not** checked and uses no attempt, as in the window's
+  answer format: the daemon answers "enter the 6-digit code" (R55-F5, review 55 R55-148). The
+  summary on this line is the builder's output, which holds no control or line-break
+  character, so it stays on one line. The outcome ("approved", "wrong
   code, N attempts left", the waiting action's error) goes back on stderr. The code is shown
   in the same place it is typed, so terminal mode protects only against agents that cannot
   reach that terminal. That is the documented weaker level (OD-P2-3).
@@ -335,3 +613,71 @@ of at most 10 timestamps), so it survives restarts.
 
 Decided rows are pruned after 30 days (the audit keeps the record). Both tables of migration
 15 go into the DROP lists of both rewind tests in `internal/store/store_test.go`.
+
+## Open decisions (R55-F5)
+
+For the owner, after the adversarial review. Each has a recommendation; the section above is
+written as if every recommendation is taken.
+
+- **OD-R55F5-1: fingerprint form in the window.** (a) The full 20 characters, grouped
+  4-4-4-4-4 (24 characters with spaces), as `agentnet identity` prints them. (b) A prefix,
+  e.g. the first 8 characters (40 bits). (c) The full fingerprint plus a word list.
+  **Recommend (a).** A 40-bit prefix can be matched by generating keys (about 2⁴⁰ hashes, hours
+  on one GPU), which defeats D9. The full form is what the human compares against, and it is
+  what `agentnet identity` already shows. Residual (review 58a, L4): a human who checks only
+  the first and last groups compares 40 bits, which key generation can match; the
+  `device_link` text therefore asks for all five groups. (c) would close that, at the cost of a
+  second encoding to keep in sync with `agentnet identity`.
+- **OD-R55F5-2: the `device_link` `fingerprint` parameter after D9.** (a) Keep it required and
+  still compared, documented as a check against the caller's typing mistakes only, not as the
+  binding control. (b) Make it optional. (c) Remove it. **Recommend (a).** Nothing changes for
+  the CLI, the harness or the docs' examples, and it still catches a wrong `@peer`. The binding
+  now comes from the window (device.md §Link flow).
+- **OD-R55F5-3: time format.** (a) UTC to the minute, plus a duration computed from stored
+  instants (`for 2 h until 2026-09-29 18:45 UTC`). (b) Local time with its offset, with the
+  time zone captured at Create so that the confirm-time comparison stays deterministic.
+  **Recommend (a).** The builder stays pure (no time zone input), the text cannot change
+  while the approval waits, and the duration is what the human reasons with.
+- **OD-R55F5-4: peer names in summaries.** (a) The full cleaned name, with no length cut (the
+  card caps it at 128 code points). (b) Keep today's 40-code-point cut with `…`. **Recommend
+  (a).** "Never truncated" should hold for every part of the summary, and a cut name hides the
+  tail where a twin name differs.
+- **OD-R55F5-5: the peer's name changes while an approval waits.** (a) Reject the approval
+  (`precondition`), since the text shown no longer matches. (b) Compare only the facts bound
+  to the key and ignore a name change. **Recommend (a).** It is rare (a roster update or
+  re-pairing in a 10-minute window), the human simply starts again, and a mid-approval rename
+  is exactly the twin-name move.
+- **OD-R55F5-6: digits in exact fields (paths, argv, branch, title, constraint text).** (a)
+  Keep them, and accept that in terminal mode (off by default) an agent-chosen path such as
+  `…\code 482913` can sit on the same stderr line as the real code. (b) Also print the code on
+  its own line after the summary in terminal mode. This changes the stderr format that the 2.H
+  and 3.H harnesses parse. **Recommend (a).** Stripping digits would show a path other than
+  the approved one. The residual costs at most wrong attempts (3 per approval, 10 per day, a
+  nuisance), only in terminal mode, and it is the same for a decoy typed into the request's
+  own title today.
+- **OD-R55F5-7: what the `release` summary says about grants.** (a) The count of sensitive
+  grants that were ever active in the session, or the cross-session reason (rule 2). (b) List
+  them (action and path), which needs a cap and a "… and N more" or a refusal, since a session
+  has no grant limit. (c) Nothing. **Recommend (a).** It is bounded, needs no cut, and the
+  full list is in `agentnet session <id>` (R55-122 fills `grants`).
+- **OD-R55F5-8: `accept_result` contents.** (a) Status and sizes only, as for `release`. (b)
+  Also show the result's own summary (at most 280 code points, quoted). **Recommend (a).**
+  `approvals.summary` is readable through `approval_list`, and one rule for both
+  result-approval kinds ("no result content in a summary") is simpler to keep correct. For an
+  accept-result the content is already visible to the agent and the human through `agentnet
+  session`, so (b) adds little.
+- **OD-R55F5-9: fingerprint-shaped text in names** (review 58a, H1). (a) `displayName` blanks
+  2 or more groups of 4 fingerprint-alphabet characters, and 8 or more such characters in a
+  row that hold a digit and a letter (step 5), on top of putting the real fingerprint first
+  and quoting the name. (b) Only the order and the quotes. **Recommend (a).** The order and the
+  quotes make the real fingerprint the first one, but a human looking for "the fingerprint"
+  can still read the one inside the name. The cost is that a name such as `WS2022DEV` shows as
+  `…`, which is harmless because the name binds nothing. A copy written with look-alike
+  letters (Cyrillic `Е` for `E`) is not caught by (a); against that only the order holds.
+- **OD-R55F5-10: a window that cannot show 4096 code points** (review 58a, M1). If the manual
+  check shows that macOS `display dialog` or zenity `--entry` cannot show a 4096-code-point
+  summary to its end with the buttons on screen: (a) F6 changes that platform's window (for
+  example a scrolling text view, zenity `--text-info` or a larger macOS dialog) and keeps the
+  one limit; (b) lower `MaxWindowSummary` for every platform to what the weakest window shows.
+  **Recommend (a).** (b) would make ordinary scopes impossible to set, and the text must be the
+  same on every platform for the confirm-time comparison.

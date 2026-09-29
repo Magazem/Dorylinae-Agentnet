@@ -285,7 +285,13 @@ back to the requester's side, that is, B's result. While `quarantined`:
   (OD-P2-15).
 - `agentnet release <session>` requires a [human approval](approval.md) (kind `release`).
   On approval: `quarantined → awaiting_result`, audit `ws.release {session, peer, round,
-  approval}`, `ws.state` to B. The result then becomes visible.
+  approval}`, `ws.state` to B. The result then becomes visible. The approval summary names
+  the peer (cleaned name and full fingerprint), the request (type and quoted title), the
+  session id, the round, the result's status and sizes, and why it is quarantined, but never
+  its content ([approval.md §Contents per kind](approval.md#contents-per-kind); R55-F5). Before
+  R55-F5 it showed only the session id, so an agent could have the wrong session released
+  (review 55 R55-005 / T8-02). `accept-result --human` gets the same summary without the
+  quarantine reason.
 - **Leaving `quarantined` without a release (OD-P2-6 (c)):** `discard` and `request-changes`
   need no approval, because both **reduce** exposure — neither shows the quarantined result
   to A's IPC or agent. In the same transaction as the state change, the stored `result` (and
@@ -455,6 +461,13 @@ Every method returns within 2 s and never waits for the relay or a peer.
 
 `result` is absent while `quarantined` on A (then `quarantine` is present). List views omit
 `result.output`, `result.notes` and `changes`, and keep the sizes.
+
+`grants` (R55-F5, review 55 R55-122 / T6b-02; today it is always `[]`) lists the grants of the
+session from the grantor's grants table, oldest first: `{"id", "action", "sensitive", "state",
+"exp"}`, and in `ws_show` (not in list views) also `"label"`, `"branch"`? and `"scope"`?. It
+never holds the local path or the token. On B, which holds grants rather than issuing them,
+it lists the held grants of the session in the same form. A human who looks at a quarantined
+session before releasing it can then see which sensitive grants caused the quarantine.
 
 | Method | Params | Result / errors |
 |---|---|---|

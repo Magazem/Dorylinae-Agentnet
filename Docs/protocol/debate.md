@@ -328,7 +328,9 @@ dependency"). It appears in the Decision under **human decisions**.
 - **Approval-gated.** The daemon cannot tell a human from an agent over IPC, and a
   constraint is shown to others as a *human* decision in a signed record. So `--constrain`
   creates a [human approval](approval.md) of the new kind **`debate_constraint`** (the
-  approval window shows the peer, the session and the constraint text in full). Only on
+  approval window shows the peer with its full fingerprint, the session and the constraint
+  text in full, built by the one builder of
+  [approval.md §Approval summaries](approval.md#approval-summaries-r55-f5), R55-F5). Only on
   approval is the constraint stored and sent. An agent that runs `--constrain` gets
   `{"approval": …, "state": "pending"}` and cannot finish it (OD-P3-3). Headless machines use
   terminal mode, as for every approval (the 3.H harness script confirms it).
