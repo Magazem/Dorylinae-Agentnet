@@ -3,9 +3,9 @@
 package paths
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -44,12 +44,45 @@ func In(dir string) (Paths, error) {
 	if err != nil {
 		return Paths{}, fmt.Errorf("resolve config dir: %w", err)
 	}
+	ep, err := endpoint(abs)
+	if err != nil {
+		return Paths{}, err
+	}
 	return Paths{
 		Dir:          abs,
 		DB:           filepath.Join(abs, "dorylinae.db"),
 		RelayQueueDB: filepath.Join(abs, "relay-queue.db"),
-		Endpoint:     endpoint(abs),
+		Endpoint:     ep,
 	}, nil
+}
+
+// Canonical returns one spelling for every spelling of dir, for deriving
+// names from it (the Windows pipe name, keychain accounts): absolute, with
+// the longest existing prefix resolved through symlinks (on Windows also
+// junctions, subst drives and 8.3 names, in the on-disk case) and the rest
+// appended as given. If resolution fails for another reason than a missing
+// path, it returns the absolute path unchanged.
+func Canonical(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	var rest []string
+	for p := abs; ; {
+		r, err := resolveExisting(p)
+		if err == nil {
+			for i := len(rest) - 1; i >= 0; i-- {
+				r = filepath.Join(r, rest[i])
+			}
+			return r
+		}
+		parent := filepath.Dir(p)
+		if !errors.Is(err, fs.ErrNotExist) || parent == p {
+			return abs
+		}
+		rest = append(rest, filepath.Base(p))
+		p = parent
+	}
 }
 
 // Ensure creates the config directory with owner-only permissions.
@@ -64,12 +97,4 @@ func (p Paths) Ensure() error {
 		}
 	}
 	return nil
-}
-
-func endpoint(dir string) string {
-	if runtime.GOOS == "windows" {
-		sum := sha256.Sum256([]byte(dir))
-		return `\\.\pipe\dorylinae-` + hex.EncodeToString(sum[:8])
-	}
-	return filepath.Join(dir, "agentnetd.sock")
 }

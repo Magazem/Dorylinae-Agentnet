@@ -2,6 +2,8 @@ package keystore_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -157,5 +159,47 @@ func TestLoadNotFoundMentionsUnavailableKeychain(t *testing.T) {
 func TestAccountsDifferPerDirectory(t *testing.T) {
 	if keystore.AccountFor("/a") == keystore.AccountFor("/b") {
 		t.Fatal("accounts must differ per config dir")
+	}
+}
+
+// Review 55 R55-088: two spellings of one config dir share one keychain
+// account.
+func TestAccountSameForTwoSpellings(t *testing.T) {
+	dir := testutil.TempDir(t)
+	if a, b := keystore.AccountFor(dir), keystore.AccountFor(testutil.OtherSpelling(t, dir)); a != b {
+		t.Fatalf("two accounts for one dir: %s, %s", a, b)
+	}
+}
+
+// A key stored before R55-088 under the account of the dir as spelled is
+// still found, copied to the canonical account, and deleted from both.
+func TestKeychainLegacyAccountFallback(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	spelled := testutil.OtherSpelling(t, dir)
+	sum := sha256.Sum256([]byte(spelled))
+	legacy := "identity-" + hex.EncodeToString(sum[:8])
+	if legacy == keystore.AccountFor(spelled) {
+		t.Skip("spelling is already canonical")
+	}
+	if err := keystore.NewKeychain(legacy).Set(secret); err != nil {
+		t.Fatal(err)
+	}
+	kc := keystore.KeychainFor("identity-", spelled)
+	got, err := kc.Get()
+	if err != nil || !bytes.Equal(got, secret) {
+		t.Fatalf("legacy key not found: %v", err)
+	}
+	if got, err := keystore.NewKeychain(keystore.AccountFor(dir)).Get(); err != nil || !bytes.Equal(got, secret) {
+		t.Fatalf("key not copied to the canonical account: %v", err)
+	}
+	if err := kc.Delete(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := kc.Get(); !errors.Is(err, keystore.ErrNotFound) {
+		t.Fatalf("deleted key came back: %v", err)
+	}
+	if _, err := keystore.NewKeychain(legacy).Get(); !errors.Is(err, keystore.ErrNotFound) {
+		t.Fatalf("legacy entry survived Delete: %v", err)
 	}
 }

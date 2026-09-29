@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/zalando/go-keyring"
 )
 
@@ -21,13 +22,36 @@ const keychainTimeout = 5 * time.Second
 // macOS Keychain, Linux Secret Service).
 type Keychain struct {
 	account string
+	// legacy are older account names for the same entry, read when account
+	// has none.
+	legacy []string
 }
 
 // AccountFor derives the keychain account for a config directory so separate
-// homes keep separate keys.
-func AccountFor(dir string) string {
+// homes keep separate keys. It hashes paths.Canonical(dir), so two spellings
+// of one directory share one account.
+func AccountFor(dir string) string { return accountFor("identity-", paths.Canonical(dir)) }
+
+func accountFor(prefix, dir string) string {
 	sum := sha256.Sum256([]byte(dir))
-	return "identity-" + hex.EncodeToString(sum[:8])
+	return prefix + hex.EncodeToString(sum[:8])
+}
+
+// KeychainFor returns the keychain backend for the entry prefix+<hash of the
+// canonical dir>. Before review 55 (R55-088) the hash was of dir as spelled;
+// when that differs, the old account stays as a fallback: Get finds a secret
+// stored there and copies it to the new account, and Delete removes both, so
+// an existing key is neither lost nor resurrected after a delete.
+func KeychainFor(prefix, dir string) *Keychain { return KeychainForEntry(prefix, dir, "") }
+
+// KeychainForEntry is KeychainFor for the account prefix+<hash>+suffix, for
+// stores that keep several entries per home (the mailbox keys).
+func KeychainForEntry(prefix, dir, suffix string) *Keychain {
+	k := &Keychain{account: accountFor(prefix, paths.Canonical(dir)) + suffix}
+	if old := accountFor(prefix, dir) + suffix; old != k.account {
+		k.legacy = []string{old}
+	}
+	return k
 }
 
 // NewKeychain returns a keychain backend for account.
@@ -38,8 +62,28 @@ func (*Keychain) Name() string { return "keychain" }
 
 // Get implements Backend.
 func (k *Keychain) Get() ([]byte, error) {
+	b, err := get(k.account)
+	if !errors.Is(err, ErrNotFound) {
+		return b, err
+	}
+	for _, old := range k.legacy {
+		b, err := get(old)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Best effort: the legacy entry still holds the secret if this fails.
+		_ = k.Set(b)
+		return b, nil
+	}
+	return nil, ErrNotFound
+}
+
+func get(account string) ([]byte, error) {
 	var v string
-	err := withTimeout(func() (err error) { v, err = keyring.Get(Service, k.account); return })
+	err := withTimeout(func() (err error) { v, err = keyring.Get(Service, account); return })
 	if err != nil {
 		if errors.Is(err, keyring.ErrNotFound) {
 			return nil, ErrNotFound
@@ -59,13 +103,27 @@ func (k *Keychain) Set(secret []byte) error {
 	return withTimeout(func() error { return keyring.Set(Service, k.account, enc) })
 }
 
-// Delete removes the entry (used by tests and manual cleanup).
+// Delete removes the entry, under its current and legacy accounts. It
+// returns ErrNotFound when none held it.
 func (k *Keychain) Delete() error {
-	err := withTimeout(func() error { return keyring.Delete(Service, k.account) })
-	if errors.Is(err, keyring.ErrNotFound) {
+	found := false
+	var errs []error
+	for _, account := range append([]string{k.account}, k.legacy...) {
+		err := withTimeout(func() error { return keyring.Delete(Service, account) })
+		switch {
+		case err == nil:
+			found = true
+		case !errors.Is(err, keyring.ErrNotFound):
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if !found {
 		return ErrNotFound
 	}
-	return err
+	return nil
 }
 
 func withTimeout(f func() error) error {

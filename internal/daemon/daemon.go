@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -269,6 +268,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if err := p.Ensure(); err != nil {
 		return err
 	}
+	// Lock before store.Open so a losing second instance does not migrate the
+	// DB under the running one (review 55 C28-03).
+	lock, err := ipc.LockInstance(p.Dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	st, err := store.Open(ctx, p.DB)
 	if err != nil {
 		return err
@@ -709,8 +715,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 	if mode == "file" {
 		return keystore.New(file)
 	}
-	account := "webhook-" + strings.TrimPrefix(keystore.AccountFor(dir), "identity-")
-	return keystore.New(keystore.NewKeychain(account), file)
+	return keystore.New(keystore.KeychainFor("webhook-", dir), file)
 }
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned

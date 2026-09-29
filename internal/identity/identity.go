@@ -59,7 +59,7 @@ func NewKeystore(dir, mode string) (*keystore.Store, error) {
 	file := keystore.NewFile(filepath.Join(dir, KeyFile))
 	switch mode {
 	case "", "auto":
-		return keystore.New(keystore.NewKeychain(keystore.AccountFor(dir)), file), nil
+		return keystore.New(keystore.KeychainFor("identity-", dir), file), nil
 	case "file":
 		return keystore.New(file), nil
 	default:
