@@ -66,7 +66,7 @@ func TestStateTracksConnectAndDisconnect(t *testing.T) {
 
 	eventually(t, "client to connect", func() bool { return c.State().Connected })
 	connectedState := c.State()
-	if !connectedState.Since.After(firstSince) {
+	if connectedState.Since.Before(firstSince) {
 		t.Fatalf("Since did not advance on connect: %v -> %v", firstSince, connectedState.Since)
 	}
 
@@ -74,7 +74,9 @@ func TestStateTracksConnectAndDisconnect(t *testing.T) {
 	srv.Close()
 	eventually(t, "client to notice the relay is gone", func() bool { return !c.State().Connected })
 	after := c.State()
-	if !after.Since.After(connectedState.Since) {
+	// Since is a wall-clock stamp; Windows clock granularity can give two
+	// transitions the same instant, so only require it never goes backwards.
+	if after.Since.Before(connectedState.Since) {
 		t.Fatalf("Since did not advance on disconnect: %v -> %v", connectedState.Since, after.Since)
 	}
 	if after.LastError == "" {

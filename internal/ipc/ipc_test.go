@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"testing"
 	"time"
@@ -108,5 +109,45 @@ func TestSecondListenerRefused(t *testing.T) {
 	}
 	if !errors.Is(err, ipc.ErrAlreadyRunning) {
 		t.Fatalf("err = %v, want ErrAlreadyRunning", err)
+	}
+}
+
+// lateListener returns one connection from Accept only after Close was
+// called: a connection accepted as shutdown begins.
+type lateListener struct {
+	closed chan struct{}
+	conn   net.Conn
+	given  bool
+}
+
+func (l *lateListener) Accept() (net.Conn, error) {
+	<-l.closed
+	if !l.given {
+		l.given = true
+		return l.conn, nil
+	}
+	return nil, net.ErrClosed
+}
+
+func (l *lateListener) Close() error   { close(l.closed); return nil }
+func (l *lateListener) Addr() net.Addr { return nil }
+
+// A connection accepted after the shutdown sweep must be closed, not left
+// waiting on its idle timeout while Serve blocks in wg.Wait.
+func TestServeClosesConnAcceptedDuringShutdown(t *testing.T) {
+	server, client := net.Pipe()
+	defer func() { _ = client.Close() }()
+	ln := &lateListener{closed: make(chan struct{}), conn: server}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ipc.NewServer().Serve(ctx, ln) }()
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve did not return: a connection accepted during shutdown was never closed")
 	}
 }

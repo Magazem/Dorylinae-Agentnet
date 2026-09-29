@@ -96,6 +96,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	var wg sync.WaitGroup
 	conns := map[net.Conn]struct{}{}
 	var cmu sync.Mutex
+	closing := false
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -106,6 +107,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		}
 		_ = ln.Close()
 		cmu.Lock()
+		closing = true
 		for c := range conns {
 			_ = c.Close()
 		}
@@ -122,6 +124,14 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			return fmt.Errorf("ipc accept: %w", err)
 		}
 		cmu.Lock()
+		if closing {
+			// Accepted just as shutdown began: the closer above already
+			// swept conns, so this one would sit in its read until the idle
+			// timeout and hold wg.Wait.
+			cmu.Unlock()
+			_ = c.Close()
+			continue
+		}
 		conns[c] = struct{}{}
 		cmu.Unlock()
 		wg.Add(1)

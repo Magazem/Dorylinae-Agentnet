@@ -53,14 +53,18 @@ func sameSignedDecision(t *testing.T, a, b *harnessNode, sid, outcome string) st
 	if !strings.Contains(da.decision, `"outcome":"`+outcome+`"`) {
 		t.Fatalf("outcome: %s", da.decision)
 	}
+	// Audit rows are written after the transaction that stores the row commits,
+	// so wait for them rather than counting the instant the state is visible.
 	for _, n := range []*harnessNode{a, b} {
-		if c := n.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'decision.create' AND instr(detail, '` + da.hash + `') > 0`); c != 1 {
+		q := `SELECT COUNT(*) FROM audit_events WHERE action = 'decision.create' AND instr(detail, '` + da.hash + `') > 0`
+		harnessWait(t, n.name+"'s decision.create audit", func() bool { return n.count(q) >= 1 })
+		if c := n.count(q); c != 1 {
 			t.Errorf("%s: decision.create audited %d times", n.name, c)
 		}
 	}
-	if c := a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'decision.sign_in'`); c < 1 {
-		t.Error("A did not audit decision.sign_in")
-	}
+	harnessWait(t, "A's decision.sign_in audit", func() bool {
+		return a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'decision.sign_in'`) >= 1
+	})
 	return da.decision
 }
 
