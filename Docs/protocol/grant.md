@@ -128,10 +128,18 @@ The grantor's daemon, in order:
 6. Build and sign the token. Store the row as `pending_approval`.
 7. **Approval.** If a [policy](#policies) matches, approve at once (audit `grant.auto
    {grant, policy}`). Otherwise create a [human approval](approval.md) (kind `grant`) and
-   return it. On approval, in one transaction: re-check steps 1–3 against the current state
-   ([approval.md §Flow](approval.md#flow) step 3; a session that left `open` or a removed
-   peer drops the grant), set the row `active` and `Outbox.SubmitTx` the `grant` mail to
-   the holder.
+   return it. Its summary states the resolved path in full, the label, the branch, the scope
+   (or "the whole folder/repository"), sensitive or **PUBLIC** with what that means for the
+   quarantine, the expiry, the session and its request, and the peer's cleaned name and full
+   fingerprint ([approval.md §Contents per kind](approval.md#contents-per-kind); R55-F5).
+   Before R55-F5 it named only the random label and the raw card name, so the human could not
+   see the `--public` opt-out below or tell a folder from the whole repository (review 55
+   R55-005 / C11-01). A summary longer than 4096 code points (a very long path) is refused
+   (`bad_request`, field `resource`). On approval, in one transaction: re-check steps 1–3
+   against the current state ([approval.md §Flow](approval.md#flow) step 3; a session that left
+   `open` or a removed peer drops the grant), and re-derive the summary from the stored row
+   and require it unchanged. Then set the row `active` and `Outbox.SubmitTx` the `grant` mail
+   to the holder.
 
 A grant is created by the **requester** of the session only (OD-P2-5). It never widens: there
 is no command that edits a grant; a different scope needs a new grant.
@@ -143,7 +151,11 @@ resource path (exact resolved path), for `git.read` the exact branch, `--scope` 
 grant's scope must be inside the policy's, by segments), the grant's `sensitive` value
 (`--public` in the policy covers only `--public` grants), and a maximum expiry.
 `sensitive` grants may be covered by a policy (the result quarantine still applies). Adding
-a policy needs a human approval (kind `grant_policy`); removing one does not.
+a policy needs a human approval (kind `grant_policy`); removing one does not. The policy's
+approval summary states every field it matches on: action, peer (name and full fingerprint),
+resolved path, branch, scope, public or not, the maximum expiry, and `until`
+([approval.md §Contents per kind](approval.md#contents-per-kind); R55-F5, review 55 C11-01).
+Every grant a policy later issues gets no summary of its own, so this one must say it all.
 
 `agentnet grant policy add @peer --action A --resource PATH[#BRANCH] [--scope P] [--public]
 --max-expires D [--until DURATION]`, `grant policy list`, `grant policy remove <p-id>`; IPC
@@ -353,7 +365,9 @@ being in flight.
 
 `sensitive: true` marks a grant whose resource is private: every `fs.read` grant, and every
 `git.read` grant not issued with `--public`. The daemon cannot tell a private repository from
-a public one, so the default is sensitive and the human opts out. A session in which any
+a public one, so the default is sensitive and the human opts out. The opt-out is the
+human's only because the approval summary shows it: a `--public` grant or policy says
+"PUBLIC … results are NOT quarantined" in the window (R55-F5). A session in which any
 sensitive grant was ever issued quarantines its results
 ([work-session.md §Quarantine](work-session.md#quarantine-24)); `agentnet release` needs a
 human approval and is audited.

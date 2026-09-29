@@ -32,16 +32,25 @@ No agent on the desktop is needed.
 
 Both devices must already be paired peers (v2 pairing or team introduction; any trust
 level). The link needs a human confirmation **on each device**, through the local
-[approval](approval.md) code of that device, and each human types the **other** device's
-fingerprint, which binds the link to the right keys even if the pairing was only `team`
-trust.
+[approval](approval.md) code of that device. **The binding is the human's comparison in the
+approval window (R55-F5, D44 = review-55 §6 D9):** each device's window shows the **other**
+device's name and full fingerprint, computed by the daemon from the key the link binds to
+([approval.md §Contents per kind](approval.md#contents-per-kind)), and the human compares it with
+what `agentnet identity` shows on that other device. That binds the link to the right keys even
+if the pairing was only `team` trust. The human compares and types nothing but the code.
+The `--fingerprint` the caller passes is still compared (step 1), but it is only a check on the
+caller's own typing (OD-R55F5-2). A local agent can read any peer's fingerprint from `peers`, so
+it proves nothing about the human's intent. Before R55-F5 it was the only check, and the window
+showed the name alone, so a prompt-injected agent could link a twin-named peer (review 55
+R55-005 / T8-01).
 
 ```
 helper (desktop)                                          controller (laptop)
 agentnet device link @laptop --as helper \                agentnet device link @desktop --as controller \
     --fingerprint <fp(laptop)>                                --fingerprint <fp(desktop)>
   fingerprint compared (constant time)                      fingerprint compared
-  approval (code on the desktop's screen)                   approval (code on the laptop's screen)
+  approval (code on the desktop's screen;                   approval (code on the laptop's screen;
+    window shows fp(laptop): compare with laptop)             window shows fp(desktop): compare with desktop)
   → intent{role: helper, nonce_h}, expires 10 min           → intent{role: controller, nonce_c}, expires 10 min
   → mail device.link {role: helper, nonce_h} ──────────▶    ◀────────── mail device.link {role: controller, nonce_c}
   active when: own intent + peer's complementary offer, both unexpired
@@ -51,7 +60,9 @@ agentnet device link @laptop --as helper \                agentnet device link @
 1. `device_link {peer, as, fingerprint}`: resolve the peer; compare the fingerprint with
    `fp(peer)` in constant time (`fingerprint_mismatch`, nothing changes). D5 applies
    (`unverified_peer`). [Hierarchy](#one-way-hierarchy) checks. Then create the approval
-   (kind `device_link`); the result is `{"approval", "link": {"state": "pending_approval"}}`.
+   (kind `device_link`, summary per [approval.md](approval.md#contents-per-kind): the role,
+   the peer's name and `fp(peer)`, and the instruction to compare it with `agentnet identity`
+   on the other device); the result is `{"approval", "link": {"state": "pending_approval"}}`.
 2. On approval, in one transaction: set `peers.trust = fingerprint` (a matched fingerprint
    is exactly `peers verify`; audit `peer.verify` as today), store the **intent** (role,
    random 16-byte `nonce`, `expires = now + 10 min`), and `Outbox.SubmitTx` a
@@ -92,9 +103,14 @@ on unlink ([§Limits](#limits)), and a scope still waiting for its code is rejec
 waiting for its code. The summary (and the CLI's printout) quotes every repo path and argv as
 JSON strings, and also escapes as `\uXXXX` every character that is invisible or not graphic
 (bidi controls such as U+202E, zero-width characters), so no quote, control or bidi character
-can change how it reads (review 40 M1); a scope whose summary would exceed
-16384 bytes is refused (`bad_scope`, field `scope`), because the approval window must show
-all of it. The scope is keyed on the controller's **key**, never on the link id: the two
+can change how it reads (review 40 M1). The summary also names the controller with its full
+fingerprint, and it is built by the one builder
+([approval.md §Approval summaries](approval.md#approval-summaries-r55-f5)). A scope whose summary
+would exceed **`MaxWindowSummary` (4096) code points** is refused (`bad_scope`, field `scope`),
+because the approval window must show all of it. This replaces the old 16384-byte limit: the
+window showed only 4096 code points, so a command after a long argument was approved unseen
+(review 55 R55-007 / C14-02). One 4096-byte argument can therefore make a scope too long to
+set. Use a shorter argument, or a wrapper program on the helper. The scope is keyed on the controller's **key**, never on the link id: the two
 devices can hold different link ids after an asymmetric retry (review 36 L6).
 
 ```json
