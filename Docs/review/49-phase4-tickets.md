@@ -208,9 +208,14 @@ edited.
   embedded in it (no rollback to a known-bad release by whoever serves the files).
 - **What it protects against, honestly:** the script is served from `<domain>`, so whoever
   controls the domain or its host controls the embedded key and every curl install. The
-  signature protects against a swap of the release artefacts on GitHub (a leaked token, a
-  compromised CI step) only if the signing key is not also in GitHub (OD-P4-19). Homebrew
-  users trust the tap repository instead.
+  signature protects against a swap of the release artefacts on GitHub (a leaked token, an
+  account takeover) only if the signing key is not also in GitHub (OD-P4-19). It also
+  depends on the owner signing only the `SHA256SUMS` whose digest the tag's own CI run
+  logged, at the commit the owner tagged locally. Otherwise the draft can be swapped before
+  signing (review 55 R55-003; runbook and spec `Docs/review/57-r55-f3-spec.md`). It does
+  **not** protect against a CI step compromised while the release runs. That run's own
+  output is what gets signed; only a local rebuild closes this (OD-R55F3-2; review 53 L5,
+  O-180). Homebrew users trust the tap repository instead.
 - Windows: a **per-user MSI** (installs to `%LOCALAPPDATA%\Programs\AgentNet`, adds to the user
   PATH, no elevation; matters on the owner's no-admin work PC) or a signed zip; `winget` later.
 

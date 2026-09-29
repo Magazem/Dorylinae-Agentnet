@@ -16,7 +16,7 @@ In short:
 3. Make a sealed backup copy and store it somewhere separate from the first copy.
 4. Run `go run ./tools/releasesign embed -key agentnet-release.key -in scripts/install.sh -out scripts/install.sh` to write the public key into the installer.
 5. Hand the updated `scripts/install.sh` to the Orchestrator to commit — you don't commit it yourself.
-6. Keep the private key available for every future release (you sign each `SHA256SUMS` by hand); see the doc's "Every release" section.
+6. Keep the private key available for every future release (you sign each `SHA256SUMS` by hand); see the doc's "Every release" section. Tag releases from your own clone and keep it: the commit you tagged there is what you check the CI run against before signing (review 55 R55-003). Do not cut a real release before ticket R55-F3 lands.
 
 ## 2. Operator age/HPKE key pair (for backups and feedback)
 
