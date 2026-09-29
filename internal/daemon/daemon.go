@@ -268,6 +268,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if err := p.Ensure(); err != nil {
 		return err
 	}
+	// Lock before store.Open so a losing second instance does not migrate the
+	// DB under the running one (review 55 C28-03).
+	lock, err := ipc.LockInstance(p.Dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
 	st, err := store.Open(ctx, p.DB)
 	if err != nil {
 		return err

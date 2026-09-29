@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -44,5 +45,20 @@ func TestCanonicalKeepsDistinctDirs(t *testing.T) {
 	a, b := testutil.TempDir(t), testutil.TempDir(t)
 	if Canonical(a) == Canonical(b) {
 		t.Fatal("distinct dirs share a canonical name")
+	}
+}
+
+// Review 60 F3: on a case-insensitive volume (macOS, Windows) two case
+// spellings of one dir are one dir and must share a name.
+func TestCanonicalFoldsCase(t *testing.T) {
+	dir := testutil.TempDir(t)
+	up := strings.ToUpper(dir)
+	a, errA := os.Stat(dir)
+	b, errB := os.Stat(up)
+	if up == dir || errA != nil || errB != nil || !os.SameFile(a, b) {
+		t.Skip("volume is case-sensitive")
+	}
+	if Canonical(dir) != Canonical(up) {
+		t.Fatalf("Canonical(%s) = %s, Canonical(%s) = %s", dir, Canonical(dir), up, Canonical(up))
 	}
 }

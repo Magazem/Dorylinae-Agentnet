@@ -42,9 +42,13 @@ func accountFor(prefix, dir string) string {
 // when that differs, the old account stays as a fallback: Get finds a secret
 // stored there and copies it to the new account, and Delete removes both, so
 // an existing key is neither lost nor resurrected after a delete.
-func KeychainFor(prefix, dir string) *Keychain {
-	k := &Keychain{account: accountFor(prefix, paths.Canonical(dir))}
-	if old := accountFor(prefix, dir); old != k.account {
+func KeychainFor(prefix, dir string) *Keychain { return KeychainForEntry(prefix, dir, "") }
+
+// KeychainForEntry is KeychainFor for the account prefix+<hash>+suffix, for
+// stores that keep several entries per home (the mailbox keys).
+func KeychainForEntry(prefix, dir, suffix string) *Keychain {
+	k := &Keychain{account: accountFor(prefix, paths.Canonical(dir)) + suffix}
+	if old := accountFor(prefix, dir) + suffix; old != k.account {
 		k.legacy = []string{old}
 	}
 	return k

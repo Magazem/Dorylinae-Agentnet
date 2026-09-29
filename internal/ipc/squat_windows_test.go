@@ -85,6 +85,8 @@ func TestPipeSquatRefused(t *testing.T) {
 }
 
 // Our own pipe is owned by the current user even from an elevated token.
+// Only an elevated run proves it (CI's windows-latest is one): a plain token's
+// default owner is the user anyway, so this passes without the explicit O:.
 func TestOwnPipeOwnerIsUser(t *testing.T) {
 	ep := `\\.\pipe\dorylinae-test-own-` + strings.ReplaceAll(t.Name(), "/", "-")
 	ln, err := Listen(ep)
@@ -103,4 +105,49 @@ func TestOwnPipeOwnerIsUser(t *testing.T) {
 		t.Fatalf("Dial own pipe: %v", err)
 	}
 	_ = c.Close()
+}
+
+// Review 60 F6: a pipe that denies the current user access is refused as
+// another user's, before anything is sent.
+func TestDialAccessDeniedIsForeign(t *testing.T) {
+	ep := `\\.\pipe\dorylinae-test-denied-` + strings.ReplaceAll(t.Name(), "/", "-")
+	ln, err := winio.ListenPipe(ep, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;SY)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	if _, err := Dial(context.Background(), ep); !errors.Is(err, ErrForeignOwner) {
+		t.Fatalf("Dial: %v, want ErrForeignOwner", err)
+	}
+}
+
+// Review 60 F2: a daemon from before the instance lock, serving the old pipe
+// name, keeps a new daemon from starting on the same home.
+func TestLockInstanceSeesLegacyPipe(t *testing.T) {
+	dir := t.TempDir()
+	ln, err := Listen(legacyEndpoint(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	if l, err := LockInstance(dir); !errors.Is(err, ErrAlreadyRunning) {
+		if l != nil {
+			_ = l.Close()
+		}
+		t.Fatalf("LockInstance beside an old daemon: %v, want ErrAlreadyRunning", err)
+	}
+	_ = ln.Close()
+	l, err := LockInstance(dir)
+	if err != nil {
+		t.Fatalf("LockInstance after the old daemon stopped: %v", err)
+	}
+	_ = l.Close()
 }

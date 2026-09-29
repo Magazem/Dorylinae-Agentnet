@@ -4,9 +4,14 @@ package ipc
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Microsoft/go-winio"
@@ -55,9 +60,46 @@ func Listen(endpoint string) (net.Listener, error) {
 	case errors.Is(derr, ErrForeignOwner):
 		return nil, fmt.Errorf("listen on %s: %w", endpoint, derr)
 	default:
-		// Busy or gone between the two calls: most likely our own daemon.
-		return nil, fmt.Errorf("%w: pipe %s is in use (%w)", ErrAlreadyRunning, endpoint, derr)
+		// Busy or gone between the two calls. The daemon holds LockInstance
+		// before it listens, so this is not known to be our own daemon.
+		return nil, fmt.Errorf("listen on %s: pipe is in use but did not answer, owner unknown: %w", endpoint, derr)
 	}
+}
+
+// LockInstance takes an exclusive lock on dir\InstanceLock, held until the
+// returned Closer is closed. The pipe name is not a lock of its own: it
+// changed in review 55 (R55-088), and the daemon takes this lock before it
+// opens the database, so a losing second daemon does not migrate the DB
+// under the running one (review 55 C28-03). A held lock, or a daemon from
+// before the lock answering on the old pipe name, yields ErrAlreadyRunning.
+func LockInstance(dir string) (io.Closer, error) {
+	path := filepath.Join(dir, InstanceLock)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // in our own config dir
+	if err != nil {
+		return nil, fmt.Errorf("open lock %s: %w", path, err)
+	}
+	err = windows.LockFileEx(windows.Handle(f.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, new(windows.Overlapped))
+	if err != nil {
+		_ = f.Close()
+		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return nil, fmt.Errorf("%w: %s is locked by another agentnetd", ErrAlreadyRunning, path)
+		}
+		return nil, fmt.Errorf("lock %s: %w", path, err)
+	}
+	old := legacyEndpoint(dir)
+	if c, err := Dial(context.Background(), old); err == nil {
+		_ = c.Close()
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: an older agentnetd serves pipe %s", ErrAlreadyRunning, old)
+	}
+	return f, nil
+}
+
+// legacyEndpoint is the pipe name before review 55 (R55-088): a hash of the
+// absolute dir as spelled.
+func legacyEndpoint(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return `\\.\pipe\dorylinae-` + hex.EncodeToString(sum[:8])
 }
 
 // Dial connects to the daemon. It returns ErrNotRunning when the pipe does not

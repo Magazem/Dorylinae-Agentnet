@@ -6,17 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
 
 const dialTimeout = 1 * time.Second
-
-// errPeerCredUnsupported is returned by peerUID on systems without a peer
-// credential call; there the 0700 config dir alone keeps other users out.
-var errPeerCredUnsupported = errors.New("peer credentials not supported")
 
 // expectedUID returns the uid the socket and the daemon must run as. Tests
 // replace it to play a socket held by another user.
@@ -40,21 +38,31 @@ func Listen(endpoint string) (net.Listener, error) {
 	return &lockedListener{Listener: ln, lock: lock}, nil
 }
 
-func lockEndpoint(endpoint string) (*os.File, error) {
-	f, err := os.OpenFile(endpoint+".lock", os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // next to our own socket, in the 0700 config dir
+// LockInstance takes the exclusive lock on dir/InstanceLock, held until the
+// returned Closer is closed. The daemon takes it before opening the database,
+// so a losing second daemon does not migrate the DB under the running one
+// (review 55 C28-03). A held lock yields ErrAlreadyRunning.
+func LockInstance(dir string) (io.Closer, error) {
+	return lockFile(filepath.Join(dir, InstanceLock))
+}
+
+func lockEndpoint(endpoint string) (*os.File, error) { return lockFile(endpoint + ".lock") }
+
+func lockFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600) //nolint:gosec // in the 0700 config dir
 	if err != nil {
-		return nil, fmt.Errorf("open lock for %s: %w", endpoint, err)
+		return nil, fmt.Errorf("open lock %s: %w", path, err)
 	}
 	if fi, err := f.Stat(); err == nil && !ownedByMe(fi) {
 		_ = f.Close()
-		return nil, fmt.Errorf("listen on %s: %w: lock file is owned by another user", endpoint, ErrForeignOwner)
+		return nil, fmt.Errorf("lock %s: %w: lock file is owned by another user", path, ErrForeignOwner)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("%w: socket %s is already in use", ErrAlreadyRunning, endpoint)
+			return nil, fmt.Errorf("%w: %s is locked by another agentnetd", ErrAlreadyRunning, path)
 		}
-		return nil, fmt.Errorf("lock %s: %w", endpoint, err)
+		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	return f, nil
 }
@@ -140,8 +148,6 @@ func checkPeer(c net.Conn, endpoint string) error {
 		return fmt.Errorf("ipc dial: %w", err)
 	}
 	switch {
-	case errors.Is(perr, errPeerCredUnsupported):
-		return nil
 	case perr != nil:
 		return fmt.Errorf("ipc dial: read peer of %s: %w", endpoint, perr)
 	case uid != expectedUID():

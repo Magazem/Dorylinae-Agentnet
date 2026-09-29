@@ -33,11 +33,18 @@ another user") unless it is the current user:
   current user's SID. A pipe that denies the current user access is refused too.
 - Linux, macOS: the peer credentials of the connected socket (`SO_PEERCRED`,
   `LOCAL_PEERCRED`) must carry the current effective uid.
+- Other Unix systems: the peer cannot be checked, so the client refuses every
+  socket.
 
 A second daemon on the same endpoint refuses to start: "already running" when
 the current user's daemon holds it, "held by another user" when someone else does. On Unix the daemon holds an exclusive `flock` on the
 lock file while it runs, so two daemons starting at once cannot both find the
-socket stale. A stale socket file (no listener answering) is removed on start
+socket stale. On every OS the daemon also holds an exclusive lock on
+`agentnetd.lock` in the config dir (`flock`, `LockFileEx` on Windows) from
+before it opens the database, so a second daemon for the same home stops before
+it migrates anything; on Windows this lock, not the pipe name, is what keeps one
+daemon per home, and a daemon from before the lock that answers on the old pipe
+name counts as running too. A stale socket file (no listener answering) is removed on start
 only if the current user owns it.
 
 ## Framing
