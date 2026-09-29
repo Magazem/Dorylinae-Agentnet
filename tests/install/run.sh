@@ -97,10 +97,12 @@ index($0, "AGENTNET_PUBKEY_PEM=" q) == 1 {
 index($0, "AGENTNET_MINISIGN_PUBKEY=" q) == 1 { print "AGENTNET_MINISIGN_PUBKEY=" q "REPLACE_WITH_RELEASE_MINISIGN_PUBKEY" q; next }
 { print }
 ' "$root/scripts/install.sh" >"$work/install-placeholder.sh"
-grep -q "^AGENTNET_PUBKEY_PEM='REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM'\$" "$work/install-placeholder.sh" &&
-	grep -q "^AGENTNET_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE_MINISIGN_PUBKEY'\$" "$work/install-placeholder.sh" &&
-	! grep -q 'BEGIN PUBLIC KEY' "$work/install-placeholder.sh" ||
-	{ echo "run.sh: could not build the placeholder install.sh" >&2; exit 1; }
+if ! grep -q "^AGENTNET_PUBKEY_PEM='REPLACE_WITH_RELEASE_PUBLIC_KEY_PEM'\$" "$work/install-placeholder.sh" ||
+	! grep -q "^AGENTNET_MINISIGN_PUBKEY='REPLACE_WITH_RELEASE_MINISIGN_PUBKEY'\$" "$work/install-placeholder.sh" ||
+	grep -q 'BEGIN PUBLIC KEY' "$work/install-placeholder.sh"; then
+	echo "run.sh: could not build the placeholder install.sh" >&2
+	exit 1
+fi
 chmod 755 "$work/install-placeholder.sh"
 rm -f "$work/test.key"
 
