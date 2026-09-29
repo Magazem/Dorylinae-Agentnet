@@ -293,9 +293,19 @@ func (n *harnessNode) outboxState(id string) (state string, plaintext bool) {
 
 func harnessWait(t *testing.T, what string, ok func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	harnessWaitFor(t, what, 30*time.Second, ok, nil)
+}
+
+// harnessWaitFor is harnessWait with its own deadline; onTimeout (may be nil)
+// runs before the failure, to dump what a CI-only flake would need.
+func harnessWaitFor(t *testing.T, what string, timeout time.Duration, ok func() bool, onTimeout func()) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for !ok() {
 		if time.Now().After(deadline) {
+			if onTimeout != nil {
+				onTimeout()
+			}
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -408,7 +418,15 @@ func testOfflineDelivery(t *testing.T, restartRelay bool) {
 
 	// B comes back: the mail is delivered from the relay queue, exactly once, and acked.
 	b.start()
-	harnessWait(t, "B to process the mail", func() bool { return b.count(`SELECT COUNT(*) FROM mail_inbox`) == 1 })
+	// B's relay client dials once at start and backs off 0.5 s doubling on a
+	// failed dial (defaultMinBackoff/MaxBackoff), so one slow first dial on a
+	// loaded runner costs tens of seconds: the deadline covers a few retries,
+	// and a timeout dumps the relay log so a real fault stays visible.
+	harnessWaitFor(t, "B to process the mail", 90*time.Second, func() bool { return b.count(`SELECT COUNT(*) FROM mail_inbox`) == 1 }, func() {
+		t.Logf("relay log (restart=%v):\n%s", restartRelay, r.logs.String())
+		s, _ := a.outboxState(res.ID)
+		t.Logf("A outbox state after timeout: %q", s)
+	})
 	if n := b.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '` + res.ID + `'`); n != 1 {
 		t.Fatalf("mail_seen rows = %d, want 1", n)
 	}

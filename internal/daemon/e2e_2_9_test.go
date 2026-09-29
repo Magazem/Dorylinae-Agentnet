@@ -51,7 +51,17 @@ func gitReadPolicy(t *testing.T, e *qEnv, sid, repo, branch string) string {
 	if out.Grant.State != "active" {
 		t.Fatalf("policy-matched git.read grant = %+v, want active at once", out.Grant)
 	}
+	awaitHeld(t, e, out.Grant.ID)
 	return out.Grant.ID
+}
+
+// awaitHeld waits until B holds the active grant: A's grant reaches B by mail,
+// so a fetch started right after grant_create can race it (unknown_grant).
+func awaitHeld(t *testing.T, e *qEnv, gid string) {
+	t.Helper()
+	harnessWait(t, "B to hold the grant", func() bool {
+		return e.b.count(`SELECT COUNT(*) FROM grants WHERE id = '`+gid+`' AND direction = 'held' AND state = 'active'`) == 1
+	})
 }
 
 // releaseAndAwait runs ws_release on sid, confirms it and waits for
@@ -86,6 +96,7 @@ func TestPhase2WholeLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	fsGrant := e.grant(t, sid, "fs.read", fsDir, false)
+	awaitHeld(t, e, fsGrant)
 
 	// B lists and reads through both grants.
 	if st, err := e.bFetch(daemon.FetchStartParams{Grant: gitGrant, Op: capability.OpList}); err != nil || st.State != "complete" {
