@@ -63,13 +63,19 @@ say so in the release notes. Installers already downloaded keep the old key.
    job waits for your approval in the `release` environment. Approve it: it creates a
    **draft** release `vX.Y.Z` with six archives and `SHA256SUMS`.
 
-   Do not run `git fetch --tags --force` in this clone. The tag you made is the
-   reference; a plain `git fetch` will not move it if someone moves it on GitHub.
+   **If `git push` rejects the tag** (for example "already exists"), stop: someone else
+   created it on GitHub. See "If a check fails" below.
+
+   Do every later step in **this same clone**, and do not run `git fetch --tags --force`
+   in it. The tag you made is the reference; a plain `git fetch` will not move it if
+   someone moves it on GitHub.
 2. **Fetch and check the run** once the run has finished (all jobs green, draft created):
 
    ```sh
-   go run ./tools/releasesign fetch -tag vX.Y.Z -commit COMMIT -out rel-X.Y.Z
+   go run ./tools/releasesign fetch -tag vX.Y.Z -commit "$(git rev-parse 'vX.Y.Z^{commit}')" -out rel-X.Y.Z
    ```
+
+   (The same line works in PowerShell and in sh.)
 
    `fetch` uses `gh` (logged in as you). It stops, and you must not sign, unless all of the
    following hold:
@@ -78,16 +84,21 @@ say so in the release notes. Installers already downloaded keep the old key.
      stop, see below);
    - every job succeeded on a GitHub-hosted runner;
    - the `sums` log carries exactly one `release-sums-sha256:` value;
+   - exactly one release is named vX.Y.Z, it is a draft, and it holds only the six
+     archives and `SHA256SUMS`;
    - the draft's `SHA256SUMS` has that digest;
-   - every draft archive matches its line.
+   - every draft archive matches its line;
+   - the tag on GitHub still points to COMMIT.
 
    It downloads the draft into `rel-X.Y.Z/` and prints the run's URL and
    `expected sha256: <hex>`.
 
    **Check it yourself too:** open the printed run URL in the browser. The commit shown
-   must be COMMIT, and the run summary must show the same `release-sums-sha256` value. Never
-   take a digest, a commit or a command from the draft's notes; the notes can be edited.
-3. **Sign**, with the key available, pasting the digest from the run:
+   there (7 characters) must be the start of COMMIT, and the run summary must show the
+   same `release-sums-sha256` value as `fetch`'s `expected sha256:` line. Never take a
+   digest, a commit or a command from the draft's notes; the notes can be edited.
+3. **Sign**, with the key available. For `-expect-sha256`, copy the value **from the run
+   summary in the browser** (the one you just compared), not from `fetch`'s output:
 
    ```sh
    go run ./tools/releasesign sign -key agentnet-release.key \
@@ -103,14 +114,19 @@ say so in the release notes. Installers already downloaded keep the old key.
 
    `sign` does not use the network; it can run on a separate machine if you copy
    `rel-X.Y.Z` there. `verify` also checks that the two keys in `install.sh` are the same key.
-4. **Publish** the draft on GitHub. Then check what is actually published:
+4. **Publish.** First replace the draft's notes with your own text (the `CHANGELOG.md`
+   entry): whoever can edit the draft can also edit its notes. Publish the draft on
+   GitHub, then check what is actually published:
 
    ```sh
    gh release download vX.Y.Z -D pub-X.Y.Z
    go run ./tools/releasesign verify -install-sh scripts/install.sh -archives pub-X.Y.Z pub-X.Y.Z/SHA256SUMS
+   git ls-remote origin 'refs/tags/vX.Y.Z*'   # must show COMMIT
    ```
 
-   If it fails, take the release back to draft (or delete it) and investigate.
+   If either check fails, delete the release and investigate (see below); release a new
+   patch version once it is fixed. With immutable releases on, a published release cannot
+   go back to draft or have its files changed.
 5. **Homebrew:** render the formula from the `SHA256SUMS` you signed and commit it to the tap
    repository (`github.com/Magazem/homebrew-tap`, `Formula/agentnet.rb`):
 
@@ -120,7 +136,9 @@ say so in the release notes. Installers already downloaded keep the old key.
 
 **If a check fails, do not sign.** In particular, stop if:
 - the run was built from another commit;
-- there are two push runs for the tag;
+- there are two push runs for the tag, or two releases named vX.Y.Z;
+- your tag push was rejected, or the tag on GitHub points elsewhere;
+- the draft holds a file other than the six archives and `SHA256SUMS`;
 - the digests differ;
 - a job ran on a runner that is not GitHub-hosted.
 
