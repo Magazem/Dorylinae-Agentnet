@@ -231,10 +231,14 @@ wins and the old one is closed with code 1008 and reason `replaced`.
 
 After `ready`, the daemon sends envelope frames. For each one the relay:
 
+0. From R55-F1, charges the frame's bytes to the sender's and its prefix's byte rates
+   before parsing it ([relay-hosted.md §2](relay-hosted.md#bytes-charged-at-read-r55-035)).
+   Over either: `error` frame `rate_limited` with an empty `ref`, dropped unparsed.
 1. Parses the routing fields. Invalid: `error` frame `bad_envelope`, frame dropped.
 2. Checks `from` equals the authenticated key. Otherwise: `error` frame `bad_sender`, dropped.
 3. From ticket 4.0b, charges a non-ephemeral envelope to the sender's and its network
-   prefix's send rates ([relay-hosted.md §2](relay-hosted.md#2-abuse-limits-ticket-40b)).
+   prefix's send rates ([relay-hosted.md §2](relay-hosted.md#2-abuse-limits-ticket-40b));
+   from R55-F1 the envelope counts only, the bytes having been charged at step 0.
    Over either: `error` frame `rate_limited` (`ref` = the envelope id), dropped; the
    connection stays open.
 4. Looks `to` up in its in-memory registry. If the recipient is connected, has
@@ -250,7 +254,11 @@ Frames from one sender to one recipient arrive in the order sent, including
 across the queue: an envelope is never forwarded directly while older ones for
 the same recipient are still queued.
 
-Errors on a single envelope never close the connection. A daemon that sends a
+Errors on a single envelope never close the connection. Load shedding is not an error on an
+envelope: from R55-F1 a connection may be closed 1013 when it holds the most of a spent
+memory budget (eviction), or when one frame takes longer than `--frame-read-timeout` to
+arrive ([relay-hosted.md §2](relay-hosted.md#memory-budgets-and-fairness-r55-f1)); the daemon
+reconnects with its normal backoff. A daemon that sends a
 control frame after `auth` other than `ack` and the pairing requests `pair_new`,
 `pair_redeem` and `pair_cancel` (see [pairing.md](pairing.md)), and on a relay with accounts
 the binding frames of [accounts.md](accounts.md), or a binary message has its

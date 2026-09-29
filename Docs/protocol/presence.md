@@ -204,6 +204,13 @@ Relay change (1.2a):
   a recipient's mail into the queue path. Otherwise the relay drops the envelope
   **silently**: no `queued`, no `error`, never stored, not counted against queue limits. The
   relay still validates routing fields and `from` (`bad_envelope`, `bad_sender`).
+- **Ephemeral budget (R55-F1, [relay-hosted.md §2](relay-hosted.md#memory-budgets-and-fairness-r55-f1)).**
+  The half-buffer rule protects one recipient's frame slots, but not the relay-wide byte
+  budget: before R55-F1, presence to many slow readers spent `--max-inflight` and pushed
+  *everyone's* mail into the queue path (R55-002). A forwarded presence envelope is now charged
+  to a separate **ephemeral budget** (`--max-inflight-ephemeral`), never to the mail budget,
+  and is dropped silently when that budget (or its recipient prefix's share of it) is spent
+  and no stale holder can be evicted.
 - Rate limit: at most **600** ephemeral envelopes per minute per sending key (relay option
   `EphemeralPerMinute`). Excess envelopes are dropped silently and counted in the log
   (`event=ephemeral_limited`, once a minute).
