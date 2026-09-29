@@ -93,7 +93,13 @@ func TestIsRoot(t *testing.T) {
 // the path: the guard never walks past what it could not see (review 61b
 // F7b-1).
 func TestResolveFailsClosedOnLstatError(t *testing.T) {
-	dir := filepath.Join(testutil.TempDir(t), "a", "b")
+	// The guard follows links, so on macOS (/var -> /private/var) it lstats
+	// the target's spelling, not the caller's: spell the path physically.
+	base, err := filepath.EvalSymlinks(testutil.TempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(base, "a", "b")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
