@@ -1,0 +1,37 @@
+package ipc
+
+// Review 55 T6a-01 (temporary, never merged): ipc.md §Framing says results
+// are encoded with HTML escaping off. marshalResult does that, but serveConn
+// re-encodes the Response (Result is a json.RawMessage) with a default
+// json.Encoder, which escapes each '<' again as a six-byte escape.
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"net"
+	"strings"
+	"testing"
+)
+
+func TestReview55T6a01HTMLEscapeOnWire(t *testing.T) {
+	s := NewServer()
+	s.Handle("x", func(ctx context.Context, params json.RawMessage) (any, error) {
+		return map[string]string{"text": strings.Repeat("<", 1000)}, nil
+	})
+	a, b := net.Pipe()
+	defer a.Close()
+	go s.serveConn(context.Background(), b)
+	if _, err := a.Write([]byte(`{"id":"1","method":"x"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReaderSize(a, 1<<20).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	lt := strings.Count(line, "<")
+	t.Logf("response line bytes=%d for 1000 '<' in the result; raw '<' on the wire=%d", len(line), lt)
+	if lt != 1000 {
+		t.Fatalf("T6a-01: '<' is HTML-escaped on the wire (%d bytes, %d raw '<')", len(line), lt)
+	}
+}
