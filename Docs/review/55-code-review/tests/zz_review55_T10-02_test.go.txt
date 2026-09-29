@@ -1,0 +1,54 @@
+package relay_test
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
+)
+
+// Review 55 T10 (temporary, never merged): queued frames are re-sent in full
+// on every reconnect until acked, and a key that never acks re-downloads its
+// whole queue up to 20 times a minute for the queue TTL. A stranger uploads
+// each byte once and downloads it indefinitely (relay egress and single-DB
+// read amplification).
+func TestReview55T10_QueueRedeliveryAmplification(t *testing.T) {
+	e := newLimitEnv(t, relay.Options{})
+	snd, rcv := newPeer(t), newPeer(t)
+	cs := e.authed(snd, "10.1.0.1")
+	const n, size = 8, 700 << 10 // ~7.3 MiB of frames, under the 8 MiB per-pair cap
+	for i := range n {
+		expectQueued(t, e.send(cs, snd, rcv.key, fmt.Sprintf("q%d", i), payload(size)), fmt.Sprintf("q%d", i))
+	}
+	uploaded := 0
+	for range n {
+		uploaded += len(mustJSON(snd.env(rcv.key, "q0", payload(size))))
+	}
+	var downloaded int
+	for minute := range 2 {
+		for range 20 { // the per-key reconnect limit
+			c := e.authed(rcv, "10.2.0.1")
+			c.SetReadLimit(2 << 20)
+			for range n {
+				rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, frame, err := c.Read(rctx)
+				cancel()
+				if err != nil {
+					t.Fatalf("minute %d: read: %v", minute, err)
+				}
+				downloaded += len(frame)
+			}
+			_ = c.CloseNow() // never acks
+			waitConnected(t, e.s, rcv.key, false)
+		}
+		e.clock.Advance(time.Minute)
+	}
+	q, _ := e.s.Queued(rcv.key)
+	t.Logf("uploaded %d MiB once; downloaded %d MiB in 2 (fake) minutes over 40 reconnects; still queued: %d",
+		uploaded>>20, downloaded>>20, q)
+	if downloaded < 20*uploaded {
+		t.Fatalf("no amplification: downloaded %d, uploaded %d", downloaded, uploaded)
+	}
+}

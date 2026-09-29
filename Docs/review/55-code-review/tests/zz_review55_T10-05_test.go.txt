@@ -1,0 +1,89 @@
+package peers
+
+// Review 55 T10 (temporary, never merged): an Agent Card has no size or
+// skills-count bound on the daemon. A team owner can introduce a member card
+// of ~650 KiB (it fits one roster mail); Verify accepts it, Introduce stores
+// it, and every peers.Store.List (run per inbound session.* frame by the
+// daemon's IsPaired closure, internal/daemon/ping.go) re-decodes it.
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+func TestReview55T10_HugeIntroducedCardSlowsList(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(testutil.TempDir(t), "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	s := NewStore(st.DB())
+	measure := func() time.Duration {
+		const n = 50
+		start := time.Now()
+		for range n {
+			if _, err := s.List(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return time.Since(start) / n
+	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var skills []agentcard.Skill
+	for i := range 1700 {
+		skills = append(skills, agentcard.Skill{ID: fmt.Sprintf("s%d", i), Name: strings.Repeat("n", 120), Description: strings.Repeat("d", 128)})
+	}
+	c, err := agentcard.New(pub, "big", "custom", skills, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc, err := agentcard.Sign(priv, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(sc)
+	canon, err := agentcard.CanonicalValue(mustParse(t, raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vs, err := agentcard.Verify(canon)
+	if err != nil {
+		t.Fatalf("Verify refused the big card: %v", err)
+	}
+	owner, _, _ := ed25519.GenerateKey(rand.Reader)
+	_ = owner
+	tx, err := st.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Introduce(ctx, tx, Member{Card: vs, Raw: canon}, "owner-key-placeholder", time.Now()); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("Introduce: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	with := measure()
+	t.Logf("card %d bytes accepted by Verify and stored; peers.List takes %v per call (one call per inbound session frame)", len(canon), with)
+}
+
+func mustParse(t *testing.T, b []byte) any {
+	t.Helper()
+	v, err := agentcard.ParseStrict(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}

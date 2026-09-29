@@ -1,0 +1,56 @@
+package audit_test
+
+// Review 55 T10-01 (temporary, never merged): disk cost of the audit rows a
+// hostile relay can write without any pairing (mail.reject + session.reject,
+// 30/min each, forever; audit_events is append-only and never pruned).
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+func TestReview55T10_01_RelayRejectAuditGrowth(t *testing.T) {
+	ctx := context.Background()
+	dir := testutil.TempDir(t)
+	path := filepath.Join(dir, "a.db")
+	s, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	l := audit.New(s.DB())
+	size := func() int64 {
+		if _, err := s.DB().ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+			t.Fatal(err)
+		}
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	before := size()
+	const n = 3000 // 1500 of each: 25 minutes of relay-driven rejects
+	peer := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	id := strings.Repeat("x", 128) // envelope ids may be 128 chars
+	for i := 0; i < n/2; i++ {
+		if err := l.Append(ctx, "daemon", "mail.reject", map[string]string{"peer": peer, "id": id, "reason": "unpaired"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Append(ctx, "daemon", "session.reject", map[string]string{"peer": peer, "type": "session.data", "reason": "unpaired", "session": "abcdef01"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after := size()
+	per := float64(after-before) / n
+	perDay := per * 60 * 60 * 24
+	t.Logf("rows=%d bytes=%d (%.0f B/row); at 60 rows/min: %.1f MB/day, %.1f GB/year, never pruned",
+		n, after-before, per, perDay/1e6, perDay*365/1e9)
+}
