@@ -7,21 +7,22 @@ import (
 	"time"
 )
 
-// approvalScript reads title/body from the environment with AppleScript's
-// "system attribute", never argv (Docs/protocol/approval.md §Delivering the
-// code: "title and body go through the environment of osascript").
-const approvalScript = `
+// approvalScript reads title/body from the environment, never argv
+// (Docs/protocol/approval.md §Delivering the code: "title and body go
+// through the environment of osascript"), as base64 UTF-8 decoded by
+// envText, so a non-ASCII summary is not garbled (R55-203).
+const approvalScript = osaScriptHeader + osaEnvTextHandler + `
 on run
-	set t to system attribute "AGENTNET_A_TITLE"
-	set b to system attribute "AGENTNET_A_BODY"
+	set t to my envText("AGENTNET_A_TITLE")
+	set b to my envText("AGENTNET_A_BODY")
 	display notification b with title t
 end run
 `
 
 func showApproval(ctx context.Context, _ string, _ time.Time, title, body string) error {
 	env := []string{
-		"AGENTNET_A_TITLE=" + title,
-		"AGENTNET_A_BODY=" + body,
+		osaEnv("AGENTNET_A_TITLE", title),
+		osaEnv("AGENTNET_A_BODY", body),
 	}
 	return run(ctx, "/usr/bin/osascript", []string{"-e", approvalScript}, env)
 }

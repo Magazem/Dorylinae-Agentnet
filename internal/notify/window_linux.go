@@ -121,12 +121,37 @@ func dialogEnv(ctx context.Context) []string {
 	return env
 }
 
-// escapeArg builds a single "--opt=value" argument, so peer-supplied text
-// (a summary that starts with "-") is never a positional argument and never
-// sits next to option parsing (Docs/protocol/approval.md §The approval
-// window, Linux row; review 29 M3).
-func escapeArg(opt, value string) string {
-	return opt + "=" + escapeMarkup(value)
+// zenityArgs and kdialogArgs build the dialog's argv. Every value is one
+// "--opt=value" argument, so peer-supplied text (a summary that starts with
+// "-") is never a positional argument and never sits next to option parsing
+// (Docs/protocol/approval.md §The approval window, Linux row; review 29
+// M3). Both tools show the title literally; the text is escaped for each
+// tool's own parser (zenityText, kdialogText; R55-F6). A value that is not
+// one line of valid UTF-8 is an error, so the window fails closed (not
+// ready).
+func zenityArgs(tag, kind, summary string, timeoutSecs int) ([]string, error) {
+	title := "AgentNet approval " + tag
+	if !dialogArgSafe(title) {
+		return nil, errDialogArg
+	}
+	text, err := zenityText(kind + ": " + summary)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"--title=" + title, "--entry", "--text=" + text,
+		"--extra-button=Reject", "--timeout=" + itoa(timeoutSecs)}, nil
+}
+
+func kdialogArgs(tag, kind, summary string) ([]string, error) {
+	title := "AgentNet approval " + tag
+	if !dialogArgSafe(title) {
+		return nil, errDialogArg
+	}
+	text, err := kdialogText(kind + ": " + summary)
+	if err != nil {
+		return nil, err
+	}
+	return []string{"--title=" + title, "--inputbox=" + text}, nil
 }
 
 // mapZenityExit decodes zenity/kdialog's exit status into a dialog answer:
@@ -177,25 +202,28 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 	if timeoutSecs < 1 {
 		timeoutSecs = 1
 	}
-	text := kind + ": " + summary
+	notReady := func() (approval.WindowHandle, error) {
+		h := newDialogHandle(func() {})
+		h.markNotReady()
+		return h, nil
+	}
 	var cmd *exec.Cmd
 	var useZenity bool
 	if path, ok := findDialogProgram("zenity"); ok {
 		useZenity = true
-		cmd = exec.CommandContext(ctx, path, //nolint:gosec // resolved from a fixed, ownership-checked candidate list, never PATH
-			escapeArg("--title", "AgentNet approval "+tag),
-			"--entry",
-			escapeArg("--text", text),
-			"--extra-button=Reject",
-			escapeArg("--timeout", itoa(timeoutSecs)))
+		args, err := zenityArgs(tag, kind, summary, timeoutSecs)
+		if err != nil {
+			return notReady()
+		}
+		cmd = exec.CommandContext(ctx, path, args...) //nolint:gosec // resolved from a fixed, ownership-checked candidate list, never PATH
 	} else if path, ok := findDialogProgram("kdialog"); ok {
-		cmd = exec.CommandContext(ctx, path, //nolint:gosec // resolved from a fixed, ownership-checked candidate list, never PATH
-			escapeArg("--title", "AgentNet approval "+tag),
-			escapeArg("--inputbox", text))
+		args, err := kdialogArgs(tag, kind, summary)
+		if err != nil {
+			return notReady()
+		}
+		cmd = exec.CommandContext(ctx, path, args...) //nolint:gosec // resolved from a fixed, ownership-checked candidate list, never PATH
 	} else {
-		h := newDialogHandle(func() {})
-		h.markNotReady()
-		return h, nil
+		return notReady()
 	}
 	cmd.Env = dialogEnv(ctx)
 	// SIGKILL the dialog when the thread that started it exits, so it dies
@@ -206,14 +234,10 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		h := newDialogHandle(func() {})
-		h.markNotReady()
-		return h, nil
+		return notReady()
 	}
 	if err := cmd.Start(); err != nil {
-		h := newDialogHandle(func() {})
-		h.markNotReady()
-		return h, nil
+		return notReady()
 	}
 	handle := newDialogHandle(func() { _ = cmd.Process.Kill() })
 

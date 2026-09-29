@@ -62,6 +62,8 @@ create ...`; until then, any build with a small Go program that calls
       Return/Esc do nothing).
 - [ ] A non-ASCII peer name in the summary (e.g. `Böb Müller`) renders
       correctly (checks `system attribute` UTF-8 decoding).
+- [ ] **R55-F6:** a peer named `Zoë 東京 Ω` shows exactly in both the dialog
+      and the code notification (base64 UTF-8 transport, R55-203).
 - [ ] The code is shown in Notification Center, never in the dialog itself.
 - [ ] Approve/Reject/dismiss (closing the dialog) all behave as on Windows.
 - [ ] `giving up after <seconds>` closes the dialog unanswered at `expires`
@@ -76,10 +78,10 @@ create ...`; until then, any build with a small Go program that calls
 - [ ] A summary starting with `-` (e.g. a peer named `--evil`) is shown as
       literal text, not treated as an option (review 29 M3: every value is a
       single `--opt=value` argument).
-- [ ] A summary containing `<b>bold</b>` or `&amp;` markup is shown escaped
-      (literal angle brackets/ampersand), not rendered — unless the manual
-      check separately confirms `--no-markup` works with `--entry` on this
-      zenity version, in which case escaping may be dropped later.
+- [ ] **R55-F6 (Ubuntu 22.04 and 24.04 zenity; kdialog too if installed):**
+      a peer named `Bob\0 snake_case <b>x</b> & \n` shows exactly that
+      text, and the window text runs on to the closing "The code is in …"
+      sentence (no cut at `\0`, no new line, no lost `_`, no `&amp;`).
 - [ ] With `kdialog` only (zenity absent): an `--inputbox` appears; Reject is
       not available in the dialog, use `agentnet approve --reject` instead.
 - [ ] `ps aux` (or `/proc/<pid>/cmdline`) while the dialog is open shows the
