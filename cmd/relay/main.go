@@ -207,6 +207,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	srv := newHTTPServer(hooks.wrap(rs, rs, stderr))
 	_, _ = fmt.Fprintf(stderr, "%s listening on %s; Ctrl+C to stop\n", name, ln.Addr())
 	_, _ = fmt.Fprintf(stderr, "public: %s; origins: %s; accounts: %s\n", yesNo(public), strings.Join(origins, " "), *accountsMode)
+	b := rs.Budgets()
+	outb, ephb := byteSize(b.Outbound), byteSize(b.Ephemeral)
+	_, _ = fmt.Fprintf(stderr, "memory budgets: max-inflight %s (and as much again for frames being read); max-inflight-ephemeral %s; frame-read-timeout %s\n",
+		outb.String(), ephb.String(), b.FrameReadTimeout)
 	if public && tf.allowAuthV1 {
 		_, _ = fmt.Fprintf(stderr, "%s: warning: --allow-auth-v1: this public relay accepts relay auth v1, which does not name the relay; remove it once every daemon is updated\n", name)
 	}

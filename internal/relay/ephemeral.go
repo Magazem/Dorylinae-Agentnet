@@ -92,7 +92,7 @@ func (s *Server) routeEphemeral(sender *conn, h envelope.Header, frame []byte) {
 	s.mu.Lock()
 	dst := s.conns[h.To]
 	s.mu.Unlock()
-	if dst != nil && dst.directEphemeral(frame) {
+	if dst != nil && dst.directEphemeral(exact(frame)) {
 		s.log.Debug("routed", "event", "route", "from", short(h.From), "to", short(h.To), "type", h.Type, "id", h.ID, "bytes", len(frame))
 	}
 }

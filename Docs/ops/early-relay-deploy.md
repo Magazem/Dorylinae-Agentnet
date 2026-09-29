@@ -29,25 +29,27 @@ needs the operator key (OD-P4-11) first.
 
 1. Project → **Add Server**. Location: an EU one (Falkenstein, Nuremberg or Helsinki).
 2. Image: **Debian 13** if offered, else **Debian 12**. `setup.sh` expects Debian.
-3. Type: the smallest shared type. Review 52 needs at least 512 MB of RAM, and every current
-   Hetzner type has more. x86 (`CX…`) is simplest. Arm (`CAX…`) also works if you build the
+3. Type: the smallest shared type. The relay and Caddy need about 1 GB of RAM (see "Memory
+   numbers" in step 5), and every current Hetzner type has more. x86 (`CX…`) is simplest. Arm (`CAX…`) also works if you build the
    relay for `arm64` in step 4.
-4. Networking: public IPv4 and IPv6 both on.
+4. Networking: public **IPv4 only**; untick IPv6 (OD-R55F1-7 (c), review 63 S-2). The
+   relay's per-prefix shares count a /48 as one client, and /48s are cheap: over IPv6 an
+   attacker would need only about 8 of them to fill a budget.
 5. SSH key: add your public key (e.g. `~/.ssh/id_ed25519.pub`). **Do not** use a root password.
 6. Backups: leave **off** (your call, see [Owner decisions](#owner-decisions-in-this-runbook)).
-7. Create. Note the IPv4 and IPv6 addresses.
+7. Create. Note the IPv4 address.
 
 ## 2. DNS (at the registrar of dorylinae.net)
 
-Create two records, TTL 300 while you set up:
+Create one record, TTL 300 while you set up:
 
 | Name | Type | Value |
 |---|---|---|
 | `relay.dorylinae.net` | `A` | the VM's IPv4 address |
-| `relay.dorylinae.net` | `AAAA` | the VM's IPv6 address (Hetzner shows a `/64`: use `<prefix>::1`) |
 
-Check from your PC: `nslookup relay.dorylinae.net` shows both. Caddy cannot get a
-certificate until this resolves, so do it before step 5.
+**No `AAAA` record** (step 1.4). Check from your PC: `nslookup relay.dorylinae.net` shows
+the IPv4 address and no IPv6 address. Caddy cannot get a certificate until this resolves,
+so do it before step 5.
 
 ## 3. First login
 
@@ -114,7 +116,8 @@ web terminal still works (Server → Console), and `ufw allow 22/tcp` there undo
 - SSH: passwords off, root by key only. It refuses to run if `/root/.ssh/authorized_keys`
   holds no key;
 - fail2ban's `sshd` jail, reading the journal;
-- firewall: inbound 22/tcp (only from `SSH_ALLOW_FROM` if set) and 443/tcp, nothing else;
+- firewall: inbound 22/tcp (only from `SSH_ALLOW_FROM` if set) and 443/tcp **over IPv4
+  only**, nothing else. IPv6 443 is dropped even if the VM has an IPv6 address (step 1.4);
 - automatic security updates, with a reboot at 04:00 (UTC unless you changed the VM's
   timezone) when a kernel or libc update needs one;
 - the journal keeps logs for 14 days at most;
@@ -136,12 +139,22 @@ Doing it by hand instead: the script is short, and every step can be run line by
 | `--db` | `/var/lib/agentnet-relay/relay.db` | systemd `StateDirectory`, owned by the service user |
 | `--metrics-listen` | `127.0.0.1:9787` | Operator metrics on loopback only (4.1a) |
 | `--max-conns` | `2000` | Review 52 M2 (the default of 5000 is sized for a larger host) |
-| `--max-inflight` | `48MiB` | Review 52 M2. The same budget applies again to frames being read, so about 96 MiB at most |
-| `GOMEMLIMIT` | `400MiB` | Review 52 M2: about 80 % of a 512 MB VM |
+| `--max-inflight` | `48MiB` | Review 52 M2. The same budget applies again to frames being read. One /24 (/48) holds at most 6 MiB of each (R55-F1) |
+| `--max-inflight-ephemeral` | `6MiB` | R55-F1: presence and control frames get a budget of their own, so they cannot spend the mail budget. Equals the default (`--max-inflight` / 8), written out so the unit shows every memory number |
+| `--frame-read-timeout` | `30s` | R55-F1: a frame must arrive within 30 s of its first byte, so an unfinished frame cannot hold memory. Equals the default |
+| `GOMEMLIMIT` | `400MiB` | Review 52 M2. Above the relay's ≈ 255 MiB (below), well inside a 1 GB VM |
 | `--queue-max-total` | `1GiB` | See below |
 | `--queue-min-free-disk` | `512MiB` | See below |
 | `LimitNOFILE` | `8192` | 2000 + 256 connections exceed the usual 1024 |
 | `--accounts` | not passed (off) | D40: the owner's own team only |
+
+**Memory numbers** (relay-hosted.md "Memory bound after R55-F1"): about 102 MiB of budgets
+(48 outbound + 48 read + 6 ephemeral) and about 255 MiB in total at 2000 connections, under
+`GOMEMLIMIT=400MiB`. Caddy is a separate process outside that limit (an estimated 250 MiB
+at 2256 connections), so the VM needs about 1 GB of RAM. Kernel socket buffers are outside
+these numbers (review 63 S-8): a peer that does not read holds up to its TCP window plus the
+sender's socket buffer before the relay's budgets see anything. That is kernel memory, capped
+by `tcp_mem`, not the relay's heap.
 
 **Disk numbers.** Review 52 asked for disk limits scaled to a 2–3 GB volume:
 
@@ -192,7 +205,7 @@ Expected:
 ```
 curl -s http://127.0.0.1:8787/healthz        # {"ok":true,"version":"..."}
 curl -s http://127.0.0.1:9787/metrics        # relay_connections ...
-ufw status verbose                           # 22/tcp and 443/tcp only
+ufw status verbose                           # 22/tcp, and 443/tcp without a "(v6)" line
 ```
 
 ### From your PC (outside the VM)
@@ -206,6 +219,9 @@ curl -m5 http://relay.dorylinae.net:9787/metrics          # must fail (timeout)
 curl -m5 http://relay.dorylinae.net:8787/healthz          # must fail (timeout)
 curl -m5 http://relay.dorylinae.net:2019/config/          # must fail (Caddy admin API)
 curl -m5 http://relay.dorylinae.net/                      # must fail (port 80 closed)
+curl -4 -sS https://relay.dorylinae.net/healthz           # {"ok":true,...}
+curl -6 -m5 https://relay.dorylinae.net/healthz           # must fail (no AAAA record)
+curl -m5 -k "https://[<prefix>::1]/healthz"               # must fail (IPv6 443 closed), if the VM has IPv6
 ```
 
 Any of the "must fail" lines that answers means something is exposed. **Stop the relay**
@@ -288,4 +304,20 @@ The defaults below are chosen; change any of them if you disagree.
   another provider (relay-hosted.md §3). Today the database holds only sealed ciphertext
   and routing keys, so turning it on is low-risk, but it is not the backup 4.1b requires.
 - **A Hetzner Cloud Firewall** in the console, in front of `ufw` with the same two ports, is
-  an optional second layer. It is left off so the setup stays host-neutral (D37).
+  an optional second layer. It is left off so the setup stays host-neutral (D37). If you
+  turn it on, give the 443 rule the source `0.0.0.0/0` only, not `::/0`.
+
+## Owner actions on the VM that exists
+
+The VM set up before R55-F1 has IPv6 on and an `AAAA` record (OD-R55F1-7 (c), review 63
+S-2). Until all of the steps below are done, share the URL only with known testers (D43).
+
+1. At the registrar, delete the `AAAA` record for `relay.dorylinae.net`.
+2. Upload the new `deploy/early/` and run `bash setup.sh` again. It replaces the
+   `443/tcp` rule (IPv4 and IPv6) with an IPv4-only one. Keep `IPV6=yes` in
+   `/etc/default/ufw` (the default): with `IPV6=no` ufw stops managing IPv6, and IPv6 would
+   be left **open**, not closed.
+3. Optional: power the VM off and unassign its primary IPv6 in the Hetzner console.
+4. Run the IPv6 checks at the end of step 7 from your PC: both must fail, and `curl -4` must
+   still answer.
+5. Before a public launch: the per-/32 IPv6 share (OD-R55F1-7 (b)) must be built first.

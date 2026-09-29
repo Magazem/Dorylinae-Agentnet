@@ -37,12 +37,21 @@ type limitEnv struct {
 	url   string
 	logs  *syncBuffer
 	clock *fakeClock
+	// client dials the relay; nil is the default client.
+	client *http.Client
 }
 
 // newLimitEnv starts a public relay that trusts 127.0.0.1's limIPHeader, so
 // a test can connect from any client prefix. Unset options keep the spec
 // defaults.
 func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
+	t.Helper()
+	return newLimitEnvWith(t, opts, nil)
+}
+
+// newLimitEnvWith is newLimitEnv serving the relay with serve, which
+// returns its URL; nil serves it as start does.
+func newLimitEnvWith(t *testing.T, opts relay.Options, serve func(*relay.Server) string) *limitEnv {
 	t.Helper()
 	e := &limitEnv{t: t, logs: &syncBuffer{}, clock: newClock()}
 	opts.Public = true
@@ -57,7 +66,13 @@ func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
 		opts.Now = e.clock.Now
 	}
 	opts.Logger = slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e.s, e.url = start(t, opts)
+	if serve == nil {
+		e.s, e.url = start(t, opts)
+		return e
+	}
+	e.s = relay.New(opts)
+	t.Cleanup(e.s.Close)
+	e.url = serve(e.s)
 	return e
 }
 
@@ -65,7 +80,7 @@ func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
 // and the HTTP status when the relay refuses the upgrade.
 func (e *limitEnv) dialHeader(h http.Header) (*websocket.Conn, int) {
 	e.t.Helper()
-	c, resp, err := websocket.Dial(ctx(e.t), e.url, &websocket.DialOptions{HTTPHeader: h}) //nolint:bodyclose // closed below when present
+	c, resp, err := websocket.Dial(ctx(e.t), e.url, &websocket.DialOptions{HTTPHeader: h, HTTPClient: e.client}) //nolint:bodyclose // closed below when present
 	if err != nil {
 		if resp == nil {
 			e.t.Fatalf("dial: %v", err)
@@ -120,6 +135,17 @@ func (e *limitEnv) send(c *websocket.Conn, p peer, to, id string, payload []byte
 	e.t.Helper()
 	writeFrame(e.t, c, []byte(mustJSON(p.env(to, id, payload))))
 	return readControl(e.t, c)
+}
+
+// count reports how many event=limit lines for limit name subject.
+func (e *limitEnv) count(limit, subject string) int {
+	n := 0
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		if strings.Contains(line, "event=limit") && strings.Contains(line, "limit="+limit+" ") && strings.Contains(line, subject) {
+			n++
+		}
+	}
+	return n
 }
 
 // logged asserts an event=limit line for limit naming subject exists, and
@@ -361,7 +387,7 @@ func TestLimitPrefixBytesPerMinute(t *testing.T) {
 	big := payload(30 << 10) // ~40 KiB frames
 	expectQueued(t, e.send(c1, a1, victim.key, "a1-1", big), "a1-1")
 	expectQueued(t, e.send(c2, a2, victim.key, "a2-1", big), "a2-1")
-	expectCode(t, e.send(c2, a2, victim.key, "a2-2", big), envelope.CodeRateLimited, "a2-2")
+	expectCode(t, e.send(c2, a2, victim.key, "a2-2", big), envelope.CodeRateLimited, "") // refused unparsed (R55-035)
 	cb := e.authed(b, "10.0.2.1")
 	expectQueued(t, e.send(cb, b, victim.key, "b-1", big), "b-1")
 	e.logged("prefix_bytes", "prefix=10.0.1.0")
@@ -394,7 +420,7 @@ func TestLimitKeyBytesPerMinute(t *testing.T) {
 	big := payload(30 << 10)
 	expectQueued(t, e.send(ca, a, victim.key, "b-1", big), "b-1")
 	expectQueued(t, e.send(ca, a, victim.key, "b-2", big), "b-2")
-	expectCode(t, e.send(ca, a, victim.key, "b-3", big), envelope.CodeRateLimited, "b-3")
+	expectCode(t, e.send(ca, a, victim.key, "b-3", big), envelope.CodeRateLimited, "") // refused unparsed (R55-035)
 	expectQueued(t, e.send(c2, a2, victim.key, "o-1", big), "o-1")
 	e.logged("key_bytes", "peer="+a.key[:8])
 }
@@ -557,9 +583,13 @@ func TestLimitMaxInflightRelayWide(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	close(stop)
 	<-watched
-	// Control frames (ready, queued) are counted but never refused, hence the slack.
-	if n := maxSeen.Load(); n > budget+64<<10 {
+	// Control frames are charged to the ephemeral budget (R55-F1), so the
+	// outbound one holds exactly, with no slack.
+	if n := maxSeen.Load(); n > budget {
 		t.Fatalf("in-flight reached %d bytes, budget %d", n, budget)
+	}
+	if n := e.s.EphemeralInflight(); n > 1<<20 { // max(3 MiB / 8, 1 MiB)
+		t.Fatalf("ephemeral budget holds %d bytes, budget 1 MiB", n)
 	}
 	e.logged("max_inflight", "relay=all")
 }
@@ -828,6 +858,10 @@ func TestLimitSixtyFourFreshKeysOnePrefix(t *testing.T) {
 // --max-inflight size. A peer that starts a maximum-size frame and never
 // finishes it pinned up to 1 MiB of relay memory outside every cap, so a few
 // hundred authenticated connections exhausted a 256–512 MB host.
+//
+// R55-F1 (acceptance test 8, OD-R55F1-1 (a)): when the second frame does not
+// fit, the older of two equally heavy frames in different prefixes is
+// evicted (1013) instead of the newcomer, and the second frame completes.
 func TestLimitUnfinishedFramesShareReadBudget(t *testing.T) {
 	const budget = 3 << 19 // 1.5 MiB: one unfinished ~1 MiB frame fits, a second does not
 	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
@@ -850,8 +884,8 @@ func TestLimitUnfinishedFramesShareReadBudget(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	// A second unfinished frame does not fit in what is left: that
-	// connection is closed (try again later) instead of pinning more memory.
+	// A second frame of the same size does not fit in what is left: the
+	// first, older frame's connection is evicted to make room.
 	frameB := []byte(mustJSON(b.env(victim.key, "b-1", payload(700_000))))
 	wb, err := cb.Writer(ctx(t), websocket.MessageText)
 	if err != nil {
@@ -860,18 +894,18 @@ func TestLimitUnfinishedFramesShareReadBudget(t *testing.T) {
 	if _, err := wb.Write(frameB[:part]); err != nil {
 		t.Fatal(err)
 	}
-	expectClose(t, cb, websocket.StatusTryAgainLater)
+	expectClose(t, ca, websocket.StatusTryAgainLater)
 	if n := e.s.Reading(); n > budget {
 		t.Fatalf("frames being read hold %d bytes, budget %d", n, budget)
 	}
-	// The first sender is unaffected, and a routed frame is uncounted.
-	if _, err := wa.Write(frameA[part:]); err != nil {
+	// The second sender completes, and a routed frame is uncounted.
+	if _, err := wb.Write(frameB[part:]); err != nil {
 		t.Fatal(err)
 	}
-	if err := wa.Close(); err != nil {
+	if err := wb.Close(); err != nil {
 		t.Fatal(err)
 	}
-	expectQueued(t, readControl(t, ca), "a-1")
+	expectQueued(t, readControl(t, cb), "b-1")
 	// The reply is sent from inside route, before serve uncharges the frame,
 	// so the sender can see it first: poll for the uncharge.
 	deadline = time.Now().Add(wait)
@@ -881,7 +915,7 @@ func TestLimitUnfinishedFramesShareReadBudget(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	e.logged("max_inflight_read", "relay=all")
+	e.logged("evict_read", "prefix=10.0.1.0")
 }
 
 // R-4.0 H1: a queue drain charges its batch to --max-inflight before it

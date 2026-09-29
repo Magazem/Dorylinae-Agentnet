@@ -22,6 +22,9 @@ import (
 // authenticated connections (the --max-conns default; the 5001st key gets
 // relay_full), and maximum-size frames sent to non-reading recipients stay
 // within the per-connection 4 MiB and the relay-wide --max-inflight.
+// R55-F1 (acceptance test 15) adds a presence flood to non-reading
+// recipients and 64 unfinished frames: the heap stays under twice the sum
+// of the three budgets plus the idle cost.
 //
 // It runs only with DORYLINAE_RELAY_LOADTEST=1 (the weekly job): its 10000
 // sockets (both ends of every connection live in this process) exhaust the
@@ -147,6 +150,45 @@ func TestLimitMemoryBound5000IdleConns(t *testing.T) {
 	}
 	if n := e.s.Inflight(); n > 256<<20 {
 		t.Errorf("in-flight %d bytes, --max-inflight 256 MiB", n)
+	}
+
+	// R55-F1: presence from 20 keys to 2000 recipients that do not read,
+	// and 64 frames started and never finished.
+	body := payload(7000)
+	for i := range 20 {
+		s := clients[20+i]
+		for j := range 600 { // the per-key ephemeral rate
+			r := clients[1000+(i*600+j)%2000]
+			if err := s.c.Write(ctx(t), websocket.MessageText, s.p.typed(envelope.TypePresence, r.p.key, fmt.Sprintf("p-%d-%d", i, j), body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for i := range 64 {
+		w, err := clients[40+i].c.Writer(ctx(t), websocket.MessageText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { _, _ = w.Write(payload(1<<20 - 1)) }() // an evicted writer's error is expected
+	}
+	time.Sleep(2 * time.Second)
+	const budgets = 256<<20 + 256<<20 + 32<<20 // outbound + read + ephemeral at the defaults
+	switch {
+	case e.s.Inflight() > 256<<20:
+		t.Errorf("outbound budget holds %d bytes", e.s.Inflight())
+	case e.s.Reading() > 256<<20:
+		t.Errorf("read budget holds %d bytes", e.s.Reading())
+	case e.s.EphemeralInflight() > 32<<20+loadConns*512: // + the ready frames, never refused
+		t.Errorf("ephemeral budget holds %d bytes", e.s.EphemeralInflight())
+	}
+	runtime.GC()
+	var loaded runtime.MemStats
+	runtime.ReadMemStats(&loaded)
+	grew = int64(loaded.HeapInuse+loaded.StackInuse) - int64(before.HeapInuse+before.StackInuse) //nolint:gosec // heap sizes are far below 2^63
+	t.Logf("under load: heap+stack grew %d MiB (outbound %d MiB, read %d MiB, ephemeral %d MiB)",
+		grew>>20, e.s.Inflight()>>20, e.s.Reading()>>20, e.s.EphemeralInflight()>>20)
+	if bound := int64(2*budgets + loadConns*loadBytesPerConn); grew > bound {
+		t.Fatalf("heap+stack grew %d bytes under load, bound %d", grew, bound)
 	}
 }
 

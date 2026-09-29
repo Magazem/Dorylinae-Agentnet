@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 )
@@ -23,6 +24,8 @@ type limitFlags struct {
 	pairEnvelopes, senderEnvelopes     int
 	prefixBytesPerMin, keyBytesPerMin  byteSize
 	connBuffer, maxInflight            byteSize
+	maxInflightEphemeral               byteSize // 0: --max-inflight / 8, at least 1 MiB
+	frameReadTimeout                   time.Duration
 	pairBytes, senderBytes, queueTotal byteSize
 	minFreeDisk                        byteSize
 
@@ -50,7 +53,9 @@ func (l *limitFlags) register(fs *flag.FlagSet) {
 	l.connBuffer = 4 << 20
 	fs.Var(&l.connBuffer, "conn-buffer", "bytes waiting in one connection's outbound buffer (e.g. 4MiB); past it envelopes take the offline queue")
 	l.maxInflight = 256 << 20
-	fs.Var(&l.maxInflight, "max-inflight", "bytes waiting in all outbound buffers together (e.g. 256MiB); past it direct sends take the offline queue")
+	fs.Var(&l.maxInflight, "max-inflight", "bytes waiting in all outbound buffers together (e.g. 256MiB); past it direct sends take the offline queue. Frames being read get a second budget of the same size")
+	fs.Var(&l.maxInflightEphemeral, "max-inflight-ephemeral", "bytes of presence and control frames waiting in all outbound buffers together (e.g. 6MiB); past it they are dropped (default --max-inflight / 8, at least 1MiB)")
+	fs.DurationVar(&l.frameReadTimeout, "frame-read-timeout", 30*time.Second, "time a peer has to send one whole frame from its first byte; past it the connection is closed 1013")
 	fs.IntVar(&l.pairEnvelopes, "queue-pair-max-envelopes", 300, "envelopes one sender may have queued for one recipient; past it queue_full")
 	l.pairBytes = 8 << 20
 	fs.Var(&l.pairBytes, "queue-pair-max-bytes", "bytes one sender may have queued for one recipient (e.g. 8MiB); past it queue_full")
@@ -114,6 +119,9 @@ func (l *limitFlags) validate(behindProxy bool) error {
 			return fmt.Errorf("%s must be positive", f.name)
 		}
 	}
+	if l.frameReadTimeout <= 0 {
+		return errors.New("--frame-read-timeout must be positive")
+	}
 	switch {
 	case behindProxy && l.clientIPHeader == "":
 		return errors.New("--behind-proxy needs --client-ip-header (and --trusted-proxy): without the client IP every client shares the proxy's address and the per-prefix limits lock everyone out together")
@@ -136,6 +144,7 @@ func (l *limitFlags) apply(o *relay.Options) {
 	o.KeyEnvelopesPerMinute, o.KeyEnvelopeBurst, o.KeyBytesPerMinute = l.keyEnvsPerMin, l.keyEnvBurst, int64(l.keyBytesPerMin)
 	o.ControlPerMinute, o.ReconnectsPerMinute = l.controlPerMin, l.reconnectsPerMin
 	o.ConnBufferBytes, o.MaxInflight = int64(l.connBuffer), int64(l.maxInflight)
+	o.MaxInflightEphemeral, o.FrameReadTimeout = int64(l.maxInflightEphemeral), l.frameReadTimeout
 	o.QueuePairMaxEnvelopes, o.QueuePairMaxBytes = l.pairEnvelopes, int64(l.pairBytes)
 	o.QueueSenderMaxEnvelopes, o.QueueSenderMaxBytes = l.senderEnvelopes, int64(l.senderBytes)
 	o.QueueMaxTotal, o.QueueMinFreeDisk = int64(l.queueTotal), int64(l.minFreeDisk)

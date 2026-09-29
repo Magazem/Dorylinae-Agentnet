@@ -278,11 +278,14 @@ would pass its share, or X would pass its size. Then, **once**, before the fallb
      started before R's current frame;
    - outbound and ephemeral budgets: H is **not keeping up** (`evictStale`): the oldest frame
      waiting in H's outbound buffer has waited at least
-     `2 s + (bytes H holds in X) ÷ 512 KiB/s` (`evictMinRate`; 14 s for a full 6 MiB, ≈ 2.5 s
-     for 264 KiB of presence). The drain reservation adds to what H holds, but its own age
-     does not count. A reader whose link delivers at least 512 KiB/s (4 Mbit/s) is never
-     eligible, however much it holds (OD-R55F1-9). A flat 2 s would make an honest daemon
-     that drains a 4 MiB backlog over anything slower than 2 MiB/s eligible, and, at 6 MiB,
+     `2 s + (bytes H holds in the outbound and ephemeral budgets together) ÷ 512 KiB/s`
+     (`evictMinRate`; 14 s for a full 6 MiB, ≈ 2.5 s for 264 KiB of presence alone). Both
+     budgets count whichever one pays: mail and presence wait in one buffer, so the oldest
+     frame waits behind all of it, and counting only X would make an honest drainer of a
+     mail backlog eligible through the few KiB of presence it also holds (review 63 S-1).
+     The drain reservation adds to what H holds, but its own age does not count. A reader
+     whose link delivers at least 512 KiB/s (4 Mbit/s) is never eligible, however much it
+     holds (OD-R55F1-9). A flat 2 s would make an honest daemon that drains a 4 MiB backlog over anything slower than 2 MiB/s eligible, and, at 6 MiB,
      the heaviest holder there is.
    If no holder in the paying prefix is eligible, nobody is evicted.
 3. **Evict H.** Under H's ledger lock, mark H dead and uncharge everything H holds in all
@@ -350,7 +353,8 @@ towards the byte buckets too. The envelope-count rows are unchanged. One excepti
 cheap, and it is how `ack`s arrive: otherwise one heavy sender behind a shared NAT could spend
 the prefix's 64 MiB / min and have every neighbour's acks dropped, so their queued mail would
 be kept and redelivered. The per-frame rules after parsing (control 60 / min, envelope counts)
-still apply to it.
+still apply to it. Such frames never drive a bucket below empty (review 63 S-5): with a
+debt, a minute of flooding acks would lock the whole prefix out for many minutes after.
 
 #### Memory bound after R55-F1
 

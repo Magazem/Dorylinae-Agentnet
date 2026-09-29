@@ -37,7 +37,13 @@ func TestLimitDefaults(t *testing.T) {
 		{"control per minute", float64(l.controlPerMin), 60},
 		{"reconnects rate", l.reconnects.rate, perMin(20)}, {"reconnects burst", l.reconnects.burst, 20},
 		{"conn buffer", float64(l.connBuffer), 4 << 20},
-		{"max inflight", float64(l.inflight.max), 256 << 20},
+		{"max inflight", float64(s.led.pools[kindOutbound].max), 256 << 20},
+		{"read budget", float64(s.led.pools[kindRead].max), 256 << 20},
+		{"ephemeral budget", float64(s.led.pools[kindEphemeral].max), 32 << 20},
+		{"outbound share", float64(s.led.pools[kindOutbound].share), 32 << 20},
+		{"read share", float64(s.led.pools[kindRead].share), 32 << 20},
+		{"ephemeral share", float64(s.led.pools[kindEphemeral].share), 4 << 20},
+		{"frame read timeout (s)", s.frameTimeout.Seconds(), 30},
 		{"queue pair envelopes", float64(s.q.lim.pairCount), 300}, {"queue pair bytes", float64(s.q.lim.pairBytes), 8 << 20},
 		{"queue sender envelopes", float64(s.q.lim.senderCount), 2000}, {"queue sender bytes", float64(s.q.lim.senderBytes), 64 << 20},
 		{"queue total", float64(s.q.lim.totalBytes), 4 << 30},
@@ -176,9 +182,10 @@ func TestQueueTotalsFollowAddAckSweep(t *testing.T) {
 // envelopes; control frames still pass; release returns every byte to the
 // relay-wide budget.
 func TestConnBufferByteCap(t *testing.T) {
-	b := &budget{max: 1 << 30}
+	b := newLedger(1<<30, 1<<30, 1<<30, time.Now)
+	used := func() int64 { return b.used(kindOutbound) + b.used(kindEphemeral) }
 	c := newConn(nil, "k", 64, "")
-	c.maxBytes, c.inflight, c.draining = 4<<20, b, false
+	c.maxBytes, c.led, c.draining = 4<<20, b, false
 	frame := make([]byte, 1<<20)
 	for i := range 4 {
 		if r := c.direct(frame); r != directSent {
@@ -191,8 +198,8 @@ func TestConnBufferByteCap(t *testing.T) {
 	if !c.send([]byte(`{"op":"queued"}`)) {
 		t.Fatal("a control frame was refused")
 	}
-	if c.buffered() != 4<<20+15 || b.used.Load() != 4<<20+15 {
-		t.Fatalf("buffered %d, budget %d", c.buffered(), b.used.Load())
+	if c.buffered() != 4<<20+15 || used() != 4<<20+15 || b.used(kindEphemeral) != 15 {
+		t.Fatalf("buffered %d, budgets %d", c.buffered(), used())
 	}
 	c.written(<-c.out) // the write loop finishes one frame
 	if c.buffered() != 3<<20+15 {
@@ -202,19 +209,20 @@ func TestConnBufferByteCap(t *testing.T) {
 		t.Fatalf("room again: %v", r)
 	}
 	c.release()
-	if b.used.Load() != 0 || c.send([]byte("x")) || c.direct(frame) != directBusy {
-		t.Fatalf("after release: budget %d", b.used.Load())
+	if used() != 0 || c.send([]byte("x")) || c.direct(frame) != directBusy {
+		t.Fatalf("after release: budgets %d", used())
 	}
 	c.written(frame) // a write that finishes after release is not uncounted twice
-	if b.used.Load() != 0 {
-		t.Fatalf("budget %d after a late write", b.used.Load())
+	if used() != 0 {
+		t.Fatalf("budgets %d after a late write", used())
 	}
 
-	// The relay-wide budget: past it, direct sends are refused on every connection.
-	shared := &budget{max: 2 << 20}
-	c1, c2 := newConn(nil, "a", 64, ""), newConn(nil, "b", 64, "")
+	// The relay-wide budget: past it, direct sends are refused on every
+	// connection (none is stale, so nobody is evicted).
+	shared := newLedger(2<<20, 2<<20, 1<<20, time.Now)
+	c1, c2 := newConn(nil, "a", 64, "10.0.1.0"), newConn(nil, "b", 64, "10.0.2.0")
 	for _, x := range []*conn{c1, c2} {
-		x.maxBytes, x.inflight, x.draining = 4<<20, shared, false
+		x.maxBytes, x.led, x.draining = 4<<20, shared, false
 	}
 	if c1.direct(frame) != directSent || c2.direct(frame) != directSent {
 		t.Fatal("within budget refused")
@@ -236,16 +244,16 @@ func TestReserveHonoursByteCap(t *testing.T) {
 	if !c.reserve(ctx, reserved, false) {
 		t.Fatal("refused within the cap")
 	}
-	if c.inflight.used.Load() != 2<<20 {
-		t.Fatalf("budget %d after reserving 2 MiB", c.inflight.used.Load())
+	if c.led.used(kindOutbound) != 2<<20 {
+		t.Fatalf("budget %d after reserving 2 MiB", c.led.used(kindOutbound))
 	}
 	for range 2 {
 		if !c.sendReserved(ctx, frame, &reserved) {
 			t.Fatal("refused a reserved frame")
 		}
 	}
-	if reserved != 0 || c.buffered() != 2<<20 || c.inflight.used.Load() != 2<<20 {
-		t.Fatalf("reserved %d, buffered %d, budget %d", reserved, c.buffered(), c.inflight.used.Load())
+	if reserved != 0 || c.buffered() != 2<<20 || c.led.used(kindOutbound) != 2<<20 {
+		t.Fatalf("reserved %d, buffered %d, budget %d", reserved, c.buffered(), c.led.used(kindOutbound))
 	}
 	if c.reserve(ctx, 1<<20, false) {
 		t.Fatal("reserve past the byte cap without waiting")
@@ -260,8 +268,8 @@ func TestReserveHonoursByteCap(t *testing.T) {
 	c.written(<-c.out)
 	select {
 	case ok := <-done:
-		if !ok || c.buffered() != 1<<20 || c.inflight.used.Load() != 2<<20 {
-			t.Fatalf("ok %v, buffered %d, budget %d", ok, c.buffered(), c.inflight.used.Load())
+		if !ok || c.buffered() != 1<<20 || c.led.used(kindOutbound) != 2<<20 {
+			t.Fatalf("ok %v, buffered %d, budget %d", ok, c.buffered(), c.led.used(kindOutbound))
 		}
 	case <-time.After(time.Second):
 		t.Fatal("reserve did not resume after a write")

@@ -8,6 +8,7 @@
 package relay
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -162,8 +163,18 @@ type Options struct {
 	// --max-inflight), queue batches read for delivery included; past it
 	// direct sends take the queue path. Frames being read from peers have a
 	// second budget of the same size; past it the reading connection is
-	// closed with 1013 (R-4.0 H1).
-	MaxInflight int64
+	// closed with 1013 (R-4.0 H1). MaxInflightEphemeral: presence and
+	// control frames waiting in outbound buffers (--max-inflight-ephemeral,
+	// default max(MaxInflight/8, 1 MiB)); past it they are dropped. One
+	// prefix holds at most an eighth of each budget, and a charge that does
+	// not fit first evicts the heaviest holder (R55-F1,
+	// relay-hosted.md "Memory budgets and fairness").
+	MaxInflight          int64
+	MaxInflightEphemeral int64
+	// FrameReadTimeout: a frame must be read completely within this time of
+	// its first byte (30 s, --frame-read-timeout); past it the connection is
+	// closed 1013 (R55-F1).
+	FrameReadTimeout time.Duration
 	// Offline queue caps on top of QueueMaxEnvelopes/QueueMaxBytes: per
 	// sender -> recipient (300, 8 MiB), per sender over all recipients
 	// (2000, 64 MiB) and relay-wide (4 GiB, --queue-max-total); past them
@@ -209,10 +220,17 @@ type Server struct {
 	origins        []string
 
 	// Abuse limits and the client address rule (4.0b). Fixed after Open.
-	lim      *limits
-	public   bool
-	ipHeader string
-	trusted  []netip.Prefix
+	// led holds the memory budgets (R55-F1); frameTimeout is
+	// --frame-read-timeout (0: none).
+	lim          *limits
+	led          *ledger
+	frameTimeout time.Duration
+	public       bool
+	ipHeader     string
+	trusted      []netip.Prefix
+
+	// onRoute, if set, runs at the start of every route (tests only).
+	onRoute func(*conn)
 
 	mu      sync.Mutex
 	conns   map[string]*conn // keyed by wire public key
@@ -258,6 +276,19 @@ func (s *Server) Stats() (Stats, error) {
 	s.mu.Unlock()
 	rows, bytes, err := s.q.stats()
 	return Stats{Connections: n, QueueRows: rows, QueueBytes: bytes}, err
+}
+
+// Budgets are the memory budgets a Server enforces (relay-hosted.md
+// "Memory budgets and fairness"), with the defaults applied. 0 means none.
+type Budgets struct {
+	Outbound, Read, Ephemeral int64
+	FrameReadTimeout          time.Duration
+}
+
+// Budgets reports the memory budgets in force, for the start line.
+func (s *Server) Budgets() Budgets {
+	return Budgets{Outbound: s.led.pools[kindOutbound].max, Read: s.led.pools[kindRead].max,
+		Ephemeral: s.led.pools[kindEphemeral].max, FrameReadTimeout: s.frameTimeout}
 }
 
 // New returns a Server with an in-memory offline queue, ignoring
@@ -323,6 +354,14 @@ func Open(opts Options) (*Server, error) {
 	s.eph = newEphemeralLimiter(opts.EphemeralPerMinute, s.now)
 	s.ephMax = opts.EphemeralMaxBytes
 	s.lim = newLimits(opts, s.now, s.log)
+	inflight := orDefault(opts.MaxInflight, defaultMaxInflight)
+	ephemeral := orDefault(opts.MaxInflightEphemeral, 0)
+	if opts.MaxInflightEphemeral == 0 && inflight > 0 {
+		ephemeral = max(inflight/8, minEphemeralBudget)
+	}
+	s.led = newLedger(inflight, inflight, ephemeral, s.now)
+	s.led.hit = s.lim.hit
+	s.frameTimeout = orDefault(opts.FrameReadTimeout, defaultFrameReadTimeout)
 	q, err := openQueue(opts.QueuePath, opts.QueueTTL, opts.QueueMaxEnvelopes, opts.QueueMaxBytes, s.now)
 	if err != nil {
 		return nil, err
@@ -465,7 +504,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.lim.release(prefix)
-	ws, err := websocket.Accept(w, r, nil)
+	hw := &hijackWriter{ResponseWriter: w}
+	ws, err := websocket.Accept(hw, r, nil)
 	if err != nil {
 		s.lim.authDone(prefix, false)
 		return // Accept has already replied
@@ -504,10 +544,28 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.dismiss(c)
-	c.maxBytes, c.inflight = s.lim.connBuffer, &s.lim.inflight
+	c.maxBytes, c.led, c.raw = s.lim.connBuffer, s.led, hw.raw
+	// Deferred so that a panic while routing cannot leak budget (R55-144).
+	defer c.release()
 	ws.SetReadLimit(envelope.MaxFrameBytes)
 	s.serve(r.Context(), c)
-	c.release()
+}
+
+// hijackWriter keeps the socket websocket.Accept hijacks, so an evicted
+// connection can be closed without waiting for its close handshake.
+type hijackWriter struct {
+	http.ResponseWriter
+	raw net.Conn
+}
+
+func (h *hijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := h.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("http.ResponseWriter does not implement http.Hijacker")
+	}
+	c, brw, err := hj.Hijack()
+	h.raw = c
+	return c, brw, err
 }
 
 // refuseAfterAuth answers an authenticated connection the relay will not
@@ -647,7 +705,7 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	defer s.unregister(c)
 	s.log.Info("peer connected", "event", "connect", "peer", short(c.key))
 
-	c.send(control(s.readyFor(c)))
+	c.sendReady(control(s.readyFor(c)))
 	go c.writeLoop(ctx, cancel)
 	// On a relay with accounts nothing is delivered to an unbound key: its
 	// queue waits (for a re-bind) until accountsChanged sees it bound.
@@ -661,77 +719,134 @@ func (s *Server) serve(ctx context.Context, c *conn) {
 	}
 
 	for {
-		typ, frame, done, err := s.readFrame(ctx, c)
-		if errors.Is(err, errReadBudget) {
+		typ, frame, err := s.readFrame(ctx, c)
+		switch {
+		case errors.Is(err, errReadBudget):
 			s.lim.hit(limitReading, "relay", "all")
-			_ = c.ws.Close(websocket.StatusTryAgainLater, "relay busy; retry later")
+			c.closeBounded(websocket.StatusTryAgainLater, "relay busy; retry later")
 			return
-		}
-		if err != nil {
+		case err != nil:
 			s.log.Info("peer disconnected", "event", "disconnect", "peer", short(c.key))
 			return
 		}
-		if typ != websocket.MessageText {
-			done()
-			c.kick("binary frames are not allowed")
-			return
-		}
-		ok := s.route(c, frame)
-		done()
+		ok := s.handleFrame(c, typ, frame)
+		c.doneRead()
 		if !ok {
-			c.kick("unexpected control frame")
 			return
 		}
 	}
+}
+
+// handleFrame routes one frame read from c and reports whether to read the
+// next one. A frame c finished after it was evicted is discarded (R55-F1),
+// and every frame is charged to the byte buckets before it is parsed
+// (R55-035).
+func (s *Server) handleFrame(c *conn, typ websocket.MessageType, frame []byte) bool {
+	if c.gone() {
+		return false
+	}
+	if limit := s.lim.frameAllowed(c.key, c.prefix, len(frame)); limit != "" {
+		if limit == limitPrefixBytes {
+			s.lim.hit(limit, "prefix", c.prefix)
+		} else {
+			s.lim.hit(limit, "peer", short(c.key))
+		}
+		s.reject(c, envelope.CodeRateLimited, "sending too fast; retry later", "")
+		return true
+	}
+	if typ != websocket.MessageText {
+		c.kick("binary frames are not allowed")
+		return false
+	}
+	if !s.route(c, frame) {
+		c.kick("unexpected control frame")
+		return false
+	}
+	return true
 }
 
 // readChunk is the initial buffer of a frame being read, and its growth step.
 const readChunk = 4 << 10
 
 // errReadBudget is a frame that could not be read because the relay-wide
-// budget for frames being read is spent.
+// budget for frames being read is spent, even after one eviction.
 var errReadBudget = errors.New("relay-wide read budget spent")
 
-// readFrame reads one message from c. Its buffer is charged, as it grows, to
-// a relay-wide budget of the MaxInflight size (counted apart from the
-// outbound one), so peers that start maximum-size frames and never finish
-// them cannot pin more memory than that together (R-4.0 H1). done uncharges
-// the frame; call it once the frame has been routed.
-func (s *Server) readFrame(ctx context.Context, c *conn) (websocket.MessageType, []byte, func(), error) {
+// errEvicted is a frame whose connection was evicted, or timed out, while
+// it was being read.
+var errEvicted = errors.New("connection evicted")
+
+// defaultFrameReadTimeout is --frame-read-timeout (R55-F1).
+const defaultFrameReadTimeout = 30 * time.Second
+
+// readFrame reads one message from c. Its buffer is charged to the read
+// budget as it grows (R-4.0 H1); a charge that does not fit evicts the
+// holder that pays once (R55-F1). The frame must be read completely within
+// frameTimeout of its first byte, or c is handled as evicted. c.doneRead
+// uncharges the frame once it has been routed.
+func (s *Server) readFrame(ctx context.Context, c *conn) (websocket.MessageType, []byte, error) {
 	typ, r, err := c.ws.Reader(ctx)
 	if err != nil {
-		return 0, nil, nil, err
+		return 0, nil, err
 	}
-	var charged int64
-	done := func() { s.lim.reading.add(-charged); charged = 0 }
+	c.startRead(time.Now()) // real time: frames are ordered by when they really started
+	if s.frameTimeout > 0 {
+		t := time.AfterFunc(s.frameTimeout, func() { s.frameTimedOut(c) })
+		defer t.Stop()
+	}
 	var buf []byte
 	for {
 		if len(buf) == cap(buf) {
 			// Double, but never past what the read limit lets a frame hold.
 			grown := slices.Grow(buf, max(1, min(max(cap(buf), readChunk), envelope.MaxFrameBytes+1-len(buf))))
-			delta := int64(cap(grown)) - charged
-			if !s.lim.reading.tryAdd(delta) {
-				done()
-				return 0, nil, nil, errReadBudget
+			if err := s.growRead(c, int64(cap(grown)-cap(buf))); err != nil {
+				c.doneRead()
+				return 0, nil, err
 			}
-			charged += delta
 			buf = grown
 		}
 		n, err := r.Read(buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+n]
 		if errors.Is(err, io.EOF) {
-			return typ, buf, done, nil
+			return typ, buf, nil
 		}
 		if err != nil {
-			done()
-			return 0, nil, nil, err
+			c.doneRead()
+			return 0, nil, err
 		}
+	}
+}
+
+// growRead charges n more bytes of c's frame to the read budget, evicting
+// once if they do not fit (relay-hosted.md "When a charge does not fit").
+func (s *Server) growRead(c *conn, n int64) error {
+	ok, refused, over, dead := c.chargeRead(n)
+	if refused && s.led.evictFor(c, kindRead, n, over) {
+		ok, _, _, dead = c.chargeRead(n)
+	}
+	switch {
+	case ok:
+		return nil
+	case dead:
+		return errEvicted
+	}
+	return errReadBudget
+}
+
+// frameTimedOut ends c, whose frame was not read within frameTimeout, as an
+// eviction: every charge is released at once and the close is bounded.
+func (s *Server) frameTimedOut(c *conn) {
+	if c.evict("frame too slow; retry later") {
+		s.lim.hit(limitFrameTimeout, "peer", short(c.key))
 	}
 }
 
 // route forwards one frame from sender. It returns false if the frame is a
 // protocol violation that must close the connection.
 func (s *Server) route(sender *conn, frame []byte) bool {
+	if s.onRoute != nil {
+		s.onRoute(sender)
+	}
 	f, err := envelope.Classify(frame)
 	if err != nil {
 		s.reject(sender, envelope.CodeBadEnvelope, "frame is not a valid envelope", "")
@@ -765,8 +880,8 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 		s.routeEphemeral(sender, h, frame)
 		return true
 	}
-	if limit := s.lim.sendAllowed(sender.key, sender.prefix, len(frame)); limit != "" {
-		if limit == limitPrefixEnvs || limit == limitPrefixBytes {
+	if limit := s.lim.sendAllowed(sender.key, sender.prefix); limit != "" {
+		if limit == limitPrefixEnvs {
 			s.lim.hit(limit, "prefix", sender.prefix)
 		} else {
 			s.lim.hit(limit, "peer", short(sender.key))
@@ -782,7 +897,7 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 	s.mu.Unlock()
 	res := directDraining // no connection: queue it
 	if dst != nil {
-		res = dst.direct(frame)
+		res = dst.direct(exact(frame))
 	}
 	switch res {
 	case directSent:
@@ -832,12 +947,28 @@ func (s *Server) enqueue(sender *conn, h envelope.Header, frame []byte) {
 // busyLimit logs which byte cap sent an envelope for dst down the queue
 // path, if one did (a buffer full by frame count is not a 4.0b limit).
 func (s *Server) busyLimit(dst *conn, n int) {
-	switch {
-	case s.lim.inflight.max > 0 && s.lim.inflight.used.Load()+int64(n) > s.lim.inflight.max:
-		s.lim.hit(limitInflight, "relay", "all")
-	case dst.maxBytes > 0 && dst.buffered()+int64(n) > dst.maxBytes:
+	if b := dst.buffered(); dst.maxBytes > 0 && b > 0 && b+int64(n) > dst.maxBytes {
 		s.lim.hit(limitConnBuffer, "peer", short(dst.key))
+		return
 	}
+	switch s.led.over(dst, kindOutbound, int64(n)) {
+	case "relay":
+		s.lim.hit(limitInflight, "relay", "all")
+	case "prefix":
+		s.lim.hit(limitInflightPrefix, "prefix", dst.prefix)
+	}
+}
+
+// exact returns frame in a slice whose capacity is its length, copying it
+// if readFrame left spare capacity, so a frame waiting in an outbound
+// buffer pins no more than the bytes it is charged for (R55-034).
+func exact(frame []byte) []byte {
+	if cap(frame) == len(frame) {
+		return frame
+	}
+	b := make([]byte, len(frame))
+	copy(b, frame)
+	return b
 }
 
 // arm makes sure c's backlog is being delivered.
@@ -887,7 +1018,7 @@ func (s *Server) drainStep(c *conn, wait bool) bool {
 		return !wait
 	}
 	reserved := int64(drainReserve)
-	defer func() { c.inflight.add(-reserved) }() // what the batch did not use
+	defer func() { c.unreserve(reserved) }() // what the batch did not use
 	c.mu.Lock()
 	rows, err := s.q.next(c.key, c.cursor, drainBatch, drainBatchBytes)
 	if err != nil {

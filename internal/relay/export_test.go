@@ -1,5 +1,7 @@
 package relay
 
+import "strings"
+
 // Draining reports whether the peer with the given key is connected and still
 // receiving its queued backlog. While it is, envelopes for it are queued (and
 // the sender gets "queued") instead of being forwarded directly. Tests that
@@ -28,15 +30,39 @@ func (s *Server) Buffered(key string) int64 {
 	return c.buffered()
 }
 
-// Inflight reports the bytes waiting in every outbound buffer together.
-func (s *Server) Inflight() int64 { return s.lim.inflight.used.Load() }
+// Inflight reports the bytes charged to the outbound budget: envelopes
+// waiting in every outbound buffer, and queue-drain reservations.
+func (s *Server) Inflight() int64 { return s.led.used(kindOutbound) }
 
 // ChargeInflight adds n bytes to the relay-wide outbound budget, as if they
-// were waiting in some buffer (n < 0 gives them back).
-func (s *Server) ChargeInflight(n int64) { s.lim.inflight.add(n) }
+// were waiting in some buffer that cannot be evicted (n < 0 gives them back).
+func (s *Server) ChargeInflight(n int64) { s.led.addUnowned(kindOutbound, n) }
 
 // Reading reports the bytes of frames being read, relay-wide (R-4.0 H1).
-func (s *Server) Reading() int64 { return s.lim.reading.used.Load() }
+func (s *Server) Reading() int64 { return s.led.used(kindRead) }
+
+// EphemeralInflight reports the bytes of presence and control frames
+// waiting in every outbound buffer (the ephemeral budget, R55-F1).
+func (s *Server) EphemeralInflight() int64 { return s.led.used(kindEphemeral) }
+
+// ReadingFor, InflightFor and EphemeralFor report what one prefix
+// ("10.1.0.0/24" or "10.1.0.0") holds of the read, outbound and ephemeral
+// budgets (R55-F1).
+func (s *Server) ReadingFor(prefix string) int64 { return s.led.usedBy(kindRead, bare(prefix)) }
+func (s *Server) InflightFor(prefix string) int64 {
+	return s.led.usedBy(kindOutbound, bare(prefix))
+}
+func (s *Server) EphemeralFor(prefix string) int64 {
+	return s.led.usedBy(kindEphemeral, bare(prefix))
+}
+
+// bare drops a prefix length: the relay names a prefix by its address.
+func bare(prefix string) string {
+	if i := strings.IndexByte(prefix, '/'); i >= 0 {
+		return prefix[:i]
+	}
+	return prefix
+}
 
 // DrainHeld reports the bytes queue drains have read from the database and
 // not yet put into an outbound buffer (R-4.0 H1).
@@ -75,4 +101,14 @@ func (s *Server) FillAccountPairNewForTest(acc string, n int) {
 	for range n {
 		s.pairs.newLimAccount.fail(acc, s.now())
 	}
+}
+
+// ChargeEphemeral adds n bytes to the ephemeral budget as if they were held
+// by nobody who can be evicted (n < 0 gives them back).
+func (s *Server) ChargeEphemeral(n int64) { s.led.addUnowned(kindEphemeral, n) }
+
+// SetRouteHookForTest runs f with the sender's key at the start of every
+// routed frame (R55-144: a hook that panics).
+func (s *Server) SetRouteHookForTest(f func(key string)) {
+	s.onRoute = func(c *conn) { f(c.key) }
 }
