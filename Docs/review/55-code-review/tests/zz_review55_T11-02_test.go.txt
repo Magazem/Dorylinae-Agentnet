@@ -1,0 +1,72 @@
+package daemon
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
+)
+
+// gStrcompress emulates GLib's g_strcompress (octal \NNN, \b \f \n \r \t \v,
+// any other escaped char kept as itself) and cuts at the first NUL, as a C
+// string consumer (GTK label) would.
+func gStrcompress(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 == len(s) {
+			b = append(b, s[i])
+			continue
+		}
+		i++
+		switch c := s[i]; {
+		case c >= '0' && c <= '7':
+			v, n := 0, 0
+			for n < 3 && i < len(s) && s[i] >= '0' && s[i] <= '7' {
+				v = v*8 + int(s[i]-'0')
+				i++
+				n++
+			}
+			i--
+			b = append(b, byte(v))
+		case c == 'n':
+			b = append(b, '\n')
+		case c == 't':
+			b = append(b, '\t')
+		case c == 'r':
+			b = append(b, '\r')
+		case c == 'b':
+			b = append(b, '\b')
+		case c == 'f':
+			b = append(b, '\f')
+		case c == 'v':
+			b = append(b, '\v')
+		default:
+			b = append(b, c)
+		}
+	}
+	out := string(b)
+	if i := strings.IndexByte(out, 0); i >= 0 {
+		out = out[:i]
+	}
+	return out
+}
+
+// Review 55 T11-02: the Linux zenity --text path. The peer's card name goes
+// through stripLongDigits(notify.Clean(name, 40)) (debate constraint), the
+// window adds Clean(summary, 4096) (window.go:39) and escapeMarkup; none of
+// them touches a backslash, so zenity's g_strcompress decodes "\0" to NUL
+// and the constraint text after the name is never shown.
+func TestReview55T11_02(t *testing.T) {
+	name := `Bob\0` // a valid card name: checkText refuses only IsControl
+	who := stripLongDigits(notify.Clean(name, 40))
+	summary := constraintSummary(who, "s-0123456789abcdef", "The human accepts Bob's plan in full.")
+	window := notify.Clean(summary, notify.MaxWindowSummary) // as windowText
+	shown := gStrcompress("debate_constraint: " + window)
+	t.Logf("argv text: %q", window)
+	t.Logf("zenity shows: %q", shown)
+	if strings.Contains(shown, "accepts") {
+		t.Fatalf("constraint text still shown")
+	}
+	g := `Mallory\n\nApproved by IT`
+	t.Logf("grant-style name %q shows as %q", g, gStrcompress(notify.Clean("approve grant read on repo to "+g+" for 24h0m0s?", 4096)))
+}
