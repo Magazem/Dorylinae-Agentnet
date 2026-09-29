@@ -2,12 +2,12 @@ package daemon
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -62,7 +62,7 @@ func TestGrantDebateOpen(t *testing.T) {
 	t.Run("policy path", func(t *testing.T) {
 		dir := testutil.TempDir(t)
 		h, peer := newGrantHarness(t, peers.TrustCode, false)
-		resolved, err := filepath.EvalSymlinks(dir)
+		resolved, err := pathid.Resolve(dir)
 		if err != nil {
 			t.Fatal(err)
 		}

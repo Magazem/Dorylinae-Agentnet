@@ -19,6 +19,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 )
 
 type approvalIDResult struct {
@@ -326,7 +327,7 @@ func qGitRepoNamed(t *testing.T, branch, name, content string) string {
 	}
 	run("add", ".")
 	run("commit", "-q", "-m", "init")
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

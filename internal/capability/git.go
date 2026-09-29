@@ -216,6 +216,15 @@ func (b GitBackend) command(ctx context.Context, repo string, args ...string) (*
 	return cmd, cctx, cancel
 }
 
+// GitRepoCommand is GitCommand run on repo with the hardening and discovery
+// ceiling of the served commands (GitBackend.command). The grantor's
+// issuance checks use it: they run on a caller-chosen directory before any
+// approval (review 55 R55-198).
+func GitRepoCommand(ctx context.Context, gitPath, repo string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	cmd, _, cancel := GitBackend{Git: gitPath, Timeout: GitTimeout}.command(ctx, repo, args...)
+	return cmd, cancel
+}
+
 func (b GitBackend) check(rec Record) error {
 	if b.Git == "" {
 		return fetchErr(CodeUnsupported)
@@ -400,7 +409,7 @@ func entryOfGit(name string, e gitEntry) Entry {
 func gitSegments(rel string) ([]string, error) {
 	segs := SplitEffective("", rel)
 	for _, s := range segs {
-		if isGitName(s) {
+		if IsGitName(s) {
 			return nil, fetchErr(CodeOutOfScope)
 		}
 	}
@@ -475,7 +484,7 @@ func (b GitBackend) List(ctx context.Context, rec Record, rel, cursor string) ([
 	names := make([]string, 0, len(raw))
 	for _, e := range raw {
 		name, ok := strings.CutPrefix(e.path, prefix)
-		if !ok || name == "" || strings.Contains(name, "/") || isGitName(name) || !utf8.ValidString(name) {
+		if !ok || name == "" || strings.Contains(name, "/") || IsGitName(name) || !utf8.ValidString(name) {
 			continue
 		}
 		if _, dup := byName[name]; dup {

@@ -15,6 +15,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 )
 
 // Scope limits (Docs/protocol/device.md §Scope).
@@ -48,7 +50,7 @@ var ErrNoScope = errors.New("device: no scope")
 
 // Scope is what the helper's human allows its controller to run
 // (Docs/protocol/device.md §Scope). Once validated, every repo path is the
-// EvalSymlinks-resolved directory and every argv[0] the absolute path found
+// directory resolved by pathid.Resolve and every argv[0] the absolute path found
 // by exec.LookPath at set time.
 type Scope struct {
 	Types    []string  `json:"types"`
@@ -134,7 +136,7 @@ func scopeErr(field, format string, a ...any) *ScopeError {
 
 // Resolver resolves the parts of a scope that depend on the machine.
 type Resolver struct {
-	// RepoPath resolves an absolute directory once (EvalSymlinks) and refuses
+	// RepoPath resolves an absolute directory once (pathid.Resolve) and refuses
 	// the places no scope may name. A *ScopeError it returns keeps its
 	// Forbidden flag; the field is filled in by ValidateScope.
 	RepoPath func(raw string) (string, error)
@@ -320,9 +322,17 @@ func resolveProgram(name string, lookPath func(string) (string, error)) (string,
 	if strings.ContainsAny(name, `/\`) && !filepath.IsAbs(name) {
 		return "", errors.New("must be a program name or an absolute path")
 	}
+	// Before lookPath touches it: a UNC path would open an SMB connection
+	// before any approval (review 55 R55-027).
+	if pathid.CheckLocal(name) != nil {
+		return "", errors.New("must be on a local path: UNC, device and network paths are refused")
+	}
 	p, err := lookPath(name)
 	if err != nil {
 		return "", fmt.Errorf("program not found: %w", err)
+	}
+	if pathid.CheckLocal(p) != nil {
+		return "", errors.New("program resolves to a UNC, device or network path")
 	}
 	if !filepath.IsAbs(p) {
 		// exec.LookPath returns a relative path only for a PATH entry that is

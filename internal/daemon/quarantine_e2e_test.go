@@ -19,6 +19,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
@@ -212,7 +213,7 @@ func qGitRepo(t *testing.T) string {
 	}
 	run("add", ".")
 	run("commit", "-q", "-m", "init")
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
