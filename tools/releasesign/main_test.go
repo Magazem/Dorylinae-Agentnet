@@ -23,6 +23,40 @@ func fakeSums(version string) []byte {
 	return []byte(b.String())
 }
 
+// realRelease writes six small archives and their SHA256SUMS into dir and
+// returns the SHA256SUMS path and its SHA-256.
+func realRelease(t *testing.T, dir, version string) (string, string) {
+	t.Helper()
+	sums, archives := releaseFiles(version, "")
+	for name, b := range archives {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := filepath.Join(dir, "SHA256SUMS")
+	if err := os.WriteFile(p, sums, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p, sha256Of(sums)
+}
+
+// releaseFiles returns a SHA256SUMS and the six archives it names; salt
+// changes every archive's bytes.
+func releaseFiles(version, salt string) ([]byte, map[string][]byte) {
+	archives := map[string][]byte{}
+	var b strings.Builder
+	for _, t := range targets {
+		ext := "tar.gz"
+		if strings.HasPrefix(t, "windows") {
+			ext = "zip"
+		}
+		name := fmt.Sprintf("agentnet_%s_%s.%s", version, t, ext)
+		archives[name] = []byte("archive " + name + salt)
+		b.WriteString(sha256Of(archives[name]) + "  " + name + "\n")
+	}
+	return []byte(b.String()), archives
+}
+
 func runOK(t *testing.T, args ...string) string {
 	t.Helper()
 	var out, errb bytes.Buffer
@@ -88,15 +122,12 @@ func TestKeygenSignVerifyEmbed(t *testing.T) {
 	runOK(t, "keygen", "-out", key)
 	runFail(t, "exists", "keygen", "-out", key) // never overwrites a key
 
-	sums := filepath.Join(dir, "SHA256SUMS")
-	if err := os.WriteFile(sums, fakeSums("1.2.3"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if out := runOK(t, "sign", "-key", key, sums); !strings.Contains(out, "1.2.3") {
+	sums, digest := realRelease(t, dir, "1.2.3")
+	if out := runOK(t, "sign", "-key", key, "-expect-sha256", digest, "-archives", dir, sums); !strings.Contains(out, "1.2.3") {
 		t.Fatalf("sign output %q does not name the version", out)
 	}
-	runFail(t, "exists", "sign", "-key", key, sums) // no silent overwrite
-	runOK(t, "sign", "-key", key, "-force", sums)
+	runFail(t, "exists", "sign", "-key", key, "-expect-sha256", digest, "-archives", dir, sums) // no silent overwrite
+	runOK(t, "sign", "-key", key, "-expect-sha256", digest, "-archives", dir, "-force", sums)
 
 	// embed into a placeholder copy of install.sh and verify against it.
 	script := placeholderInstallSh(t)
@@ -164,9 +195,12 @@ func TestSignRefusesMalformedSums(t *testing.T) {
 		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		// The digest matches, so only the format check can refuse.
 		var out, errb bytes.Buffer
-		if code := run([]string{"sign", "-key", key, p}, &out, &errb); code == 0 {
+		if code := run([]string{"sign", "-key", key, "-expect-sha256", sha256Of([]byte(body)), "-archives", dir, p}, &out, &errb); code == 0 {
 			t.Errorf("%s: signed a malformed SHA256SUMS", name)
+		} else if !strings.Contains(errb.String(), "format check") {
+			t.Errorf("%s: refused for another reason: %s", name, errb.String())
 		}
 		if _, err := os.Stat(p + ".sig"); err == nil {
 			t.Errorf("%s: wrote a signature anyway", name)
@@ -184,11 +218,8 @@ func TestOpenSSLInterop(t *testing.T) {
 	dir := t.TempDir()
 	key := filepath.Join(dir, "k")
 	runOK(t, "keygen", "-out", key)
-	sums := filepath.Join(dir, "SHA256SUMS")
-	if err := os.WriteFile(sums, fakeSums("0.4.0"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	runOK(t, "sign", "-key", key, sums)
+	sums, digest := realRelease(t, dir, "0.4.0")
+	runOK(t, "sign", "-key", key, "-expect-sha256", digest, "-archives", dir, sums)
 	priv, err := readPrivateKey(key)
 	if err != nil {
 		t.Fatal(err)
@@ -212,4 +243,199 @@ func TestOpenSSLInterop(t *testing.T) {
 	if !bytes.Equal(a, b) {
 		t.Fatal("openssl and releasesign signatures differ")
 	}
+}
+
+// --- R55-F3: sign is bound to the CI run (spec 57 §7 A1-A5) ---
+
+// runCode runs releasesign and returns its exit code and stderr.
+func runCode(args ...string) (int, string) {
+	var out, errb bytes.Buffer
+	code := run(args, &out, &errb)
+	return code, errb.String()
+}
+
+func assertNoSignature(t *testing.T, sums string) {
+	t.Helper()
+	for _, ext := range []string{".sig", ".minisig"} {
+		if _, err := os.Stat(sums + ext); err == nil {
+			t.Fatalf("a refused sign still wrote %s%s", sums, ext)
+		}
+	}
+}
+
+// c1501Sums is review 55's C15-01 fixture: a well-formed SHA256SUMS whose
+// hashes belong to no build (an attacker's swap of the draft asset).
+func c1501Sums(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, tg := range targets {
+		ext := "tar.gz"
+		if strings.HasPrefix(tg, "windows") {
+			ext = "zip"
+		}
+		b.WriteString(strings.Repeat("e", 64) + "  agentnet_1.2.3_" + tg + "." + ext + "\n")
+	}
+	sums := filepath.Join(dir, "SHA256SUMS")
+	if err := os.WriteFile(sums, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return sums
+}
+
+// A1 (C15-01 inverted): the runbook's old call no longer signs, and neither
+// does a call that leaves out -expect-sha256; the error names the flag
+// (today's flag package would also give rc 2, for an unknown flag).
+func TestSignRefusesUnboundSums(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "k.pem")
+	runOK(t, "keygen", "-out", key)
+	sums := c1501Sums(t, dir)
+
+	for name, args := range map[string][]string{
+		"old runbook call":         {"sign", "-key", key, sums},
+		"archives, no digest":      {"sign", "-key", key, "-archives", dir, sums},
+		"archives, empty digest":   {"sign", "-key", key, "-archives", dir, "-expect-sha256", "", sums},
+		"digest only, no archives": {"sign", "-key", key, "-expect-sha256", strings.Repeat("a", 64), sums},
+	} {
+		code, stderr := runCode(args...)
+		want := "-expect-sha256 is required"
+		if name == "digest only, no archives" {
+			want = "-archives is required"
+		}
+		if code != 2 || !strings.Contains(stderr, want) {
+			t.Errorf("%s: rc=%d stderr=%q, want rc 2 and %q", name, code, stderr, want)
+		}
+		assertNoSignature(t, sums)
+	}
+}
+
+// A2: a well-formed SHA256SUMS that is not the one the run logged.
+func TestSignRefusesDigestMismatch(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "k.pem")
+	runOK(t, "keygen", "-out", key)
+	sums := c1501Sums(t, dir)
+	raw, err := os.ReadFile(sums) //nolint:gosec // test temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	logged := sha256Of(fakeSums("1.2.3")) // the digest of a different well-formed SUMS
+	code, stderr := runCode("sign", "-key", key, "-expect-sha256", logged, "-archives", dir, sums)
+	if code != 1 || !strings.Contains(stderr, "digest check") ||
+		!strings.Contains(stderr, logged) || !strings.Contains(stderr, sha256Of(raw)) {
+		t.Fatalf("rc=%d stderr=%q, want rc 1 naming the digest check, expected and actual digests", code, stderr)
+	}
+	assertNoSignature(t, sums)
+}
+
+// A3: -expect-sha256 must be exactly 64 lowercase hex.
+func TestSignRefusesBadExpectFormat(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "k.pem")
+	runOK(t, "keygen", "-out", key)
+	sums, digest := realRelease(t, dir, "1.2.3")
+	for name, v := range map[string]string{
+		"uppercase": strings.ToUpper(digest),
+		"63 hex":    digest[:63],
+		"65 hex":    digest + "0",
+		"prefix":    "sha256:" + digest,
+		"suffix":    digest + " ",
+		"not hex":   strings.Repeat("g", 64),
+	} {
+		code, stderr := runCode("sign", "-key", key, "-expect-sha256", v, "-archives", dir, sums)
+		if code != 2 || !strings.Contains(stderr, "must be a SHA-256 digest") {
+			t.Errorf("%s: rc=%d stderr=%q, want rc 2 naming the digest format", name, code, stderr)
+		}
+		assertNoSignature(t, sums)
+	}
+}
+
+// A4: the archives in -archives must be exactly the six SHA256SUMS names,
+// each matching its line.
+func TestSignArchives(t *testing.T) {
+	keyDir := t.TempDir()
+	key := filepath.Join(keyDir, "k.pem")
+	runOK(t, "keygen", "-out", key)
+	linux := "agentnet_1.2.3_linux_amd64.tar.gz"
+	for name, tc := range map[string]struct {
+		change func(dir string) error
+		want   string
+	}{
+		"all good": {func(string) error { return nil }, ""},
+		"flipped byte": {func(dir string) error {
+			p := filepath.Join(dir, linux)
+			b, err := os.ReadFile(p) //nolint:gosec // test temp dir
+			if err != nil {
+				return err
+			}
+			b[0] ^= 1
+			return os.WriteFile(p, b, 0o600) //nolint:gosec // test temp dir
+		}, linux + " has SHA-256"},
+		"missing": {func(dir string) error { return os.Remove(filepath.Join(dir, linux)) }, linux + " is missing"},
+		"extra agentnet file": {func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "agentnet_1.2.3_linux_amd64.exe"), []byte("x"), 0o600)
+		}, "agentnet_1.2.3_linux_amd64.exe is not named in SHA256SUMS"},
+		"empty folder": {func(dir string) error {
+			for _, e := range must(os.ReadDir(dir)) {
+				if strings.HasPrefix(e.Name(), "agentnet_") {
+					if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		}, "is missing"},
+	} {
+		dir := t.TempDir()
+		sums, digest := realRelease(t, dir, "1.2.3")
+		if err := tc.change(dir); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := runCode("sign", "-key", key, "-expect-sha256", digest, "-archives", dir, sums)
+		if tc.want == "" {
+			if code != 0 {
+				t.Errorf("%s: rc=%d stderr=%q, want a signature", name, code, stderr)
+			}
+			continue
+		}
+		if code != 1 || !strings.Contains(stderr, "archive check") || !strings.Contains(stderr, tc.want) {
+			t.Errorf("%s: rc=%d stderr=%q, want rc 1 and %q", name, code, stderr, tc.want)
+		}
+		assertNoSignature(t, sums)
+	}
+}
+
+func must[T any](v T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
+// A5: the bound signature verifies against install.sh's embedded key, and
+// verify -archives checks the published files.
+func TestSignBoundHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	keyDir := t.TempDir()
+	key := filepath.Join(keyDir, "k.pem")
+	runOK(t, "keygen", "-out", key)
+	sums, digest := realRelease(t, dir, "1.2.3")
+	runOK(t, "sign", "-key", key, "-expect-sha256", digest, "-archives", dir, sums)
+
+	placeholder := filepath.Join(keyDir, "placeholder.sh")
+	if err := os.WriteFile(placeholder, placeholderInstallSh(t), 0o600); err != nil { //nolint:gosec // test temp dir
+		t.Fatal(err)
+	}
+	script := filepath.Join(keyDir, "install.sh")
+	runOK(t, "embed", "-key", key, "-in", placeholder, "-out", script)
+	runOK(t, "verify", "-install-sh", script, sums)
+	if out := runOK(t, "verify", "-install-sh", script, "-archives", dir, sums); !strings.Contains(out, "archives") {
+		t.Fatalf("verify -archives output %q", out)
+	}
+	// A published archive swapped after signing fails verify -archives.
+	p := filepath.Join(dir, "agentnet_1.2.3_darwin_arm64.tar.gz")
+	if err := os.WriteFile(p, []byte("swapped"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFail(t, "agentnet_1.2.3_darwin_arm64.tar.gz has SHA-256", "verify", "-install-sh", script, "-archives", dir, sums)
 }

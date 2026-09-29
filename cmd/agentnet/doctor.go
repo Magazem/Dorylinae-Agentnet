@@ -254,7 +254,7 @@ func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
 	if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
 		return doctorCheck{ID: "config", State: doctorFail,
 			Detail: "the config directory does not exist",
-			Fix:    "run `agentnetd install` (or `agentnet setup`)"}
+			Fix:    "run `agentnetd install`"}
 	}
 	if err := checkOwner(p.Dir); err != nil {
 		var we *device.WritableError
@@ -306,7 +306,7 @@ func checkKeychain(p paths.Paths) doctorCheck {
 	case errors.Is(err, keystore.ErrNotFound):
 		return doctorCheck{ID: "keychain", State: doctorWarn,
 			Detail: "no identity key yet",
-			Fix:    "run `agentnet setup` (or `agentnetd`) to create one"}
+			Fix:    "run `agentnetd install` (or start `agentnetd`) to create one"}
 	default:
 		return doctorCheck{ID: "keychain", State: doctorFail,
 			Detail: "the identity key is not readable",

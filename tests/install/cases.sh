@@ -86,6 +86,29 @@ case $rc:$out in
 *) echo "FAIL $n http-url-without-opt-in: $out"; fails=$((fails + 1)) ;;
 esac
 check symlink-in-archive fail "no regular file agentnet" "$d/16" "$PATH_OSSL" "$U/symlink"
+# A failure after agentnet was replaced says so, not "nothing was installed"
+# (R55-133): agentnetd's target is a read-only directory, so its mv fails.
+n=$((n + 1))
+mkdir -p "$d/18/agentnetd"
+chmod 555 "$d/18/agentnetd"
+out=$(env PATH="$PATH_OSSL" AGENTNET_ALLOW_INSECURE_URL=1 AGENTNET_DOWNLOAD_URL="$U/good" \
+	AGENTNET_INSTALL_DIR="$d/18" sh "$T/install.sh" 2>&1)
+rc=$?
+left=$(find "$d/18" -maxdepth 1 -name '.*.new.*' | wc -l)
+case $rc:$out in
+0:*) echo "FAIL $n partial-install-reported: exit 0"; fails=$((fails + 1)) ;;
+*"nothing was installed"*) echo "FAIL $n partial-install-reported: says nothing was installed: $out"; fails=$((fails + 1)) ;;
+*"partially installed: agentnet replaced, agentnetd not"*)
+	if [ -x "$d/18/agentnet" ] && [ "$left" -eq 0 ]; then
+		echo "ok   $n partial-install-reported"
+	else
+		echo "FAIL $n partial-install-reported: agentnet not installed or staged files left ($left)"
+		fails=$((fails + 1))
+	fi
+	;;
+*) echo "FAIL $n partial-install-reported: $out"; fails=$((fails + 1)) ;;
+esac
+chmod 755 "$d/18/agentnetd"
 # A `curl | sh` cut short runs nothing (review 53 L1): every prefix of the
 # script, piped to sh, installs nothing and leaves no install dir.
 n=$((n + 1))

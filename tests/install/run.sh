@@ -22,6 +22,13 @@ trap 'rm -rf "$work"' EXIT
 
 sign() { (cd "$root" && go run ./tools/releasesign "$@"); }
 
+# sign_dir KEY DIR: sign DIR/SHA256SUMS the way the owner does (R55-F3):
+# bound to its digest and to the six archives in DIR.
+sign_dir() {
+	sign sign -key "$1" -expect-sha256 "$(sha256sum "$2/SHA256SUMS" | cut -d' ' -f1)" \
+		-archives "$2" "$2/SHA256SUMS" >/dev/null
+}
+
 targets='darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64'
 
 # fake_release DIR VERSION: six archives whose unix ones hold stub binaries.
@@ -58,8 +65,8 @@ fake_release "$srv/old" 0.0.0
 
 sign keygen -out "$work/test.key" >/dev/null
 sign keygen -out "$work/other.key" >/dev/null
-sign sign -key "$work/test.key" "$srv/good/SHA256SUMS" >/dev/null
-sign sign -key "$work/test.key" "$srv/old/SHA256SUMS" >/dev/null
+sign_dir "$work/test.key" "$srv/good"
+sign_dir "$work/test.key" "$srv/old"
 # symlink: correctly signed, but the linux archives' agentnet is a symlink
 # (to /etc/passwd) and they carry an extra file; only the two regular
 # binaries may ever be installed (review 53 L2).
@@ -74,7 +81,7 @@ for a in amd64 arm64; do
 	tar -czf "$srv/symlink/agentnet_${version}_linux_$a.tar.gz" -C "$work/sl" agentnet agentnetd extra
 done
 (cd "$srv/symlink" && sha256sum agentnet_* | LC_ALL=C sort -k2 >SHA256SUMS)
-sign sign -key "$work/test.key" "$srv/symlink/SHA256SUMS" >/dev/null
+sign_dir "$work/test.key" "$srv/symlink"
 sign embed -key "$work/test.key" -in "$root/scripts/install.sh" -out "$work/install.sh" >/dev/null
 # The test copy's minimum is the release under test, so a dry run's 0.0.Z
 # (release.yml keeps those below the real minimum, review 53 M1) installs
@@ -128,7 +135,7 @@ cmp -s "$srv/good/SHA256SUMS" "$srv/badsums/SHA256SUMS" && { echo "badsums did n
 # wrongkey: a well-formed signature by a key install.sh does not know.
 cp "$srv/good"/* "$srv/wrongkey/"
 rm -f "$srv/wrongkey/SHA256SUMS.sig" "$srv/wrongkey/SHA256SUMS.minisig"
-sign sign -key "$work/other.key" "$srv/wrongkey/SHA256SUMS" >/dev/null
+sign_dir "$work/other.key" "$srv/wrongkey"
 rm -f "$work/other.key"
 
 cp "$root/tests/install/cases.sh" "$work/cases.sh"

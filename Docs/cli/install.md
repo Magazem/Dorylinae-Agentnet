@@ -20,7 +20,8 @@ curl -fsSL https://dorylinae.net/install.sh | sh -s -- --version 1.2.3   # a giv
 ```
 
 It installs `agentnet` and `agentnetd` into `~/.local/bin` (or `--dir DIR`,
-`$AGENTNET_INSTALL_DIR`). It never uses sudo. Then run `agentnet setup`. If
+`$AGENTNET_INSTALL_DIR`). It never uses sudo. Then run `agentnetd install` (it starts the
+daemon as a per-user service) and `agentnet doctor` to check the result. If
 `~/.local/bin` is not on your `PATH`, the script says how to add it.
 
 Before installing anything the script:
@@ -44,8 +45,9 @@ non-https mirror; for tests).
 **What this protects against, honestly.** The script is served from `dorylinae.net`, so
 whoever controls that domain or its host controls the embedded key and every
 `curl | sh` install. The signature protects against a swap of the release files on
-GitHub after the maintainer signed them (a leaked token, a later compromised workflow),
-because the signing key is kept offline and is never in GitHub. It cannot catch a build
+GitHub before or after the maintainer signs them (a leaked token, a later compromised
+workflow; the maintainer signs only the `SHA256SUMS` the tag's CI run logged), because the
+signing key is kept offline and is never in GitHub. It cannot catch a build
 that was already bad when the maintainer signed its `SHA256SUMS`.
 
 ## macOS and Linux: Homebrew
