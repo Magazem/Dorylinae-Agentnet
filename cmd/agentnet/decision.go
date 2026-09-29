@@ -384,7 +384,7 @@ func fingerprintOf(key string) string {
 
 func printDecisionVerifyHuman(w io.Writer, res decision.Result) {
 	if !res.Valid {
-		_, _ = fmt.Fprintf(w, "invalid at step %d: %s\n", res.Step, res.Reason)
+		_, _ = fmt.Fprintf(w, "invalid at step %d: %s\n", res.Step, decision.Visible(res.Reason, false))
 		return
 	}
 	status := "valid, signed by " + strings.Join(res.SignedBy, " and ")

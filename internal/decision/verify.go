@@ -177,7 +177,7 @@ func members(path string, o map[string]any, required, optional []string) error {
 	}
 	for k := range o {
 		if !contains(required, k) && !contains(optional, k) {
-			return fmt.Errorf("unknown member %s", name(k))
+			return fmt.Errorf("unknown member %q", name(k))
 		}
 	}
 	return nil
