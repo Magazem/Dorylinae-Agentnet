@@ -1,0 +1,54 @@
+package mail
+
+// Review 55 theme T12, finding T12-02: mail_seen is pruned by the receiver's
+// wall clock at prune time. One prune run during a forward clock step deletes
+// rows whose mail is still inside the created window once the clock is
+// corrected, so a relay replay of that mail is accepted and applied again
+// (for kinds without an inbox row, e.g. team.leave / team.join / team.roster).
+
+import (
+	"context"
+	"database/sql"
+	"testing"
+	"time"
+)
+
+func TestReview55T12_02PruneDuringForwardStepAdmitsReplay(t *testing.T) {
+	f := newRecvFixture(t)
+	now := vectorNow
+	clock := func() time.Time { return now }
+	f.rcv.Now = clock
+	f.rcv.Opener.Now = clock
+
+	applied := 0
+	f.rcv.Kinds = map[string]Kind{"team.leave": {Apply: func(context.Context, *sql.Tx, *Opened) error { applied++; return nil }}}
+
+	e := f.mailEnv(testID, "team.leave", map[string]any{"team": "t-00000000000000000000000000000001"})
+	if err := f.rcv.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	// Normal replay the same day: deduped.
+	if err := f.rcv.Handle(context.Background(), e); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("applied = %d before the step, want 1", applied)
+	}
+
+	// Five days later the wall clock steps 31 days ahead; the daily/at-start
+	// prune runs once during the step.
+	now = vectorNow.Add(36 * 24 * time.Hour)
+	if n, err := Prune(context.Background(), f.st.DB(), now); err != nil || n != 1 {
+		t.Fatalf("Prune = %d, %v", n, err)
+	}
+	// NTP corrects the clock: true time is created + 5 d, inside both the
+	// 30 d step-11 window and the 14 d ReceiveMaxAge.
+	now = vectorNow.Add(5 * 24 * time.Hour)
+	if err := f.rcv.Handle(context.Background(), e); err != nil {
+		t.Fatalf("replay rejected: %v", err)
+	}
+	if applied != 2 {
+		t.Fatalf("applied = %d, want 2 (replay admitted)", applied)
+	}
+	t.Logf("T12-02: relay replay of a 5-day-old mail applied again after one prune during a forward step (applied=%d)", applied)
+}
