@@ -129,12 +129,20 @@ func isSeparator(r rune) bool {
 const minDigitRun = 6
 
 // maxRunSeparators is how many separator runes may stand between two numbers
-// of one run (review 58a L3: "4 - 8 - 2 - 9 - 1 - 3").
-const maxRunSeparators = 3
+// of one run (review 58a L3: "4 - 8 - 2 - 9 - 1 - 3"; review 64 F5S-2:
+// "4 - - 8 - - 2 …" and "4----8----2…").
+const maxRunSeparators = 8
+
+// isAnyMark reports a combining mark of any kind, spacing marks (Mc)
+// included: inside a digit run or a fingerprint group it is part of the run
+// wherever it stands (review 64 F5S-2).
+func isAnyMark(r rune) bool {
+	return unicode.In(r, unicode.Mn, unicode.Mc, unicode.Me)
+}
 
 // blankDigitRuns is step 4: a maximal run of numbers (category N), with up to
-// 3 separator runes between two of them and the combining marks right after
-// each, is replaced by "…" when it holds 6 or more numbers.
+// 8 separator runes between two of them and any combining mark (Mn, Mc, Me)
+// anywhere in it, is replaced by "…" when it holds 6 or more numbers.
 func blankDigitRuns(rs []rune) []rune {
 	out := make([]rune, 0, len(rs))
 	for i := 0; i < len(rs); {
@@ -151,13 +159,22 @@ func blankDigitRuns(rs []rune) []rune {
 			}
 			count++
 			j++
-			for j < len(rs) && isMark(rs[j]) {
+			for j < len(rs) && isAnyMark(rs[j]) {
 				j++
 			}
 			end = j
-			k := j
-			for k < len(rs) && k-j < maxRunSeparators && isSeparator(rs[k]) && !isNumber(rs[k]) {
-				k++
+			k, seps := j, 0
+			for k < len(rs) {
+				if isAnyMark(rs[k]) {
+					k++
+					continue
+				}
+				if seps < maxRunSeparators && isSeparator(rs[k]) && !isNumber(rs[k]) {
+					seps++
+					k++
+					continue
+				}
+				break
 			}
 			if k < len(rs) && isNumber(rs[k]) {
 				j = k
@@ -179,53 +196,111 @@ func blankDigitRuns(rs []rune) []rune {
 // case-insensitively.
 const fpAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-func isFPRune(r rune) bool {
-	u := unicode.ToUpper(r)
-	return u < utf8.RuneSelf && strings.ContainsRune(fpAlphabet, u)
+// fpConfusables folds Cyrillic and Greek letters that look like a letter or
+// digit of the fingerprint alphabet onto it (review 64 F5S-1: "2ЕD9 TGVЕ"
+// with Cyrillic Е). Fullwidth forms are folded in foldFP.
+var fpConfusables = map[rune]rune{
+	// Cyrillic
+	0x0410: 'A', 0x0430: 'A', 0x0412: 'B', 0x0432: 'B', 0x0415: 'E', 0x0435: 'E',
+	0x0417: '3', 0x0437: '3', 0x041A: 'K', 0x043A: 'K', 0x041C: 'M', 0x043C: 'M',
+	0x041D: 'H', 0x043D: 'H', 0x0420: 'P', 0x0440: 'P', 0x0421: 'C', 0x0441: 'C',
+	0x0422: 'T', 0x0442: 'T', 0x0423: 'Y', 0x0443: 'Y', 0x0425: 'X', 0x0445: 'X',
+	0x0405: 'S', 0x0455: 'S', 0x0408: 'J', 0x0458: 'J', 0x0431: '6',
+	0x04AE: 'Y', 0x04AF: 'Y', 0x0500: 'D', 0x0501: 'D', 0x051A: 'Q', 0x051B: 'Q',
+	0x051C: 'W', 0x051D: 'W',
+	// Greek
+	0x0391: 'A', 0x03B1: 'A', 0x0392: 'B', 0x03B2: 'B', 0x0395: 'E', 0x0396: 'Z',
+	0x0397: 'H', 0x039A: 'K', 0x03BA: 'K', 0x039C: 'M', 0x039D: 'N', 0x03BD: 'V',
+	0x03A1: 'P', 0x03C1: 'P', 0x03A4: 'T', 0x03C4: 'T', 0x03A5: 'Y', 0x03A7: 'X',
+	0x03C7: 'X', 0x03F2: 'C', 0x03F9: 'C', 0x037F: 'J',
+	// Letterlike
+	0x212A: 'K',
 }
 
-// blankFingerprints is step 5 (OD-R55F5-9, review 58a H1): two or more groups
-// of exactly 4 fingerprint-alphabet characters joined by single spaces or
-// '-', and any run of 8 or more of them with no separator that holds both a
-// digit and a letter, become "…". A peer cannot then show the fingerprint of
-// the device it impersonates inside its own name.
+// foldFP returns the fingerprint-alphabet character r reads as (upper case),
+// or 0: ASCII in any case, fullwidth forms, and the Cyrillic and Greek
+// look-alikes of fpConfusables.
+func foldFP(r rune) rune {
+	switch {
+	case r >= 0xFF10 && r <= 0xFF19:
+		r = r - 0xFF10 + '0'
+	case r >= 0xFF21 && r <= 0xFF3A:
+		r = r - 0xFF21 + 'A'
+	case r >= 0xFF41 && r <= 0xFF5A:
+		r = r - 0xFF41 + 'A'
+	default:
+		if c, ok := fpConfusables[r]; ok {
+			r = c
+		}
+	}
+	u := unicode.ToUpper(r)
+	if u < utf8.RuneSelf && strings.ContainsRune(fpAlphabet, u) {
+		return u
+	}
+	return 0
+}
+
+// maxGroupSeparators is how many separator runes may join two groups of 4
+// (review 64 F5S-1: '.', '_', '/', '—', "--" and " - ").
+const maxGroupSeparators = 3
+
+// blankFingerprints is step 5 (OD-R55F5-9, review 58a H1, review 64 F5S-1):
+// two or more groups of exactly 4 fingerprint-alphabet characters joined by
+// 1 to 3 separator runes (space, P*, S*), and any run of 8 or more of them
+// with no separator that holds both a digit and a letter, become "…". The
+// characters are matched after foldFP (any case, fullwidth, Cyrillic and
+// Greek look-alikes), and combining marks inside a run are part of it. A
+// peer cannot then show the fingerprint of the device it impersonates inside
+// its own name.
 func blankFingerprints(rs []rune) []rune {
-	// Maximal alphabet runs.
-	type span struct{ start, end int }
+	// Maximal alphabet runs; n counts the alphabet characters.
+	type span struct{ start, end, n int }
 	var runs []span
 	for i := 0; i < len(rs); {
-		if !isFPRune(rs[i]) {
+		if foldFP(rs[i]) == 0 {
 			i++
 			continue
 		}
-		j := i
-		for j < len(rs) && isFPRune(rs[j]) {
+		j, n := i, 0
+		for j < len(rs) {
+			if foldFP(rs[j]) != 0 {
+				n++
+			} else if !isAnyMark(rs[j]) {
+				break
+			}
 			j++
 		}
-		runs = append(runs, span{i, j})
+		runs = append(runs, span{i, j, n})
 		i = j
+	}
+	joined := func(a, b span) bool {
+		seps := 0
+		for _, r := range rs[a.end:b.start] {
+			switch {
+			case isAnyMark(r):
+			case isSeparator(r):
+				seps++
+			default:
+				return false
+			}
+		}
+		return seps >= 1 && seps <= maxGroupSeparators
 	}
 	blank := make([]span, 0)
 	for k := 0; k < len(runs); {
 		r := runs[k]
-		if r.end-r.start == 4 {
-			// Chain groups of 4 joined by exactly one ' ' or '-'.
+		if r.n == 4 {
 			last := k
-			for last+1 < len(runs) {
-				nx := runs[last+1]
-				gap := nx.start - runs[last].end
-				if gap != 1 || (rs[runs[last].end] != ' ' && rs[runs[last].end] != '-') || nx.end-nx.start != 4 {
-					break
-				}
+			for last+1 < len(runs) && runs[last+1].n == 4 && joined(runs[last], runs[last+1]) {
 				last++
 			}
 			if last > k {
-				blank = append(blank, span{r.start, runs[last].end})
+				blank = append(blank, span{r.start, runs[last].end, 0})
 				k = last + 1
 				continue
 			}
 		}
-		if r.end-r.start >= 8 && hasDigitAndLetter(rs[r.start:r.end]) {
+		if r.n >= 8 && hasDigitAndLetter(rs[r.start:r.end]) {
 			blank = append(blank, r)
 		}
 		k++
@@ -246,9 +321,11 @@ func blankFingerprints(rs []rune) []rune {
 func hasDigitAndLetter(rs []rune) bool {
 	var d, l bool
 	for _, r := range rs {
-		if r >= '0' && r <= '9' {
+		switch f := foldFP(r); {
+		case f == 0: // a mark
+		case f >= '0' && f <= '9':
 			d = true
-		} else {
+		default:
 			l = true
 		}
 	}

@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -29,4 +30,14 @@ func (Approval) Remove(ctx context.Context, id string) {
 	ctx, cancel := context.WithTimeout(ctx, showTimeout)
 	defer cancel()
 	removeApproval(ctx, id)
+}
+
+// removable reports whether the notification tagged id can later be
+// withdrawn with Remove: an approval's code notification. The Store never
+// removes its outcome ("outcome-<id>") and lock ("lock-<time>") notices, so
+// a platform that keeps an id map must not record them, or the map grows by
+// one entry per outcome for the daemon's lifetime (review 55 R55-105 /
+// C12-04; internal/approval/store.go notifyOutcome and the lock notice).
+func removable(id string) bool {
+	return !strings.HasPrefix(id, "outcome-") && !strings.HasPrefix(id, "lock-")
 }

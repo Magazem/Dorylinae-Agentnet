@@ -101,8 +101,9 @@ and on macOS `ps` show every process's arguments to every local user):
   session bus with `github.com/godbus/dbus/v5` (pure Go, already in the module graph through
   `go-keyring`), not through `gdbus` or `notify-send`. No fallback for approvals: if the
   in-process call fails, the approval is `approval_unavailable`.
-- **macOS:** title and body go through the environment of `osascript` (read with
-  `system attribute`), as Windows already does; the script is fixed text.
+- **macOS:** title and body go through the environment of `osascript` as base64 of their
+  UTF-8 bytes (read with `system attribute`, decoded as UTF-8 with Foundation, R55-203), as
+  Windows already does; the script is fixed text.
 - **Windows:** unchanged transport (environment, fixed script). The toast carries a `tag`
   (the approval id) and group `agentnet-approval`, and `ExpirationTime` = `expires`; when the
   approval is decided or expires, the daemon removes it from the notification history
@@ -187,8 +188,8 @@ Per platform (no cgo, no admin):
 | OS | Dialog | Ready when | Notes |
 |---|---|---|---|
 | Windows | `<system dir>\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -STA -WindowStyle Hidden -Command <fixed script>`, where `<system dir>` comes from `GetSystemDirectory` (`x/sys/windows`), not from `%SystemRoot%` or `PATH`. The approval toast and its history removal switch to the same absolute path (today `powershell.exe` is found through `PATH`). PowerShell 5.1 with WinForms: a `Form` (`TopMost`, fixed size, no minimise, cascaded so that several windows do not stack exactly), `Label`s whose `.Text` is set from the environment (base64 UTF-16, like the toast), a `TextBox` limited to 6 digits and focused first, **Approve** (enabled only with 6 digits) and **Reject**. No `AcceptButton`/`CancelButton`, so Enter and Esc do not click them. The input box ignores keystrokes for **1 s** after each `Activated` event, not only after `Shown`: a background process usually cannot take the focus, so the window mostly gets it later from a click | The form's `Shown` event writes `ready` to stdout. Wait at most 10 s | Under Constrained Language Mode (AppLocker/WDAC) WinForms is blocked: the result is `approval_unavailable`. The toast has the same limit. A daemon outside an interactive session (session 0, an SSH logon) would fire `Shown` on a desktop nobody sees, so the check first requires `ProcessIdToSessionId` ≠ 0 and the process's window station to be `WinSta0`; otherwise the window is `missing` |
-| macOS | `/usr/bin/osascript` with a fixed script: `activate` (osascript itself, no TCC permission; it brings the dialog to the front), then `display dialog (system attribute "AGENTNET_A_BODY") with title (system attribute "AGENTNET_A_TITLE") default answer "" buttons {"Reject", "Approve"} giving up after <from env>`, with no `default button` and no `cancel button`, so Return and Esc click nothing. The script turns the record into the one-line answer (`gave up` → `dismiss`) | Still running after 1.5 s, or already exited with a valid answer. An early non-zero exit is failure | `display dialog` inside osascript needs no Automation (TCC) permission. It cannot delay input. Only a daemon running in the user's GUI session (a LaunchAgent) can show it. The manual check includes a non-ASCII peer name (`system attribute` decoding) |
-| Linux | `zenity --entry --title=… --text=… --extra-button=Reject --timeout=<s>`, else `kdialog --title=… --inputbox=…`. Every value is one `--opt=value` argument, and peer text is never a positional argument, so a summary starting with `-` cannot become an option. Text is markup-escaped (`& < >`) for both tools; zenity's `--no-markup` is used instead only if the manual check shows that it is accepted with `--entry` on the zenity versions of Ubuntu 22.04 and 24.04. The program is the first of `/usr/bin/<tool>`, `/bin/<tool>`, `/run/current-system/sw/bin/<tool>` (NixOS) that exists, is owned by root and is not group- or world-writable; never `PATH` (a Flatpak-only install is not found). `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `XDG_RUNTIME_DIR` are taken from the daemon's environment or, if missing, from the systemd user manager's environment, read in-process at each opening (property `Environment` of `org.freedesktop.systemd1.Manager` over godbus): a user unit started at `default.target` often starts before the desktop exports them | As macOS | **Title and summary are in argv** (neither tool reads its text from stdin or the environment), so another local user can read them through `/proc/<pid>/cmdline` unless `/proc` is mounted `hidepid=2`. The code is never in them. This is **accepted and documented** (owner, OQ-2.2d-1 = (a)): the summary is local metadata, not a secret. `Docs/cli/approve.md` and the Linux install notes say so and name `hidepid=2` as the fix on shared machines. kdialog has no Reject button: reject with `agentnet approve --reject` |
+| macOS | `/usr/bin/osascript` with a fixed script: `activate` (osascript itself, no TCC permission; it brings the dialog to the front), then `display dialog (k & ": " & s) with title ("AgentNet approval " & t) default answer "" buttons {"Reject", "Approve"} giving up after <from env>`, with no `default button` and no `cancel button`, so Return and Esc click nothing. The script turns the record into the one-line answer (`gave up` → `dismiss`). Tag, kind and summary (`t`, `k`, `s`) come from the environment as base64 of their UTF-8 bytes, read with `system attribute` and decoded as UTF-8 with Foundation (`use framework "Foundation"`), so non-ASCII text is not decoded in a legacy encoding (R55-203); a value that does not decode is an error, so osascript exits non-zero | Still running after 1.5 s, or already exited with a valid answer. An early non-zero exit is failure | `display dialog` inside osascript needs no Automation (TCC) permission. It cannot delay input. Only a daemon running in the user's GUI session (a LaunchAgent) can show it. The manual check includes a non-ASCII peer name (UTF-8 decoding) |
+| Linux | `zenity --entry --title=… --text=… --extra-button=Reject --timeout=<s>`, else `kdialog --title=… --inputbox=…`. Every value is one `--opt=value` argument, and peer text is never a positional argument, so a summary starting with `-` cannot become an option. The title is shown literally by both tools. The text is escaped for each tool's real parser, so the window shows exactly the builder's text (R55-F6; review 55 R55-025, which found the former "markup-escaped for both tools" wrong): zenity passes `--text` through GLib `g_strcompress` (decodes `\` escapes, cuts at a decoded NUL) and sets it as a GTK **mnemonic** label, not markup, so every `_` is doubled and then every `\` is doubled, and `& < >` are left alone. kdialog decodes `\\` and `\n` (`Utils::parseString`) and shows the result in a `QLabel` with a buddy, whose format is guessed and in which `&` marks a mnemonic, so the text is forced rich text (`<qt><p style="white-space:pre-wrap">…</p></qt>`), with `& < >` as entities, each `&` doubled, and every `\` doubled. A value that is not one line of valid UTF-8 (a NUL, any C0/C1 control, U+2028/U+2029) makes the window fail closed (not ready); `windowText` never produces one. The program is the first of `/usr/bin/<tool>`, `/bin/<tool>`, `/run/current-system/sw/bin/<tool>` (NixOS) that exists, is owned by root and is not group- or world-writable; never `PATH` (a Flatpak-only install is not found). `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY` and `XDG_RUNTIME_DIR` are taken from the daemon's environment or, if missing, from the systemd user manager's environment, read in-process at each opening (property `Environment` of `org.freedesktop.systemd1.Manager` over godbus): a user unit started at `default.target` often starts before the desktop exports them | As macOS | **Title and summary are in argv** (neither tool reads its text from stdin or the environment), so another local user can read them through `/proc/<pid>/cmdline` unless `/proc` is mounted `hidepid=2`. The code is never in them. This is **accepted and documented** (owner, OQ-2.2d-1 = (a)): the summary is local metadata, not a secret. `Docs/cli/approve.md` and the Linux install notes say so and name `hidepid=2` as the fix on shared machines. kdialog has no Reject button: reject with `agentnet approve --reject` |
 
 **No window helper on Linux** (neither zenity nor kdialog, or no display): approvals are
 `approval_unavailable`, exactly as when the notifier fails. There is **no automatic
@@ -345,16 +346,20 @@ safe.
    can cover the neighbouring text, the fingerprint included (review 58a, M4).
 4. **Long digit runs.** A digit run is a maximal sequence of runes of category `N` (`Nd`, `Nl`,
    `No`: ASCII, fullwidth, superscript, circled and mathematical digits). Between two of its
-   numbers there may be **up to 3** separator runes (spaces, `P*` or `S*`), so `4 - 8 - 2 - 9 -
-   1 - 3` counts as one run (review 58a, L3). Combining marks directly after a number are part
-   of it. A run of **6 or more** numbers is replaced by one `…`. This is today's
+   numbers there may be **up to 8** separator runes (spaces, `P*` or `S*`), so `4 - 8 - 2 - 9 -
+   1 - 3` and `4 - - 8 - - 2 …` count as one run (review 58a, L3; review 64 F5S-2). Combining
+   marks of any kind (`Mn`, `Mc`, `Me`) anywhere in the run, on a number or on a separator,
+   are part of it and do not count as separators (F5S-2). A run of **6 or more** numbers is replaced by one `…`. This is today's
    `stripLongDigits` (review 26 N4, review 36 L2), made to see through invisible characters,
    combining marks, non-decimal digits and spaced-out digits. The zenity octal form
    `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
 5. **Fingerprint-shaped text** (OD-R55F5-9). A run of **2 or more** groups of 4 characters of
-   the fingerprint alphabet (case-insensitive), separated by single spaces or `-`, and any
-   run of 8 or more such characters with no separator that holds both a digit and a letter,
-   are replaced by one `…`. A peer cannot then put the fingerprint of the device it
+   the fingerprint alphabet (case-insensitive), joined by 1 to 3 separator runes (spaces, `P*`
+   or `S*`: `-`, `.`, `_`, `/`, `—`, `--` …), and any run of 8 or more such characters with no
+   separator that holds both a digit and a letter, are replaced by one `…`. Characters are
+   matched after folding look-alikes onto the alphabet: fullwidth forms, and the Cyrillic and
+   Greek letters that look like one of its letters or digits (`Е`, `М`, `С`, `Ε`, `З` → `3` …);
+   combining marks inside a group are part of it (review 64 F5S-1). A peer cannot then put the fingerprint of the device it
    impersonates into its own name (review 58a, H1).
 6. An empty result becomes `(no name)`.
 
@@ -404,8 +409,8 @@ was removed) shows as `peer XXXX XXXX XXXX XXXX XXXX (no longer paired)`.
   precedes the fingerprint, and the name only follows it.
 - *zenity before F6.* zenity decodes `\` escapes in its text (R55-025), so a name such as
   `Bob\0` would cut the Linux window right after the name, fingerprint included.
-  `displayQuote` writes `\` as `\\`, which zenity decodes back to `\`, so no name can cut the
-  window, even before F6 lands.
+  `displayQuote` writes `\` as `\\`, which zenity decodes back to `\`, so no name could cut the
+  window even before F6. F6 now escapes the whole text for zenity, so it shows `\\` as typed.
 
 **Fixed text** in the builder is constant ASCII English.
 
@@ -420,21 +425,18 @@ The builder's output is **display-safe**:
 that mean something to a renderer, such as `\ " & < > _ % $`. Every renderer must show them
 **literally**:
 - the Windows window sets `Label.Text` and the scrolling box's `.Text`, which is literal;
-- the macOS window reads the text through `system attribute`, which is literal;
+- the macOS window and code notification read the text from the environment as base64 of
+  its UTF-8 bytes, decoded as UTF-8 (R55-F6: `system attribute` alone may decode it in a
+  legacy encoding and garble non-ASCII text, R55-203), and `display dialog` is literal;
 - the terminal line and `agentnet approve --list` are literal;
-- **Linux zenity/kdialog is ticket R55-F6.** zenity passes `--text` through GLib
-  `g_strcompress`, so a `\` escape becomes a NUL, a newline or any byte, and `--entry` uses a
-  mnemonic label, so `_` is consumed (review 55 R55-025 / T11-01; approval.md's Linux row below
-  is wrong on this). F6 escapes for zenity's real parser. The builder gives F6 a fixed
+- **Linux zenity and kdialog** escape the text for each tool's real parser (R55-F6, see the
+  Linux row of [The approval window](#the-approval-window)): zenity passes `--text` through
+  GLib `g_strcompress` (a `\` escape would become a NUL, a newline or any byte) and `--entry`
+  uses a mnemonic label (`_` would be consumed), so `_` and then `\` are doubled; kdialog
+  decodes `\` escapes and guesses rich text with `&` mnemonics, so its text is forced rich
+  text with entities, doubled `&` and doubled `\`. The builder gives the window a fixed
   contract: one display-safe line in which `\` and `_` can occur (in `displayQuote` output,
-  paths and argv). Until F6 lands, the Linux window does not meet this section for text that
-  contains `\` or `_`: zenity shows `\\` as `\`, `\"` as `"` and `‮` as `u202e`, and eats
-  one `_`. Every piece of peer or agent text in a summary is `displayQuote` output, whose `\`
-  is always doubled, so none of this can cut the window or add a line; it only misshows
-  characters. F6 must land in the same release as F5 (review 58a, M2).
-- **macOS before F6** (R55-203): `system attribute` may decode the text in a legacy encoding,
-  so non-ASCII letters in names and paths can show garbled. The fingerprint and the fixed
-  text are ASCII and are not affected.
+  paths and argv).
 
 ### Contents per kind
 

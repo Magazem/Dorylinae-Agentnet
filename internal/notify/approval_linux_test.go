@@ -93,3 +93,27 @@ func TestShowApprovalEscapesMarkup(t *testing.T) {
 		t.Fatalf("body = %q, want %q", fake.body, want)
 	}
 }
+
+// Review 55 R55-105 (C12-04): outcome and lock notices, which the Store
+// never removes, do not grow notifIDs; a code notification still does.
+func TestShowApprovalRecordsOnlyRemovableIDs(t *testing.T) {
+	orig := notifyIface
+	defer func() { notifyIface = orig }()
+	notifyIface = &fakeDBusNotifier{}
+	notifIDsMu.Lock()
+	before := len(notifIDs)
+	notifIDsMu.Unlock()
+	for _, id := range []string{"outcome-a-9", "lock-20260929T120000Z", "a-10"} {
+		if err := showApproval(context.Background(), id, time.Now().Add(time.Minute), "AgentNet", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notifIDsMu.Lock()
+	n := len(notifIDs)
+	_, ok := notifIDs["a-10"]
+	notifIDsMu.Unlock()
+	if n != before+1 || !ok {
+		t.Fatalf("notifIDs grew by %d (a-10 recorded: %v), want 1", n-before, ok)
+	}
+	removeApproval(context.Background(), "a-10")
+}

@@ -36,11 +36,14 @@ func TestShowApprovalCodeNeverInArgvDarwin(t *testing.T) {
 	if len(gotArgs) != 2 || gotArgs[1] != approvalScript {
 		t.Fatalf("args = %q, want the fixed script", gotArgs)
 	}
-	want := "AGENTNET_A_BODY=" + body
+	want := osaEnv("AGENTNET_A_BODY", body)
 	found := false
 	for _, e := range gotEnv {
 		if e == want {
 			found = true
+		}
+		if strings.Contains(e, "482913") {
+			t.Fatalf("code in the clear in the environment: %q", e)
 		}
 	}
 	if !found {

@@ -98,6 +98,65 @@ func TestNameBlanksFingerprints(t *testing.T) {
 	}
 }
 
+// Review 64 F5S-2 (R55-F6): a decoy code survives neither 4 to 8 separator
+// runes between its digits nor a mark on a separator nor a spacing mark
+// (Mc) after each digit.
+func TestNameBlanksWideDecoyCodes(t *testing.T) {
+	for _, name := range []string{
+		"Code 4----8----2----9----1----3",
+		"Code 4 - - 8 - - 2 - - 9 - - 1 - - 3",
+		"Code 4 \u0332 8 \u0332 2 \u0332 9 \u0332 1 \u0332 3", // mark on the separator
+		"Code 4\u0903 8\u0903 2\u0903 9\u0903 1\u0903 3",      // spacing mark (Mc)
+		"Code 4\u09038\u09032\u09039\u09031\u09033",
+		"Code 4 . . . 8 . . . 2 . . . 9 . . . 1 . . . 3", // 7 separators
+	} {
+		got := Name(name)
+		if got != "Code …" {
+			t.Errorf("Name(%q) = %q: the decoy survives", name, got)
+		}
+	}
+	// Nine separators end a run; letters always do.
+	for _, in := range []string{"a 12 b 3456", "1.........2.........3.........4.........5.........6"} {
+		if got := Name(in); got != in {
+			t.Errorf("Name(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
+// Review 64 F5S-1 (R55-F6): fingerprint-shaped text survives neither other
+// separators (. _ / — -- " - ") nor look-alike letters (Cyrillic, Greek,
+// fullwidth), nor combining marks inside a group.
+func TestNameBlanksConfusableFingerprints(t *testing.T) {
+	const fp = "2ED9 TGVE R471 63MC C451"
+	names := []string{
+		"Desktop 2ЕD9 TGVЕ R471 63МС С451", // Cyrillic Е, М, С
+		"Desktop 2ΕD9 TGVΕ R471 63ΜC C451", // Greek Ε, Μ
+		"Desktop ２ＥＤ９ ＴＧＶＥ",                // fullwidth
+		"Desktop ２ｅｄ９ ｔｇｖｅ",                // fullwidth lower case
+		"Desktop 2E\u0301D9 TGVE",          // a mark inside a group
+		"Desktop 2ЕD9TGVЕR471",             // Cyrillic, no separator
+	}
+	for _, sep := range []string{".", "_", "/", "—", "--", " - ", " / ", "·"} {
+		names = append(names, "Desktop "+strings.ReplaceAll(fp, " ", sep))
+	}
+	for _, name := range names {
+		got := Name(name)
+		if !strings.HasPrefix(got, "Desktop …") {
+			t.Errorf("Name(%q) = %q: the fingerprint survives", name, got)
+		}
+		if n := utf8.RuneCountInString(strings.TrimPrefix(got, "Desktop …")); n > 0 {
+			t.Errorf("Name(%q) = %q keeps %d runes after the blank", name, got, n)
+		}
+	}
+	// Ordinary names are left alone: a Cyrillic or Greek word, and groups
+	// that are not joined by separators only.
+	for _, in := range []string{"Москва office", "Αθήνα laptop", "Office laptop", "ABCD and EFGH", "ABCD 1 EFGH"} {
+		if got := Name(in); got != in {
+			t.Errorf("Name(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
 // R55-F5 A17 (review 58a M4): at most 2 combining marks stay on a base;
 // Quote keeps the value exact and escapes the rest.
 func TestStackedMarks(t *testing.T) {

@@ -78,7 +78,8 @@ func (liveNotifyIface) CloseNotification(ctx context.Context, id uint32) error {
 }
 
 // notifIDs maps an approval id to the D-Bus notification id Notify returned,
-// so Remove can close the right one.
+// so Remove can close the right one. Only removable ids are recorded
+// (R55-105).
 var (
 	notifIDsMu sync.Mutex
 	notifIDs   = map[string]uint32{}
@@ -102,9 +103,11 @@ func showApproval(ctx context.Context, id string, expires time.Time, title, body
 	if err != nil {
 		return err
 	}
-	notifIDsMu.Lock()
-	notifIDs[id] = dbusID
-	notifIDsMu.Unlock()
+	if removable(id) {
+		notifIDsMu.Lock()
+		notifIDs[id] = dbusID
+		notifIDsMu.Unlock()
+	}
 	return nil
 }
 
