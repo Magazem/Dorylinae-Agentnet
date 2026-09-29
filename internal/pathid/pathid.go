@@ -8,8 +8,10 @@ package pathid
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // ErrRemote is returned for a UNC, device-namespace or network-drive path.
@@ -109,8 +111,9 @@ func IsRoot(p string) (bool, error) {
 
 // guardLinks walks p component by component with Lstat and, at every link,
 // checks the target with CheckLocal before continuing through it. It only
-// guards; resolution is left to evalLinks and finalPath. A component that
-// does not exist ends the walk (resolution then reports it).
+// guards; resolution is left to evalLinks and finalPath. A component of p
+// that does not exist ends the walk (resolution then reports it); any other
+// Lstat error, and a link target that does not exist, is returned.
 func guardLinks(p string) error {
 	vol := filepath.VolumeName(p)
 	cur := vol + string(filepath.Separator)
@@ -128,7 +131,14 @@ func guardLinks(p string) error {
 		next := filepath.Join(cur, c)
 		fi, err := lstat(next)
 		if err != nil {
-			return nil
+			// Only a missing tail on the spelled path ends the walk. Any
+			// other error, or a missing link target, is a place where this
+			// model and the kernel's may differ: the open that follows
+			// would be the first to see the link (review 61b F7b-1).
+			if hops == 0 && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
 		}
 		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
 			cur = next
@@ -136,8 +146,12 @@ func guardLinks(p string) error {
 		}
 		t, err := os.Readlink(next)
 		if err != nil {
-			// A reparse point that is not a link (a cloud file, dedup):
-			// the kernel does not redirect through it.
+			// A reparse point that is not a symlink or mount point (a cloud
+			// file, dedup) makes Readlink report ENOENT: the kernel does not
+			// redirect through it. A link that cannot be read is refused.
+			if !errors.Is(err, syscall.ENOENT) {
+				return err
+			}
 			cur = next
 			continue
 		}

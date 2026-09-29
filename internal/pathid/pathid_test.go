@@ -1,6 +1,7 @@
 package pathid
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -85,5 +86,27 @@ func TestIsRoot(t *testing.T) {
 	}
 	if ok, err := IsRoot(dir); err != nil || ok {
 		t.Fatalf("IsRoot(%q) = %v, %v; want false", dir, ok, err)
+	}
+}
+
+// An Lstat error other than "does not exist" on a middle component refuses
+// the path: the guard never walks past what it could not see (review 61b
+// F7b-1).
+func TestResolveFailsClosedOnLstatError(t *testing.T) {
+	dir := filepath.Join(testutil.TempDir(t), "a", "b")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	middle := filepath.Dir(dir)
+	old := lstat
+	t.Cleanup(func() { lstat = old })
+	lstat = func(p string) (os.FileInfo, error) {
+		if p == middle {
+			return nil, os.ErrPermission
+		}
+		return old(p)
+	}
+	if got, err := Resolve(dir); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Resolve(%q) = %q, %v; want ErrPermission", dir, got, err)
 	}
 }

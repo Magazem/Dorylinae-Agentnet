@@ -190,6 +190,23 @@ func TestRefusalMakesNoCall(t *testing.T) {
 	}
 }
 
+// A link whose target does not exist is refused before any open: the
+// kernel, not the guard, would be the first to follow it (review 61b F7b-1).
+func TestResolveRefusesDanglingLinkWithoutOpen(t *testing.T) {
+	base := testutil.TempDir(t)
+	j := filepath.Join(base, "junction")
+	makeJunction(t, j, filepath.Join(base, "missing"))
+	oldCreate := createFile
+	t.Cleanup(func() { createFile = oldCreate })
+	createFile = func(name *uint16, _, _ uint32, _ *windows.SecurityAttributes, _, _ uint32, _ windows.Handle) (windows.Handle, error) {
+		t.Errorf("CreateFile %q reached", windows.UTF16PtrToString(name))
+		return windows.InvalidHandle, windows.ERROR_FILE_NOT_FOUND
+	}
+	if _, err := Resolve(filepath.Join(j, "sub")); err == nil {
+		t.Fatal("Resolve through a dangling junction succeeded")
+	}
+}
+
 // makeJunction creates the junction j to target with mklink /J, or skips.
 func makeJunction(t *testing.T, j, target string) {
 	t.Helper()
