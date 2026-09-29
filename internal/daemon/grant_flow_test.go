@@ -44,8 +44,9 @@ import (
 // fakeApprovalNotifier captures the 6-digit code shown for each approval id
 // (mirroring internal/approval's own test notifier).
 type fakeApprovalNotifier struct {
-	mu    sync.Mutex
-	codes map[string]string
+	mu     sync.Mutex
+	codes  map[string]string
+	bodies map[string]string // the notification body per approval id (R55-F5 A7)
 }
 
 func (f *fakeApprovalNotifier) Show(_ context.Context, id string, _ time.Time, title, body string) error {
@@ -55,6 +56,10 @@ func (f *fakeApprovalNotifier) Show(_ context.Context, id string, _ time.Time, t
 		f.codes = map[string]string{}
 	}
 	f.codes[id] = extractApprovalCode(title, body)
+	if f.bodies == nil {
+		f.bodies = map[string]string{}
+	}
+	f.bodies[id] = body
 	return nil
 }
 
@@ -791,7 +796,7 @@ func newGrantFakeWindow() *grantFakeWindow {
 	return &grantFakeWindow{handles: map[string]*grantFakeHandle{}}
 }
 
-func (w *grantFakeWindow) Start(_ context.Context, id, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
+func (w *grantFakeWindow) Start(_ context.Context, id, _, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	h := &grantFakeHandle{answers: make(chan [2]string, 1), killed: make(chan struct{})}

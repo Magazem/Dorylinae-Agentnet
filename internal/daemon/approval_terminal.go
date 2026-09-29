@@ -75,6 +75,13 @@ func handleTerminalLine(ctx context.Context, stderr io.Writer, as *approval.Stor
 		return
 	}
 	tag, code := fields[0], fields[1]
+	// A value that is not exactly 6 ASCII digits is a typo, not a guess: it
+	// is not checked and uses no attempt, as in the window (R55-F5, review 55
+	// R55-148).
+	if !isSixDigits(code) {
+		_, _ = fmt.Fprintf(stderr, "AgentNet: enter the 6-digit code\n")
+		return
+	}
 	id, err := as.ResolveTag(tag)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "AgentNet: %s\n", terminalTagError(tag, err))
@@ -101,4 +108,17 @@ func terminalTagError(tag string, err error) string {
 	default:
 		return err.Error()
 	}
+}
+
+// isSixDigits reports whether v is exactly 6 ASCII digits.
+func isSixDigits(v string) bool {
+	if len(v) != 6 {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
 }

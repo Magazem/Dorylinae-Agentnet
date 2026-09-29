@@ -317,3 +317,15 @@ func decodeGrant(gen map[string]any) (Grant, error) {
 	}
 	return g, nil
 }
+
+// DecodeToken decodes the grant of a token's wire form without verifying its
+// signature or formats: the grantor's own token, decoded back from the exact
+// bytes its approval's Perform will send, so the approval summary describes
+// what is sent (Docs/protocol/approval.md §One builder, review 58a M3).
+func DecodeToken(raw []byte) (Grant, error) {
+	_, tok, err := parseToken(raw)
+	if err != nil {
+		return Grant{}, fmt.Errorf("capability: decode token: %w", err)
+	}
+	return tok.Grant, nil
+}

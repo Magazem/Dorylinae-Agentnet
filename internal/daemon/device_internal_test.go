@@ -106,27 +106,3 @@ func TestParseOfferIsStrict(t *testing.T) {
 		}
 	}
 }
-
-// Peer-supplied text cannot show a decoy approval code (review 26 N4).
-func TestStripLongDigits(t *testing.T) {
-	for in, want := range map[string]string{
-		"bob":                  "bob",
-		"bob 123456":           "bob …",
-		"bob12345":             "bob12345",
-		"a1234567b":            "a…b",
-		"482913":               "…",
-		"12 345 678":           "…",
-		"x999999y111111":       "x…y…",
-		"code 000000 then 42.": "code … then 42.",
-		// review 36 L2: split or non-ASCII digits read as the same code.
-		"bob? Code 482 913":   "bob? Code …",
-		"48-29-13":            "…",
-		"４８２９１３":              "…",
-		"v1.2.3 and 12, 3456": "v1.2.3 and 12, 3456",
-		"a 12 b 3456":         "a 12 b 3456",
-	} {
-		if got := stripLongDigits(in); got != want {
-			t.Errorf("stripLongDigits(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

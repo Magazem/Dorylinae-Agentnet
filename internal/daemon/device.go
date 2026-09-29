@@ -10,15 +10,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 )
 
@@ -93,42 +92,6 @@ func deviceHierarchyError(err error) error {
 	default:
 		return err
 	}
-}
-
-// stripLongDigits replaces runs of six or more digits with an ellipsis so that
-// peer-supplied text cannot show a decoy approval code (review 26 N4). A run
-// counts any Unicode digit and may be split by single spaces or punctuation
-// ("482 913", "48-29-13", fullwidth digits), which a human reads as the same
-// code (review 36 L2).
-func stripLongDigits(s string) string {
-	rs := []rune(s)
-	var b strings.Builder
-	for i := 0; i < len(rs); {
-		if !unicode.IsDigit(rs[i]) {
-			b.WriteRune(rs[i])
-			i++
-			continue
-		}
-		digits, end := 0, i
-		for j := i; j < len(rs); j++ {
-			if unicode.IsDigit(rs[j]) {
-				digits++
-				end = j + 1
-				continue
-			}
-			sep := unicode.IsSpace(rs[j]) || unicode.IsPunct(rs[j]) || unicode.IsSymbol(rs[j])
-			if !sep || j+1 >= len(rs) || !unicode.IsDigit(rs[j+1]) {
-				break
-			}
-		}
-		if digits >= 6 {
-			b.WriteString("…")
-		} else {
-			b.WriteString(string(rs[i:end]))
-		}
-		i = end
-	}
-	return b.String()
 }
 
 // offerBody is the JSON of a device.link body, also what a kept offer stores.
@@ -484,8 +447,28 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 				_ = ds.RevokePending(ctx, linkID)
 			},
 		}
-		who := stripLongDigits(notify.Clean(peer.Name, 40))
-		summary := fmt.Sprintf("link this device as the %s of %s? Confirm only if you started this on both devices.", role, who)
+		// The window shows the other device's full fingerprint first, and
+		// the human compares it with 'agentnet identity' there (D44 = review
+		// 55 §6 D9, Docs/protocol/approval.md §Contents per kind).
+		pf, err := peerFacts(ctx, ds.DB, peerKey)
+		if err != nil {
+			_ = ds.Delete(ctx, linkID)
+			return nil, err
+		}
+		facts := approvaltext.Link{ID: linkID, Peer: pf, Role: role}
+		summary, err := approvaltext.BuildLink(facts)
+		if err != nil {
+			_ = ds.Delete(ctx, linkID)
+			return nil, summaryField(err, "peer")
+		}
+		action.Rebuild = rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Link, error) {
+			cur, err := ds.GetTx(ctx, tx, linkID)
+			if err != nil {
+				return approvaltext.Link{}, approval.ErrChanged
+			}
+			pf, err := peerFacts(ctx, tx, cur.Peer)
+			return approvaltext.Link{ID: cur.ID, Peer: pf, Role: cur.Role}, err
+		}, approvaltext.BuildLink)
 		view, aerr := apprStore.Create(ctx, approval.KindDeviceLink, linkID, summary, action)
 		if aerr != nil {
 			_ = ds.Delete(ctx, linkID) // review 26 N5: drop the pending row if Create fails

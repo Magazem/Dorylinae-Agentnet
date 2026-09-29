@@ -689,3 +689,18 @@ func NewPolicyID() string {
 	_, _ = rand.Read(b)
 	return "p-" + hex.EncodeToString(b)
 }
+
+// SensitiveGrantsInSession counts the sensitive grants this daemon issued in
+// session sid that were ever active: clause (1) of QuarantineHolds, the K of
+// the release approval summary (Docs/protocol/approval.md §Contents per
+// kind, OD-R55F5-7). Read-only; q is the confirm transaction or the DB.
+func SensitiveGrantsInSession(ctx context.Context, q DebateOpenQ, sid string) (int, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE direction = 'issued' AND sensitive = 1 AND
+		(state = 'active' OR (state = 'revoked' AND (COALESCE(approval, '') <> '' OR COALESCE(policy, '') <> '')))
+		AND session = ?`, sid).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("capability: count sensitive grants: %w", err)
+	}
+	return n, nil
+}

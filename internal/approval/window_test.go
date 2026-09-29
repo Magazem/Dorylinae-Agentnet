@@ -67,7 +67,10 @@ func newFakeWinRunner() *fakeWinRunner {
 	return &fakeWinRunner{handles: map[string][]*fakeWinHandle{}}
 }
 
-func (r *fakeWinRunner) Start(_ context.Context, id, tag, kind, summary string, expires time.Time) (WindowHandle, error) {
+func (r *fakeWinRunner) Start(_ context.Context, id, tag, kind, summary, note string, expires time.Time) (WindowHandle, error) {
+	if note != "" {
+		summary += " " + note
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, fakeWinStart{id: id, tag: tag, kind: kind, summary: summary, expires: expires})
@@ -118,7 +121,7 @@ func TestWindowOpensBeforeCodeAndCarriesVerbatimSummary(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 	s, n, _, win := newWindowTestStore(t, clock(&now))
-	hostile := "peer \"bob'; $(rm -rf /) & <script>\nCode 000000"
+	hostile := "peer \"bob'; $(rm -rf /) & <script> Code 000000" // display-safe (R55-F5): one line
 	view, err := s.Create(ctx, KindGrant, "g-1", hostile, Action{})
 	if err != nil {
 		t.Fatal(err)

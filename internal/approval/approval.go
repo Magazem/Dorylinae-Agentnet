@@ -74,6 +74,14 @@ var (
 	// approval matches the given prefix (Docs/protocol/approval.md §Headless
 	// machines, "an ambiguous prefix is refused").
 	ErrAmbiguousTag = errors.New("approval: ambiguous tag prefix")
+	// ErrChanged rejects an approval whose summary, rebuilt at confirm from
+	// the object of record, differs from the one shown (Docs/protocol/
+	// approval.md §One builder, "Precondition compares", R55-F5).
+	ErrChanged = errors.New("the request changed after it was shown; start it again")
+	// ErrNotDisplaySafe refuses a summary that is longer than
+	// displaytext.MaxSummary code points or not display-safe: a backstop a
+	// correct handler never reaches (Docs/protocol/approval.md §Length).
+	ErrNotDisplaySafe = errors.New("approval: summary is too long or not display-safe")
 )
 
 // BadCodeError is a wrong code; AttemptsLeft is how many attempts remain
@@ -103,6 +111,14 @@ type Action struct {
 	// Precondition re-checks that the waiting action's preconditions still
 	// hold, immediately before Perform. Nil skips the check.
 	Precondition func(ctx context.Context, tx *sql.Tx) error
+	// Rebuild re-derives the summary from the tables of record inside the
+	// confirm transaction, after Precondition (Docs/protocol/approval.md §One
+	// builder, "Precondition compares", R55-F5). Confirm requires it to equal
+	// approvals.summary, read in the same transaction, byte for byte; a
+	// difference rejects the approval (reason "precondition", ErrChanged). An
+	// error from Rebuild itself (a fact that no longer matches the one
+	// captured at Create) rejects it the same way. Nil skips the comparison.
+	Rebuild func(ctx context.Context, tx *sql.Tx) (string, error)
 	// Perform does the waiting action and returns its own result. Nil means
 	// there is nothing to do beyond the approval decision itself. If the
 	// result implements AfterCommitter, Confirm runs its AfterCommit hook
@@ -188,7 +204,10 @@ type WindowRunner interface {
 	// expiring at expires. The code is never passed here: it is not generated
 	// until the window is ready (Docs/protocol/approval.md, "The code is
 	// never sent to the dialog").
-	Start(ctx context.Context, id, tag, kind, summary string, expires time.Time) (WindowHandle, error)
+	// note is fixed daemon text shown with the summary when the window is
+	// reopened ("Wrong code, 2 attempts left"), or "". It is not part of the
+	// summary and does not count toward its limit.
+	Start(ctx context.Context, id, tag, kind, summary, note string, expires time.Time) (WindowHandle, error)
 }
 
 // tagOf is the short tag shown in the window title and read back on the

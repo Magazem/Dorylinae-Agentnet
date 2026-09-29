@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // ResolveTag finds the single pending approval whose id starts with tag, a
@@ -50,6 +52,12 @@ func (s *Store) ResolveTag(tag string) (id string, err error) {
 func (s *Store) Create(ctx context.Context, kind, subject, summary string, action Action) (View, error) {
 	if !validKinds[kind] {
 		return View{}, fmt.Errorf("approval: unknown kind %q", kind)
+	}
+	// The backstop of Docs/protocol/approval.md §Length: a summary the window
+	// would have to cut, or could not show literally, is refused before
+	// anything is stored, audited or shown (C14-02). Handlers refuse it first.
+	if !displaytext.Safe(summary) {
+		return View{}, ErrNotDisplaySafe
 	}
 	s.mu.Lock()
 	now := s.now()
@@ -104,7 +112,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	expires := now.Add(TTL)
 	var handle WindowHandle
 	if s.window != nil {
-		handle, err = s.window.Start(ctx, id, tagOf(id), kind, summary, expires)
+		handle, err = s.window.Start(ctx, id, tagOf(id), kind, summary, "", expires)
 		if err != nil || !handle.Ready(ctx) {
 			s.dropReserved(id)
 			if handle != nil {
@@ -340,8 +348,8 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		s.mu.Unlock()
 		return nil, fmt.Errorf("approval: mark approved: %w", err)
 	}
-	if action.Precondition != nil {
-		if err := action.Precondition(ctx, tx); err != nil {
+	if action.Precondition != nil || action.Rebuild != nil {
+		if err := checkAction(ctx, tx, id, action); err != nil {
 			_ = tx.Rollback()
 			delete(s.pending, id)
 			s.mu.Unlock()
@@ -392,6 +400,33 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		ac.AfterCommit(ctx)
 	}
 	return result, nil
+}
+
+// checkAction runs the waiting action's Precondition and then its Rebuild
+// comparison (Docs/protocol/approval.md §One builder, "Precondition
+// compares"): the summary rebuilt from the tables of record must equal
+// approvals.summary, read in the same transaction, byte for byte.
+func checkAction(ctx context.Context, tx *sql.Tx, id string, action Action) error {
+	if action.Precondition != nil {
+		if err := action.Precondition(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if action.Rebuild == nil {
+		return nil
+	}
+	var shown string
+	if err := tx.QueryRowContext(ctx, `SELECT summary FROM approvals WHERE id = ?`, id).Scan(&shown); err != nil {
+		return fmt.Errorf("approval: read summary: %w", err)
+	}
+	rebuilt, err := action.Rebuild(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if rebuilt != shown {
+		return ErrChanged
+	}
+	return nil
 }
 
 // checkExpiryLocked reports whether id's stored expiry is at or before now,
@@ -778,11 +813,7 @@ func (s *Store) startWindow(ctx context.Context, id, message string) WindowHandl
 	if err != nil {
 		return nil
 	}
-	summary := view.Summary
-	if message != "" {
-		summary = view.Summary + " " + message
-	}
-	handle, err := s.window.Start(ctx, id, tagOf(id), view.Kind, summary, expires)
+	handle, err := s.window.Start(ctx, id, tagOf(id), view.Kind, view.Summary, message, expires)
 	if err != nil || !handle.Ready(ctx) {
 		if handle != nil {
 			handle.Kill()

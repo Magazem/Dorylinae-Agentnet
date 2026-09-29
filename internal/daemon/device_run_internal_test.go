@@ -192,7 +192,10 @@ func TestScopeSummaryEscapesInvisibleCharacters(t *testing.T) {
 		Commands: []device.Command{{Name: "t", Repo: "r", Argv: []string{"/bin/tool", "--x" + string(rune(0x202e)) + "-- fr- mr"}, TimeoutS: 5}},
 		Expires:  "2026-10-01T00:00:00Z",
 	}
-	s := scopeSummary("laptop", sc)
+	s, err := scopeSummaryFor(t, "laptop", sc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.ContainsRune(s, 0x200b) || strings.ContainsRune(s, 0x202e) {
 		t.Fatalf("summary holds a raw invisible character: %q", s)
 	}

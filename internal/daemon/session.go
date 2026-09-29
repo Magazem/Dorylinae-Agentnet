@@ -10,7 +10,9 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -176,6 +178,9 @@ func sessionView(ctx context.Context, ps *peers.Store, ts *team.Store, rs *reque
 		Opened: timeOrEmpty(v.Opened), StateAt: timeOrEmpty(v.StateAt),
 		Cancel: v.Cancel,
 		Grants: []any{},
+	}
+	if rs != nil {
+		sv.Grants = sessionGrants(ctx, rs.DB, v.ID, listMode)
 	}
 	if !v.Closed.IsZero() {
 		sv.Closed = timeOrEmpty(v.Closed)
@@ -393,9 +398,24 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if v.State != worksession.StateAwaitingResult {
 			return nil, sessionError(&worksession.BadStateError{State: v.State, Msg: fmt.Sprintf("%s is %s", sid, v.State)})
 		}
-		summary := fmt.Sprintf("Accept the result for session %s?", sid)
+		// Status and sizes only, never the result's content (OD-R55F5-8).
+		facts, err := sessionResultFacts(ctx, ws.DB, v, false)
+		if err != nil {
+			return nil, err
+		}
+		summary, err := approvaltext.BuildAcceptResult(facts)
+		if err != nil {
+			return nil, summaryField(err, "id")
+		}
 		createdSeq := v.Seq
 		view, err := as.Create(ctx, "accept_result", sid, summary, approval.Action{
+			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Result, error) {
+				cur, err := ws.GetTx(ctx, tx, sid)
+				if err != nil {
+					return approvaltext.Result{}, err
+				}
+				return sessionResultFacts(ctx, tx, cur, false)
+			}, approvaltext.BuildAcceptResult),
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
 				role, state, seq, err := ws.PeekTx(ctx, tx, sid)
 				if err != nil {
@@ -526,7 +546,16 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if v.State != worksession.StateQuarantined {
 			return nil, sessionError(&worksession.BadStateError{State: v.State, Msg: fmt.Sprintf("%s is %s", sid, v.State)})
 		}
-		summary := fmt.Sprintf("Release the quarantined result of session %s?", sid)
+		// Status, sizes and why it is quarantined, never the result's
+		// content (Docs/protocol/approval.md §Contents per kind, R55-F5).
+		facts, err := sessionResultFacts(ctx, ws.DB, v, true)
+		if err != nil {
+			return nil, err
+		}
+		summary, err := approvaltext.BuildRelease(facts)
+		if err != nil {
+			return nil, summaryField(err, "id")
+		}
 		// approvalID is set once Create returns below, before Perform can ever
 		// run (Perform only runs later, once a human confirms through the
 		// approval window or the daemon's terminal stdin, 2.2d): the closure
@@ -534,6 +563,13 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		var approvalID string
 		createdSeq := v.Seq
 		view, err := as.Create(ctx, "release", sid, summary, approval.Action{
+			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Result, error) {
+				cur, err := ws.GetTx(ctx, tx, sid)
+				if err != nil {
+					return approvaltext.Result{}, err
+				}
+				return sessionResultFacts(ctx, tx, cur, true)
+			}, approvaltext.BuildRelease),
 			Precondition: func(ctx context.Context, tx *sql.Tx) error {
 				role, state, seq, err := ws.PeekTx(ctx, tx, sid)
 				if err != nil {
@@ -577,4 +613,38 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		approvalID = view.ID
 		return map[string]approval.View{"approval": view}, nil
 	})
+}
+
+// SessionGrantView is one entry of the session view's "grants"
+// (Docs/protocol/work-session.md §IPC, R55-F5 / review 55 R55-122): never
+// the local path or the token. Label, branch and scope are in ws_show only.
+type SessionGrantView struct {
+	ID        string `json:"id"`
+	Action    string `json:"action"`
+	Sensitive bool   `json:"sensitive"`
+	State     string `json:"state"`
+	Exp       string `json:"exp"`
+	Label     string `json:"label,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+	Scope     string `json:"scope,omitempty"`
+}
+
+// sessionGrants lists the grants of session sid in this daemon's grants
+// table, issued (on A) or held (on B), oldest first. A read error gives an
+// empty list: the view is informational.
+func sessionGrants(ctx context.Context, db *sql.DB, sid string, listMode bool) []any {
+	recs, err := (&capability.Store{DB: db}).List(ctx, capability.ListFilter{Session: sid})
+	out := []any{}
+	if err != nil {
+		return out
+	}
+	for i := len(recs) - 1; i >= 0; i-- { // List is newest first
+		r := recs[i]
+		g := SessionGrantView{ID: r.ID, Action: r.Action, Sensitive: r.Sensitive, State: r.State, Exp: wireTimeStr(r.Exp)}
+		if !listMode {
+			g.Label, g.Branch, g.Scope = r.Label, r.Branch, r.Scope
+		}
+		out = append(out, g)
+	}
+	return out
 }

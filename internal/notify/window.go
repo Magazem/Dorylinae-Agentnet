@@ -2,10 +2,12 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // ApprovalWindow opens the daemon-owned approval dialog per OS
@@ -15,31 +17,44 @@ type ApprovalWindow struct{}
 
 // Start launches the fixed dialog program for id (Docs/protocol/approval.md
 // §The approval window, per-platform table). The code is never passed here.
-func (ApprovalWindow) Start(ctx context.Context, id, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
-	tag, kind, summary = windowText(tag, kind, summary)
+func (ApprovalWindow) Start(ctx context.Context, id, tag, kind, summary, note string, expires time.Time) (approval.WindowHandle, error) {
+	tag, kind, summary, err := windowText(tag, kind, summary, note)
+	if err != nil {
+		return nil, err
+	}
 	return startDialog(ctx, id, tag, kind, summary, expires)
 }
 
-// MaxWindowSummary bounds the summary shown in the dialog, in code points;
-// a longer one is cut with "…". An approval whose summary must be shown in
-// full (a debate constraint, review 46 H2) refuses a longer one up front. It
-// fits a 500-code-point constraint even when every character is escaped.
-const MaxWindowSummary = 4096
+// MaxWindowSummary bounds the summary shown in the dialog, in code points
+// (Docs/protocol/approval.md §Length). A longer summary is refused when the
+// agent asks, never cut (R55-F5).
+const MaxWindowSummary = displaytext.MaxSummary
 
-const maxWindowSummary = MaxWindowSummary
+// errWindowText refuses a summary the window would have to cut or could not
+// show literally: a fail-closed backstop a correct handler never reaches
+// (Docs/protocol/approval.md §The approval window, "The summary is shown as
+// built").
+var errWindowText = errors.New("notify: approval summary is too long or not display-safe")
 
-// windowText sanitises every value before any platform code sees it: no
-// control character (NUL, newline, escape) and a bounded length, whatever the
-// caller passed (review 30, L1: a NUL fails exec, a newline or a huge value
-// reaches argv on Linux). It appends where the code is
-// (Docs/protocol/approval.md §The approval window, review 29 L5).
-func windowText(tag, kind, summary string) (string, string, string) {
+// windowText checks and assembles every value before any platform code sees
+// it. The summary is shown exactly as built (R55-F5): it is never cleaned,
+// collapsed or cut here; one that is not display-safe or longer than
+// MaxWindowSummary makes the window fail to open (not ready, so
+// approval_unavailable). Tag, kind and the daemon's own note are cleaned (no
+// control character, review 30 L1). The fixed sentence says where the code
+// is (review 29 L5).
+func windowText(tag, kind, summary, note string) (string, string, string, error) {
+	if !displaytext.Safe(summary) {
+		return "", "", "", errWindowText
+	}
 	tag = Clean(tag, 40)
 	kind = Clean(kind, 40)
-	summary = Clean(summary, maxWindowSummary) +
-		" The code is in the AgentNet notification for " + tag +
+	if note = Clean(note, 200); note != "" {
+		summary += " " + note
+	}
+	summary += " The code is in the AgentNet notification for " + tag +
 		". If notifications are silenced (Do Not Disturb, Focus Assist), open the notification centre."
-	return tag, kind, summary
+	return tag, kind, summary, nil
 }
 
 // maxAnswerLine is "The daemon reads at most 256 bytes"

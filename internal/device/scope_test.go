@@ -218,14 +218,18 @@ func TestValidateScopeRefusesBatchFiles(t *testing.T) {
 // invisible characters, so a path or argv reads as what runs.
 func TestDisplayQuote(t *testing.T) {
 	for in, want := range map[string]string{
-		"plain":                `"plain"`,
-		"caf\u00e9":            `"café"`,
-		"a\u202eb":             `"a\u202eb"`,
-		"x\u200by":             `"x\u200by"`,
-		"q\"\\\n\x1b":          `"q\"\\\n\u001b"`,
-		"\U000E0041tag":        `"\udb40\udc41tag"`,
-		"bad\xffbyte\ufffd":    `"bad\ufffdbyte\ufffd"`,
-		"line\u2028sep\u00a0x": `"line\u2028sep` + "\u00a0" + `x"`,
+		"plain":             `"plain"`,
+		"caf\u00e9":         `"café"`,
+		"a\u202eb":          `"a\u202eb"`,
+		"x\u200by":          `"x\u200by"`,
+		"q\"\\\n\x1b":       `"q\"\\\n\u001b"`,
+		"\U000E0041tag":     `"\udb40\udc41tag"`,
+		"bad\xffbyte\ufffd": `"bad\ufffdbyte\ufffd"`,
+		// R55-F5 (A14): the full hidden set, so U+00A0 and the other
+		// invisible runes are escaped too, and <>& are not HTML-escaped (L1).
+		"line\u2028sep\u00a0x": `"line\u2028sep\u00a0x"`,
+		"a<b>&c":               `"a<b>&c"`,
+		"v\ufe0fs\u3164":       `"v\ufe0fs\u3164"`,
 	} {
 		if got := DisplayQuote(in); got != want {
 			t.Errorf("DisplayQuote(%q) = %s, want %s", in, got, want)
