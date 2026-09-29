@@ -442,6 +442,10 @@ func TestLimitReadEvictionOwnPrefixPays(t *testing.T) {
 // fillOutbound sends mail from senders to the non-reading sinks until the
 // outbound budget cannot take another frame, even once the sinks' socket
 // buffers are full, and returns the frame size.
+//
+// Once mail to a full sink is queued, its drain waits to reserve a whole
+// relay.DrainReserve, so above that budget the fill may stall up to one
+// reservation short; the caller charges the rest to nobody.
 func fillOutbound(t *testing.T, e *limitEnv, senders []peer, conns []*websocket.Conn, sinks []peer, body []byte, budget int64) int64 {
 	t.Helper()
 	var size int64
@@ -454,6 +458,10 @@ func fillOutbound(t *testing.T, e *limitEnv, senders []peer, conns []*websocket.
 			}
 		}
 		if time.Now().After(deadline) {
+			settle(t, e.s.Inflight)
+			if budget > relay.DrainReserve && e.s.Inflight() >= budget-relay.DrainReserve {
+				return size
+			}
 			t.Fatalf("the outbound budget did not fill: %d of %d", e.s.Inflight(), budget)
 		}
 		s := i % len(senders)
