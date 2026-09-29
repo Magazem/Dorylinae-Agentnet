@@ -57,7 +57,7 @@ func newApproveFakeWindow() *approveFakeWindow {
 	return &approveFakeWindow{handles: map[string]*approveFakeHandle{}}
 }
 
-func (w *approveFakeWindow) Start(_ context.Context, id, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
+func (w *approveFakeWindow) Start(_ context.Context, id, _, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	h := &approveFakeHandle{ready: make(chan struct{}), answerCh: make(chan [2]string, 1)}
 	close(h.ready)
 	w.mu.Lock()

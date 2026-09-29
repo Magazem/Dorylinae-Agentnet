@@ -18,6 +18,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -659,6 +660,30 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			return map[string]GrantView{"grant": grantView(ctx, ps, rec)}, nil
 		}
 
+		// The summary states everything that decides the grant, from the
+		// token Perform will send plus the row's resolved path, and is
+		// refused (never cut) when too long, before anything is stored
+		// (Docs/protocol/approval.md §Approval summaries, R55-F5).
+		reqType, reqTitle, err := requestFacts(ctx, capStore.DB, peer.PublicKey, sess.RequestID)
+		if err != nil {
+			return nil, err
+		}
+		pf, err := peerFacts(ctx, capStore.DB, peer.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		facts, err := grantFacts(wire, resolved, pf, reqType, reqTitle)
+		if err != nil {
+			return nil, err
+		}
+		longField := "resource"
+		if len(p.Scope) > len(resolved) {
+			longField = "scope"
+		}
+		summary, err := approvaltext.BuildGrant(facts)
+		if err != nil {
+			return nil, summaryField(err, longField)
+		}
 		if err := capStore.InsertPending(ctx, rec); err != nil {
 			return nil, err
 		}
@@ -666,6 +691,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 		sessionID := p.Session
 		grantID := g.ID
 		peerKey := peer.PublicKey
+		requestID := sess.RequestID
 		action := approval.Action{
 			// Re-check steps 1-3 against the current state (Docs/protocol/
 			// grant.md §Issuance step 7; review 28 M2): session, peer and
@@ -686,8 +712,31 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				if !time.Now().Before(gr.Exp) {
 					return &ipc.Error{Code: CodeBadState, Message: "the grant expired before it was approved"}
 				}
+				// The row must agree with the token Perform sends
+				// (review 58a M3, A19).
+				if err := rowMatchesToken(gr, facts); err != nil {
+					return err
+				}
 				return recheckResource(configDir, gr)
 			},
+			// Precondition compares (R55-F5): the facts from the token, the
+			// row's path, the peer's current name and the request, read in
+			// the confirm transaction.
+			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Grant, error) {
+				gr, err := capStore.GetTx(ctx, tx, grantID)
+				if err != nil {
+					return approvaltext.Grant{}, approval.ErrChanged
+				}
+				typ, title, err := requestFacts(ctx, tx, peerKey, requestID)
+				if err != nil {
+					return approvaltext.Grant{}, err
+				}
+				pf, err := peerFacts(ctx, tx, peerKey)
+				if err != nil {
+					return approvaltext.Grant{}, err
+				}
+				return grantFacts(wire, gr.Path, pf, typ, title)
+			}, approvaltext.BuildGrant),
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
 				now := time.Now()
 				// The approval id marks the row as once-active for the
@@ -723,7 +772,6 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				return afterCommitResult{after: func(context.Context) { ob.Wake() }}, nil
 			},
 		}
-		summary := fmt.Sprintf("approve grant %s on %s to %s for %s?", p.Action, label, peer.Name, expires.String())
 		view, aerr := apprStore.Create(ctx, approval.KindGrant, g.ID, summary, action)
 		if aerr != nil {
 			_ = capStore.Delete(ctx, g.ID) // review 26 N5: drop the pending row if Create fails
@@ -1071,7 +1119,26 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 				return map[string]GrantPolicyView{"policy": policyViewTx(pol)}, nil
 			},
 		}
-		summary := fmt.Sprintf("approve a grant policy: %s on %s for %s, up to %s?", p.Action, pol.Path, peer.Name, maxExpires.String())
+		// The policy waits only in this closure, so its facts are pol itself
+		// plus the peer's current name (Docs/protocol/approval.md §One
+		// builder, R55-F5).
+		pf, err := peerFacts(ctx, capStore.DB, pol.Peer)
+		if err != nil {
+			return nil, err
+		}
+		facts := policyFacts(pol, pf)
+		summary, err := approvaltext.BuildPolicy(facts)
+		if err != nil {
+			longField := "resource"
+			if len(p.Scope) > len(resolved) {
+				longField = "scope"
+			}
+			return nil, summaryField(err, longField)
+		}
+		action.Rebuild = rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Policy, error) {
+			pf, err := peerFacts(ctx, tx, pol.Peer)
+			return policyFacts(pol, pf), err
+		}, approvaltext.BuildPolicy)
 		view, aerr := apprStore.Create(ctx, approval.KindGrantPolicy, pol.ID, summary, action)
 		if aerr != nil {
 			return nil, approvalError(aerr)

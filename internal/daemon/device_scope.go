@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -24,11 +25,6 @@ const (
 	CodeUnknownLink = "unknown_link"
 	CodeBadScope    = "bad_scope"
 )
-
-// maxScopeSummary caps the approval summary of a scope: every command, its
-// repo path and its full resolved argv must fit in the approval window (the
-// Windows window receives the summary through its environment block).
-const maxScopeSummary = 16384
 
 // DeviceScopeSetParams are the params of "device_scope_set".
 type DeviceScopeSetParams struct {
@@ -141,24 +137,22 @@ func scopeResolver(configDir string) device.Resolver {
 	}}
 }
 
-// scopeSummary is what the human approves: every command's name, repo path
-// and full argv with argv[0] resolved (Docs/protocol/device.md §Scope). The
-// argv strings are JSON-quoted, with bidi controls and other invisible
-// characters escaped too (review 40 M1), so that nothing in them can change
-// how the line reads.
-func scopeSummary(peerName string, sc device.Scope) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "let %s run commands on this device until %s, for %s requests:", peerName, sc.Expires, strings.Join(sc.Types, ", "))
+// scopeFacts is what the human approves (Docs/protocol/approval.md §Contents
+// per kind): the controller, and every command's name, repo directory and
+// full argv with argv[0] resolved (Docs/protocol/device.md §Scope). The
+// builder quotes every path and argv string with the displayQuote rule, so
+// nothing in them can change how the line reads (review 40 M1).
+func scopeFacts(peer approvaltext.Peer, sc device.Scope) (approvaltext.Scope, error) {
+	exp, err := sc.ExpiresAt()
+	if err != nil {
+		return approvaltext.Scope{}, &ipc.Error{Code: CodeBadScope, Message: "expires: " + err.Error()}
+	}
+	f := approvaltext.Scope{Peer: peer, Types: sc.Types, Expires: exp.UTC()}
 	for _, c := range sc.Commands {
 		dir, _ := sc.RepoPath(c.Repo)
-		fmt.Fprintf(&b, " [%s] in %s runs %s (timeout %d s", c.Name, device.DisplayQuote(dir), device.DisplayArgv(c.Argv), c.TimeoutS)
-		if len(c.Env) > 0 {
-			fmt.Fprintf(&b, ", env %s", strings.Join(c.Env, " "))
-		}
-		b.WriteString(");")
+		f.Commands = append(f.Commands, approvaltext.ScopeCommand{Name: c.Name, Dir: dir, Argv: c.Argv, TimeoutS: c.TimeoutS, Env: c.Env})
 	}
-	b.WriteString(" Confirm only if you set this scope yourself.")
-	return b.String()
+	return f, nil
 }
 
 // helperLinkFor resolves peer and returns this device's active helper link
@@ -205,10 +199,23 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		if err != nil {
 			return nil, scopeError(err)
 		}
-		who := stripLongDigits(notify.Clean(peer.Name, 40))
-		summary := scopeSummary(who, resolved)
-		if len(summary) > maxScopeSummary {
-			return nil, &ipc.Error{Code: CodeBadScope, Message: fmt.Sprintf("scope: too long to show in one approval (%d bytes of summary, at most %d); set fewer or shorter commands", len(summary), maxScopeSummary)}
+		// The whole scope must fit in the window, never cut: a longer one is
+		// refused here, before any approval exists (R55-F5, review 55
+		// R55-007 / C14-02).
+		pf, err := peerFacts(ctx, ds.DB, peer.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		facts, err := scopeFacts(pf, resolved)
+		if err != nil {
+			return nil, err
+		}
+		summary, err := approvaltext.BuildScope(facts)
+		if errors.Is(err, approvaltext.ErrTooLong) {
+			return nil, &ipc.Error{Code: CodeBadScope, Message: fmt.Sprintf("scope: too long to show in full in the approval window (at most %d code points of summary); set fewer or shorter commands, or run a wrapper script", notify.MaxWindowSummary)}
+		}
+		if err != nil {
+			return nil, err
 		}
 		// A newer scope supersedes one still waiting for its code.
 		if old := pending.take(peer.PublicKey); old != "" {
@@ -258,6 +265,15 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 					runner.kick() // queued runs are checked against the new scope
 				}}, nil
 			},
+			// Precondition compares (R55-F5): the captured scope and the
+			// controller's current name.
+			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Scope, error) {
+				pf, err := peerFacts(ctx, tx, peerKey)
+				if err != nil {
+					return approvaltext.Scope{}, err
+				}
+				return scopeFacts(pf, resolved)
+			}, approvaltext.BuildScope),
 			OnReject: func(context.Context) {
 				idMu.Lock()
 				aid := approvalID

@@ -29,7 +29,10 @@ func newFakeWindowRunner() *fakeWindowRunner {
 	return &fakeWindowRunner{handles: map[string]*fakeWindowHandle{}}
 }
 
-func (r *fakeWindowRunner) Start(_ context.Context, id, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
+func (r *fakeWindowRunner) Start(_ context.Context, id, tag, kind, summary, note string, expires time.Time) (approval.WindowHandle, error) {
+	if note != "" {
+		summary += " " + note
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, fakeWindowStart{id: id, tag: tag, kind: kind, summary: summary, expires: expires})

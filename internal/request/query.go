@@ -164,3 +164,25 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]View, error) {
 	}
 	return out, nil
 }
+
+// Querier is *sql.DB or *sql.Tx.
+type Querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// PeekTypeTitleIn is Store.PeekTypeTitle through q: the confirm transaction
+// of an approval Precondition that re-derives the request of an approval
+// summary (Docs/protocol/approval.md §One builder, "Precondition compares",
+// R55-F5), or the database when the summary is first built.
+func PeekTypeTitleIn(ctx context.Context, q Querier, direction, peer, id string) (typ, title string, err error) {
+	row, err := getRow(ctx, q, direction, peer, id)
+	if err != nil {
+		return "", "", err
+	}
+	if req, terr := decodeStoredBody(row.body); terr == nil {
+		title = req.Title
+	}
+	return row.typ, title, nil
+}

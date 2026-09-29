@@ -3,7 +3,8 @@ package decision
 import (
 	"fmt"
 	"strings"
-	"unicode"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // Visible is the escaping rule of decision.md §Markdown (review 43 M1), the
@@ -25,28 +26,13 @@ func Visible(s string, multiLine bool) string {
 			b.WriteRune(r)
 			continue
 		}
-		if isC0C1(r) || unicode.Is(unicode.Cf, r) || (r != ' ' && !unicode.IsGraphic(r)) || invisibleGraphic(r) {
+		if displaytext.Hidden(r) { // the one shared set (Docs/protocol/approval.md §Sanitising)
 			fmt.Fprintf(&b, `\u{%X}`, r)
 			continue
 		}
 		b.WriteRune(r)
 	}
 	return b.String()
-}
-
-func isC0C1(r rune) bool {
-	return (r >= 0x00 && r <= 0x1F) || (r >= 0x7F && r <= 0x9F)
-}
-
-// invisibleGraphic is review 46 H1's set of runes unicode.IsGraphic accepts
-// that render as nothing or as a plain space (internal/debate's
-// invisibleRune, which refuses them in debate text; titles, file names and
-// petnames do not go through it).
-func invisibleGraphic(r rune) bool {
-	return unicode.Is(unicode.Variation_Selector, r) ||
-		unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) ||
-		(r != ' ' && unicode.Is(unicode.Zs, r)) ||
-		r == 0x2800
 }
 
 // TemplateInert is decision.md §Markdown's template rule (review 48 H1),

@@ -623,7 +623,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return ShutdownResult{OK: true}, nil
 	})
 	registerDebate(srv, debates, peerStore, teamStore, reqStore)
-	registerDebateConstrain(srv, debates, apprStore, peerStore)
+	registerDebateConstrain(srv, debates, apprStore)
 	registerDecision(srv, debates, peerStore, reqStore, id.Card().Card.PublicKey, id.Card().Card.Name)
 	srv.Handle("identity", func(context.Context, json.RawMessage) (any, error) {
 		sc := id.Card()

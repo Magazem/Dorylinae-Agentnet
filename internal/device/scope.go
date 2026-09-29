@@ -12,10 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf16"
-	"unicode/utf8"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 )
 
@@ -363,28 +361,13 @@ func envKey(name string) string {
 }
 
 // DisplayQuote quotes s as a JSON string for a human to read (the approval
-// summary, the CLI), and also escapes, as \uXXXX, every rune that is not
-// graphic or is a format character: bidi controls (U+202E …), zero-width
-// characters and the like, which json.Marshal leaves as they are and which
-// could make a path or argv read differently from what runs (review 40 M1).
+// summary, the CLI). It is displaytext.Quote: no HTML escaping, and every
+// hidden rune (bidi controls, zero-width characters, variation selectors,
+// non-ASCII spaces, …) and every combining mark after the 2nd on one base is
+// written as \uXXXX, so nothing in a path or argv can make it read
+// differently from what runs (review 40 M1, R55-F5 review 58a L1, M4).
 func DisplayQuote(s string) string {
-	raw, _ := json.Marshal(s)
-	var b strings.Builder
-	b.Grow(len(raw))
-	for _, r := range string(raw) {
-		switch {
-		case r == utf8.RuneError || (r > 0x7e && (!unicode.IsGraphic(r) || unicode.Is(unicode.Cf, r))):
-			if r > 0xffff {
-				hi, lo := utf16.EncodeRune(r)
-				fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
-			} else {
-				fmt.Fprintf(&b, `\u%04x`, r)
-			}
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
+	return displaytext.Quote(s)
 }
 
 // DisplayArgv is DisplayQuote for an argv: a JSON array of quoted strings.
