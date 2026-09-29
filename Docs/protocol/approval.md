@@ -7,7 +7,7 @@ Used by grants ([grant.md](grant.md)), the sensitive-grant release
 ([work-session.md](work-session.md#quarantine-24)), `accept-result --human`, and the
 own-device link and scope ([device.md](device.md)). Change this document first.
 Review 55 ticket **R55-F5** (draft, pending the adversarial review and the owner's approval of
-OD-R55F5-1..8) adds [Approval summaries](#approval-summaries-r55-f5): one builder, the contents per
+OD-R55F5-1..10) adds [Approval summaries](#approval-summaries-r55-f5): one builder, the contents per
 kind, one sanitising rule and a hard length limit.
 
 ## Why
@@ -245,6 +245,17 @@ summary.
   that object and from the `peers` row of its key. So the text cannot describe something other
   than what Perform does. (Today `grant_create` formats `p.Action` and `label` next to a
   separately built token; the grant summary is the one place where they could drift.)
+  **For `grant`, what Perform sends is the token signed at Create** (grant.md §Issuance step
+  6), not the row. So the grant's facts are taken from that signed token, decoded back from
+  the exact bytes Perform will send (action, label, branch, scope, `sensitive`, `nbf`, `exp`,
+  audience, session), plus the one local-only field, the resolved path, from the row. The
+  Precondition first requires the stored row to agree with the token on every shared field
+  (review 58a, M3).
+- **The path is the identity-resolved path.** A grant's or policy's path fact is the path
+  that grant.md §Issuance step 3 resolves and stores (R55-F7: symbolic links, and on Windows
+  junctions, mount points, `subst` and 8.3 names, resolved from an open handle), never the
+  spelling the agent passed. The existing `recheckResource` at confirm requires the path to
+  still resolve to it, so a folder swapped for a link while the approval waits is rejected.
 - **Precondition compares.** At confirm, inside the confirm transaction, each kind's
   Precondition, after its existing state checks:
   1. re-derives the facts from the tables of record: the stored row (grant, policy, link
@@ -259,7 +270,10 @@ summary.
   changed after it was shown; start it again". This turns review 46 H2's "the human approves
   what the window shows" into a checked property. Facts that can change while an approval
   waits: the peer's name (a roster update or re-pairing; OD-R55F5-5) and, for release and
-  accept-result, the round, which the `seq` check already binds.
+  accept-result, the round, which the `seq` check already binds. A fact that depends on time
+  (the release's rule-2 reason, "a sensitive grant in another session in the last 7 days") is
+  evaluated against the approval's stored `created` instant, both at Create and at confirm, so
+  the comparison stays deterministic and the builder stays free of any clock.
 - **The summary holds no secret and no quarantined content.** `approvals.summary` is returned
   by `approval_list` to any local caller, the agent included. So no summary ever contains a
   code, a token, or the content of a quarantined (or not yet accepted) result: only its
@@ -285,6 +299,20 @@ summary.
   is stored), and the window refuses to open for such a text ([The approval
   window](#the-approval-window)). A correct handler never reaches either. They exist so that a
   missed check refuses instead of cutting (C14-02).
+- **Not cut is not the same as seen (review 58a, M1).** The Windows window shows about 1000
+  characters in its 490×200 box and scrolls for the rest, so a command placed after a
+  3000-character argument is still below the fold. And `display dialog` and zenity `--entry`
+  may not scroll at all. So:
+  - every summary puts what decides the approval **before** any long, agent-chosen field. For
+    `device_scope`, the count and the names of all commands come first
+    ([Contents per kind](#contents-per-kind)), so a command hidden below the fold is still
+    named at the top;
+  - every summary ends with its fixed "Confirm only if …" sentence, so a text whose end the
+    human cannot see is visibly unfinished;
+  - the manual check (review 58 M1, M2) confirms on Windows, macOS and Linux that a
+    4096-code-point summary can be read to its end and that the buttons and the code box stay
+    on screen. If a platform fails, F6 changes that platform's window (OD-R55F5-10). The limit
+    stays one number for all platforms, because the text must be the same everywhere.
 
 ### Sanitising: one character rule, two renderings
 
@@ -312,14 +340,23 @@ safe.
    U+0020. Every other hidden rune is **removed**, so that `4​8​2​9​1​3` (zero-width spaces)
    reads as `482913` for step 3 (R55-066).
 2. Runs of spaces collapse to one, and the text is trimmed.
-3. **Long digit runs.** A digit run is a maximal sequence of runes of category `N` (`Nd`, `Nl`,
+3. **Stacked marks.** After each base character at most **2** combining marks (`Mn`, `Me`)
+   are kept; the rest are removed. A long stack of marks is drawn above or below its line and
+   can cover the neighbouring text, the fingerprint included (review 58a, M4).
+4. **Long digit runs.** A digit run is a maximal sequence of runes of category `N` (`Nd`, `Nl`,
    `No`: ASCII, fullwidth, superscript, circled and mathematical digits). Between two of its
-   numbers there may be at most one separator rune (a space, `P*` or `S*`). Any number of
-   combining marks (`Mn`, `Me`) directly after a number are part of it. A run of **6 or more**
-   numbers is replaced by one `…`. This is today's `stripLongDigits` (review 26 N4, review 36
-   L2), made to see through invisible characters, combining marks and non-decimal digits. The
-   zenity octal form `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
-4. An empty result becomes `(no name)`.
+   numbers there may be **up to 3** separator runes (spaces, `P*` or `S*`), so `4 - 8 - 2 - 9 -
+   1 - 3` counts as one run (review 58a, L3). Combining marks directly after a number are part
+   of it. A run of **6 or more** numbers is replaced by one `…`. This is today's
+   `stripLongDigits` (review 26 N4, review 36 L2), made to see through invisible characters,
+   combining marks, non-decimal digits and spaced-out digits. The zenity octal form
+   `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
+5. **Fingerprint-shaped text** (OD-R55F5-9). A run of **2 or more** groups of 4 characters of
+   the fingerprint alphabet (case-insensitive), separated by single spaces or `-`, and any
+   run of 8 or more such characters with no separator that holds both a digit and a letter,
+   are replaced by one `…`. A peer cannot then put the fingerprint of the device it
+   impersonates into its own name (review 58a, H1).
+6. An empty result becomes `(no name)`.
 
 The name is **not cut**: the card rules already cap it at 128 code points (OD-R55F5-4). The
 40-code-point cut of notify.md stays for ordinary notifications only.
@@ -329,8 +366,15 @@ branch, scope, the label, argv, env names, the request title and the constraint 
 review 40's `DisplayQuote`: a JSON string in double quotes in which every hidden rune (and U+FFFD
 from invalid bytes) is escaped as `\uXXXX`, as a surrogate pair above U+FFFF. It now uses the
 full `hidden` set; today it misses the variation selectors, the default-ignorable code points,
-`Zs` and U+2800. Digits are **kept**: removing them would show a different path from the one
-approved. A decoy code in such a field is the terminal-mode residual of OD-R55F5-6.
+`Zs` and U+2800. It also escapes every combining mark after the 2nd in a row on one base
+character (the stacked-marks rule of `displayName`, but escaped rather than removed, so the
+value stays exact). It does **not** HTML-escape: `<`, `>` and `&` are shown as themselves, not
+as `<`, `>` and `&` as `json.Marshal` writes them today (an encoder with
+`SetEscapeHTML(false)`; review 58a, L1). Digits are **kept**: removing them would show a
+different path from the one approved. A decoy code in such a field is the terminal-mode
+residual of OD-R55F5-6. Letters of right-to-left scripts are kept too (they are real names);
+they can visually reorder the digits and punctuation next to them inside the quotes, but
+cannot hide or add a character.
 
 **The fingerprint** is `fp(key)` of [pairing.md](pairing.md#fingerprints), computed by the
 daemon from the key the action binds to. It is never taken from an IPC parameter or a card.
@@ -343,10 +387,25 @@ holds digit groups, but that decoy is only a random guess at a 6-digit code (the
 shows the code). Its cost is at most wasted attempts in terminal mode, the residual of
 OD-R55F5-6. A peer always appears as
 
-`<displayName(name)> (fingerprint XXXX XXXX XXXX XXXX XXXX)`
+`peer XXXX XXXX XXXX XXXX XXXX named <displayQuote(displayName(name))>`
 
 written `<peer>` below. A key that is no longer in `peers` (the release of a session whose peer
-was removed) shows as `(unknown peer) (fingerprint …)`.
+was removed) shows as `peer XXXX XXXX XXXX XXXX XXXX (no longer paired)`.
+
+**Why the fingerprint comes first and the name is quoted (review 58a, H1, M2, L2).**
+- *Fingerprint in the name.* With the name first and unquoted, a peer named
+  `Desktop (fingerprint 2ED9 TGVE R471 63MC C451)`, which is the real desktop's fingerprint,
+  would show the right fingerprint before its own. A human who compares "the fingerprint"
+  would then link the twin. Now the real fingerprint is always the first one, right after the
+  fixed word `peer`. The name is inside quotes that it cannot close (`displayQuote` escapes
+  `"`), and fingerprint-shaped text in it is blanked (`displayName` step 5).
+- *Right-to-left names.* A Hebrew or Arabic letter just before the fingerprint would make the
+  bidi algorithm move its leading digits. Fixed English text (strong left-to-right) now
+  precedes the fingerprint, and the name only follows it.
+- *zenity before F6.* zenity decodes `\` escapes in its text (R55-025), so a name such as
+  `Bob\0` would cut the Linux window right after the name, fingerprint included.
+  `displayQuote` writes `\` as `\\`, which zenity decodes back to `\`, so no name can cut the
+  window, even before F6 lands.
 
 **Fixed text** in the builder is constant ASCII English.
 
@@ -369,7 +428,13 @@ that mean something to a renderer, such as `\ " & < > _ % $`. Every renderer mus
   is wrong on this). F6 escapes for zenity's real parser. The builder gives F6 a fixed
   contract: one display-safe line in which `\` and `_` can occur (in `displayQuote` output,
   paths and argv). Until F6 lands, the Linux window does not meet this section for text that
-  contains `\` or `_`.
+  contains `\` or `_`: zenity shows `\\` as `\`, `\"` as `"` and `‮` as `u202e`, and eats
+  one `_`. Every piece of peer or agent text in a summary is `displayQuote` output, whose `\`
+  is always doubled, so none of this can cut the window or add a line; it only misshows
+  characters. F6 must land in the same release as F5 (review 58a, M2).
+- **macOS before F6** (R55-203): `system attribute` may decode the text in a legacy encoding,
+  so non-ASCII letters in names and paths can show garbled. The fingerprint and the fixed
+  text are ASCII and are not affected.
 
 ### Contents per kind
 
@@ -386,12 +451,12 @@ Every field listed as a fact is in the summary. The templates below are the exac
 
 | Kind | Facts (from the object of record) | Summary |
 |---|---|---|
-| `grant` | grant id; action; peer key, name; resolved path; label; branch (`git.read`); scope; sensitive; `nbf`, `exp`; session id; the session's request type and title | `Grant <action> to <peer> on <q(path)> (label <label>)[, branch <q(branch)>], <scope part>, for <dur(exp−nbf)> until <utc(exp)>, in session <sid> (your <type> request <q(title)>). <sensitivity part> Confirm only if you asked for exactly this.` Scope part: `only <q(scope)> inside it`, or `the whole folder` (`fs.read`), or `the whole repository` (`git.read`). Sensitivity part: sensitive → `Sensitive: results of this session stay quarantined until you release them.`; public → `PUBLIC: you state this repository is public; results of this session are NOT quarantined.` |
+| `grant` | grant id; action; peer key, name; resolved path; label; branch (`git.read`); scope; sensitive; `nbf`, `exp`; session id; the session's request type and title | `Grant <action> to <peer> on <q(path)> (label <q(label)>)[, branch <q(branch)>], <scope part>, for <dur(exp−nbf)> until <utc(exp)>, in session <sid> (your <type> request <q(title)>). <sensitivity part> Confirm only if you asked for exactly this.` Scope part: `only <q(scope)> inside it`, or `the whole folder` (`fs.read`), or `the whole repository` (`git.read`). Sensitivity part: sensitive → `Sensitive: results of this session stay quarantined until you release them.`; public → `PUBLIC: you state this repository is public; results of this session are NOT quarantined.` |
 | `grant_policy` | policy id; action; peer key, name; resolved path; branch; scope; public; `max_expires_s`; `created`, `until` | `Allow grants with no further question until <utc(until)> (<dur(until−created)>): <action> to <peer> on <q(path)>[, branch <q(branch)>], <scope part>, each grant for at most <dur(max)>, <sensitivity part>. Confirm only if you asked for exactly this.` Scope part: `only paths inside <q(scope)>`, or `any path in it`. Sensitivity part: not public → `sensitive grants only (results quarantined)`; public → `PUBLIC grants only: results are NOT quarantined`. |
 | `release` | session id; peer key, name; request id, type, title; round; `seq`; result `status`, `result_bytes`, `output_bytes`, artifact count; the number K of sensitive grants ever active in the session | `Release the quarantined result of <peer> for your <type> request <q(title)> (session <sid>, round <n>): status <status>, <result_bytes> bytes, <output_bytes> bytes of output, <a> artifact(s). Your agent will then be able to read it. <reason> Confirm only if you mean to release this result.` Reason: K > 0 → `This session had K sensitive grant(s).`; K = 0 → `This peer held a sensitive grant in another session in the last 7 days.` Never the result's summary, output, notes or artifacts ([One builder](#one-builder)) |
 | `accept_result` | as `release`, without K | `Accept the result of <peer> for your <type> request <q(title)> (session <sid>, round <n>): status <status>, <result_bytes> bytes, <output_bytes> bytes of output, <a> artifact(s). This closes the request as accepted. Confirm only if you checked this result.` (OD-R55F5-8) |
-| `device_link` | link intent id; peer key, name; role | `Link this device as the <role> of <peer>. <role part> Compare this fingerprint with what 'agentnet identity' shows on the other device. Confirm only if they match and you started this on both devices.` Role part: helper → `That device will be able to run, on this device, the commands of a scope you set later.`; controller → `This device will be able to ask that device to run the commands of its scope.` (D9 as decided in D44: the human **compares**; nothing is typed.) |
-| `device_scope` | peer key, name; the resolved scope (types, repos, commands with resolved argv, env names, timeouts, expires) | `Let <peer> run commands on this device until <utc(expires)>, for <types> requests:` then per command ` [<name>] in <q(dir)> runs <argv as a JSON array of q()> (timeout <n> s[, env <names>]);`, then ` Confirm only if you set this scope yourself.` (today's text, with the fingerprint added and the expiry in UTC) |
+| `device_link` | link intent id; peer key, name; role | `Link this device as the <role> of <peer>. <role part> Compare all five groups of this fingerprint with what 'agentnet identity' shows on the other device. Confirm only if all of them match and you started this on both devices.` Role part: helper → `That device will be able to run, on this device, the commands of a scope you set later.`; controller → `This device will be able to ask that device to run the commands of its scope.` (D9 as decided in D44: the human **compares**; nothing is typed.) |
+| `device_scope` | peer key, name; the resolved scope (types, repos, commands with resolved argv, env names, timeouts, expires) | `Let <peer> run <N> command(s) (<name>, <name>, …) on this device until <utc(expires)>, for <types> requests:` then per command ` [<name>] in <q(dir)> runs <argv as a JSON array of q()> (timeout <n> s[, env <names>]);`, then ` Confirm only if you set this scope yourself.` (today's text, with the command count and names first (review 58a, M1), the fingerprint added and the expiry in UTC). Command names, types and env names are ASCII by device.md's rules and need no quoting |
 | `debate_constraint` | debate session id; peer key, name; constraint id; text | `Add a human constraint to the debate <sid> with <peer>: <q(text)>. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.` (today's text, with the fingerprint added) |
 
 Notes:
@@ -404,7 +469,11 @@ Notes:
   ([work-session.md §IPC](work-session.md#ipc), R55-122), so a human who runs `agentnet session
   <id>` before releasing sees which grants made the result quarantined.
 - **Confusable names.** A name made of look-alike letters (Cyrillic `а` in `desktop`) passes
-  `displayName`. The fingerprint is the control, which is why every kind shows it.
+  `displayName`. The fingerprint is the control, which is why every kind shows it, first.
+- **Residual: partial comparison.** A peer can generate keys until the first and last groups
+  of its fingerprint match the target's (8 characters, about 2⁴⁰ tries, hours on one GPU). Only
+  a human who compares all five groups defeats that, so the `device_link` text says "all five
+  groups" (OD-R55F5-1).
 
 ## Flow
 
@@ -555,7 +624,10 @@ written as if every recommendation is taken.
   e.g. the first 8 characters (40 bits). (c) The full fingerprint plus a word list.
   **Recommend (a).** A 40-bit prefix can be matched by generating keys (about 2⁴⁰ hashes, hours
   on one GPU), which defeats D9. The full form is what the human compares against, and it is
-  what `agentnet identity` already shows.
+  what `agentnet identity` already shows. Residual (review 58a, L4): a human who checks only
+  the first and last groups compares 40 bits, which key generation can match; the
+  `device_link` text therefore asks for all five groups. (c) would close that, at the cost of a
+  second encoding to keep in sync with `agentnet identity`.
 - **OD-R55F5-2: the `device_link` `fingerprint` parameter after D9.** (a) Keep it required and
   still compared, documented as a check against the caller's typing mistakes only, not as the
   binding control. (b) Make it optional. (c) Remove it. **Recommend (a).** Nothing changes for
@@ -594,3 +666,18 @@ written as if every recommendation is taken.
   result-approval kinds ("no result content in a summary") is simpler to keep correct. For an
   accept-result the content is already visible to the agent and the human through `agentnet
   session`, so (b) adds little.
+- **OD-R55F5-9: fingerprint-shaped text in names** (review 58a, H1). (a) `displayName` blanks
+  2 or more groups of 4 fingerprint-alphabet characters, and 8 or more such characters in a
+  row that hold a digit and a letter (step 5), on top of putting the real fingerprint first
+  and quoting the name. (b) Only the order and the quotes. **Recommend (a).** The order and the
+  quotes make the real fingerprint the first one, but a human looking for "the fingerprint"
+  can still read the one inside the name. The cost is that a name such as `WS2022DEV` shows as
+  `…`, which is harmless because the name binds nothing. A copy written with look-alike
+  letters (Cyrillic `Е` for `E`) is not caught by (a); against that only the order holds.
+- **OD-R55F5-10: a window that cannot show 4096 code points** (review 58a, M1). If the manual
+  check shows that macOS `display dialog` or zenity `--entry` cannot show a 4096-code-point
+  summary to its end with the buttons on screen: (a) F6 changes that platform's window (for
+  example a scrolling text view, zenity `--text-info` or a larger macOS dialog) and keeps the
+  one limit; (b) lower `MaxWindowSummary` for every platform to what the weakest window shows.
+  **Recommend (a).** (b) would make ordinary scopes impossible to set, and the text must be the
+  same on every platform for the confirm-time comparison.

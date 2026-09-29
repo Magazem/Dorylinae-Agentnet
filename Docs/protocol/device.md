@@ -35,8 +35,10 @@ level). The link needs a human confirmation **on each device**, through the loca
 [approval](approval.md) code of that device. **The binding is the human's comparison in the
 approval window (R55-F5, D44 = review-55 §6 D9):** each device's window shows the **other**
 device's name and full fingerprint, computed by the daemon from the key the link binds to
-([approval.md §Contents per kind](approval.md#contents-per-kind)), and the human compares it with
-what `agentnet identity` shows on that other device. That binds the link to the right keys even
+([approval.md §Contents per kind](approval.md#contents-per-kind)), and the human compares it, all
+five groups, with what `agentnet identity` shows on that other device. The fingerprint comes
+first and the name after it in quotes, so a peer cannot show a copied fingerprint in its name
+before its own (review 58a). That binds the link to the right keys even
 if the pairing was only `team` trust. The human compares and types nothing but the code.
 The `--fingerprint` the caller passes is still compared (step 1), but it is only a check on the
 caller's own typing (OD-R55F5-2). A local agent can read any peer's fingerprint from `peers`, so
@@ -104,7 +106,8 @@ waiting for its code. The summary (and the CLI's printout) quotes every repo pat
 JSON strings, and also escapes as `\uXXXX` every character that is invisible or not graphic
 (bidi controls such as U+202E, zero-width characters), so no quote, control or bidi character
 can change how it reads (review 40 M1). The summary also names the controller with its full
-fingerprint, and it is built by the one builder
+fingerprint and starts with the number and names of the commands, so a command far down a long
+summary is still named at the top. It is built by the one builder
 ([approval.md §Approval summaries](approval.md#approval-summaries-r55-f5)). A scope whose summary
 would exceed **`MaxWindowSummary` (4096) code points** is refused (`bad_scope`, field `scope`),
 because the approval window must show all of it. This replaces the old 16384-byte limit: the

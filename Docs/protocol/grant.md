@@ -137,8 +137,9 @@ The grantor's daemon, in order:
    R55-005 / C11-01). A summary longer than 4096 code points (a very long path) is refused
    (`bad_request`, field `resource`). On approval, in one transaction: re-check steps 1–3
    against the current state ([approval.md §Flow](approval.md#flow) step 3; a session that left
-   `open` or a removed peer drops the grant), and re-derive the summary from the stored row
-   and require it unchanged. Then set the row `active` and `Outbox.SubmitTx` the `grant` mail
+   `open` or a removed peer drops the grant), require the stored row to agree with the signed
+   token that will be sent, and re-derive the summary from that token and the row's resolved
+   path and require it unchanged (review 58a). Then set the row `active` and `Outbox.SubmitTx` the `grant` mail
    to the holder.
 
 A grant is created by the **requester** of the session only (OD-P2-5). It never widens: there
