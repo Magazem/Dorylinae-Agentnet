@@ -1,0 +1,49 @@
+package store
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 T9-06: after a row is deleted (secure_delete=ON) and a checkpoint
+// has run, the deleted bytes are still in the -wal file while the daemon keeps
+// the database open: a checkpoint does not truncate or zero the WAL.
+func TestReview55T9_06(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(testutil.TempDir(t), "wal.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	db := s.DB()
+	marker := "REVIEW55-QUARANTINED-" + strings.Repeat("X", 64)
+	if _, err := db.ExecContext(ctx, `INSERT INTO settings (key, value, updated) VALUES ('k', json_quote(?), 'now')`, marker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM settings WHERE key = 'k'`); err != nil {
+		t.Fatal(err)
+	}
+	var busy, logN, ckpt int
+	if err := db.QueryRowContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`).Scan(&busy, &logN, &ckpt); err != nil {
+		t.Fatal(err)
+	}
+	// One more small write: the WAL restarts from its beginning after a full checkpoint.
+	if _, err := db.ExecContext(ctx, `INSERT INTO settings (key, value, updated) VALUES ('j', '1', 'now')`); err != nil {
+		t.Fatal(err)
+	}
+	main, _ := os.ReadFile(path)
+	wal, _ := os.ReadFile(path + "-wal")
+	inMain := bytes.Contains(main, []byte(marker))
+	inWal := bytes.Contains(wal, []byte(marker))
+	t.Logf("checkpoint busy=%d log=%d checkpointed=%d; marker in main db: %v; marker in -wal (%d bytes): %v", busy, logN, ckpt, inMain, len(wal), inWal)
+	if inWal {
+		t.Errorf("T9-06: deleted content still in -wal after a checkpoint and a later write")
+	}
+}
