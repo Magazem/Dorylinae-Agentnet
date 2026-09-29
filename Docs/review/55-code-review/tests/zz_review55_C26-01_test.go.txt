@@ -1,0 +1,31 @@
+package store
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// Review 55 C26-01: a '#' or '%xx' in the database path is parsed as URI syntax.
+func TestReview55C2601HashInPath(t *testing.T) {
+	for _, name := range []string{"a#b", "x%41y"} {
+		dir := filepath.Join(t.TempDir(), name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, "dorylinae.db")
+		s, err := Open(context.Background(), path)
+		if err != nil {
+			t.Logf("%s: Open error: %v", name, err)
+			continue
+		}
+		_ = s.Close()
+		_, statErr := os.Stat(path)
+		t.Logf("%s: Open ok; file at intended path exists: %v", name, statErr == nil)
+		entries, _ := os.ReadDir(filepath.Dir(dir))
+		for _, e := range entries {
+			t.Logf("  sibling: %s", e.Name())
+		}
+	}
+}
