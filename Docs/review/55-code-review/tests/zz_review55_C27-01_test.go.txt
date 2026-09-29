@@ -1,0 +1,52 @@
+package notify
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"runtime"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// TestReview55C27_01IdleConnLeak: every delivery attempt builds a fresh
+// http.Transport and never closes its idle connection, so each successful
+// delivery leaves one TCP connection (and its read/write goroutines) open
+// for as long as the receiver keeps it alive.
+func TestReview55C27_01IdleConnLeak(t *testing.T) {
+	ctx := context.Background()
+	var open atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
+		switch s {
+		case http.StateNew:
+			open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			open.Add(-1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	wh, clock := openWebhook(t)
+	mustSetWebhook(t, wh, srv.URL, false)
+	g0 := runtime.NumGoroutine()
+	const n = 40
+	for i := 0; i < n; i++ {
+		if err := wh.Enqueue(ctx, Event{Kind: EventReceived, PeerName: "bob", Type: "review", Urgency: "high", RequestID: "r-1", State: "pending", CreatedAt: clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wh.tick(ctx)
+	wh.tick(ctx)
+	time.Sleep(500 * time.Millisecond)
+	runtime.GC()
+	t.Logf("deliveries=%d open server conns=%d goroutines +%d", n, open.Load(), runtime.NumGoroutine()-g0)
+	if open.Load() >= n/2 {
+		t.Fatalf("connection leak: %d connections still open after %d deliveries", open.Load(), n)
+	}
+}
