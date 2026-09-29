@@ -6,6 +6,12 @@ reviewed in [50-phase4-spec-review.md](../review/50-phase4-spec-review.md)). OD-
 this document are recorded in the ticket plan, not open, except OD-P4-20 (outside review
 timing), decided during wave 1.
 
+**Pending change (R55-F1, 2026-09-29):** [§2 Memory budgets and fairness](#memory-budgets-and-fairness-r55-f1)
+replaces the review-50 M2 memory-bound paragraph and reopens the R-4.0 H1 "close the reader"
+choice. It is a proposal until the owner approves it after its adversarial review; open
+decisions are [OD-R55F1-1…8](#open-decisions-r55-f1) at the end of this document. Summary and
+acceptance tests: [../review/56-r55-f1-spec.md](../review/56-r55-f1-spec.md).
+
 This document changes the relay of [envelope.md](envelope.md) so that it can run on a public
 address for invited beta teams. It covers two things:
 
@@ -154,14 +160,17 @@ The source is the client IP, grouped to a /24 (IPv4) or /48 (IPv6) prefix ("pref
 | Distinct authenticated keys per prefix (review 50 M1) | 64 concurrent | `error` `relay_full`, close 1013 |
 | Non-ephemeral envelopes sent, all keys of a prefix together (review 50 M1) | 600 / min | `rate_limited` |
 | Bytes sent, all keys of a prefix together (review 50 M1) | 64 MiB / min | `rate_limited` |
+| Share of each memory budget held by one prefix (R55-F1) | 1/8 of the budget, see [below](#memory-budgets-and-fairness-r55-f1) | the prefix's own largest holder is evicted, or the frame takes today's fallback |
 
 ### Per authenticated key
 
 | Limit | Default | On excess |
 |---|---|---|
 | Envelopes sent (non-ephemeral) | 120 / min, burst 240 | `error` `rate_limited` (ref = envelope id), envelope dropped, connection stays open |
-| Bytes sent (non-ephemeral) | 32 MiB / min | same |
+| Bytes sent (from R55-F1: **every** frame read after `auth`, charged before it is parsed; R55-035) | 32 MiB / min | same; a frame refused here is dropped **unparsed**, and the error has an empty `ref` |
 | Ephemeral (presence) | 600 / min (exists) | dropped silently (exists) |
+| Ephemeral and control bytes waiting to be written (R55-F1) | the ephemeral budget, [below](#memory-budgets-and-fairness-r55-f1) | presence dropped silently; see below for control frames |
+| One frame being read (R55-F1) | must finish within `--frame-read-timeout` (30 s) of its first byte | close 1013 "frame too slow; retry later" |
 | Control frames (`ack` excluded) | 60 / min | `rate_limited`; 3 windows in a row → close 1008 |
 | Reconnects | 20 / min | `error` `rate_limited` right after `auth`, close 1013 (the key is only known after the upgrade, so this cannot be an HTTP 429; review 50 L2) |
 | Frames waiting in the connection's outbound buffer (review 50 M2) | 4 MiB (in addition to the existing 64 frames) | the envelope takes the queue path (`directBusy`), as for a full buffer today |
@@ -172,6 +181,187 @@ stops reading pins 64 MiB until the 10 s write timeout; a few dozen such keys ex
 256–512 MB host. The byte cap above plus a relay-wide in-flight budget (`--max-inflight`,
 default 256 MiB; past it direct sends take the queue path) bound memory. The 4.0b load test
 sends **maximum-size** frames to non-reading recipients, not only idle connections.
+
+### Memory budgets and fairness (R55-F1)
+
+Review 55 found that the memory bound above is a bound, but not a fair one: whoever takes the
+budget first keeps it. R55-001 (C01-02): about 50 unfinished frames from **one** /24 hold the
+whole read budget indefinitely, and every other connection is closed 1013 on its next frame.
+R55-002 (C01-01): presence to the attacker's own slow readers is charged to `--max-inflight`
+but never refused, so all direct mail takes the queue path and every drain waits. This
+section replaces "first come, first served" with four rules: a **deadline** per frame, a
+**per-prefix share** of every budget, a **separate ephemeral budget**, and **eviction of the
+heaviest holder** instead of refusing the newcomer. It also takes in R55-034 (frames pin up to
+twice the bytes charged), R55-035 (invalid frames are parsed without being charged) and R55-144
+(`release` not deferred).
+
+#### Three budgets
+
+Every byte the relay holds for a connection is charged to exactly one of three relay-wide
+budgets, and to the connection and its prefix inside that budget:
+
+| Budget | What is charged | Size | 4.1p |
+|---|---|---|---|
+| **Outbound** (`--max-inflight`, exists) | Non-ephemeral envelopes waiting in a connection's outbound buffer, and queue-drain reservations (`drainReserve`, R-4.0 H1) | 256 MiB | 48 MiB |
+| **Read** (exists, same size as `--max-inflight`) | The buffer of the frame being read from each connection, by capacity as it grows (R-4.0 H1) | = `--max-inflight` | 48 MiB |
+| **Ephemeral** (new, `--max-inflight-ephemeral`) | Presence envelopes and relay-generated control frames waiting in outbound buffers (`queued`, `error`, `pair_*`, `bind_*`, `account_changed`) | `max(--max-inflight / 8, 1 MiB)` | 6 MiB |
+
+- **Charge what is pinned (R55-034).** A frame is charged by the memory it pins. `readFrame`
+  may leave `cap(frame)` up to twice `len(frame)`; before a frame enters an outbound buffer
+  the relay copies it into an exact-length slice when `cap > len`, so the outbound charge
+  (`len`) is the real size. (Charging `cap` instead is acceptable if the implementation
+  prefers it; either way the outbound budget must match the heap it stands for.)
+- **Every charge is refused when it does not fit.** No outbound, ephemeral or read charge
+  uses an unconditional add any more, with one exception: the `ready` frame, the first frame
+  of every connection (≈ 200 bytes, at most one per connection, bounded by `--max-conns`), is
+  charged to the ephemeral budget without a check. Frames written straight to the socket
+  before a connection is served (auth errors, `relay_full`, `rate_limited` after `auth`) are
+  not buffered and are not charged.
+- **Every charge is released on every exit path (R55-144).** The connection's release runs
+  in a `defer` placed right after admission, so a panic while routing cannot leak budget.
+  A connection that is evicted is uncharged at the moment of eviction (below), and its
+  later release must not uncharge the same bytes again.
+
+#### Shares: per key and per prefix
+
+Inside each budget no single key and no single prefix (a /24 or /48, as elsewhere in §2) can
+hold more than its share:
+
+| Budget | Per key (one connection per key) | Per prefix | 4.1p per prefix |
+|---|---|---|---|
+| Outbound | 4 MiB buffer (`--conn-buffer`, exists) + one drain reservation (2 MiB) | `share(B, 6 MiB)` | 6 MiB |
+| Read | one frame, at most `MaxFrameBytes + 1` (exists: one frame at a time) | `share(B, 2 MiB)` | 6 MiB |
+| Ephemeral | half the frame slots (32 of 64, exists) × 8 KiB, plus its own control replies | `share(B, 512 KiB)` | 768 KiB |
+
+`share(B, floor) = min(B, max(B / 8, floor))`: an eighth of the budget, never less than the
+floor (enough for one connection's normal use), never more than the budget. With a budget
+smaller than the floor (tests) the share is the whole budget. A key's old connection that is
+being replaced still counts until its charges are released.
+
+#### When a charge does not fit: evict the heaviest holder
+
+A charge of `n` bytes to budget X for connection R (the reader for the read budget, the
+recipient whose buffer the frame goes into for the other two) is refused if R's prefix
+would pass its share, or X would pass its size. Then, **once**, before the fallback:
+
+1. **Choose the prefix that pays.** If R's own prefix would pass its share, it is R's prefix.
+   Otherwise it is the prefix holding the most of X, ties broken by the prefix holding the
+   oldest charge; but if that prefix holds less of X than R's prefix would after the charge
+   (or the same, and its oldest charge is not older than R's), nobody is evicted: the
+   requester's prefix is itself the heaviest, and it pays by the fallback.
+2. **Choose the holder.** In the paying prefix, the connection H ≠ R holding the most of X,
+   ties broken by the oldest charge, that is **eligible**:
+   - read budget: H's current frame started before R's current frame;
+   - outbound and ephemeral budgets: the oldest frame waiting in H's buffer (or H's drain
+     reservation) is at least **2 s** old (`evictStale`): H is not keeping up. A reader that
+     keeps up is never evicted, however much it holds.
+   If no holder in the paying prefix is eligible, nobody is evicted.
+3. **Evict H.** Uncharge everything H holds in all three budgets at once, mark H so no later
+   path charges or uncharges it again, and close it: close 1013 "relay busy; retry later",
+   written with at most a 1 s timeout, then drop the TCP connection without waiting for the
+   peer's close reply. Log `event=limit limit=evict_read|evict_outbound|evict_ephemeral
+   prefix=<paying prefix>` (the usual once-a-minute rule).
+4. **Retry R's charge once.** If it still does not fit (another charge took the room), take
+   the fallback. There is no loop and no waiting.
+
+The **fallbacks** are today's behaviour: the read budget closes R with 1013 "relay busy;
+retry later" (R-4.0 H1); a direct envelope takes the queue path (`directBusy`); a queue drain
+waits for room, and each of its rechecks (every 50 ms, `spaceRecheck`) is a new charge that
+may evict once; presence is dropped
+silently; a control reply is dropped (OD-R55F1-4). `ready` never gets here.
+
+**What eviction costs an honest daemon.** It is reconnected by its normal backoff. Mail that
+was waiting in its outbound buffer was forwarded directly and so is not in the relay's queue:
+the sender's outbox resends it until the recipient acks ([mail.md](mail.md)), so it is delayed,
+not lost (OD-R55F1-6). An evicted reader's unfinished frame is resent the same way.
+
+**Why this does not bring back the R-4.0 H1 deadlock.** Nothing waits for another
+connection's frame. Eviction and fallback are both immediate, so an attacker holding the budget
+cannot make the relay stall; it can only make the relay close the attacker's own connections
+first, because they are the heaviest and the oldest.
+
+#### Frame read deadline
+
+A frame must be read completely within **`--frame-read-timeout` (default 30 s)** of the moment
+its header arrives (`ws.Reader` returns). Past it the connection is closed 1013 "frame too
+slow; retry later", its read charge is released, and `event=limit limit=frame_read_timeout
+peer=<short key>` is logged. It covers the whole frame, not the gap between fragments, and
+does not apply between frames (an idle connection holds no read budget). Implementation hint:
+a timer armed when `Reader` returns and stopped at EOF, which closes the connection; a
+context on `Reader` alone does not start at the first byte.
+
+At 30 s a maximum-size frame (1 MiB) needs about 35 KiB/s of upload. A daemon on a slower link
+can still send mail of normal size; a frame that repeatedly times out is reported by the daemon
+like any other 1013.
+
+#### Bytes charged at read (R55-035)
+
+Every complete frame read after `auth` is charged, before it is parsed, to its key's and
+prefix's **byte** buckets (32 MiB / min per key, 64 MiB / min per prefix, the rows above). A
+frame over either is dropped without being parsed, with `error` `rate_limited` and an empty
+`ref`. `sendAllowed` then checks only the envelope counts, so a valid envelope is not charged
+twice. Presence (at most 600 × 8 KiB ≈ 4.7 MiB a minute per key) and control frames now count
+towards the byte buckets too. The envelope-count rows are unchanged.
+
+#### Memory bound after R55-F1
+
+With `--max-conns` C and `--max-inflight` B: `B` (outbound, drain reservations inside it) +
+`B` (read) + `max(B / 8, 1 MiB)` (ephemeral) + C × `ready` (≈ 200 bytes) + C × the idle cost
+of a connection (R-4.0 M2 measured ~58 KiB with both ends in one process, so this is an upper
+estimate for the relay's side) + the process's fixed cost. At the 4.1p flags:
+
+| Part | 4.1p |
+|---|---|
+| Outbound + read + ephemeral | 48 + 48 + 6 = 102 MiB |
+| 2000 idle connections | ≈ 113 MiB |
+| `ready` frames | < 1 MiB |
+| Runtime, SQLite page cache, limit maps, queue totals (estimate) | ≈ 40 MiB |
+| **Total** | **≈ 255 MiB**, under `GOMEMLIMIT=400MiB` (≈ 145 MiB headroom for the GC) |
+
+Before R55-F1 the same flags allowed presence alone to pin ≈ 0.5 GiB at 2000 connections
+(verify C01-01) plus up to 48 MiB of uncounted backing arrays (R55-034), above
+`GOMEMLIMIT`.
+
+#### Flags for the early private relay (4.1p)
+
+`deploy/early/agentnet-relay.service` keeps `--max-conns 2000 --max-inflight 48MiB` and
+`GOMEMLIMIT=400MiB`, and adds, explicitly (they equal the defaults, but the unit should show
+every memory number):
+
+```
+    --max-inflight-ephemeral 6MiB \
+    --frame-read-timeout 30s \
+```
+
+The unit's sizing comment and `Docs/ops/early-relay-deploy.md` (its `--max-inflight` row says
+"about 96 MiB at most") change to the table above: ≈ 102 MiB of budgets, ≈ 255 MiB in total.
+Caddy needs no stream timeout for this: the relay now bounds unfinished frames itself.
+
+#### Attacks from review 55, after R55-F1
+
+Rough costs at the 4.1p flags. "Prefix" is a /24 or a /48.
+
+| Attack | Today (verify file) | After R55-F1 |
+|---|---|---|
+| **R55-001 / C01-02**, unfinished frames hold the read budget | 1 prefix, ~51 connections, 29–45 MiB uploaded once, then nothing: every honest frame closed 1013, indefinitely | **1 prefix holds at most 6 MiB**: the other 42 MiB serve everyone else, and the attacker's 7th frame evicts one of its own. To fill 48 MiB: ≥ 8 prefixes, ~48 connections, 48 MiB re-uploaded every 30 s (≈ 1.6 MiB/s, ≈ 13 Mbit/s, sustained). Even then an honest frame that finds the budget full evicts the attacker's oldest frame in its heaviest prefix instead of being closed. **No denial**; the attack costs bandwidth and reconnects (30 upgrades / min per prefix) |
+| **R55-002 / C01-01**, presence to slow readers spends the mail budget | ~4 prefixes, ~190 keys, 50–100 MiB ramp, then ~200 KiB/s each way: all direct mail queued, drains stall | **Closed at any cost:** presence cannot touch the outbound budget. Presence itself: filling the 6 MiB ephemeral budget needs ≥ 8 prefixes (768 KiB each, ~3 sinks), and each refused honest presence first evicts the stalest sink of the heaviest prefix; the attacker must reconnect and refill it (264 KiB per sink, 30 upgrades / min per prefix). Presence is best effort and repeats; mail is unaffected |
+| Same shape with **mail** to the attacker's own slow readers (found while writing this spec; read, not tested) | 1 prefix today: 12 sinks × 4 MiB of 64 KiB frames, 48 MiB in ~1.5 min within the prefix send rates, then ~77 KiB/s to keep each sink's oldest write under 10 s: direct mail queued, drains wait | 1 prefix holds at most 6 MiB. With ≥ 8 prefixes, each honest direct send or drain that finds the budget full evicts a stale sink (≥ 2 s behind) first; the attacker must refill 4 MiB per evicted sink within the 64 MiB / min per-prefix rate. **No denial** |
+| **R55-034**, frames pin up to 2 × the bytes charged | +48 MiB uncounted | 0: frames are trimmed to their length (or `cap` is charged) |
+| **R55-035**, invalid 1 MiB frames parsed uncharged | limited only by upload bandwidth | 32 parses a minute per key, 64 a minute per prefix; the rest dropped unparsed |
+
+**Residuals** (added to [What the limits do not stop](#what-the-limits-do-not-stop)):
+
+- An attacker with **many prefixes**, each holding less than one honest prefix, makes the
+  honest prefix the heaviest. Its frames are then the ones evicted. This needs about
+  `B / (one honest frame)` prefixes (≈ 48 at 4.1p for 1 MiB frames) within `--max-conns`,
+  plus the re-upload above. It hurts large honest frames (they are retried); small ones
+  (acks, presence, typical mail) come from light prefixes and evict the heavy one. IPv6 /48s
+  are cheap, so this is realistic on IPv6 (OD-R55F1-7).
+- An attacker who can send to an honest recipient faster than it downloads can make that
+  recipient's buffer stale and so eligible for outbound eviction while the budget is full.
+  The recipient reconnects; its mail comes again from the queue and from senders' outboxes.
+- One misbehaving host behind a shared NAT uses its prefix's share for everyone behind it
+  (as for the other per-prefix limits).
 
 ### Offline queue (M2)
 
@@ -232,7 +422,14 @@ together: `--behind-proxy` without `--client-ip-header` is a usage error.
   fill the victim's queue, and many keys from several prefixes can fill the relay-wide queue
   (above, OD-P4-21).
 - One misbehaving host behind a shared NAT (an office, a carrier-grade NAT) can trigger the
-  per-prefix limits for everyone behind it.
+  per-prefix limits for everyone behind it, including its prefix's share of the memory
+  budgets (R55-F1).
+- (R55-F1) An attacker with many prefixes, each holding less of a budget than one honest
+  prefix, can get the honest prefix's large frames evicted and retried (≈ 48 prefixes at the
+  4.1p flags; cheap with IPv6 /48s, OD-R55F1-7). Small frames still pass. See
+  [Residuals](#attacks-from-review-55-after-r55-f1).
+- (R55-F1) An attacker that out-sends a recipient's download speed can get that recipient
+  evicted while the outbound budget is full; it reconnects and its mail is delivered again.
 - A bound account can spend its own team's quota (its teammates' problem, visible in the
   per-team counters).
 
@@ -399,6 +596,12 @@ therefore sends a Phase 4 control frame (`bind_*`, `unbind`, `invite_redeem`,
   wss://relay.example`) is public: it refuses v1 auth and v1 pairing by default.
 - A recipient that stops reading, sent 1 MiB frames by several keys, holds at most 4 MiB in its
   buffer; the relay stays under `--max-inflight`.
+- R55-F1 (full list in [56-r55-f1-spec.md](../review/56-r55-f1-spec.md#3-acceptance-tests)):
+  unfinished frames from one prefix hold at most its share and an honest mail is still
+  delivered; a frame that never completes is closed within `--frame-read-timeout`; a presence
+  flood to non-reading recipients never raises the outbound budget and honest mail between
+  reading peers is forwarded directly; past a full budget the heaviest prefix's holder is
+  evicted, not the newcomer; the outbound charge equals the heap the frames pin.
 - A restore followed by `--replay-journal` keeps an unbind and an invite redemption made after
   the backup.
 - Each limit table row has a test that triggers it and checks the error code and that other
@@ -408,3 +611,67 @@ therefore sends a Phase 4 control frame (`bind_*`, `unbind`, `invite_redeem`,
 - Behind a proxy: a spoofed `Fly-Client-IP` from an untrusted peer is ignored.
 - Backup, restore, and the restore-drill test; kill-and-restart of the binary loses no queued
   envelope.
+
+## Open decisions (R55-F1)
+
+Each has a recommendation; the owner decides after the adversarial review.
+
+- **OD-R55F1-1: reopen R-4.0 H1 ("close the reader, never wait").** R52 H1 closed the reader
+  that asked when the read budget was spent, to avoid a deadlock; review 55 showed that hands
+  the budget to whoever took it first (R55-001).
+  (a) Past a full budget, **evict the heaviest prefix's oldest holder** (§2 Memory budgets),
+  with the frame deadline as a backstop; no waiting, so no deadlock.
+  (b) Keep closing the newcomer; add only the per-prefix share and the deadline. One prefix no
+  longer suffices, but 8 prefixes and ≈ 13 Mbit/s deny service again.
+  (c) Let the reader wait up to 1 s for room, then close it. Brings back goroutines parked on
+  an attacker's budget and still hands the budget to the first holders.
+  **Recommended: (a).** This reopens a review choice, not an owner decision (HANDOFF rule 9
+  does not apply); it is a concrete availability flaw, confirmed by test.
+- **OD-R55F1-2: frame read deadline.**
+  (a) Fixed 30 s from the frame's first byte (`--frame-read-timeout`).
+  (b) Scaled: 10 s + 1 s per 32 KiB read so far (≈ 42 s for 1 MiB, 10 s for small frames).
+  (c) Fixed 60 s.
+  **Recommended: (a).** With eviction the deadline is only a backstop; a fixed value is
+  simpler to test and explain. (b) is tighter for small frames if the review finds it matters.
+- **OD-R55F1-3: prefix share.**
+  (a) 1/8 of each budget, with the floors in §2 (6 MiB of 48 MiB at 4.1p).
+  (b) 1/4 (an attacker needs 4 prefixes; an office gets twice the room).
+  (c) 1/16 (16 prefixes; a busy office or carrier-grade NAT hits its share sooner).
+  **Recommended: (a).**
+- **OD-R55F1-4: a control reply that does not fit the ephemeral budget** (after the eviction
+  attempt). `queued`, `error`, `pair_*`, `bind_*`.
+  (a) Drop it (`ready` is exempt). The daemon's outbox resends until acked, a pairing times
+  out and is retried, and `pair_peer` to an issuer already answers `peer_busy`.
+  (b) Close the connection the reply is for with 1013 (it is the one not reading its replies).
+  (c) Keep control frames on an unconditional add and bound them per connection (64 frames).
+  At 2000 connections × 64 × ~1 KiB that is ≈ 125 MiB, too much for the 4.1p VM.
+  **Recommended: (a).** (b) is a reasonable alternative if the review finds a reply whose loss
+  confuses a daemon.
+- **OD-R55F1-5: ephemeral budget size.**
+  (a) New flag `--max-inflight-ephemeral`, default `max(--max-inflight / 8, 1 MiB)` (6 MiB at
+  4.1p), on top of the outbound budget.
+  (b) Fixed 16 MiB default, independent of `--max-inflight`.
+  (c) No new flag: carve 1/8 out of `--max-inflight` (mail keeps 7/8).
+  **Recommended: (a):** it keeps mail's budget whole and scales with the operator's sizing.
+- **OD-R55F1-6: mail in an evicted connection's outbound buffer.** It was forwarded directly,
+  so it is not in the relay's queue.
+  (a) Accept: the sender's outbox resends it until the recipient acks it (delay, not loss).
+  Documented in §2.
+  (b) Move the buffered mail back into the offline queue before closing: SQLite writes on the
+  attack path, and the queue caps may refuse them anyway.
+  (c) No outbound eviction; shares only. Then ≥ 8 prefixes of slow readers deny direct mail
+  again (the mail variant in §2).
+  **Recommended: (a).**
+- **OD-R55F1-7: IPv6 and the many-prefix residual.** /48s are cheap, so "8 prefixes" is not
+  a high bar on IPv6, and "≈ 48 prefixes" (the residual) is within reach.
+  (a) Keep /48 as the prefix and document the residual (§2 What the limits do not stop).
+  (b) Add a second share level: all /48s of one /32 together hold at most 2 × a prefix share.
+  (c) For 4.1p only: publish no AAAA record for `relay.dorylinae.net` until (b) exists.
+  **Recommended: (a) now, with (c) for 4.1p if the VM has IPv6 today; revisit (b) before the
+  public launch** (with the outside review, D41).
+- **OD-R55F1-8: charge bytes at read (R55-035).**
+  (a) Charge every frame to the key's and prefix's byte buckets before parsing; drop it
+  unparsed when over.
+  (b) Charge only frames that fail `Classify`/`ParseHeader`/`from`, after parsing them once.
+  (c) Leave R55-035 in the Low backlog.
+  **Recommended: (a):** one rule, and it bounds the parse CPU a key can cause.
