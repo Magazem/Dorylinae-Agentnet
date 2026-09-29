@@ -180,6 +180,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 12. **No admin on the owner's work PC.** Never run anything that installs services or needs
     elevation there (e.g. `agy --sandbox` raises a UAC prompt).
 13. File bugs/to-dos/decisions on the Sticky Board (`sticky-board` skill); close them when done.
+14. **Never delete through links (incident 2026-09-29).** A reviewer's `rm -rf` of a temp probe dir followed a test junction onto the owner's D: drive and deleted `D:"`, `D:\Recovery` (no recycle bin). Workers must never `rm -rf` / `Remove-Item -Recurse` / `os.RemoveAll` a directory that may contain junctions, symlinks or mount points (remove each link first with `rmdir <link>` / `os.Remove`), never point a test link at a real drive or at user folders (only at dirs under their own temp dir; prefer `t.TempDir()`), and never write outside their worktree and temp dir. Put this sentence in every brief that involves filesystem links, junctions, subst or mounts.
 
 ## 3. Owner decisions (final)
 
