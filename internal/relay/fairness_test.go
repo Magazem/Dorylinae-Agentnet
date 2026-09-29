@@ -178,7 +178,9 @@ func presenceFloodKeepsMailDirect(t *testing.T, opts relay.Options, ephBudget in
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
-	time.Sleep(200 * time.Millisecond) // let the relay route the flood
+	// The relay routes one connection's frames in order, so once mail to an
+	// offline key is answered, it has routed the whole flood.
+	expectQueued(t, e.send(ca, atk, newPeer(t).key, "sync", payload(200)), "sync")
 	if n := stopOut(); n != 0 {
 		t.Fatalf("presence reached the outbound (mail) budget: %d bytes", n)
 	}
@@ -259,6 +261,8 @@ func TestLimitUnfinishedFramesPrefixShare(t *testing.T) {
 	waitDrained(t, e.s, other.key)
 
 	held := func() int64 { return e.s.ReadingFor("10.1.0.0/24") }
+	full := bufCap(1<<20 - 1)
+	k := int(share / full) // whole frames the share holds
 	stop := watchMax(held)
 	for n := range 24 {
 		a := newPeer(t)
@@ -266,7 +270,10 @@ func TestLimitUnfinishedFramesPrefixShare(t *testing.T) {
 		// Just under a whole frame: charges the full ~1 MiB buffer. An
 		// evicted attacker's write may fail; that is tolerated.
 		startFrameAsync(t, ca, payload(1<<20-1))
-		time.Sleep(30 * time.Millisecond)
+		// Until the share is reached, each frame lands whole; past it the
+		// prefix keeps k frames, the oldest paying for the newest.
+		want := int64(min(n+1, k)) * full
+		waitUntil(t, wait, "the prefix to hold its frames", func() bool { return held() >= want })
 		if got := held(); got > share {
 			t.Fatalf("after attacker %d the prefix holds %d bytes of the read budget, share %d", n, got, share)
 		}
@@ -290,9 +297,11 @@ func TestLimitUnfinishedFramesPrefixShare(t *testing.T) {
 // New tests.
 
 // Acceptance test 5: a frame must be read completely within
-// --frame-read-timeout of its first byte; a slow but steady one passes.
+// --frame-read-timeout of its first byte; a slow but steady one passes. The
+// timeout is 1 s, so that the slow frame's 200 ms keep a wide margin under
+// the race detector on a slow runner.
 func TestLimitFrameReadDeadline(t *testing.T) {
-	e := newLimitEnv(t, relay.Options{FrameReadTimeout: 300 * time.Millisecond})
+	e := newLimitEnv(t, relay.Options{FrameReadTimeout: time.Second})
 	a, b, r := newPeer(t), newPeer(t), newPeer(t)
 	ca := e.authed(a, "10.1.0.1")
 	cb := e.authed(b, "10.2.0.1")
@@ -303,8 +312,8 @@ func TestLimitFrameReadDeadline(t *testing.T) {
 	start := time.Now()
 	startFrame(t, ca, payload(5000)) // never finished
 	expectClose(t, ca, websocket.StatusTryAgainLater)
-	if el := time.Since(start); el > time.Second {
-		t.Fatalf("closed after %v, want within 1 s", el)
+	if el := time.Since(start); el > 3*time.Second {
+		t.Fatalf("closed after %v, want within 3 s", el)
 	}
 	waitUntil(t, time.Second, "the timed-out frame to be uncharged", func() bool { return e.s.Reading() == 0 })
 	e.logged("frame_read_timeout", "peer="+a.key[:8])
@@ -439,17 +448,47 @@ func TestLimitReadEvictionOwnPrefixPays(t *testing.T) {
 	e2.logged("max_inflight_read", "relay=all")
 }
 
+// fillWait bounds a fill loop: generous, for the race detector on a slow
+// runner.
+const fillWait = 30 * time.Second
+
+// quiet waits until every peer's first queue drain has ended and no drain
+// reservation is left: a reservation (2 MiB) landing during a fill takes
+// room the fill is counting on.
+func quiet(t *testing.T, e *limitEnv, ps ...peer) {
+	t.Helper()
+	for _, p := range ps {
+		waitDrained(t, e.s, p.key)
+	}
+	waitUntil(t, wait, "no drain reservation left", func() bool { return e.s.Inflight() == 0 })
+}
+
 // fillOutbound sends mail from senders to the non-reading sinks until the
-// outbound budget cannot take another frame, even once the sinks' socket
-// buffers are full, and returns the frame size.
+// outbound budget can take no more of it, and returns the frame size: until
+// it cannot take another frame, or every sink is receiving a backlog (mail
+// to it takes the queue path, and its drain charges 2 MiB at a time, which
+// may not fit). Both are checked once the ledger has settled. The env must
+// come from newSmallSocketEnv, so that the sinks' kernel buffers do not
+// swallow megabytes, and the connections must be quiet.
 func fillOutbound(t *testing.T, e *limitEnv, senders []peer, conns []*websocket.Conn, sinks []peer, body []byte, budget int64) int64 {
 	t.Helper()
 	var size int64
-	deadline := time.Now().Add(8 * time.Second)
+	full := func() bool {
+		if e.s.Inflight()+size > budget {
+			return true
+		}
+		for _, s := range sinks {
+			if !e.s.Draining(s.key) {
+				return false
+			}
+		}
+		return true
+	}
+	deadline := time.Now().Add(fillWait)
 	for i := 0; ; i++ {
-		if size > 0 && e.s.Inflight()+size > budget {
+		if size > 0 && full() {
 			settle(t, e.s.Inflight)
-			if e.s.Inflight()+size > budget {
+			if full() {
 				return size
 			}
 		}
@@ -486,25 +525,19 @@ func settle(t *testing.T, f func() int64) {
 // stalest sink of the heaviest prefix instead of taking the queue path.
 func TestLimitOutboundEvictsStaleSink(t *testing.T) {
 	const budget = 1 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	h1, h2 := newPeer(t), newPeer(t)
 	ch1 := e.authed(h1, "10.9.0.1")
 	ch2 := e.authed(h2, "10.9.0.2")
-	waitDrained(t, e.s, h1.key)
-	waitDrained(t, e.s, h2.key)
 	var sinks []peer
 	for i := range 8 { // 8 prefixes, never read
 		r := newPeer(t)
 		e.authed(r, fmt.Sprintf("10.1.%d.1", i+1))
-		waitDrained(t, e.s, r.key)
 		sinks = append(sinks, r)
 	}
 	senders := []peer{newPeer(t), newPeer(t)}
 	conns := []*websocket.Conn{e.authed(senders[0], "10.8.0.1"), e.authed(senders[1], "10.7.0.1")}
-	for _, s := range senders {
-		waitDrained(t, e.s, s.key)
-	}
-	waitUntil(t, wait, "no drain reservation left", func() bool { return e.s.Inflight() == 0 })
+	quiet(t, e, append(append([]peer{h1, h2}, sinks...), senders...)...)
 	stop := watchMax(e.s.Inflight)
 	fillOutbound(t, e, senders, conns, sinks, payload(48_000), budget)
 	e.s.ChargeInflight(budget - e.s.Inflight()) // exactly full; this rest is nobody's
@@ -546,22 +579,30 @@ func TestLimitOutboundEvictsStaleSink(t *testing.T) {
 // sink holds up to its 4 MiB buffer.
 func TestLimitOutboundFallbackThenDrainEvicts(t *testing.T) {
 	const budget = 16 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	h1, h2 := newPeer(t), newPeer(t)
 	ch1 := e.authed(h1, "10.9.0.1")
 	ch2 := e.authed(h2, "10.9.0.2")
-	waitDrained(t, e.s, h2.key)
 	var sinks []peer
 	for i := range 5 {
 		r := newPeer(t)
 		e.authed(r, fmt.Sprintf("10.1.%d.1", i+1))
-		waitDrained(t, e.s, r.key)
 		sinks = append(sinks, r)
 	}
 	senders := []peer{newPeer(t), newPeer(t), newPeer(t)}
 	conns := []*websocket.Conn{e.authed(senders[0], "10.8.0.1"), e.authed(senders[1], "10.7.0.1"), e.authed(senders[2], "10.6.0.1")}
+	quiet(t, e, append(append([]peer{h1, h2}, sinks...), senders...)...)
 	fillOutbound(t, e, senders, conns, sinks, payload(500_000), budget)
 	e.s.ChargeInflight(budget - e.s.Inflight()) // exactly full; this rest is nobody's
+	// h2's drain reservation (2 MiB) can be paid for only by a sink
+	// holding at least that much.
+	heaviest := int64(0)
+	for i := range sinks {
+		heaviest = max(heaviest, e.s.InflightFor(fmt.Sprintf("10.1.%d.0", i+1)))
+	}
+	if heaviest < 2<<20 {
+		t.Fatalf("the heaviest sink holds %d bytes; a drain reservation is 2 MiB", heaviest)
+	}
 
 	expectQueued(t, e.send(ch1, h1, h2.key, "honest-1", payload(200)), "honest-1")
 	time.Sleep(300 * time.Millisecond) // the drain rechecks, but nobody is stale yet
@@ -579,17 +620,18 @@ func TestLimitOutboundFallbackThenDrainEvicts(t *testing.T) {
 // the prefix's share of the outbound budget; past it mail to them is queued.
 func TestLimitOutboundPrefixShare(t *testing.T) {
 	const budget, share = 16 << 20, 6 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	// Small socket buffers: the sinks' kernel buffers must not swallow
+	// the frames that are to fill the share.
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	var sinks []peer
 	for i := range 3 {
 		r := newPeer(t)
 		e.authed(r, fmt.Sprintf("10.1.0.%d", i+2))
-		waitDrained(t, e.s, r.key)
 		sinks = append(sinks, r)
 	}
 	senders := []peer{newPeer(t), newPeer(t)}
 	conns := []*websocket.Conn{e.authed(senders[0], "10.8.0.1"), e.authed(senders[1], "10.7.0.1")}
-	waitUntil(t, wait, "no drain reservation left", func() bool { return e.s.Inflight() == 0 })
+	quiet(t, e, append(sinks, senders...)...)
 	stop := watchMax(func() int64 { return e.s.InflightFor("10.1.0.0/24") })
 	queued := func() bool {
 		for _, s := range sinks {
@@ -678,7 +720,7 @@ func TestLimitEphemeralEvictionAndControlFrames(t *testing.T) {
 	// Presence to the sinks, which never read, until the ephemeral budget
 	// cannot take another frame even once their socket buffers are full.
 	body := payload(5500)
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(fillWait)
 	for i, size := 0, int64(0); ; i++ {
 		if size > 0 && e.s.EphemeralInflight()+size > eph {
 			settle(t, e.s.EphemeralInflight)
@@ -835,7 +877,9 @@ func TestLimitCrossPrefixReadEvictionIgnoresAge(t *testing.T) {
 // while it keeps up (5 s < 2 s + its holding ÷ 512 KiB/s), only later.
 func TestLimitHonestDrainNotEvicted(t *testing.T) {
 	const budget = 8 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	// Small socket buffers: r's kernel buffers must not keep taking its
+	// backlog after its buffer is measured below.
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	r := newPeer(t)
 	s1, s2 := newPeer(t), newPeer(t)
 	c1, c2 := e.authed(s1, "10.8.0.1"), e.authed(s2, "10.7.0.1")
@@ -849,14 +893,8 @@ func TestLimitHonestDrainNotEvicted(t *testing.T) {
 		}
 	}
 	e.authed(r, "10.1.0.1") // connects, reads nothing: its drain fills its buffer
-	var last int64
-	waitUntil(t, wait, "r's buffer to fill", func() bool {
-		n := e.s.InflightFor("10.1.0.0")
-		full := n > 2<<20 && n == last
-		last = n
-		time.Sleep(50 * time.Millisecond)
-		return full
-	})
+	waitUntil(t, wait, "r's buffer to fill", func() bool { return e.s.InflightFor("10.1.0.0") > 2<<20 })
+	settle(t, func() int64 { return e.s.InflightFor("10.1.0.0") })
 	held := e.s.InflightFor("10.1.0.0")
 	e.s.ChargeInflight(budget - e.s.Inflight()) // the rest of the budget: nobody's
 	h, h3, h4 := newPeer(t), newPeer(t), newPeer(t)
@@ -896,14 +934,13 @@ func TestLimitHonestDrainNotEvicted(t *testing.T) {
 // once, not after the close handshake.
 func TestLimitEvictionNeverBlocks(t *testing.T) {
 	const budget = 1 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	h1, h2, sink, s := newPeer(t), newPeer(t), newPeer(t), newPeer(t)
 	ch1 := e.authed(h1, "10.9.0.1")
 	ch2 := e.authed(h2, "10.9.0.2")
-	waitDrained(t, e.s, h2.key)
 	e.authed(sink, "10.1.0.1") // never reads, so never answers a close
-	waitDrained(t, e.s, sink.key)
 	cs := e.authed(s, "10.8.0.1")
+	quiet(t, e, h1, h2, sink, s)
 	fillOutbound(t, e, []peer{s}, []*websocket.Conn{cs}, []peer{sink}, payload(48_000), budget)
 	e.s.ChargeInflight(budget - e.s.Inflight())
 	e.clock.Advance(30 * time.Second)
@@ -913,7 +950,9 @@ func TestLimitEvictionNeverBlocks(t *testing.T) {
 	if id := readEnvID(t, ch2, wait); id != "fast-1" {
 		t.Fatalf("got %q", id)
 	}
-	if el := time.Since(start); el > 100*time.Millisecond {
+	// Blocking would wait out the close handshake (evictCloseWait, 1 s);
+	// the bound leaves the race detector room below that.
+	if el := time.Since(start); el > 500*time.Millisecond {
 		t.Fatalf("the send that evicted took %v", el)
 	}
 	e.logged("evict_outbound", "prefix=10.1.0.0")
@@ -923,11 +962,15 @@ func TestLimitEvictionNeverBlocks(t *testing.T) {
 	e2 := newLimitEnv(t, relay.Options{FrameReadTimeout: 300 * time.Millisecond})
 	a := newPeer(t)
 	ca := e2.authed(a, "10.1.0.1")
-	start = time.Now()
 	startFrame(t, ca, payload(5000)) // never finished; ca never reads either
+	// Timed from here, not before the write: a slow write must not eat
+	// the margin. The timer may have started a little earlier.
+	start = time.Now()
 	waitUntil(t, wait, "the frame to be charged", func() bool { return e2.s.Reading() > 0 })
-	waitUntil(t, time.Second, "the timed-out frame to be uncharged", func() bool { return e2.s.Reading() == 0 })
-	if el := time.Since(start); el > 600*time.Millisecond {
+	waitUntil(t, 2*time.Second, "the timed-out frame to be uncharged", func() bool { return e2.s.Reading() == 0 })
+	// After the close handshake (1 s, as ca never answers) it would be
+	// past 1.3 s.
+	if el := time.Since(start); el > 800*time.Millisecond {
 		t.Fatalf("uncharged after %v; the timer fires at 300 ms", el)
 	}
 }

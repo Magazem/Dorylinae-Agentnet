@@ -546,7 +546,10 @@ func TestLimitNonReadingRecipientHoldsAtMost4MiB(t *testing.T) {
 // --max-inflight: past the relay-wide budget, direct sends take the queue path.
 func TestLimitMaxInflightRelayWide(t *testing.T) {
 	const budget = 3 << 20
-	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	// Small socket buffers: the recipients' kernel buffers must not swallow
+	// the frames that are to fill the budget (loopback autotuning allows
+	// megabytes on Linux and macOS).
+	e := newSmallSocketEnv(t, relay.Options{MaxInflight: budget})
 	var maxSeen atomic.Int64
 	stop := make(chan struct{})
 	watched := make(chan struct{})
@@ -580,7 +583,8 @@ func TestLimitMaxInflightRelayWide(t *testing.T) {
 			}
 		}
 	}
-	time.Sleep(500 * time.Millisecond)
+	waitUntil(t, wait, "the budget to send mail down the queue path", func() bool { return e.count("max_inflight", "relay=all") > 0 })
+	settle(t, e.s.Inflight)
 	close(stop)
 	<-watched
 	// Control frames are charged to the ephemeral budget (R55-F1), so the
