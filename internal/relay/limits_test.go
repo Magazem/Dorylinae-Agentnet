@@ -571,13 +571,32 @@ func TestLimitMaxInflightRelayWide(t *testing.T) {
 		waitDrained(t, e.s, r.key)
 		rs = append(rs, r)
 	}
+	// Frames being read share a budget of the same size (R55-F1). While
+	// routing is slow (-race), several senders' ~1 MiB frames are read at
+	// once and do not fit: the relay evicts one (1013), which may be the
+	// sender being written. That sender stops; the next one goes on.
+	evicted := false
 	for i := range 3 {
 		s := newPeer(t)
 		cs := e.authed(s, fmt.Sprintf("10.0.%d.1", i+1))
+	send:
 		for j, r := range rs {
 			for k := range 3 {
-				writeFrame(t, cs, []byte(mustJSON(s.env(r.key, fmt.Sprintf("s%d-%d-%d", i, j, k), big))))
+				frame := []byte(mustJSON(s.env(r.key, fmt.Sprintf("s%d-%d-%d", i, j, k), big)))
+				if err := cs.Write(ctx(t), websocket.MessageText, frame); err != nil {
+					evicted = true
+					break send
+				}
 			}
+		}
+	}
+	if evicted {
+		deadline := time.Now().Add(wait)
+		for e.count("evict_read", "")+e.count("max_inflight_read", "") == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("a sender was closed, but not for the read budget")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 	time.Sleep(500 * time.Millisecond)
