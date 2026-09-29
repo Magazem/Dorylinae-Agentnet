@@ -36,7 +36,8 @@ const (
 
 	// evictStaleBase and evictMinRate: an outbound or ephemeral holder is
 	// eligible for eviction once the oldest frame in its buffer has waited
-	// evictStaleBase + held ÷ evictMinRate (OD-R55F1-9).
+	// evictStaleBase + held ÷ evictMinRate, held being all it holds of both
+	// (OD-R55F1-9, review 63 S-1).
 	evictStaleBase = 2 * time.Second
 	evictMinRate   = 512 << 10 // bytes a second
 
@@ -315,17 +316,35 @@ func (l *ledger) pick(r *conn, k budgetKind, n int64, over bool) (*conn, string)
 	}
 	pay, payName := rp, r.prefix
 	if !over {
-		// The prefix holding the most of k, ties to the oldest charge.
+		// The prefix holding the most of k, ties to the oldest charge. The
+		// age of a prefix is a walk of its holders, so it is taken only on
+		// a tie (review 63 S-4: pick runs under mu on every refused charge).
 		var best *prefixUse
 		var bestAge time.Time
+		aged := false
 		for name, p := range b.prefixes {
-			a := p.oldest(k)
-			if best == nil || p.used > best.used || (p.used == best.used && older(a, bestAge)) {
-				best, bestAge, payName = p, a, name
+			switch {
+			case best == nil || p.used > best.used:
+				best, payName, aged = p, name, false
+			case p.used == best.used:
+				if !aged {
+					bestAge, aged = best.oldest(k), true
+				}
+				if a := p.oldest(k); older(a, bestAge) {
+					best, bestAge, payName = p, a, name
+				}
 			}
 		}
-		if best == nil || best == rp || best.used < rUsed+n || (best.used == rUsed+n && !older(bestAge, rAge)) {
+		if best == nil || best == rp || best.used < rUsed+n {
 			return nil, "" // r's own prefix is the heaviest: it pays by the fallback
+		}
+		if best.used == rUsed+n {
+			if !aged {
+				bestAge = best.oldest(k)
+			}
+			if !older(bestAge, rAge) {
+				return nil, ""
+			}
 		}
 		pay = best
 	}
@@ -353,12 +372,15 @@ func (l *ledger) eligible(c, r *conn, k budgetKind, ownPrefix bool, now time.Tim
 		// frames (review 56a A2); inside r's prefix only an older frame does.
 		return !ownPrefix || c.readStart.Before(r.readStart)
 	}
-	// Outbound and ephemeral: only a holder that is not keeping up. The
-	// drain reservation adds to what it holds, but its own age does not count.
+	// Outbound and ephemeral: only a holder that is not keeping up. Its
+	// oldest frame waits behind everything in its buffer, mail and presence
+	// alike (one FIFO), so the allowance counts both budgets whichever pays
+	// (review 63 S-1). The drain reservation adds to what it holds, but its
+	// own age does not count.
 	if len(c.queue) == 0 {
 		return false
 	}
-	return now.Sub(c.queue[0].at) >= evictStale(c.hold[k])
+	return now.Sub(c.queue[0].at) >= evictStale(c.hold[kindOutbound]+c.hold[kindEphemeral])
 }
 
 // oldest is the time of the oldest charge of k in p. Callers hold mu.

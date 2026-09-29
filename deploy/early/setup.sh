@@ -57,7 +57,7 @@ EOF
 systemctl enable fail2ban
 systemctl restart fail2ban
 
-step "Firewall: 22/tcp and 443/tcp in, nothing else"
+step "Firewall: 22/tcp and 443/tcp (IPv4 only) in, nothing else"
 ufw default deny incoming
 ufw default allow outgoing
 if [ -n "${SSH_ALLOW_FROM:-}" ]; then
@@ -67,7 +67,12 @@ if [ -n "${SSH_ALLOW_FROM:-}" ]; then
 else
 	ufw allow 22/tcp
 fi
-ufw allow 443/tcp
+# 443 over IPv4 only (OD-R55F1-7 (c)): a /48 counts as one client in the relay's
+# shares, and /48s are cheap. With ufw's default IPV6=yes, "deny incoming" then drops
+# IPv6 443; do not set IPV6=no, which would leave IPv6 unfiltered instead.
+ufw allow proto tcp from 0.0.0.0/0 to any port 443
+# Drop the IPv4-and-IPv6 rule for 443 left by an earlier run.
+ufw delete allow 443/tcp >/dev/null 2>&1 || true
 ufw --force enable
 ufw status verbose
 

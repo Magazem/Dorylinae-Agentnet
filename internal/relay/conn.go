@@ -183,8 +183,13 @@ func (c *conn) tryPush(frame []byte, k budgetKind, force bool) (ok, refused, ove
 	return true, false, false
 }
 
-// spaceRecheck is how often a waiting queue drain rechecks the relay-wide budget.
-const spaceRecheck = 50 * time.Millisecond
+// spaceRecheck is how often a waiting queue drain rechecks the relay-wide
+// budget; drainEvictEvery is how often at most one of its rechecks may look
+// for a holder to evict (review 63 S-4: the scan runs under the ledger lock).
+const (
+	spaceRecheck    = 50 * time.Millisecond
+	drainEvictEvery = 250 * time.Millisecond
+)
 
 // reserve charges n bytes to the outbound budget for a queue batch before it
 // is read from the database, so frames loaded but not yet in out are counted
@@ -192,6 +197,7 @@ const spaceRecheck = 50 * time.Millisecond
 // the budget is spent, unless wait is false; each try is a new charge that
 // may evict once (R55-F1). False means no reservation was made.
 func (c *conn) reserve(ctx context.Context, n int64, wait bool) bool {
+	var lastEvict time.Time
 	for {
 		ok, refused, over, dead := c.tryReserve(n)
 		if ok {
@@ -200,9 +206,12 @@ func (c *conn) reserve(ctx context.Context, n int64, wait bool) bool {
 		if dead {
 			return false
 		}
-		if refused && c.led.evictFor(c, kindOutbound, n, over) {
-			if ok, _, _, _ = c.tryReserve(n); ok {
-				return true
+		if refused && time.Since(lastEvict) >= drainEvictEvery {
+			lastEvict = time.Now()
+			if c.led.evictFor(c, kindOutbound, n, over) {
+				if ok, _, _, _ = c.tryReserve(n); ok {
+					return true
+				}
 			}
 		}
 		if !wait {

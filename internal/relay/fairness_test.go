@@ -5,7 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -603,10 +607,57 @@ func TestLimitOutboundPrefixShare(t *testing.T) {
 	e.logged("max_inflight_prefix", "prefix=10.1.0.0")
 }
 
+// smallSocket is the socket buffer size asked for at both ends of every
+// connection of newSmallSocketEnv (the kernel may round it up).
+const smallSocket = 4 << 10
+
+// shrinkSocket makes c's kernel buffers small, so a peer that never reads
+// stalls the relay's write loop after a few KiB instead of after the
+// megabytes loopback autotuning allows on Linux and macOS (review 63 S-3).
+func shrinkSocket(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetReadBuffer(smallSocket)
+		_ = tc.SetWriteBuffer(smallSocket)
+	}
+}
+
+type shrinkListener struct{ net.Listener }
+
+func (l shrinkListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		shrinkSocket(c)
+	}
+	return c, err
+}
+
+// newSmallSocketEnv is newLimitEnv with small socket buffers on both the
+// relay's and the clients' side of every connection.
+func newSmallSocketEnv(t *testing.T, opts relay.Options) *limitEnv {
+	t.Helper()
+	e := newLimitEnvWith(t, opts, func(s *relay.Server) string {
+		ts := httptest.NewUnstartedServer(s)
+		ts.Listener = shrinkListener{ts.Listener}
+		ts.Start()
+		t.Cleanup(ts.Close)
+		return "ws" + strings.TrimPrefix(ts.URL, "http") + envelope.ConnectPath
+	})
+	e.client = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err == nil {
+				shrinkSocket(c)
+			}
+			return c, err
+		},
+	}}
+	return e
+}
+
 // Acceptance test 11: ephemeral eviction and control frames.
 func TestLimitEphemeralEvictionAndControlFrames(t *testing.T) {
 	const eph = 128 << 10
-	e := newLimitEnv(t, relay.Options{MaxInflightEphemeral: eph, EphemeralPerMinute: 1 << 20})
+	e := newSmallSocketEnv(t, relay.Options{MaxInflightEphemeral: eph, EphemeralPerMinute: 1 << 20})
 	h1, h2, h3 := newPeer(t), newPeer(t), newPeer(t)
 	ch1 := e.authed(h1, "10.9.0.1")
 	ch2 := e.authed(h2, "10.9.0.2")
@@ -619,32 +670,62 @@ func TestLimitEphemeralEvictionAndControlFrames(t *testing.T) {
 		e.authed(r, fmt.Sprintf("10.1.0.%d", i+2))
 		sinks = append(sinks, r)
 	}
+	// Presence to the sinks, which never read, until the ephemeral budget
+	// cannot take another frame even once their socket buffers are full.
 	body := payload(5500)
-	for i := range 4 * 40 {
-		writeFrame(t, ca, presence(atk, sinks[i%len(sinks)].key, fmt.Sprintf("p%d", i), body))
+	deadline := time.Now().Add(8 * time.Second)
+	for i, size := 0, int64(0); ; i++ {
+		if size > 0 && e.s.EphemeralInflight()+size > eph {
+			settle(t, e.s.EphemeralInflight)
+			if e.s.EphemeralInflight()+size > eph {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ephemeral budget did not fill: %d of %d", e.s.EphemeralInflight(), eph)
+		}
+		frame := presence(atk, sinks[i%len(sinks)].key, fmt.Sprintf("p%d", i), body)
+		size = int64(len(frame))
+		writeFrame(t, ca, frame)
+		time.Sleep(time.Millisecond)
 	}
-	waitUntil(t, wait, "the sinks to hold presence", func() bool { return e.s.EphemeralFor("10.1.0.0") > 32<<10 })
-	time.Sleep(100 * time.Millisecond)
+	if n := e.s.EphemeralFor("10.1.0.0"); n < eph/2 {
+		t.Fatalf("the sinks hold %d bytes of the %d-byte ephemeral budget", n, eph)
+	}
 	// Top the budget up, so that it is exactly full.
 	e.s.ChargeEphemeral(eph - e.s.EphemeralInflight())
 
 	// No holder is stale: a queued reply that does not fit is dropped and
-	// counted in the log (OD-R55F1-4 (a)).
+	// counted in the log (OD-R55F1-4 (a)). The fill may have logged drops
+	// too, so the reply's drop is the count going up.
+	before := e.count("max_inflight_ephemeral", "relay=all")
 	offline := newPeer(t)
 	writeFrame(t, ch3, []byte(mustJSON(h3.env(offline.key, "q-1", payload(200)))))
 	waitUntil(t, wait, "the mail to be queued", func() bool { n, _ := e.s.Queued(offline.key); return n == 1 })
+	waitUntil(t, wait, "the dropped reply to be logged", func() bool { return e.count("max_inflight_ephemeral", "relay=all") > before })
 	noFrameWithin(t, ch3, 300*time.Millisecond)
 	e.logged("max_inflight_ephemeral", "relay=all")
+	if n := e.count("evict_ephemeral", ""); n != 0 {
+		t.Fatalf("%d evictions before any sink was stale", n)
+	}
 	// A new connection still gets ready.
 	e.authed(newPeer(t), "10.9.0.9")
 
 	// Once the sinks are stale, presence between two reading peers evicts one.
-	e.clock.Advance(5 * time.Second)
+	e.clock.Advance(5 * time.Second) // past 2 s + 128 KiB ÷ 512 KiB/s
 	writeFrame(t, ch1, presence(h1, h2.key, "pres-1", payload(200)))
 	if id := readEnvID(t, ch2, wait); id != "pres-1" {
 		t.Fatalf("got %q", id)
 	}
 	e.logged("evict_ephemeral", "prefix=10.1.0.0")
+	waitUntil(t, 2*time.Second, "a sink to be evicted", func() bool {
+		for _, s := range sinks {
+			if !e.s.Connected(s.key) {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // Acceptance test 13 (R55-035): bytes are charged when a frame is read,
@@ -778,12 +859,21 @@ func TestLimitHonestDrainNotEvicted(t *testing.T) {
 	ch3 := e.authed(h3, "10.3.0.1") // its drain cannot reserve room: mail to it is queued either way
 
 	e.clock.Advance(5 * time.Second) // 5 s < 2 s + held ÷ 512 KiB/s
+	// The requester is h3's queue drain: it finds the budget full and, on
+	// its rechecks, looks for a holder to evict. (Mail to h3 is queued
+	// either way while it drains.) Several rechecks pass, and r keeps what
+	// it holds: an eviction would uncharge it at once, before r's socket
+	// is closed.
 	expectQueued(t, e.send(ch, h, h3.key, "q-1", payload(200)), "q-1")
+	time.Sleep(time.Second)
+	if n := e.s.InflightFor("10.1.0.0"); n != held {
+		t.Fatalf("the honest drain held %d bytes and now %d: it was evicted", held, n)
+	}
+	if n := e.count("evict_outbound", ""); n != 0 {
+		t.Fatalf("%d evictions while the honest drain kept up", n)
+	}
 	_ = ch3.CloseNow() // its drain would compete for room below
 	waitConnected(t, e.s, h3.key, false)
-	if !e.s.Connected(r.key) {
-		t.Fatalf("the honest drain (holding %d bytes) was evicted", held)
-	}
 
 	e.clock.Advance(10 * time.Second) // 15 s: past 2 s + 6 MiB ÷ 512 KiB/s
 	ch4 := e.authed(h4, "10.4.0.1")

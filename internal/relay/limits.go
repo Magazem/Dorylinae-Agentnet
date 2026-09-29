@@ -423,13 +423,16 @@ func (b *bucketSet) has(key string, now time.Time, cost float64) bool {
 	return b.refill(key, now).tokens >= cost
 }
 
-// spend removes cost tokens from key's bucket even past empty: the debt is
-// repaid by the refill before the bucket admits anything that checks it.
+// spend removes cost tokens from key's bucket, or empties it if it holds
+// fewer. There is no debt: frames that are charged but never refused (acks)
+// would otherwise lock a whole prefix out for as long as they flooded it
+// (review 63 S-5).
 func (b *bucketSet) spend(key string, now time.Time, cost float64) {
 	if b.rate <= 0 {
 		return
 	}
-	b.refill(key, now).tokens -= cost
+	tb := b.refill(key, now)
+	tb.tokens = max(0, tb.tokens-cost)
 }
 
 // take removes cost tokens from key's bucket if it holds them.

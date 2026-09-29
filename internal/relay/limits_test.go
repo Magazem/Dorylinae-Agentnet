@@ -37,12 +37,21 @@ type limitEnv struct {
 	url   string
 	logs  *syncBuffer
 	clock *fakeClock
+	// client dials the relay; nil is the default client.
+	client *http.Client
 }
 
 // newLimitEnv starts a public relay that trusts 127.0.0.1's limIPHeader, so
 // a test can connect from any client prefix. Unset options keep the spec
 // defaults.
 func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
+	t.Helper()
+	return newLimitEnvWith(t, opts, nil)
+}
+
+// newLimitEnvWith is newLimitEnv serving the relay with serve, which
+// returns its URL; nil serves it as start does.
+func newLimitEnvWith(t *testing.T, opts relay.Options, serve func(*relay.Server) string) *limitEnv {
 	t.Helper()
 	e := &limitEnv{t: t, logs: &syncBuffer{}, clock: newClock()}
 	opts.Public = true
@@ -57,7 +66,13 @@ func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
 		opts.Now = e.clock.Now
 	}
 	opts.Logger = slog.New(slog.NewTextHandler(e.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	e.s, e.url = start(t, opts)
+	if serve == nil {
+		e.s, e.url = start(t, opts)
+		return e
+	}
+	e.s = relay.New(opts)
+	t.Cleanup(e.s.Close)
+	e.url = serve(e.s)
 	return e
 }
 
@@ -65,7 +80,7 @@ func newLimitEnv(t *testing.T, opts relay.Options) *limitEnv {
 // and the HTTP status when the relay refuses the upgrade.
 func (e *limitEnv) dialHeader(h http.Header) (*websocket.Conn, int) {
 	e.t.Helper()
-	c, resp, err := websocket.Dial(ctx(e.t), e.url, &websocket.DialOptions{HTTPHeader: h}) //nolint:bodyclose // closed below when present
+	c, resp, err := websocket.Dial(ctx(e.t), e.url, &websocket.DialOptions{HTTPHeader: h, HTTPClient: e.client}) //nolint:bodyclose // closed below when present
 	if err != nil {
 		if resp == nil {
 			e.t.Fatalf("dial: %v", err)
@@ -120,6 +135,17 @@ func (e *limitEnv) send(c *websocket.Conn, p peer, to, id string, payload []byte
 	e.t.Helper()
 	writeFrame(e.t, c, []byte(mustJSON(p.env(to, id, payload))))
 	return readControl(e.t, c)
+}
+
+// count reports how many event=limit lines for limit name subject.
+func (e *limitEnv) count(limit, subject string) int {
+	n := 0
+	for _, line := range strings.Split(e.logs.String(), "\n") {
+		if strings.Contains(line, "event=limit") && strings.Contains(line, "limit="+limit+" ") && strings.Contains(line, subject) {
+			n++
+		}
+	}
+	return n
 }
 
 // logged asserts an event=limit line for limit naming subject exists, and

@@ -187,3 +187,47 @@ func TestEvictionDoesNotDoubleUncharge(t *testing.T) {
 		t.Fatalf("budgets %v after every connection ended, want 0", u)
 	}
 }
+
+// Review 63 S-1: an honest recipient draining a mail backlog is not made
+// eligible by the few KiB of presence it also holds. Its oldest frame waits
+// behind the whole backlog, so an ephemeral charge 5 s later does not evict
+// it (5 s < 2 s + 4.2 MiB ÷ 512 KiB/s); only once past that allowance.
+func TestEphemeralEvictionCountsQueuedMail(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := newLedger(64<<20, 64<<20, 1<<20, func() time.Time { return now })
+	drainer := newConn(nil, testKey(t), 64, "10.1.0.0")
+	requester := newConn(nil, testKey(t), 64, "10.2.0.0")
+	for range 8 { // a 4 MiB backlog, then 200 KiB of presence behind it
+		if ok, _ := l.charge(drainer, kindOutbound, 512<<10, false, true); !ok {
+			t.Fatal("mail refused")
+		}
+	}
+	for range 25 {
+		if ok, _ := l.charge(drainer, kindEphemeral, 8<<10, false, true); !ok {
+			t.Fatal("presence refused")
+		}
+	}
+	l.addUnowned(kindEphemeral, 1<<20-l.used(kindEphemeral)) // the rest of the budget: nobody's
+
+	now = now.Add(5 * time.Second) // past 2 s + 200 KiB ÷ 512 KiB/s, not past the backlog
+	if h, _ := l.pick(requester, kindEphemeral, 200, false); h != nil {
+		t.Fatal("an ephemeral charge evicted the honest drainer of a 4 MiB backlog")
+	}
+	now = now.Add(6 * time.Second) // 11 s: past 2 s + 4.2 MiB ÷ 512 KiB/s
+	if h, prefix := l.pick(requester, kindEphemeral, 200, false); h != drainer || prefix != "10.1.0.0" {
+		t.Fatalf("pick = %v, %q; want the drainer, which no longer keeps up", h, prefix)
+	}
+}
+
+// Review 63 S-5: frames charged but never refused do not drive a byte
+// bucket into debt that would lock the prefix out after they stop.
+func TestByteBucketHasNoDebt(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	b := newBucketSet(1000, 1000) // 1000 a second
+	for range 100 {
+		b.spend("10.1.0.0", now, 1000) // a flood 100 × the burst
+	}
+	if !b.has("10.1.0.0", now.Add(time.Second), 1000) {
+		t.Fatal("a second after the flood the bucket is still empty: it carried a debt")
+	}
+}

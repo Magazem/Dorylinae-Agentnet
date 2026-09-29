@@ -8,6 +8,9 @@
 #
 # Caddy ignores X-Forwarded-For sent by clients (no trusted_proxies here) and sets it
 # to the client's address, so the last entry the relay reads is always the real client.
+#
+# Caddy listens on every address, IPv6 included; 443 is IPv4 only by the firewall
+# (setup.sh) and by having no AAAA record (OD-R55F1-7 (c), the runbook's step 2).
 
 {
 	# Optional: a contact address for Let's Encrypt expiry notices.
