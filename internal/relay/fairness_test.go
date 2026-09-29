@@ -160,6 +160,7 @@ func presenceFloodKeepsMailDirect(t *testing.T, opts relay.Options, ephBudget in
 	// Attacker: 4 recipient keys that never read, one sender key.
 	atk := newPeer(t)
 	ca := e.authed(atk, "10.1.0.1")
+	waitDrained(t, e.s, atk.key) // its first drain reserves 2 MiB; do not let that land after the watch starts
 	var sinks []peer
 	for i := range 4 {
 		r := newPeer(t)
@@ -489,6 +490,7 @@ func TestLimitOutboundEvictsStaleSink(t *testing.T) {
 	h1, h2 := newPeer(t), newPeer(t)
 	ch1 := e.authed(h1, "10.9.0.1")
 	ch2 := e.authed(h2, "10.9.0.2")
+	waitDrained(t, e.s, h1.key)
 	waitDrained(t, e.s, h2.key)
 	var sinks []peer
 	for i := range 8 { // 8 prefixes, never read
@@ -499,6 +501,9 @@ func TestLimitOutboundEvictsStaleSink(t *testing.T) {
 	}
 	senders := []peer{newPeer(t), newPeer(t)}
 	conns := []*websocket.Conn{e.authed(senders[0], "10.8.0.1"), e.authed(senders[1], "10.7.0.1")}
+	for _, s := range senders {
+		waitDrained(t, e.s, s.key)
+	}
 	waitUntil(t, wait, "no drain reservation left", func() bool { return e.s.Inflight() == 0 })
 	stop := watchMax(e.s.Inflight)
 	fillOutbound(t, e, senders, conns, sinks, payload(48_000), budget)
