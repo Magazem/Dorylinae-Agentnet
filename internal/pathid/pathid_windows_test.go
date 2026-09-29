@@ -21,6 +21,10 @@ func TestCheckLocalRefusesUNCAndDevicePaths(t *testing.T) {
 		`\\192.0.2.1\share`, `\\192.0.2.1\share\dir`, `//192.0.2.1/share/dir`,
 		`\\?\UNC\192.0.2.1\share`, `\\?\C:\`, `\\.\C:\`, `\\?\GLOBALROOT\Device\HarddiskVolume1\`,
 		`\\?\Volume{00000000-0000-0000-0000-000000000000}\`,
+		// The NT object-manager prefix (review 61 F7-S2).
+		`\??\UNC\192.0.2.1\share\x`, `\??\UNC\localhost\C$\Users`, `\??\C:\`, `\??\C:\Windows`,
+		`\??\GLOBALROOT\Device\HarddiskVolume1\`, `/??/UNC/192.0.2.1/share`,
+		`\??\Volume{00000000-0000-0000-0000-000000000000}\`,
 	} {
 		start := time.Now()
 		if err := CheckLocal(p); !errors.Is(err, ErrRemote) {
@@ -148,5 +152,130 @@ func TestResolveRefusesLinkToUNC(t *testing.T) {
 	}
 	if d := time.Since(start); d > time.Second {
 		t.Fatalf("took %v: the UNC target was dialled", d)
+	}
+}
+
+// A refused spelling reaches no Windows call at all (review 61 F7-S2): the
+// file and drive-table calls are replaced by ones that fail the test.
+func TestRefusalMakesNoCall(t *testing.T) {
+	oldLstat, oldDrive, oldCreate := lstat, getDriveType, createFile
+	t.Cleanup(func() { lstat, getDriveType, createFile = oldLstat, oldDrive, oldCreate })
+	var called []string
+	lstat = func(p string) (os.FileInfo, error) {
+		called = append(called, "Lstat "+p)
+		return nil, os.ErrNotExist
+	}
+	getDriveType = func(root *uint16) uint32 {
+		called = append(called, "GetDriveType "+windows.UTF16PtrToString(root))
+		return windows.DRIVE_FIXED
+	}
+	createFile = func(name *uint16, _, _ uint32, _ *windows.SecurityAttributes, _, _ uint32, _ windows.Handle) (windows.Handle, error) {
+		called = append(called, "CreateFile "+windows.UTF16PtrToString(name))
+		return windows.InvalidHandle, windows.ERROR_FILE_NOT_FOUND
+	}
+	for _, p := range []string{
+		`\??\UNC\192.0.2.1\share\x`, `\??\C:\Windows`, `\??\GLOBALROOT\Device\HarddiskVolume1\`,
+		`\\192.0.2.1\share\dir`, `\\?\UNC\192.0.2.1\share`, `\\.\C:\`,
+	} {
+		called = nil
+		if err := CheckLocal(p); !errors.Is(err, ErrRemote) {
+			t.Errorf("CheckLocal(%q) = %v, want ErrRemote", p, err)
+		}
+		if _, err := Resolve(p); !errors.Is(err, ErrRemote) {
+			t.Errorf("Resolve(%q) = %v, want ErrRemote", p, err)
+		}
+		if len(called) > 0 {
+			t.Errorf("%q reached %q before being refused", p, called)
+		}
+	}
+}
+
+// makeJunction creates the junction j to target with mklink /J, or skips.
+func makeJunction(t *testing.T, j, target string) {
+	t.Helper()
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", j, target).CombinedOutput(); err != nil { //nolint:gosec // test: fixed command, temp dirs
+		t.Skipf("mklink /J: %v %s", err, out)
+	}
+	// Remove the link itself, never through it, before the temp dir goes.
+	t.Cleanup(func() { _ = os.Remove(j) })
+}
+
+// A path through a junction resolves to the path through its target
+// (review 61 F7-S4: go1.23+ EvalSymlinks fails on it).
+func TestResolveThroughJunction(t *testing.T) {
+	base := testutil.TempDir(t)
+	target := filepath.Join(base, "target")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j := filepath.Join(base, "junction")
+	makeJunction(t, j, target)
+	a, err := Resolve(filepath.Join(j, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Resolve(filepath.Join(target, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf(`Resolve(junction\sub) = %q, Resolve(target\sub) = %q`, a, b)
+	}
+}
+
+// A junction whose target is spelled \\?\Volume{GUID}\..., as a folder
+// mount point's is, is local and resolves (review 61 F7-S3). The junction
+// points at a temp dir through the volume GUID of its own drive.
+func TestResolveThroughVolumeGUIDLink(t *testing.T) {
+	base, err := Resolve(testutil.TempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(base, "target")
+	if err := os.MkdirAll(filepath.Join(target, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	vol := filepath.VolumeName(base)
+	root, _ := windows.UTF16PtrFromString(vol + `\`)
+	buf := make([]uint16, 64)
+	if err := windows.GetVolumeNameForVolumeMountPoint(root, &buf[0], uint32(len(buf))); err != nil { //nolint:gosec // fixed 64
+		t.Skipf("no volume GUID for %s: %v", vol, err)
+	}
+	guid := windows.UTF16ToString(buf) // \\?\Volume{...}\
+	if !isVolumeGUIDPath(guid) {
+		t.Fatalf("isVolumeGUIDPath(%q) = false", guid)
+	}
+	j := filepath.Join(base, "mnt")
+	makeJunction(t, j, guid+target[len(vol)+1:])
+	if l, err := os.Readlink(j); err != nil || !isVolumeGUIDPath(l) {
+		t.Skipf("the junction does not read back as a volume GUID path: %q, %v", l, err)
+	}
+	got, err := Resolve(filepath.Join(j, "sub"))
+	if err != nil {
+		t.Fatalf(`Resolve(mnt\sub) = %v`, err)
+	}
+	want, err := Resolve(filepath.Join(target, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf(`Resolve(mnt\sub) = %q, want %q`, got, want)
+	}
+}
+
+func TestIsVolumeGUIDPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		`\\?\Volume{0a1b2c3d-0000-0000-0000-00000000abcd}\`:        true,
+		`\\?\volume{0A1B2C3D-0000-0000-0000-00000000ABCD}\dir\sub`: true,
+		`\\?\Volume{0a1b2c3d-0000-0000-0000-00000000abcd}`:         true,
+		`\\?\Volume{0a1b2c3d-0000-0000-0000-00000000abcd}x`:        false,
+		`\\?\Volume{0a1b2c3d-0000-0000-0000-0000000Xabcd}\`:        false,
+		`\\?\UNC\host\share`: false,
+		`\??\Volume{0a1b2c3d-0000-0000-0000-00000000abcd}\`: false,
+		`C:\dir`: false,
+	} {
+		if got := isVolumeGUIDPath(p); got != want {
+			t.Errorf("isVolumeGUIDPath(%q) = %v, want %v", p, got, want)
+		}
 	}
 }

@@ -18,21 +18,26 @@ var ErrRemote = errors.New("UNC, device-namespace and network paths are refused"
 // maxLinks bounds the links followed by the pre-resolution guard.
 const maxLinks = 40
 
+// lstat is os.Lstat; tests replace it to prove that a refused path touches
+// no file.
+var lstat = os.Lstat
+
 // CheckLocal reports ErrRemote, without touching the filesystem, when p is
 // spelled as a path that could reach another host or bypass Win32 path rules.
-// On Windows that is any path starting with two separators (UNC, \\?\, \\.\,
-// volume GUIDs, GLOBALROOT) and a drive letter the OS reports as a network
-// drive. On other systems nothing is refused.
+// On Windows that is any volume name other than a drive letter (UNC, \\?\,
+// \\.\, \??\, volume GUIDs, GLOBALROOT) and a drive letter the OS reports as
+// a network drive. On other systems nothing is refused.
 func CheckLocal(p string) error {
 	return checkLocal(p)
 }
 
 // Resolve returns the canonical form of the absolute path p: symbolic links
-// resolved with filepath.EvalSymlinks and, on Windows, everything else that
-// makes two spellings name one directory (junctions and other mount points,
-// subst drives, 8.3 names, case) resolved from an open handle. Before any
-// link is followed, every link target on the way is checked with CheckLocal,
-// so a link to a UNC path is refused without being dialled.
+// resolved with filepath.EvalSymlinks on Unix; on Windows everything that
+// makes two spellings name one directory (symbolic links, junctions and
+// other mount points, subst drives, 8.3 names, case) resolved from an open
+// handle. Before any link is followed, every link target on the way is
+// checked with CheckLocal, so a link to a UNC path is refused without being
+// dialled.
 func Resolve(p string) (string, error) {
 	if err := checkLocal(p); err != nil {
 		return "", err
@@ -40,7 +45,7 @@ func Resolve(p string) (string, error) {
 	if err := guardLinks(filepath.Clean(p)); err != nil {
 		return "", err
 	}
-	r, err := filepath.EvalSymlinks(p)
+	r, err := evalLinks(p)
 	if err != nil {
 		return "", err
 	}
@@ -67,9 +72,35 @@ func Ancestors(p string) []string {
 	}
 }
 
+// PhysicalAncestors returns the directories physically above p: p/..,
+// p/../.. and so on, up to the one that is its own parent. Unlike Ancestors
+// they follow the kernel's "..", so on macOS they include the data volume
+// root above a firmlinked /Users (review 61 F7-S1).
+func PhysicalAncestors(p string) ([]os.FileInfo, error) {
+	cur, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	var out []os.FileInfo
+	for range 4096 {
+		p += string(filepath.Separator) + ".."
+		parent, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if os.SameFile(cur, parent) {
+			return out, nil
+		}
+		out = append(out, parent)
+		cur = parent
+	}
+	return nil, errors.New("too many directories above " + p)
+}
+
 // IsRoot reports whether the resolved directory p is the root of a
-// filesystem: a volume root or any other mount point (Unix: its parent is
-// on another device or is itself; Windows: p is its own volume mount path).
+// filesystem: a volume root or any other mount point (Unix: p is listed as
+// a mount point, or its parent is on another device or is itself; Windows:
+// p is its own volume mount path).
 // A mount point counts as a root because it can be another spelling of one
 // (macOS /System/Volumes/Data is "/" under a firmlink, review 55 T13-01).
 func IsRoot(p string) (bool, error) {
@@ -78,8 +109,8 @@ func IsRoot(p string) (bool, error) {
 
 // guardLinks walks p component by component with Lstat and, at every link,
 // checks the target with CheckLocal before continuing through it. It only
-// guards; resolution is left to EvalSymlinks and finalPath. A component that
-// does not exist ends the walk (EvalSymlinks then reports it).
+// guards; resolution is left to evalLinks and finalPath. A component that
+// does not exist ends the walk (resolution then reports it).
 func guardLinks(p string) error {
 	vol := filepath.VolumeName(p)
 	cur := vol + string(filepath.Separator)
@@ -95,7 +126,7 @@ func guardLinks(p string) error {
 			continue
 		}
 		next := filepath.Join(cur, c)
-		fi, err := os.Lstat(next)
+		fi, err := lstat(next)
 		if err != nil {
 			return nil
 		}
@@ -113,8 +144,13 @@ func guardLinks(p string) error {
 		if hops++; hops > maxLinks {
 			return errors.New("too many links")
 		}
-		if err := checkLocal(t); err != nil {
-			return err
+		// A volume GUID target is a folder-mounted local volume: mount
+		// points cannot target a remote one (review 61 F7-S3).
+		local := isVolumeGUIDPath(t)
+		if !local {
+			if err := checkLocal(t); err != nil {
+				return err
+			}
 		}
 		switch {
 		case filepath.IsAbs(t):
@@ -124,8 +160,10 @@ func guardLinks(p string) error {
 			t = filepath.Join(cur, t) // relative to the link's directory
 		}
 		t = filepath.Clean(t)
-		if err := checkLocal(t); err != nil {
-			return err
+		if !local {
+			if err := checkLocal(t); err != nil {
+				return err
+			}
 		}
 		vol = filepath.VolumeName(t)
 		cur = vol + string(filepath.Separator)

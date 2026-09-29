@@ -204,6 +204,17 @@ func checkForbiddenIdentity(configDir, resolved string, info os.FileInfo) *ipc.E
 			return errCfg
 		}
 	}
+	// The config dir's physical parents too: on macOS they include the
+	// data volume root above the firmlinked /Users (review 61 F7-S1).
+	above, err := pathid.PhysicalAncestors(cfg)
+	if err != nil {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "a directory above the config dir cannot be checked; resources are refused"}
+	}
+	for _, ai := range above {
+		if pathid.Same(ai, info) {
+			return errCfg
+		}
+	}
 	errHome := &ipc.Error{Code: CodeForbiddenResource, Message: "the home directory cannot be resolved; resources are refused"}
 	home, err := os.UserHomeDir()
 	if err != nil {

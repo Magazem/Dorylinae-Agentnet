@@ -50,7 +50,7 @@ var ErrNoScope = errors.New("device: no scope")
 
 // Scope is what the helper's human allows its controller to run
 // (Docs/protocol/device.md §Scope). Once validated, every repo path is the
-// EvalSymlinks-resolved directory and every argv[0] the absolute path found
+// directory resolved by pathid.Resolve and every argv[0] the absolute path found
 // by exec.LookPath at set time.
 type Scope struct {
 	Types    []string  `json:"types"`
@@ -136,7 +136,7 @@ func scopeErr(field, format string, a ...any) *ScopeError {
 
 // Resolver resolves the parts of a scope that depend on the machine.
 type Resolver struct {
-	// RepoPath resolves an absolute directory once (EvalSymlinks) and refuses
+	// RepoPath resolves an absolute directory once (pathid.Resolve) and refuses
 	// the places no scope may name. A *ScopeError it returns keeps its
 	// Forbidden flag; the field is filled in by ValidateScope.
 	RepoPath func(raw string) (string, error)
