@@ -33,6 +33,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
@@ -262,7 +263,7 @@ func testGitRepo(t *testing.T) string {
 	}
 	run("add", ".")
 	run("commit", "-q", "-m", "init")
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +612,7 @@ func TestGrantPolicyAddNeedsApproval(t *testing.T) {
 func TestGrantMatchingPolicyIssuesAtOnce(t *testing.T) {
 	dir := testutil.TempDir(t)
 	h, peer := newGrantHarness(t, peers.TrustCode, false)
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +650,7 @@ func TestGrantMatchingPolicyIssuesAtOnce(t *testing.T) {
 func TestGrantOfflineVerifyAndWidenedCaveatRejected(t *testing.T) {
 	dir := testutil.TempDir(t)
 	h, peer := newGrantHarness(t, peers.TrustCode, false)
-	resolved, err := filepath.EvalSymlinks(dir)
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

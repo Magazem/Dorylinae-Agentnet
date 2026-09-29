@@ -116,12 +116,12 @@ func SplitEffective(scope, path string) []string {
 	return segs
 }
 
-// isGitName reports whether seg names a .git entry as NTFS, APFS or HFS+
+// IsGitName reports whether seg names a .git entry as NTFS, APFS or HFS+
 // would resolve it: case-insensitively, ignoring invisible format characters.
 // Upper-casing rune by rune also catches letters whose upper case is ASCII
 // without being a Unicode case fold of it (U+0131 "ı" upper-cases to "I", and
 // NTFS compares names through an upcase table; review 34 L2).
-func isGitName(seg string) bool {
+func IsGitName(seg string) bool {
 	clean := strings.Map(func(r rune) rune {
 		if unicode.Is(unicode.Cf, r) {
 			return -1
@@ -178,7 +178,7 @@ func componentErr(m fs.FileMode, last bool) error {
 // and returns the final component's Lstat (see componentErr).
 func walk(root *os.Root, segs []string) (fs.FileInfo, error) {
 	for _, seg := range segs {
-		if isGitName(seg) {
+		if IsGitName(seg) {
 			return nil, fetchErr(CodeOutOfScope)
 		}
 		if runtime.GOOS == "windows" && isShortNameShape(seg) {
@@ -204,6 +204,24 @@ func walk(root *os.Root, segs []string) (fs.FileInfo, error) {
 		}
 	}
 	return info, nil
+}
+
+// rewalk runs walk again after the open and checks that the path still
+// leads to the opened file. walk Lstats the components one at a time, so a
+// local writer could swap an already-checked directory for a link (to .git
+// inside the root) before the open; the first check then followed the same
+// link as the open. Walking again after the open catches the link if it is
+// still there, and a different file if it was swapped back (review 55
+// R55-159).
+func rewalk(root *os.Root, segs []string, opened fs.FileInfo) error {
+	info, err := walk(root, segs)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) {
+		return fetchErr(CodeSymlink)
+	}
+	return nil
 }
 
 func entryOf(name string, info fs.FileInfo) Entry {
@@ -274,15 +292,19 @@ func (FSBackend) List(_ context.Context, rec Record, rel, cursor string) ([]Entr
 		return nil, "", "", mapOSErr(err)
 	}
 	defer func() { _ = dir.Close() }()
-	if di, err := dir.Stat(); err != nil || !di.IsDir() || !os.SameFile(info, di) {
+	di, err := dir.Stat()
+	if err != nil || !di.IsDir() || !os.SameFile(info, di) {
 		return nil, "", "", fetchErr(CodeSymlink)
+	}
+	if err := rewalk(root, segs, di); err != nil {
+		return nil, "", "", err
 	}
 	var names []string
 	for {
 		des, err := dir.ReadDir(256)
 		for _, de := range des {
 			n := de.Name()
-			if isGitName(n) || !utf8.ValidString(n) {
+			if IsGitName(n) || !utf8.ValidString(n) {
 				continue
 			}
 			names = append(names, n)
@@ -358,6 +380,9 @@ func (FSBackend) Read(ctx context.Context, rec Record, rel string, offset int64,
 	}
 	if !os.SameFile(info, hi) {
 		return fetchErr(CodeSymlink)
+	}
+	if err := rewalk(root, segs, hi); err != nil {
+		return err
 	}
 	if !hi.Mode().IsRegular() {
 		return fetchErr(CodeNotRegular)

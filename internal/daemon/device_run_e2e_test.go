@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
@@ -238,8 +239,8 @@ func TestHelperRunsInScopeRequests(t *testing.T) {
 		t.Fatalf("spam output: %d bytes, escapes %v", len(spam.Output), strings.ContainsAny(spam.Output, "\x1b\r"))
 	}
 	pwd := e.result(t, e.submit(t, "task", "mk-pwd"))
-	want, _ := filepath.EvalSymlinks(e.repo)
-	got, _ := filepath.EvalSymlinks(strings.TrimSpace(pwd.Output))
+	want, _ := pathid.Resolve(e.repo)
+	got, _ := pathid.Resolve(strings.TrimSpace(pwd.Output))
 	if !strings.EqualFold(got, want) {
 		t.Fatalf("the command ran in %q, want the repo %q", got, want)
 	}

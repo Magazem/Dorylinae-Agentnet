@@ -5,12 +5,13 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 )
 
 // MaxOutput is the most output a result carries: the last 32768 bytes
@@ -176,9 +177,14 @@ func Run(ctx context.Context, spec RunSpec) RunResult {
 // time (review 40 L5): the working directory still resolves to itself, so a
 // repo replaced since by a symlink or junction to somewhere else is refused,
 // and the program is still a regular file that only this user or an
-// administrator can change (CheckProgramOwner, review 40 L11).
+// administrator can change (CheckProgramOwner, review 40 L11). The directory
+// is resolved with pathid.Resolve, which follows junctions too (review 55
+// C14-01), and a UNC or network path is refused without being opened.
 func CheckTarget(path, dir string) error {
-	resolved, err := filepath.EvalSymlinks(dir)
+	if pathid.CheckLocal(path) != nil {
+		return errors.New("device: the program is not on a local path")
+	}
+	resolved, err := pathid.Resolve(dir)
 	if err != nil {
 		return err
 	}
@@ -192,7 +198,7 @@ func CheckTarget(path, dir string) error {
 	if fi, err := os.Stat(resolved); err != nil || !fi.IsDir() {
 		return errors.New("device: the working directory is not a directory")
 	}
-	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() { //nolint:gosec // the program the human approved in the scope, checked local above
 		return errors.New("device: the program is not a regular file")
 	}
 	return CheckProgramOwner(path)

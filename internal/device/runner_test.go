@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
@@ -203,7 +204,8 @@ func TestRunOrphanHoldingOutput(t *testing.T) {
 // approved, and the program must still be a regular file.
 func TestCheckTarget(t *testing.T) {
 	prog := runnerHelper(t)
-	dir, err := filepath.EvalSymlinks(testutil.TempDir(t))
+	// Resolved as the scope resolves it (the daemon's validateResource).
+	dir, err := pathid.Resolve(testutil.TempDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}

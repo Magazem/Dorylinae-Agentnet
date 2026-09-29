@@ -22,6 +22,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
@@ -126,10 +127,15 @@ func grantViewCommon(rec capability.Record) GrantView {
 
 // ---- Resource validation (Docs/protocol/grant.md §Issuance step 3) ----
 
-// validateResource resolves rawPath once with filepath.EvalSymlinks and
-// refuses a relative path, a non-existent or non-directory path, the config
-// dir (or anything inside or containing it), the user's home directory
-// itself, and a filesystem root.
+// validateResource resolves rawPath once (pathid.Resolve: symlinks and, on
+// Windows, junctions, subst drives and 8.3 names) and refuses a relative
+// path, a UNC, device-namespace or network path (before touching the
+// filesystem, so nothing is dialled; review 55 R55-027), a non-existent or
+// non-directory path, a path with a .git component, the config dir (or
+// anything inside or containing it), the user's home directory itself, and a
+// filesystem root. The last three are judged by file identity, not spelling
+// (review 55 R55-006), and fail closed when the config dir or home cannot be
+// resolved.
 func validateResource(configDir, rawPath string) (resolved string, ierr *ipc.Error) {
 	if rawPath == "" {
 		return "", &ipc.Error{Code: ipc.CodeBadRequest, Message: "resource path is required"}
@@ -137,7 +143,13 @@ func validateResource(configDir, rawPath string) (resolved string, ierr *ipc.Err
 	if !filepath.IsAbs(rawPath) {
 		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource must be an absolute path"}
 	}
-	resolved, err := filepath.EvalSymlinks(rawPath)
+	if pathid.CheckLocal(rawPath) != nil {
+		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource must be a local path: UNC, device and network paths are refused"}
+	}
+	resolved, err := pathid.Resolve(rawPath)
+	if errors.Is(err, pathid.ErrRemote) {
+		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource must be a local path: UNC, device and network paths are refused"}
+	}
 	if err != nil {
 		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource does not exist"}
 	}
@@ -145,20 +157,104 @@ func validateResource(configDir, rawPath string) (resolved string, ierr *ipc.Err
 	if err != nil || !info.IsDir() {
 		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource must be an existing directory"}
 	}
-	if cfg, err := filepath.EvalSymlinks(configDir); err == nil {
-		if pathEqualOrContains(cfg, resolved) {
-			return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be the config dir or contain/be inside it"}
+	for _, seg := range strings.Split(filepath.ToSlash(resolved), "/") {
+		if capability.IsGitName(seg) {
+			return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be or be inside a .git directory"}
 		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		if h, err := filepath.EvalSymlinks(home); err == nil && pathsEqual(h, resolved) {
-			return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be the home directory"}
-		}
-	}
-	if isFilesystemRoot(resolved) {
-		return "", &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be a filesystem root"}
+	if ierr := checkForbiddenIdentity(configDir, resolved, info); ierr != nil {
+		return "", ierr
 	}
 	return resolved, nil
+}
+
+// checkForbiddenIdentity refuses, by file identity, the config dir, a
+// directory inside it (one of resolved's ancestors is the config dir) or
+// containing it (resolved is one of the config dir's ancestors), the home
+// directory itself, and a filesystem root or mount point. The spelling
+// checks run first and stay as a second opinion.
+func checkForbiddenIdentity(configDir, resolved string, info os.FileInfo) *ipc.Error {
+	errCfg := &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be the config dir or contain/be inside it"}
+	cfg, err := pathid.Resolve(configDir)
+	if err != nil {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "the config dir cannot be resolved; resources are refused"}
+	}
+	if pathEqualOrContains(cfg, resolved) {
+		return errCfg
+	}
+	cfgInfo, err := os.Stat(cfg)
+	if err != nil {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "the config dir cannot be resolved; resources are refused"}
+	}
+	for _, a := range pathid.Ancestors(resolved) {
+		ai, err := os.Stat(a)
+		if err != nil {
+			return &ipc.Error{Code: CodeForbiddenResource, Message: "a directory above the resource cannot be checked"}
+		}
+		if pathid.Same(ai, cfgInfo) {
+			return errCfg
+		}
+	}
+	for _, a := range pathid.Ancestors(cfg) {
+		ai, err := os.Stat(a)
+		if err != nil {
+			return &ipc.Error{Code: CodeForbiddenResource, Message: "a directory above the config dir cannot be checked; resources are refused"}
+		}
+		if pathid.Same(ai, info) {
+			return errCfg
+		}
+	}
+	errHome := &ipc.Error{Code: CodeForbiddenResource, Message: "the home directory cannot be resolved; resources are refused"}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return errHome
+	}
+	h, err := pathid.Resolve(home)
+	if err != nil {
+		return errHome
+	}
+	hi, err := os.Stat(h)
+	if err != nil {
+		return errHome
+	}
+	if pathsEqual(h, resolved) || pathid.Same(hi, info) {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be the home directory"}
+	}
+	if isFilesystemRoot(resolved) {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be a filesystem root"}
+	}
+	if root, err := pathid.IsRoot(resolved); err != nil || root {
+		return &ipc.Error{Code: CodeForbiddenResource, Message: "resource may not be a filesystem root or mount point"}
+	}
+	return nil
+}
+
+// validateFSResource adds the fs.read rule of Docs/protocol/grant.md
+// §Resource kinds ("not served: anything under a .git directory") for a bare
+// repository, whose name need not be ".git": neither resolved nor any
+// directory above it may look like a git directory (review 55 R55-028).
+func validateFSResource(resolved string) *ipc.Error {
+	for _, a := range pathid.Ancestors(resolved) {
+		if isGitDirShape(a) {
+			return &ipc.Error{Code: CodeForbiddenResource, Message: "resource is or is inside a git directory; use git.read"}
+		}
+	}
+	return nil
+}
+
+// isGitDirShape reports whether dir has what git itself requires of a git
+// directory: a HEAD entry and objects/ and refs/ directories.
+func isGitDirShape(dir string) bool {
+	if _, err := os.Lstat(filepath.Join(dir, "HEAD")); err != nil {
+		return false
+	}
+	for _, d := range []string{"objects", "refs"} {
+		fi, err := os.Stat(filepath.Join(dir, d))
+		if err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // caseInsensitiveFS reports whether the default filesystem of this OS
@@ -217,15 +313,16 @@ func isFilesystemRoot(p string) bool {
 
 var lookupGit = capability.LookGit
 
-// gitCommand builds an issuance-time git command with the shared rules of
-// capability.GitCommand (Docs/protocol/grant.md §Serving git): every inherited
-// GIT_* variable removed, system and global config disabled, no prompts, and
-// a 10 s timeout. The approval Precondition runs these under the approval
+// gitCommand builds an issuance-time git command on repo with the shared
+// rules of capability.GitRepoCommand (Docs/protocol/grant.md §Serving git):
+// every inherited GIT_* variable removed, system and global config disabled,
+// no prompts, the served commands' -c hardening, discovery stopped at repo
+// (review 55 R55-198), and a 10 s timeout. The approval Precondition runs these under the approval
 // Store's lock and inside its transaction (review 28 L5), so a hung git must
 // not hold them for long. Callers pass a validated path (an absolute,
 // existing, resolved directory) and fixed arguments.
-func gitCommand(ctx context.Context, gitPath string, args ...string) (*exec.Cmd, context.CancelFunc) {
-	return capability.GitCommand(ctx, gitPath, args...)
+func gitCommand(ctx context.Context, gitPath, repo string, args ...string) (*exec.Cmd, context.CancelFunc) {
+	return capability.GitRepoCommand(ctx, gitPath, repo, args...)
 }
 
 // validateGitResource checks that resolved is the top of a git work tree or
@@ -250,7 +347,7 @@ func validateGitResource(resolved, branch string) *ipc.Error {
 // isGitTopLevel reports whether resolved is the top of a git work tree or a
 // bare repository (Docs/protocol/grant.md §Issuance step 3).
 func isGitTopLevel(gitPath, resolved string) bool {
-	cmd, cancel := gitCommand(context.Background(), gitPath, "-C", resolved, "rev-parse", "--show-toplevel")
+	cmd, cancel := gitCommand(context.Background(), gitPath, resolved, "rev-parse", "--show-toplevel")
 	defer cancel()
 	out, err := cmd.Output()
 	if err == nil {
@@ -259,7 +356,7 @@ func isGitTopLevel(gitPath, resolved string) bool {
 	}
 	// Bare: resolved must be the git directory itself, not a directory inside
 	// one (discovery from repo.git/objects finds repo.git; review 37 L1).
-	cmd2, cancel2 := gitCommand(context.Background(), gitPath, "-C", resolved, "rev-parse", "--is-bare-repository", "--absolute-git-dir")
+	cmd2, cancel2 := gitCommand(context.Background(), gitPath, resolved, "rev-parse", "--is-bare-repository", "--absolute-git-dir")
 	defer cancel2()
 	out, err = cmd2.Output()
 	if err != nil {
@@ -430,6 +527,8 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			}
 		} else if branch != "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "fs.read does not take a branch"}
+		} else if ierr := validateFSResource(resolved); ierr != nil {
+			return nil, ierr
 		}
 		if p.Scope != "" && !capability.ValidScopePath(p.Scope) {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "scope is not a valid path"}
@@ -786,6 +885,8 @@ func recheckResource(configDir string, rec capability.Record) error {
 		if ierr := validateGitResource(resolved, rec.Branch); ierr != nil {
 			return ierr
 		}
+	} else if ierr := validateFSResource(resolved); ierr != nil {
+		return ierr
 	}
 	return nil
 }
@@ -895,6 +996,8 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 			}
 		} else if branch != "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "fs.read does not take a branch"}
+		} else if ierr := validateFSResource(resolved); ierr != nil {
+			return nil, ierr
 		}
 		if p.Scope != "" && !capability.ValidScopePath(p.Scope) {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "scope is not a valid path"}

@@ -117,11 +117,23 @@ The grantor's daemon, in order:
    is untrusted whoever runs it (D17).
 3. Resource: `<path>` must be an **absolute, existing** directory. For `git.read` it must be
    the top of a git work tree or a bare repository (`git rev-parse --show-toplevel` /
-   `--is-bare-repository`), and `#<branch>` must name an existing `refs/heads/` branch. The
-   path is resolved with `filepath.EvalSymlinks` once, at issuance, and the resolved path is
-   stored. Refused: the config dir (`DORYLINAE_HOME` or default) or any path inside it or
-   containing it, the user's home directory itself, and a filesystem root
-   (`forbidden_resource`).
+   `--is-bare-repository`), and `#<branch>` must name an existing `refs/heads/` branch. A UNC
+   or device-namespace path (on Windows any path starting with two separators:
+   `\\host\share`, `\\?\`, `\\.\`, volume GUIDs) or a path on a network drive is refused
+   **before the filesystem is touched**, so no SMB connection is opened (review 55 R55-027);
+   so is a path through a symbolic link whose target is such a path. The path is resolved
+   once, at issuance (symbolic links; on Windows also junctions, mount points, `subst`
+   drives and 8.3 names, from an open handle), and the resolved path is stored. Refused
+   **by file identity**, not by comparing spellings (so also through `subst`, a junction or
+   a macOS firmlink such as `/System/Volumes/Data/Users/…`; review 55 R55-006): the config
+   dir (`DORYLINAE_HOME` or default) or any path inside it or containing it, the user's home
+   directory itself, and a filesystem root or other mount point. The check fails closed: if
+   the config dir or the home directory cannot be resolved, every resource is refused. Also
+   refused: a path with a `.git` component (as in [Paths](#paths)) and, for `fs.read`, a git
+   directory (holding `HEAD`, `objects/` and `refs/`, such as a bare repository) or a path
+   inside one (review 55 R55-028). All of these are `forbidden_resource`. The issuance-time
+   `git rev-parse` calls use the same `-c` hardening and discovery ceiling as serving
+   (review 55 R55-198).
 4. `--expires`: a duration, 1 min to 7 d, and additionally capped at 7 d; default 2 h.
 5. `sensitive` = true unless `--public` is given **and** the action is `git.read`. `fs.read`
    is always sensitive ([Sensitive grants](#sensitive-grants-24)).

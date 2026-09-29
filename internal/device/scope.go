@@ -15,6 +15,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/pathid"
 )
 
 // Scope limits (Docs/protocol/device.md §Scope).
@@ -320,9 +322,17 @@ func resolveProgram(name string, lookPath func(string) (string, error)) (string,
 	if strings.ContainsAny(name, `/\`) && !filepath.IsAbs(name) {
 		return "", errors.New("must be a program name or an absolute path")
 	}
+	// Before lookPath touches it: a UNC path would open an SMB connection
+	// before any approval (review 55 R55-027).
+	if pathid.CheckLocal(name) != nil {
+		return "", errors.New("must be on a local path: UNC, device and network paths are refused")
+	}
 	p, err := lookPath(name)
 	if err != nil {
 		return "", fmt.Errorf("program not found: %w", err)
+	}
+	if pathid.CheckLocal(p) != nil {
+		return "", errors.New("program resolves to a UNC, device or network path")
 	}
 	if !filepath.IsAbs(p) {
 		// exec.LookPath returns a relative path only for a PATH entry that is

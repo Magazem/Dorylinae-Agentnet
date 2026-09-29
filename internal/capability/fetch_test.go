@@ -309,13 +309,13 @@ func TestPathGrammar(t *testing.T) {
 
 func TestGitNameAndShortName(t *testing.T) {
 	for _, s := range []string{".git", ".GIT", ".Git", ".gIt", ".g\u200bit", ".\u200dgit", ".g\u0131t", ".G\u0131T"} {
-		if !isGitName(s) {
-			t.Errorf("isGitName(%q) = false", s)
+		if !IsGitName(s) {
+			t.Errorf("IsGitName(%q) = false", s)
 		}
 	}
 	for _, s := range []string{".gitignore", "git", ".git2", "a.git", ".gi"} {
-		if isGitName(s) {
-			t.Errorf("isGitName(%q) = true", s)
+		if IsGitName(s) {
+			t.Errorf("IsGitName(%q) = true", s)
 		}
 	}
 	for _, s := range []string{"GIT~1", "git~1", "a~2b", "PROGRA~1"} {
