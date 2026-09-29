@@ -1,0 +1,17 @@
+package notify
+
+import (
+	"strings"
+	"testing"
+)
+
+// Uses the real zenity argument builder (escapeArg) on Linux.
+func TestReview55T11_01EscapeArgLeavesStrcompressEscapes(t *testing.T) {
+	_, kind, s := windowText("ab12", "debate_constraint", `add a human constraint to the debate s-1 with Bob\0: "x"`)
+	arg := escapeArg("--text", kind+": "+s)
+	shown := gStrcompress(strings.TrimPrefix(arg, "--text="))
+	if strings.Contains(shown, `"x"`) {
+		t.Fatalf("not cut: %q", shown)
+	}
+	t.Logf("zenity shows: %q", shown)
+}
