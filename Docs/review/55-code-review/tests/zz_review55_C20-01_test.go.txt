@@ -1,0 +1,50 @@
+package team_test
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// Review 55 C20-01: the R16 M2 case "re-invited after leaving locally but
+// before its team.leave arrived". The team.leave is outboxed and arrives after
+// the team.join; it then removes the member that just rejoined, and the owner
+// sends the removed member nothing. This test FAILS at 6cc26a7 (finding).
+func TestReview55C2001DelayedLeaveUndoesRejoin(t *testing.T) {
+	owner, joiner, tm, _ := invitedRoster(t)
+	ctx := context.Background()
+	now := owner.now()
+	if _, err := owner.db.Exec(`INSERT INTO team_invites (lookup, team_id, pairing_id, peer_key, created, expires) VALUES (?, ?, 'p2', ?, ?, ?)`,
+		"CCCCC", tm.ID, joiner.key, now.UTC().Format("2006-01-02T15:04:05.000Z"), now.Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordOutbox{}
+	owner.ts.Outbox = rec
+	// The rejoin's team.join arrives first (already-member branch).
+	if err := deliver(t, joiner, owner, "team.join", map[string]any{"lookup": "CCCCC"}); err != nil {
+		t.Fatal(err)
+	}
+	// Then the earlier team.leave, delayed in the outbox/relay, arrives.
+	if err := deliver(t, joiner, owner, "team.leave", map[string]any{"team": tm.ID}); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := owner.ts.Members(ctx, tm.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := false
+	for _, m := range ms {
+		if m.Key == joiner.key {
+			in = true
+		}
+	}
+	sentToJoiner := 0
+	for _, c := range rec.calls {
+		if c.to == joiner.key {
+			sentToJoiner++
+		}
+	}
+	if !in {
+		t.Fatalf("rejoined member removed by its older team.leave; members=%d, rosters sent to joiner=%d (only the join's)", len(ms), sentToJoiner)
+	}
+}
