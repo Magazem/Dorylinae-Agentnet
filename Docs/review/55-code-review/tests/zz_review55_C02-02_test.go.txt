@@ -1,0 +1,98 @@
+package relay
+
+// Review 55 verification of C02-02 (temporary, never merged): time one sweep
+// of a large batch of expired rows with the production DSN (WAL,
+// synchronous=FULL, secure_delete=ON) and measure the WAL file it leaves.
+// ZZ_MB sets the expired bytes (default 256), ZZ_FRAME the frame size in
+// bytes (default 1 MiB).
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+func zzEnvInt(name string, def int) int {
+	if v, err := strconv.Atoi(os.Getenv(name)); err == nil && v > 0 {
+		return v
+	}
+	return def
+}
+
+func zzSize(p string) int64 {
+	st, err := os.Stat(p)
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
+func TestZZReview55C0202SweepLargeBatch(t *testing.T) {
+	mb := zzEnvInt("ZZ_MB", 256)
+	frameSize := zzEnvInt("ZZ_FRAME", 1<<20)
+	path := filepath.Join(testutil.TempDir(t), "q.db")
+	now := time.Now()
+	clock := func() time.Time { return now }
+	q, err := openQueue(path, defaultQueueTTL, defaultQueueMaxEnvelope, defaultQueueMaxBytes, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = q.close() }()
+
+	frame := make([]byte, frameSize)
+	for i := range frame {
+		frame[i] = byte(i*131 + 7)
+	}
+	rows := (mb << 20) / frameSize
+	old := now.Add(-defaultQueueTTL - time.Hour).UnixMilli()
+	start := time.Now()
+	const perTx = 256
+	for i := 0; i < rows; i += perTx {
+		tx, err := q.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for j := i; j < i+perTx && j < rows; j++ {
+			// Spread over many senders and recipients, as the scenario's fresh keys would.
+			if _, err := tx.Exec(`INSERT INTO queue (to_key, from_key, id, enqueued, frame) VALUES (?, ?, ?, ?, ?)`,
+				fmt.Sprintf("to-%05d", j%997), fmt.Sprintf("from-%05d", j/64), fmt.Sprintf("id-%07d", j), old, frame); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := q.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.rebuildTotals(); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("filled %d rows x %d B = %d MiB in %s; db=%d MiB wal=%d MiB; totals n=%d bytes=%d MiB",
+		rows, frameSize, mb, time.Since(start).Round(time.Millisecond), zzSize(path)>>20, zzSize(path+"-wal")>>20, q.total.n, q.total.bytes>>20)
+
+	// A concurrent add must wait on q.mu for the whole sweep.
+	start = time.Now()
+	n, err := q.sweep()
+	dur := time.Since(start)
+	t.Logf("sweep: n=%d err=%v took %s (queueOpTimeout %s); db=%d MiB wal=%d MiB; totals n=%d bytes=%d MiB",
+		n, err, dur.Round(time.Millisecond), queueOpTimeout, zzSize(path)>>20, zzSize(path+"-wal")>>20, q.total.n, q.total.bytes>>20)
+
+	var left int
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue`).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	var jsl int64
+	_ = q.db.QueryRow(`PRAGMA journal_size_limit`).Scan(&jsl)
+	if _, err := q.db.Exec(`PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("after: rows left=%d journal_size_limit=%d; after passive checkpoint wal=%d MiB", left, jsl, zzSize(path+"-wal")>>20)
+}

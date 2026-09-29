@@ -1,0 +1,48 @@
+//go:build windows
+
+package ipc
+
+import (
+	"bufio"
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/Microsoft/go-winio"
+)
+
+// Review 55 C16-01: whoever creates the pipe name first owns it. A squatter
+// (here with an Everyone DACL, as another OS user would use) makes the real
+// daemon fail as "already running", and Call talks to the squatter without
+// any check of who serves the pipe.
+func TestReview55C16_01PipeSquat(t *testing.T) {
+	ep := `\\.\pipe\dorylinae-review55-c16-01`
+	sq, err := winio.ListenPipe(ep, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;WD)"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sq.Close() }()
+	got := make(chan string, 1)
+	go func() {
+		c, err := sq.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close() }()
+		line, _ := bufio.NewReader(c).ReadString('\n')
+		got <- line
+		_, _ = c.Write([]byte(`{"id":"1","ok":true,"result":{"pid":4242}}` + "\n"))
+	}()
+
+	if _, err := Listen(ep); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("daemon Listen on squatted pipe: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var res map[string]any
+	if err := Call(ctx, ep, "mail_submit", map[string]string{"body": "secret content"}, &res); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	t.Logf("squatter received: %s; client accepted forged result %v", <-got, res)
+}

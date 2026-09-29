@@ -1,0 +1,77 @@
+package keystore
+
+import (
+	"errors"
+	"path/filepath"
+	"testing"
+
+	"github.com/zalando/go-keyring"
+)
+
+// flakyKeychain is a keychain backend that can be made unavailable, keeping
+// what it stored (a locked keychain keeps its entries).
+type flakyKeychain struct {
+	v    []byte
+	down bool
+}
+
+func (*flakyKeychain) Name() string { return "keychain" }
+func (k *flakyKeychain) Get() ([]byte, error) {
+	if k.down {
+		return nil, ErrUnavailable
+	}
+	if k.v == nil {
+		return nil, ErrNotFound
+	}
+	return k.v, nil
+}
+func (k *flakyKeychain) Set(s []byte) error {
+	if k.down {
+		return ErrUnavailable
+	}
+	k.v = append([]byte(nil), s...)
+	return nil
+}
+
+// T3-01: a Save that falls back to the file while the keychain is unavailable
+// leaves the older keychain copy in front; once the keychain is back, Load
+// returns the old secret.
+func TestReview55T3_01StaleKeychainWins(t *testing.T) {
+	kc := &flakyKeychain{}
+	st := New(kc, NewFile(filepath.Join(t.TempDir(), "webhook.key")))
+	if _, _, err := st.Save([]byte("S1-old-secret")); err != nil {
+		t.Fatal(err)
+	}
+	kc.down = true
+	if b, _, err := st.Save([]byte("S2-rotated")); err != nil || b != "file" {
+		t.Fatalf("rotate: backend=%q err=%v", b, err)
+	}
+	kc.down = false
+	got, backend, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "S2-rotated" {
+		t.Errorf("T3-01: after rotation Load returns %q from %s (the pre-rotation secret)", got, backend)
+	}
+}
+
+// T3-02: Keychain.Delete does not wrap a "no Secret Service" error as
+// ErrUnavailable, so Store.Delete fails on every machine without a keychain,
+// even though the file copy was removed.
+func TestReview55T3_02DeleteFailsWithoutKeychain(t *testing.T) {
+	keyring.MockInitWithError(errors.New("dbus: no session bus"))
+	defer keyring.MockInit()
+	path := filepath.Join(t.TempDir(), "k.key")
+	f := NewFile(path)
+	if err := f.Set([]byte("secret")); err != nil {
+		t.Fatal(err)
+	}
+	st := New(NewKeychain("review55"), f)
+	err := st.Delete()
+	_, ferr := f.Get()
+	t.Logf("Delete err=%v; file after delete: %v", err, ferr)
+	if err != nil && errors.Is(ferr, ErrNotFound) {
+		t.Errorf("T3-02: Delete reports failure although the only stored copy is gone: %v", err)
+	}
+}

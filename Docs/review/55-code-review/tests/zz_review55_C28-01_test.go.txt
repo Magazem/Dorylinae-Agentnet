@@ -1,0 +1,74 @@
+package relayclient_test
+
+// Review 55, finding C28-01 (temporary; never merged). A relay answers the
+// WebSocket upgrade with an `error` control frame instead of a challenge; its
+// code/message land verbatim in State().LastError, which `agentnet status`
+// and `agentnet doctor` print raw, and which "status" returns over IPC.
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
+)
+
+func TestReview55C28_01_RelayErrorTextReachesLastErrorRaw(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	// OSC 8 hyperlink + erase-line, then 1 000 000 '<': 1 byte each in the
+	// relay's frame, 6 bytes each (<) once the daemon's IPC encoder
+	// (json.NewEncoder, HTML escaping on) writes the status response.
+	payload := "\x1b]8;;https://evil.example/agentnet\x07upgrade now\x1b]8;;\x07\x1b[2K" + strings.Repeat("<", 1000000)
+	var fb strings.Builder
+	fe := json.NewEncoder(&fb)
+	fe.SetEscapeHTML(false) // a hostile relay writes '<' raw
+	_ = fe.Encode(map[string]string{"op": "error", "code": "x", "message": payload})
+	frame := []byte(fb.String())
+	if len(frame) > 1<<20 {
+		t.Fatalf("frame %d bytes over cap", len(frame))
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.CloseNow() }()
+		_ = c.Write(r.Context(), websocket.MessageText, frame)
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer ts.Close()
+
+	c, err := relayclient.New(relayclient.Config{
+		URL:        "ws" + strings.TrimPrefix(ts.URL, "http"),
+		Signer:     relayclient.NewKeySigner(priv),
+		MinBackoff: time.Hour, MaxBackoff: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for c.State().LastError == "" && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	le := c.State().LastError
+	if !strings.Contains(le, "\x1b]8;;https://evil.example") {
+		t.Fatalf("LastError does not carry the raw escape: %q", le[:min(len(le), 80)])
+	}
+	var sb strings.Builder
+	_ = json.NewEncoder(&sb).Encode(map[string]string{"last_error": le})
+	enc := sb.String()
+	t.Logf("LastError: %d bytes raw, %d bytes as JSON (IPC client line cap %d)", len(le), len(enc), 1<<20)
+}

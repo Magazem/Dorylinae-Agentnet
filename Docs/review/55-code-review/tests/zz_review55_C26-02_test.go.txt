@@ -1,0 +1,49 @@
+package audit
+
+import (
+	"context"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 C26-02: a sparse audit_list filter is one SQL statement that scans
+// the whole table while holding the store's single connection.
+func TestReview55C2602SparseQueryHoldsConnection(t *testing.T) {
+	s := openStore(t, filepath.Join(testutil.TempDir(t), "q.db"))
+	ctx := context.Background()
+	const n = 200000
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		if err := AppendTx(ctx, tx, "daemon", "mail.in", map[string]any{"peer": "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc", "kind": "request", "n": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	l := New(s.DB())
+	for _, p := range []ListParams{{Action: "nomatch."}, {Session: "r-00000000000000000000000000000000"}} {
+		start := time.Now()
+		res, err := l.Query(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%+v: %d rows in %v over %d-row log", p, len(res.Events), time.Since(start), n)
+	}
+	// A concurrent read waits for the scan: measure how long a trivial read is blocked.
+	done := make(chan time.Duration)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		st := time.Now()
+		_, _ = l.Head(ctx)
+		done <- time.Since(st)
+	}()
+	_, _ = l.Query(ctx, ListParams{Session: "r-00000000000000000000000000000000"})
+	t.Logf("Head() issued 20ms into the scan waited %v", <-done)
+}

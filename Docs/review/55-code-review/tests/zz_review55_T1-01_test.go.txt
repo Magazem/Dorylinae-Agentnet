@@ -1,0 +1,48 @@
+package agentcard
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"testing"
+)
+
+// T1-01 (review 55): the schema decode after the signature check matches
+// member names case-insensitively with Unicode folding (U+212A KELVIN SIGN
+// folds to 'k', U+017F LONG S to 's'). A card signed by K1 under its exact
+// "public_key" member can therefore decode with PublicKey = K2.
+func TestReview55T1_01_FoldedMemberOverridesSignedKey(t *testing.T) {
+	pub1, priv1, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	k1, k2 := b64.EncodeToString(pub1), b64.EncodeToString(pub2)
+
+	card := map[string]any{
+		"version":         json.Number("1"),
+		"name":            "alice",
+		"public_key":      k1, // what the signature is checked under
+		"public_Key": k2, // folds to public_key, sorts after it
+		"harness":         "claude-code",
+		"harneſſ": "spoofed-harness",
+		"skills":          []any{},
+		"created":         "2026-01-01T00:00:00Z",
+	}
+	canon, err := canonicalBytes(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv1, signingInput(canon))
+	env := []byte(`{"card":` + string(canon) + `,"signature":"` + b64.EncodeToString(sig) + `"}`)
+
+	sc, err := Verify(env)
+	if err != nil {
+		t.Logf("Verify refused the folded card: %v (no finding)", err)
+		return
+	}
+	t.Logf("signed under key %s…; Verify returned Card.PublicKey %s…, Harness %q", k1[:8], sc.Card.PublicKey[:8], sc.Card.Harness)
+	if sc.Card.PublicKey == k2 {
+		t.Errorf("T1-01: card signed by K1 accepted as the card of K2 (folded member %q)", "public_Key")
+	}
+	if sc.Card.Harness != "claude-code" {
+		t.Errorf("T1-01: harness shown %q differs from the exact signed member %q", sc.Card.Harness, "claude-code")
+	}
+}

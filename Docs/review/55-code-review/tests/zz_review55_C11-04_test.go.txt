@@ -1,0 +1,54 @@
+package daemon
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+)
+
+// The config dir itself, spelled \\?\<dir>, passes issuance and is served.
+func TestReview55C1104PrefixedConfigDirServed(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	cfg := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfg, "dorylinae.db"), []byte("SECRET-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, ierr := validateResource(cfg, `\\?\`+cfg)
+	if ierr != nil {
+		t.Skipf("refused: %s", ierr.Message)
+	}
+	var got []byte
+	err := capability.FSBackend{}.Read(context.Background(), capability.Record{Path: resolved, Action: capability.ActionFSRead}, "dorylinae.db", 0, 1024,
+		func(f capability.Fragment) error { got = append(got, f.Data...); return nil })
+	t.Logf("resolved=%q read err=%v data=%q", resolved, err, got)
+	if err == nil && string(got) == "SECRET-DB" {
+		t.Fatalf("config dir served through a \\\\?\\ resource path")
+	}
+}
+
+// Review 55 C11-04: forbidden resources spelled with Windows path prefixes.
+func TestReview55C1104PrefixedForbidden(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	home, _ := os.UserHomeDir()
+	cfgBase, _ := os.UserConfigDir()
+	cfg := filepath.Join(cfgBase, "dorylinae")
+	for _, p := range []string{
+		`\\?\` + home, `\\?\` + cfg, `\\?\C:\`, `\\.\C:\`, `\\localhost\C$`, `\\localhost\C$\Users`, `\\127.0.0.1\C$\` + home[3:],
+		`\\?\GLOBALROOT\Device\HarddiskVolume3\`, `\\?\UNC\localhost\C$\` + home[3:], `\\localhost\C$\` + cfg[3:],
+	} {
+		resolved, ierr := validateResource(cfg, p)
+		if ierr == nil {
+			t.Errorf("ACCEPTED %q -> %q", p, resolved)
+		} else {
+			t.Logf("refused %q: %s", p, ierr.Message)
+		}
+	}
+}

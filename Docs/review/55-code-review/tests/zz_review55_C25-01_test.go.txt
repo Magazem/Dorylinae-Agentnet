@@ -1,0 +1,26 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Review 55 C25-01: a hostile file's unknown member name reaches the human
+// verify output raw (CR/ESC), so the "invalid" verdict can be overwritten.
+func TestZZReview55C25_01VerifyReasonRaw(t *testing.T) {
+	spoof := `\r\u001b[2Kd-7eaeb0b78e6bd96981357b500af94044  hash 6ec3...  valid, signed by initiator and respondent`
+	file := `{"decision":{},"hash":"` + strings.Repeat("0", 64) + `","signatures":{"initiator":"x"},"` + spoof + `":1}`
+	p := filepath.Join(t.TempDir(), "d.json")
+	if err := os.WriteFile(p, []byte(file), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	code := runDecisionVerify([]string{p}, &out, &errb)
+	t.Logf("exit %d stdout %q", code, out.String())
+	if strings.Contains(out.String(), "\r\x1b[2K") {
+		t.Errorf("raw CR+ESC from the file reached the terminal output")
+	}
+}

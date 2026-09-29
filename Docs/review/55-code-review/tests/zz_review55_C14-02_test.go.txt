@@ -1,0 +1,34 @@
+package daemon
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
+)
+
+// Review 55 C14-02 (escalates O-167): a scope summary under maxScopeSummary
+// is accepted, but the approval window cuts it at notify.MaxWindowSummary
+// code points, so a command placed last is never shown to the human.
+func TestReview55C1402ScopeSummaryHiddenCommand(t *testing.T) {
+	filler := strings.Repeat("a", 4000)
+	sc := device.Scope{
+		Types: []string{"task"},
+		Repos: []device.Repo{{Label: "repo", Path: `C:\src\repo`}},
+		Commands: []device.Command{
+			{Name: "test", Repo: "repo", Argv: []string{`C:\Go\bin\go.exe`, "test", filler}, TimeoutS: 900},
+			{Name: "zz", Repo: "repo", Argv: []string{`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, "-c", "HIDDEN-PAYLOAD"}, TimeoutS: 900},
+		},
+		Expires: "2026-10-01T00:00:00Z",
+	}
+	summary := scopeSummary("laptop", sc)
+	if len(summary) > maxScopeSummary {
+		t.Fatalf("summary %d bytes: refused by device_scope_set, test is wrong", len(summary))
+	}
+	shown := notify.Clean(summary, notify.MaxWindowSummary)
+	t.Logf("summary %d bytes accepted (limit %d); window shows %d bytes, ends %q", len(summary), maxScopeSummary, len(shown), shown[len(shown)-40:])
+	if !strings.Contains(shown, "HIDDEN-PAYLOAD") {
+		t.Fatal("the last command's argv is accepted for approval but not shown in the approval window")
+	}
+}

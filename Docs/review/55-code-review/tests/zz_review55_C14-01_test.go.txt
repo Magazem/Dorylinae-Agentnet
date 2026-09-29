@@ -1,0 +1,46 @@
+//go:build windows
+
+package device
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// Review 55 C14-01: a repo directory replaced by a junction to another
+// directory must be refused by CheckTarget (device.md §Running, review 40 L5).
+func TestReview55C1401JunctionRepo(t *testing.T) {
+	prog := filepath.Join(os.Getenv("SystemRoot"), "System32", "whoami.exe")
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(base, "repo")
+	other := filepath.Join(base, "elsewhere")
+	for _, d := range []string{repo, other} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// This PC's C:\ ACL makes the program-owner step fail (HANDOFF section 0), so
+	// only the directory step, which runs first, is judged here.
+	if err := CheckTarget(prog, repo); err != nil && strings.Contains(err.Error(), "working directory") {
+		t.Fatalf("unchanged repo refused: %v", err)
+	}
+	if err := os.Remove(repo); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", repo, other).CombinedOutput(); err != nil {
+		t.Fatalf("mklink /J: %v %s", err, out)
+	}
+	resolved, _ := filepath.EvalSymlinks(repo)
+	t.Logf("EvalSymlinks(%s) = %s", repo, resolved)
+	err = CheckTarget(prog, repo)
+	t.Logf("CheckTarget after the swap: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "working directory") {
+		t.Fatal("a repo swapped for a junction to another directory passed the directory re-check")
+	}
+}

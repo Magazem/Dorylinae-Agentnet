@@ -1,0 +1,52 @@
+package ipc_test
+
+// Review 55, finding T6c-01 (temporary, never merged). debate.md §IPC "Size"
+// (review 43 M7) says the IPC server writes results with HTML escaping off,
+// so a '<'-heavy debate transcript keeps its canonical size. marshalResult
+// does that, but serveConn then encodes the Response (whose Result is a
+// json.RawMessage) with a default json.Encoder, which re-escapes '<' as
+// <. A 200 000-byte '<' string then no longer fits the 1 MiB line.
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+)
+
+func TestReview55T6c01EscapeHTMLUndone(t *testing.T) {
+	p := shortHome(t)
+	ln, err := ipc.Listen(p.Endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := ipc.NewServer()
+	srv.Handle("big", func(_ context.Context, params json.RawMessage) (any, error) {
+		var in struct {
+			Ch string `json:"ch"`
+		}
+		_ = json.Unmarshal(params, &in)
+		return map[string]string{"text": strings.Repeat(in.Ch, 200000)}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx, ln) }()
+
+	callBig := func(ch string) error {
+		cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer ccancel()
+		var out map[string]string
+		return ipc.Call(cctx, p.Endpoint, "big", map[string]string{"ch": ch}, &out)
+	}
+	if err := callBig("a"); err != nil {
+		t.Fatalf("control: 200000 x 'a' failed: %v", err)
+	}
+	err = callBig("<")
+	t.Logf("200000 x '<' (raw 200 KB, under the 1 MiB line): err = %v", err)
+	if err == nil {
+		t.Fatal("expected the '<' result to fail: it did not, so HTML escaping is off end to end")
+	}
+}

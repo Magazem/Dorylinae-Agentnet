@@ -1,0 +1,35 @@
+package debate
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+)
+
+// Review 55 C24-01: a modified A repeats one constraint id B holds in its
+// close's "constraints" list. B neither dedupes nor bounds the list, so its
+// derivation exceeds MaxDecision and Apply returns a plain (non-ErrBadBody)
+// error: the close is never acked and never refused, a poison mail.
+func TestReview55C24_01DuplicateListedConstraints(t *testing.T) {
+	a, b, _, sid := openPositions(t, 1)
+	toConverge(t, a, b, sid)
+	pc := constrain(t, b, sid, strings.Repeat("\U0001D400", 500)) // 500 code points, 2000 bytes
+	cl := closeTo(t, a, b, sid)
+	list := make([]any, 400)
+	for i := range list {
+		list[i] = pc.ID
+	}
+	cl.body["constraints"] = list
+	err := deliver(t, b, a.self, cl)
+	var tl *decision.TooLargeError
+	t.Logf("apply error: %v", err)
+	if err == nil || errors.Is(err, mail.ErrBadBody) || !errors.As(err, &tl) {
+		t.Fatalf("want a non-bad-body TooLargeError, got %v", err)
+	}
+	if ph := phaseOf(t, b, sid); ph == PhaseClosed || ph == PhaseBroken {
+		t.Fatalf("B phase %s", ph)
+	}
+}

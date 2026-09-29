@@ -1,0 +1,56 @@
+package relay_test
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/coder/websocket"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
+)
+
+// Review 55 C01-02: an attacker that holds the relay-wide read budget with
+// unfinished frames (no read timeout after auth) makes the relay close every
+// OTHER connection that sends anything, with 1013, for as long as it likes.
+// Scaled down: budget 64 KiB, 4 attacker connections each holding 16 KiB.
+// At the hosted flags (--max-inflight 48MiB) it is 48 connections x 1 MiB,
+// from one /24.
+func TestReview55C01_02ReadBudgetHeldClosesHonestPeers(t *testing.T) {
+	const budget = 64 << 10
+	e := newLimitEnv(t, relay.Options{MaxInflight: budget})
+	victim, other := newPeer(t), newPeer(t)
+	cv := e.authed(victim, "10.9.0.1")
+	e.authed(other, "10.9.0.2")
+
+	// Open attacker connections, each starting a frame it never finishes,
+	// until less than one 4 KiB read chunk of the budget is left.
+	n := 0
+	for ; n < 40 && e.s.Reading() > budget-4096 == false; n++ {
+		a := newPeer(t)
+		ca := e.authed(a, fmt.Sprintf("10.1.%d.1", n+1))
+		w, err := ca.Writer(ctx(t), websocket.MessageText)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(payload(5000)); err != nil { // never finished
+			t.Fatal(err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if e.s.Reading() <= budget-4096 {
+		t.Fatalf("attacker holds only %d of %d read-budget bytes", e.s.Reading(), budget)
+	}
+	t.Logf("attacker holds %d bytes of read budget with %d unfinished frames", e.s.Reading(), n)
+
+	// The honest victim sends one ordinary small mail and is disconnected.
+	writeFrame(t, cv, []byte(mustJSON(victim.env(other.key, "honest-1", payload(200)))))
+	expectClose(t, cv, websocket.StatusTryAgainLater)
+	t.Log("honest peer closed 1013 for sending a 200-byte mail")
+
+	// It reconnects and is closed again on its next frame.
+	cv2 := e.authed(victim, "10.9.0.1")
+	writeFrame(t, cv2, []byte(mustJSON(victim.env(other.key, "honest-2", payload(200)))))
+	expectClose(t, cv2, websocket.StatusTryAgainLater)
+	t.Log("and again after reconnecting")
+}

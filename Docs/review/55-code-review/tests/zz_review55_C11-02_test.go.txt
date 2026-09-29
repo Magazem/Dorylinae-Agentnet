@@ -1,0 +1,90 @@
+package daemon
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+)
+
+// Review 55 C11-02: a Windows junction whose target is the config dir must be
+// refused by validateResource (grant.md §Issuance step 3).
+func TestReview55C1102JunctionToConfigDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "cfg")
+	if err := os.MkdirAll(filepath.Join(cfg, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j := filepath.Join(tmp, "innocent")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", j, cfg).CombinedOutput(); err != nil {
+		t.Fatalf("mklink: %v %s", err, out)
+	}
+	ev, everr := filepath.EvalSymlinks(j)
+	t.Logf("EvalSymlinks(junction) = %q, %v", ev, everr)
+	resolved, ierr := validateResource(cfg, j)
+	if ierr == nil {
+		t.Fatalf("junction to the config dir accepted: resolved=%q", resolved)
+	}
+	t.Logf("refused: %v", ierr.Message)
+}
+
+// The fs backend then serves the config dir's files through the root junction.
+func TestReview55C1102JunctionServed(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "cfg")
+	if err := os.MkdirAll(filepath.Join(cfg, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "keys", "seed"), []byte("SECRET-SEED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := filepath.Join(tmp, "innocent")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", j, cfg).CombinedOutput(); err != nil {
+		t.Fatalf("mklink: %v %s", err, out)
+	}
+	resolved, ierr := validateResource(cfg, j)
+	if ierr != nil {
+		t.Skipf("refused at issuance: %v", ierr.Message)
+	}
+	rec := capability.Record{Path: resolved, Action: capability.ActionFSRead}
+	var got []byte
+	err := capability.FSBackend{}.Read(context.Background(), rec, "keys/seed", 0, 1024, func(f capability.Fragment) error {
+		got = append(got, f.Data...)
+		return nil
+	})
+	t.Logf("read err=%v data=%q", err, got)
+	if err == nil && string(got) == "SECRET-SEED" {
+		t.Fatalf("config-dir file served through a junction resource")
+	}
+}
+
+// The stock Windows legacy junction "%USERPROFILE%\Application Data" points at
+// %APPDATA% (Roaming), which holds the default config dir. Metadata only.
+func TestReview55C1102StockApplicationDataJunction(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows only")
+	}
+	home, _ := os.UserHomeDir()
+	cfgBase, _ := os.UserConfigDir()
+	cfg := filepath.Join(cfgBase, "dorylinae")
+	j := filepath.Join(home, "Application Data")
+	resolved, ierr := validateResource(cfg, j)
+	if ierr != nil {
+		t.Skipf("refused: %v", ierr.Message)
+	}
+	e, _, err := capability.FSBackend{}.Stat(context.Background(), capability.Record{Path: resolved, Action: capability.ActionFSRead}, "dorylinae")
+	t.Logf("accepted %q; stat dorylinae: entry=%+v err=%v", resolved, e, err)
+	if err == nil {
+		t.Fatalf("config dir reachable through the stock Application Data junction")
+	}
+}

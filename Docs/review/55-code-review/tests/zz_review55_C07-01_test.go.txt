@@ -1,0 +1,49 @@
+package mail
+
+import (
+	"context"
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 C07-01: a paired peer that announces a fresh key before every
+// keys mail makes Retry re-seal and re-send every open row, every time.
+func TestReview55C0701RetryRepeatsOnEachNewAnnouncement(t *testing.T) {
+	sender, recip, _ := fixture(t)
+	st := openStore(t, filepath.Join(testutil.TempDir(t), "o.db"))
+	t.Cleanup(func() { _ = st.Close() })
+	peers := &obPeers{keys: map[string][]byte{recip.key: recip.mbox.PublicKey().Bytes()}}
+	out := &sentBox{}
+	ob := &Outbox{
+		DB: st.DB(), Peers: peers, Sender: out,
+		Priv: func() (ed25519.PrivateKey, error) { return append(ed25519.PrivateKey(nil), sender.priv...), nil },
+		Now:  func() time.Time { return vectorNow },
+	}
+	ctx := context.Background()
+	var ids []string
+	for i := 0; i < 3; i++ {
+		res, err := ob.Submit(ctx, recip.key, "note", map[string]any{"text": "x"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, res.ID)
+	}
+	const rounds = 5
+	for r := 0; r < rounds; r++ {
+		k, err := ecdh.X25519().NewPrivateKey(seq(byte(0x80 + r)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		peers.set(recip.key, k.PublicKey().Bytes()) // merge of a newer announcement
+		ob.Retry(ctx, recip.key, ids)
+	}
+	t.Logf("rows=%d rounds=%d envelopes sent=%d", len(ids), rounds, out.count())
+	if out.count() != len(ids)*rounds {
+		t.Fatalf("sent %d", out.count())
+	}
+}

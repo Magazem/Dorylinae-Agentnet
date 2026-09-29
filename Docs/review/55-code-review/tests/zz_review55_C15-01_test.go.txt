@@ -1,0 +1,44 @@
+package main
+
+// Review 55, verification of C15-01 (never merged). The draft's SHA256SUMS
+// is a mutable asset; `sign` is the owner's last step before the key touches
+// it. This test asserts the property the finding says is missing: `sign`
+// should refuse a SHA256SUMS that is not bound to the CI run that built the
+// release. It FAILS today because the only check is checkSums (format).
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestReview55C1501SignAcceptsSwappedSums(t *testing.T) {
+	dir := t.TempDir()
+	key := filepath.Join(dir, "k.pem")
+	var out, errb bytes.Buffer
+	if rc := run([]string{"keygen", "-out", key}, &out, &errb); rc != 0 {
+		t.Fatalf("keygen rc=%d: %s", rc, errb.String())
+	}
+	// An attacker's SHA256SUMS: well formed, hashes of trojaned archives
+	// (arbitrary here), no relation to anything CI built.
+	var b strings.Builder
+	for _, tg := range targets {
+		ext := "tar.gz"
+		if strings.HasPrefix(tg, "windows") {
+			ext = "zip"
+		}
+		b.WriteString(strings.Repeat("e", 64) + "  agentnet_1.2.3_" + tg + "." + ext + "\n")
+	}
+	sums := filepath.Join(dir, "SHA256SUMS")
+	if err := os.WriteFile(sums, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	rc := run([]string{"sign", "-key", key, sums}, &out, &errb)
+	if rc == 0 {
+		t.Fatalf("C15-01: sign signed a SHA256SUMS with no binding to the CI run (rc=0): %s", strings.TrimSpace(out.String()))
+	}
+}

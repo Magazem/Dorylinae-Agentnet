@@ -1,0 +1,33 @@
+package agentcard
+
+import (
+	"bytes"
+	"runtime"
+	"testing"
+	"time"
+)
+
+// Review 55 C05-02: nesting depth of ParseStrict is unbounded.
+func TestReview55DeepNesting(t *testing.T) {
+	for _, n := range []int{10000, 100000, 1000000, 2000000} {
+		data := append(bytes.Repeat([]byte{'['}, n), bytes.Repeat([]byte{']'}, n)...)
+		var ms runtime.MemStats
+		start := time.Now()
+		_, err := ParseStrict(data)
+		runtime.ReadMemStats(&ms)
+		t.Logf("depth %d (%d bytes): err=%v elapsed=%v StackSys=%d MiB Sys=%d MiB", n, len(data), err, time.Since(start), ms.StackSys>>20, ms.Sys>>20)
+	}
+}
+
+// Review 55 C05-03: lone surrogate escapes canonicalise to U+FFFD.
+func TestReview55LoneSurrogate(t *testing.T) {
+	for _, in := range []string{`"\ud800"`, `"\udfff"`, `"�"`, "\"\xef\xbf\xbd\""} {
+		v, err := ParseStrict([]byte(in))
+		if err != nil {
+			t.Logf("%s: err %v", in, err)
+			continue
+		}
+		c, _ := CanonicalValue(v)
+		t.Logf("%q -> %q", in, c)
+	}
+}

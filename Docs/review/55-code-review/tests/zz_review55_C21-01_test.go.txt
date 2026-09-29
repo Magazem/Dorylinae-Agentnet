@@ -1,0 +1,52 @@
+package worksession
+
+import (
+	"context"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
+)
+
+// Review 55 C21-01: B submits two results in round 1 before A's ws.state
+// arrives. A applies the first and ignores the second, the human accepts the
+// first, but B completes its request (and sends request.complete to A) with
+// the second, which A never reviewed.
+func TestReview55_C21_01_CompleteCarriesUnacceptedResult(t *testing.T) {
+	ctx := context.Background()
+	a, b, reqID, sid := setupAcceptedSession(t)
+
+	r1 := &Result{Status: request.ResultPass, Summary: "reviewed result R1", Verification: VerificationNone}
+	r2 := &Result{Status: request.ResultPass, Summary: "never reviewed R2", Verification: VerificationNone}
+	if ok, _, err := b.ws.SubmitResult(ctx, testA, reqID, r1); !ok || err != nil {
+		t.Fatalf("submit R1: %v", err)
+	}
+	m1 := b.ob.last(t, KindResult)
+	if ok, _, err := b.ws.SubmitResult(ctx, testA, reqID, r2); !ok || err != nil {
+		t.Fatalf("submit R2 (B's mirror still open): %v", err)
+	}
+	m2 := b.ob.last(t, KindResult)
+
+	if err := deliver(t, a, testB, m1); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(t, a, testB, m2); err != nil { // ignored: state
+		t.Fatal(err)
+	}
+	av, err := a.ws.AcceptResult(ctx, sid)
+	if err != nil || av.Result == nil {
+		t.Fatalf("accept: %+v %v", av, err)
+	}
+	t.Logf("A's session accepted summary: %q", av.Result.Summary)
+	deliverState(t, a, b)
+	if err := deliver(t, a, testB, b.ob.last(t, request.KindComplete)); err != nil {
+		t.Fatal(err)
+	}
+	arv, err := a.req.Show(ctx, reqID, testB)
+	if err != nil || arv.Result == nil {
+		t.Fatalf("A's request: %+v %v", arv, err)
+	}
+	t.Logf("A's request record summary:   %q", arv.Result.Summary)
+	if arv.Result.Summary != av.Result.Summary {
+		t.Errorf("A's request record carries %q, but A accepted %q", arv.Result.Summary, av.Result.Summary)
+	}
+}

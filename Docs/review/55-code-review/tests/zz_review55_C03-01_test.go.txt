@@ -1,0 +1,53 @@
+package relay
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+)
+
+// C03-01: every bind_start from an unbound key stores a bind_requests row that
+// is kept for bindKeep (24 h) after its 10-minute expiry, even when a later
+// bind_start of the same key cancels it. Measures the on-disk cost per row.
+func TestReview55C03_01BindStartRowsGrowDisk(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "q.db")
+	s := New(Options{Now: func() time.Time { return now }, Accounts: AccountsGitHub, QueuePath: path})
+	var keys []*conn
+	for i := 0; i < 16; i++ { // 16 unbound connections: the per-prefix cap
+		keys = append(keys, newConn(nil, testKey(t), 1<<20, "198.51.100.0"))
+	}
+	const perKey = 1250 // 20,000 rows in all; one key at 60/min makes 86,400 a day
+	for i := 0; i < perKey; i++ {
+		for _, c := range keys {
+			s.handleControl(c, &envelope.Control{Op: envelope.OpBindStart, Device: "laptop-with-a-long-label-xxxxxx", OS: "windows"})
+			for len(c.out) > 0 {
+				<-c.out
+			}
+		}
+		now = now.Add(time.Second)
+	}
+	var rows int
+	if err := s.q.db.QueryRow(`SELECT COUNT(*) FROM bind_requests`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	s.Sweep() // prune keeps them: none expired more than 24 h ago
+	var after int
+	_ = s.q.db.QueryRow(`SELECT COUNT(*) FROM bind_requests`).Scan(&after)
+	var pages, psize int64
+	_ = s.q.db.QueryRow(`PRAGMA page_count`).Scan(&pages)
+	_ = s.q.db.QueryRow(`PRAGMA page_size`).Scan(&psize)
+	size := pages * psize
+	s.Close()
+	_ = os.Remove
+	perRow := float64(size) / float64(rows)
+	t.Logf("rows=%d after-sweep=%d db+wal bytes=%d (%.0f B/row); one prefix at 16 keys x 60/min x 24h10m = %.0f MB",
+		rows, after, size, perRow, 16*60*60*24.17*perRow/1e6)
+	if after != rows || rows != 16*perKey {
+		t.Fatalf("rows=%d after=%d", rows, after)
+	}
+}

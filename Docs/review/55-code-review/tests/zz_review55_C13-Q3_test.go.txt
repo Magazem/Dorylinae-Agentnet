@@ -1,0 +1,96 @@
+package device
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"golang.org/x/sys/windows"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+)
+
+// Review 55 C13: does checkPathOwner judge a junction by its own access list
+// (device.md §Program ownership, "the link is not followed for it"), or by
+// its target's? And does CheckProgramOwner refuse a path through a junction?
+func TestReview55C13JunctionOwnACL(t *testing.T) {
+	dir := testutil.PrivateDir(t)
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "tool.exe"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	j := filepath.Join(dir, "j")
+	junction(t, j, target)
+
+	// Give Users FILE_WRITE_ATTRIBUTES on the junction object itself, through
+	// a handle opened on the reparse point (not followed).
+	p, _ := windows.UTF16PtrFromString(j)
+	h, err := windows.CreateFile(p, windows.READ_CONTROL|windows.WRITE_DAC, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
+		windows.OPEN_EXISTING, windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _, _ := sd.DACL()
+	users, _ := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: fileWriteAttrs | fileWriteData,
+		AccessMode:        windows.GRANT_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{TrusteeForm: windows.TRUSTEE_IS_SID, TrusteeType: windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+			TrusteeValue: windows.TrusteeValueFromSID(users)},
+	}}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.UNPROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil); err != nil {
+		t.Fatal(err)
+	}
+	_ = windows.CloseHandle(h)
+
+	// Confirm the ACE is on the junction object and not on the target.
+	own := func(path string, reparse bool) string {
+		fl := uint32(windows.FILE_FLAG_BACKUP_SEMANTICS)
+		if reparse {
+			fl |= windows.FILE_FLAG_OPEN_REPARSE_POINT
+		}
+		pp, _ := windows.UTF16PtrFromString(path)
+		hh, err := windows.CreateFile(pp, windows.READ_CONTROL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil, windows.OPEN_EXISTING, fl, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer windows.CloseHandle(hh)
+		s, err := windows.GetSecurityInfo(hh, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.String()
+	}
+	t.Logf("junction own SD: %s", own(j, true))
+	t.Logf("target SD:       %s", own(target, false))
+	named, _ := windows.GetNamedSecurityInfo(j, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	t.Logf("GetNamedSecurityInfo(junction): %s", named.String())
+	if !strings.Contains(own(j, true), ";;;BU)") {
+		t.Fatalf("setup: Users ACE not on the junction")
+	}
+
+	err = checkPathOwner(j, roleLink)
+	t.Logf("checkPathOwner(junction, roleLink) = %v", err)
+	w := ownerWalk{seen: map[string]bool{}}
+	werr := w.check(filepath.Join(j, "tool.exe"), 0)
+	t.Logf("ownerWalk through junction = %v", werr)
+	_, everr := filepath.EvalSymlinks(filepath.Join(j, "tool.exe"))
+	t.Logf("EvalSymlinks through junction err = %v", everr)
+	cerr := CheckProgramOwner(filepath.Join(j, "tool.exe"))
+	t.Logf("CheckProgramOwner through junction = %v", cerr)
+	if err == nil && werr == nil && cerr == nil {
+		t.Errorf("a junction that Users can rewrite is accepted")
+	}
+}
