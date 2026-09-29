@@ -1,0 +1,91 @@
+//go:build windows
+
+package daemon
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"golang.org/x/sys/windows"
+)
+
+// Review 55 T4-01: Windows spellings of the config dir that are neither
+// \\?\ nor UNC (C11-04 covers those): the NTFS directory stream
+// "::$INDEX_ALLOCATION", an 8.3 short name, a trailing dot or space, and the
+// volume-GUID form.
+func TestReview55T401Spellings(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "dorylinae-config")
+	if err := os.Mkdir(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "dorylinae.db"), []byte("SECRET-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spellings := map[string]string{
+		"index_allocation": cfg + `::$INDEX_ALLOCATION`,
+		"index_alloc_i30":  cfg + `:$I30:$INDEX_ALLOCATION`,
+		"trailing_dot":     cfg + `.`,
+		"trailing_space":   cfg + ` `,
+	}
+	if p, err := windows.UTF16PtrFromString(cfg); err == nil {
+		buf := make([]uint16, 1024)
+		if n, err := windows.GetShortPathName(p, &buf[0], uint32(len(buf))); err == nil && n > 0 {
+			spellings["short_8dot3"] = windows.UTF16ToString(buf[:n])
+		}
+	}
+	vol := make([]uint16, 64)
+	root, _ := windows.UTF16PtrFromString(filepath.VolumeName(cfg) + `\`)
+	if err := windows.GetVolumeNameForVolumeMountPoint(root, &vol[0], uint32(len(vol))); err == nil {
+		g := windows.UTF16ToString(vol) // \\?\Volume{...}\
+		spellings["volume_guid"] = g + cfg[len(filepath.VolumeName(cfg))+1:]
+	}
+	for name, raw := range spellings {
+		resolved, ierr := validateResource(cfg, raw)
+		if ierr != nil {
+			t.Logf("%s: %q refused: %s", name, raw, ierr.Message)
+			continue
+		}
+		rec := capability.Record{Path: resolved}
+		data, err := readViaFS(rec, "dorylinae.db")
+		t.Errorf("%s: %q ACCEPTED as %q; served read err=%v data=%q", name, raw, resolved, err, data)
+	}
+}
+
+func readViaFS(rec capability.Record, rel string) (string, error) {
+	var out []byte
+	err := capability.FSBackend{}.Read(context.Background(), rec, rel, 0, 64, func(f capability.Fragment) error {
+		out = append(out, f.Data...)
+		return nil
+	})
+	return string(out), err
+}
+
+// A drive letter made with subst (as HANDOFF §0 does for the test workaround)
+// is another spelling of the same directory.
+func TestReview55T401Subst(t *testing.T) {
+	base := t.TempDir()
+	cfg := filepath.Join(base, "dorylinae-config")
+	if err := os.Mkdir(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "dorylinae.db"), []byte("SECRET-DB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const drive = "Q:"
+	if out, err := exec.Command("subst", drive, base).CombinedOutput(); err != nil {
+		t.Skipf("subst: %v %s", err, out)
+	}
+	defer func() { _ = exec.Command("subst", drive, "/D").Run() }()
+	raw := drive + `\dorylinae-config`
+	resolved, ierr := validateResource(cfg, raw)
+	if ierr != nil {
+		t.Logf("subst %q refused: %s", raw, ierr.Message)
+		return
+	}
+	data, err := readViaFS(capability.Record{Path: resolved}, "dorylinae.db")
+	t.Errorf("subst %q ACCEPTED as %q; served read err=%v data=%q", raw, resolved, err, data)
+}
