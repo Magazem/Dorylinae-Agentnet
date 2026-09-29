@@ -136,12 +136,19 @@ Doing it by hand instead: the script is short, and every step can be run line by
 | `--db` | `/var/lib/agentnet-relay/relay.db` | systemd `StateDirectory`, owned by the service user |
 | `--metrics-listen` | `127.0.0.1:9787` | Operator metrics on loopback only (4.1a) |
 | `--max-conns` | `2000` | Review 52 M2 (the default of 5000 is sized for a larger host) |
-| `--max-inflight` | `48MiB` | Review 52 M2. The same budget applies again to frames being read, so about 96 MiB at most |
+| `--max-inflight` | `48MiB` | Review 52 M2. The same budget applies again to frames being read. One /24 (/48) holds at most 6 MiB of each (R55-F1) |
+| `--max-inflight-ephemeral` | `6MiB` | R55-F1: presence and control frames get a budget of their own, so they cannot spend the mail budget. Equals the default (`--max-inflight` / 8), written out so the unit shows every memory number |
+| `--frame-read-timeout` | `30s` | R55-F1: a frame must arrive within 30 s of its first byte, so an unfinished frame cannot hold memory. Equals the default |
 | `GOMEMLIMIT` | `400MiB` | Review 52 M2: about 80 % of a 512 MB VM |
 | `--queue-max-total` | `1GiB` | See below |
 | `--queue-min-free-disk` | `512MiB` | See below |
 | `LimitNOFILE` | `8192` | 2000 + 256 connections exceed the usual 1024 |
 | `--accounts` | not passed (off) | D40: the owner's own team only |
+
+**Memory numbers** (relay-hosted.md "Memory bound after R55-F1"): about 102 MiB of budgets
+(48 outbound + 48 read + 6 ephemeral) and about 255 MiB in total at 2000 connections, under
+`GOMEMLIMIT=400MiB`. Caddy is a separate process outside that limit (an estimated 250 MiB
+at 2256 connections), so the VM needs about 1 GB of RAM.
 
 **Disk numbers.** Review 52 asked for disk limits scaled to a 2–3 GB volume:
 

@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -79,8 +78,18 @@ const (
 	limitUnboundPerPrefix = "unbound_per_prefix"
 )
 
+// Limit names of R55-F1: the ephemeral budget refused a presence or control
+// frame (dropped); a prefix's share of the outbound budget sent mail down the
+// queue path; a frame was not read within --frame-read-timeout. The eviction
+// names are evictLimits (budget.go).
+const (
+	limitEphemeral      = "max_inflight_ephemeral"
+	limitInflightPrefix = "max_inflight_prefix"
+	limitFrameTimeout   = "frame_read_timeout"
+)
+
 // orDefault returns v, def when v is 0, or 0 (off) when v is negative.
-func orDefault[T int | int64](v, def T) T {
+func orDefault[T ~int | ~int64](v, def T) T {
 	switch {
 	case v == 0:
 		return def
@@ -118,9 +127,6 @@ type limits struct {
 	ctlPrune    time.Time
 	prefixConns map[string]int // open WebSocket connections per prefix
 	unauth      int            // connections still authenticating, relay-wide
-
-	inflight budget // bytes waiting in every connection's outbound buffer
-	reading  budget // bytes of frames being read from every connection (R-4.0 H1)
 
 	logMu   sync.Mutex
 	logSeen map[string]*logWindow
@@ -170,8 +176,6 @@ func newLimits(opts Options, now func() time.Time, log *slog.Logger) *limits {
 		reconnects:        newBucketSet(perMin(reconnects), float64(reconnects)),
 		control:           map[string]*controlWindowState{},
 		prefixConns:       map[string]int{},
-		inflight:          budget{max: orDefault(opts.MaxInflight, defaultMaxInflight)},
-		reading:           budget{max: orDefault(opts.MaxInflight, defaultMaxInflight)},
 		logSeen:           map[string]*logWindow{},
 	}
 	return l
@@ -279,28 +283,47 @@ func (l *limits) reconnect(key string) bool {
 	return l.reconnects.take(key, now, 1)
 }
 
-// sendAllowed charges one non-ephemeral envelope of n bytes to key and to
-// prefix. Either all four buckets are charged or none; the name of the first
-// limit that refused is returned.
-func (l *limits) sendAllowed(key, prefix string, n int) string {
+// smallFrame is the size up to which a frame is charged to the byte buckets
+// but never refused before it is parsed: acks (review 56a A7).
+const smallFrame = 1 << 10
+
+// frameAllowed charges one frame of n bytes, read after auth and not yet
+// parsed, to the byte buckets of key and prefix (R55-035). Both are charged
+// or neither; the name of the first limit that refused is returned. A frame
+// of at most smallFrame bytes is always charged and never refused.
+func (l *limits) frameAllowed(key, prefix string, n int) string {
 	now := l.now()
 	size := float64(n)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n > smallFrame {
+		switch {
+		case !l.keyBytes.has(key, now, size):
+			return limitKeyBytes
+		case !l.prefixBytes.has(prefix, now, size):
+			return limitPrefixBytes
+		}
+	}
+	l.keyBytes.spend(key, now, size)
+	l.prefixBytes.spend(prefix, now, size)
+	return ""
+}
+
+// sendAllowed charges one non-ephemeral envelope to key and to prefix. Both
+// are charged or neither; the name of the first limit that refused is
+// returned. Its bytes were charged when it was read (frameAllowed).
+func (l *limits) sendAllowed(key, prefix string) string {
+	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch {
 	case !l.keyEnvs.has(key, now, 1):
 		return limitKeyEnvs
-	case !l.keyBytes.has(key, now, size):
-		return limitKeyBytes
 	case !l.prefixEnvs.has(prefix, now, 1):
 		return limitPrefixEnvs
-	case !l.prefixBytes.has(prefix, now, size):
-		return limitPrefixBytes
 	}
 	l.keyEnvs.take(key, now, 1)
-	l.keyBytes.take(key, now, size)
 	l.prefixEnvs.take(prefix, now, 1)
-	l.prefixBytes.take(prefix, now, size)
 	return ""
 }
 
@@ -400,6 +423,15 @@ func (b *bucketSet) has(key string, now time.Time, cost float64) bool {
 	return b.refill(key, now).tokens >= cost
 }
 
+// spend removes cost tokens from key's bucket even past empty: the debt is
+// repaid by the refill before the bucket admits anything that checks it.
+func (b *bucketSet) spend(key string, now time.Time, cost float64) {
+	if b.rate <= 0 {
+		return
+	}
+	b.refill(key, now).tokens -= cost
+}
+
 // take removes cost tokens from key's bucket if it holds them.
 func (b *bucketSet) take(key string, now time.Time, cost float64) bool {
 	if b.rate <= 0 {
@@ -412,27 +444,6 @@ func (b *bucketSet) take(key string, now time.Time, cost float64) bool {
 	tb.tokens -= cost
 	return true
 }
-
-// budget is a relay-wide byte budget (--max-inflight). max 0 means no limit.
-type budget struct {
-	max  int64
-	used atomic.Int64
-}
-
-// tryAdd reserves n bytes if they fit.
-func (b *budget) tryAdd(n int64) bool {
-	for {
-		cur := b.used.Load()
-		if b.max > 0 && cur+n > b.max && cur > 0 {
-			return false
-		}
-		if b.used.CompareAndSwap(cur, cur+n) {
-			return true
-		}
-	}
-}
-
-func (b *budget) add(n int64) { b.used.Add(n) }
 
 // Client address behind a proxy (Docs/protocol/relay-hosted.md §2 "Client IP
 // behind a proxy").

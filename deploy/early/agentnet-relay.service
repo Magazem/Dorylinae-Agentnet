@@ -1,8 +1,12 @@
 # systemd unit for the early private relay (ticket 4.1p, Docs/ops/early-relay-deploy.md).
 # Installed as /etc/systemd/system/agentnet-relay.service by setup.sh.
 #
-# Sizing from review 52 M2 (Docs/review/52-4.0-r40-review.md) for a 512 MB-class VM:
+# Sizing from review 52 M2 (Docs/review/52-4.0-r40-review.md):
 #   --max-conns 2000, --max-inflight 48MiB, GOMEMLIMIT=400MiB;
+#   R55-F1 (Docs/protocol/relay-hosted.md "Memory budgets and fairness"): --max-inflight-ephemeral
+#   6MiB and --frame-read-timeout 30s (both the defaults, written out). Budgets: 48 outbound
+#   + 48 read + 6 ephemeral = 102 MiB; about 255 MiB in total at 2000 connections. Caddy is
+#   outside GOMEMLIMIT (about 250 MiB more), so the VM needs about 1 GB of RAM.
 #   --queue-max-total 1GiB, --queue-min-free-disk 512MiB (fit a 2-3 GB volume; see the runbook).
 # No --accounts: accounts stay off (the flag's default) until the beta.
 
@@ -26,6 +30,8 @@ ExecStart=/opt/agentnet-relay/relay \
     --metrics-listen 127.0.0.1:9787 \
     --max-conns 2000 \
     --max-inflight 48MiB \
+    --max-inflight-ephemeral 6MiB \
+    --frame-read-timeout 30s \
     --queue-max-total 1GiB \
     --queue-min-free-disk 512MiB
 Restart=on-failure

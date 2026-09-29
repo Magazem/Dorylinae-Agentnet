@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 
@@ -33,7 +34,7 @@ func TestLimitFlagDefaults(t *testing.T) {
 		PrefixEnvelopesPerMinute: 600, PrefixBytesPerMinute: 64 << 20,
 		KeyEnvelopesPerMinute: 120, KeyEnvelopeBurst: 240, KeyBytesPerMinute: 32 << 20,
 		ControlPerMinute: 60, ReconnectsPerMinute: 20,
-		ConnBufferBytes: 4 << 20, MaxInflight: 256 << 20,
+		ConnBufferBytes: 4 << 20, MaxInflight: 256 << 20, FrameReadTimeout: 30 * time.Second,
 		QueuePairMaxEnvelopes: 300, QueuePairMaxBytes: 8 << 20,
 		QueueSenderMaxEnvelopes: 2000, QueueSenderMaxBytes: 64 << 20,
 		QueueMaxTotal: 4 << 30, QueueMinFreeDisk: 1 << 30,
@@ -47,10 +48,53 @@ func TestLimitFlagDefaults(t *testing.T) {
 	var help bytes.Buffer
 	fs.SetOutput(&help)
 	fs.PrintDefaults()
-	for _, s := range []string{"-max-conns int", "(default 5000)", "-queue-max-total value", "(default 4GiB)", "-max-inflight value", "(default 256MiB)"} {
+	for _, s := range []string{"-max-conns int", "(default 5000)", "-queue-max-total value", "(default 4GiB)", "-max-inflight value", "(default 256MiB)",
+		"-max-inflight-ephemeral value", "(default --max-inflight / 8, at least 1MiB)", "-frame-read-timeout duration", "(default 30s)"} {
 		if !strings.Contains(help.String(), s) {
 			t.Errorf("help lacks %q", s)
 		}
+	}
+}
+
+// R55-F1 (acceptance test 16): the two new memory flags parse with units,
+// and the start line prints the budgets in force.
+func TestMemoryBudgetFlags(t *testing.T) {
+	var lf limitFlags
+	fs := flag.NewFlagSet("x", flag.ContinueOnError)
+	lf.register(fs)
+	if err := fs.Parse([]string{"--max-inflight", "48MiB", "--max-inflight-ephemeral", "6MiB", "--frame-read-timeout", "45s"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lf.validate(false); err != nil {
+		t.Fatal(err)
+	}
+	var o relay.Options
+	lf.apply(&o)
+	if o.MaxInflight != 48<<20 || o.MaxInflightEphemeral != 6<<20 || o.FrameReadTimeout != 45*time.Second {
+		t.Fatalf("got max-inflight %d, ephemeral %d, frame timeout %v", o.MaxInflight, o.MaxInflightEphemeral, o.FrameReadTimeout)
+	}
+	for _, args := range [][]string{{"--frame-read-timeout", "0s"}, {"--max-inflight-ephemeral", "lots"}} {
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), args, &out, &errb); code != 2 {
+			t.Errorf("%v: exit %d, want 2 (%s)", args, code, errb.String())
+		}
+	}
+
+	_, errb := startRelayLog(t, "--max-inflight", "48MiB", "--frame-read-timeout", "30s")
+	waitLogLine(t, errb, "memory budgets: max-inflight 48MiB (and as much again for frames being read); max-inflight-ephemeral 6MiB; frame-read-timeout 30s")
+	_, errb = startRelayLog(t, "--max-inflight-ephemeral", "2MiB", "--frame-read-timeout", "1m")
+	waitLogLine(t, errb, "max-inflight 256MiB (and as much again for frames being read); max-inflight-ephemeral 2MiB; frame-read-timeout 1m0s")
+}
+
+// waitLogLine waits for the relay's stderr to contain want.
+func waitLogLine(t *testing.T, errb *syncBuffer, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(errb.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("start lines lack %q:\n%s", want, errb.String())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
