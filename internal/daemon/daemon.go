@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -709,8 +708,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 	if mode == "file" {
 		return keystore.New(file)
 	}
-	account := "webhook-" + strings.TrimPrefix(keystore.AccountFor(dir), "identity-")
-	return keystore.New(keystore.NewKeychain(account), file)
+	return keystore.New(keystore.KeychainFor("webhook-", dir), file)
 }
 
 // startRelay connects to opts.RelayURL in the background, if set. The returned

@@ -9,15 +9,36 @@ endpoint. This is a **local** API only; it never crosses the network.
 
 | OS | Endpoint | Access control |
 |----|----------|----------------|
-| Linux, macOS | Unix domain socket `<config dir>/agentnetd.sock` | Config dir is `0700`, socket is `0600` |
-| Windows | Named pipe `\\.\pipe\dorylinae-<id>` where `<id>` is the first 8 bytes (hex) of SHA-256 of the config dir path | Pipe DACL grants access to the current user's SID only |
+| Linux, macOS | Unix domain socket `<config dir>/agentnetd.sock`, lock file `<config dir>/agentnetd.sock.lock` | Config dir is `0700`, socket and lock file are `0600` |
+| Windows | Named pipe `\\.\pipe\dorylinae-<id>` where `<id>` is the first 8 bytes (hex) of SHA-256 of `<user SID> NUL <canonical config dir, lower-cased>` | Pipe owner is the current user's SID, and its DACL grants access to that SID only |
 
 The config dir is `os.UserConfigDir()/dorylinae`, or the value of the
 `DORYLINAE_HOME` environment variable when set (used by tests and for running
 several daemons side by side). The SQLite database is `<config dir>/dorylinae.db`.
 
-A second daemon on the same endpoint refuses to start. A stale Unix socket file
-(no listener answering) is removed on start.
+The canonical config dir is the absolute path with its longest existing prefix
+resolved through symlinks (on Windows also junctions, `subst` drives and 8.3
+names, in the on-disk case), the rest appended as given. Every name derived from
+the dir (the pipe name, keychain accounts) uses it, so two spellings of one
+directory give one pipe and one key (review 55 R55-088). The user SID in the pipe
+name keeps two users' pipes apart by default; it is not a secret.
+
+**Owner check (review 55 R55-008).** The endpoint name is predictable, and on
+Windows pipe names are machine-global, so another OS user can create the name
+while the daemon is down. The client therefore checks who serves the endpoint
+before it sends anything, and refuses (`ErrForeignOwner`, "endpoint held by
+another user") unless it is the current user:
+
+- Windows: the owner SID of the connected pipe (read from the handle) must be the
+  current user's SID. A pipe that denies the current user access is refused too.
+- Linux, macOS: the peer credentials of the connected socket (`SO_PEERCRED`,
+  `LOCAL_PEERCRED`) must carry the current effective uid.
+
+A second daemon on the same endpoint refuses to start: "already running" when
+the current user's daemon holds it, "held by another user" when someone else does. On Unix the daemon holds an exclusive `flock` on the
+lock file while it runs, so two daemons starting at once cannot both find the
+socket stale. A stale socket file (no listener answering) is removed on start
+only if the current user owns it.
 
 ## Framing
 

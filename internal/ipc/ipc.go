@@ -286,3 +286,8 @@ var ErrNotRunning = errors.New("ipc: no daemon listening")
 // ErrAlreadyRunning means Listen found another process already listening on
 // the endpoint (a second agentnetd for the same home).
 var ErrAlreadyRunning = errors.New("ipc: endpoint already in use")
+
+// ErrForeignOwner means the endpoint is held by another OS user: Dial refuses
+// to send anything to it and Listen refuses to report it as our own daemon
+// (review 55 R55-008).
+var ErrForeignOwner = errors.New("ipc: endpoint held by another user")
