@@ -30,6 +30,10 @@ func (s *Server) Buffered(key string) int64 {
 	return c.buffered()
 }
 
+// DrainReserve is what one queue batch charges to the outbound budget before
+// it is read from the database.
+const DrainReserve = drainReserve
+
 // Inflight reports the bytes charged to the outbound budget: envelopes
 // waiting in every outbound buffer, and queue-drain reservations.
 func (s *Server) Inflight() int64 { return s.led.used(kindOutbound) }
