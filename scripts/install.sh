@@ -17,8 +17,9 @@
 #
 # What this protects against, honestly: whoever controls the domain serving
 # this script controls the key embedded in it. The signature protects against
-# a swap of the release files on GitHub after the owner signed them (a leaked
-# token, a later compromised workflow), because the signing key is kept
+# a swap of the release files on GitHub before or after the owner signs them
+# (a leaked token, a later compromised workflow; the owner signs only the
+# SHA256SUMS the tag's CI run logged), because the signing key is kept
 # offline and never in GitHub. It cannot catch a build that was already bad
 # when the owner signed its SHA256SUMS.
 #
@@ -35,12 +36,10 @@ set -eu
 # =============================================================================
 # RELEASE SIGNING KEY
 #
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-# !!  PLACEHOLDER: THE REAL RELEASE PUBLIC KEY HAS NOT BEEN GENERATED YET.   !!
-# !!  Until the owner runs `go run ./tools/releasesign keygen` and pastes    !!
-# !!  its output here (Docs/ops/release-signing.md), this script refuses to  !!
-# !!  install anything.                                                      !!
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# The public half of the release key, made offline with `go run
+# ./tools/releasesign keygen` and written here by `releasesign embed`
+# (Docs/ops/release-signing.md). If these lines hold REPLACE_WITH_RELEASE_*
+# placeholders instead, this script refuses to install anything.
 #
 # Both lines hold the SAME Ed25519 public key: PEM for OpenSSL, base64 for
 # minisign. `go run ./tools/releasesign verify -install-sh scripts/install.sh
@@ -67,6 +66,11 @@ say() { printf '%s\n' "$*"; }
 die() {
 	printf 'agentnet install: %s\n' "$*" >&2
 	printf 'agentnet install: nothing was installed.\n' >&2
+	exit 1
+}
+# fail: like die, for a failure after something was already installed.
+fail() {
+	printf 'agentnet install: %s\n' "$*" >&2
 	exit 1
 }
 
@@ -308,10 +312,22 @@ for b in agentnet agentnetd; do
 done
 
 mkdir -p "$install_dir" || die "cannot create $install_dir"
+# Stage both binaries before replacing either (R55-133): a failure while
+# staging leaves the old install untouched.
 for b in agentnet agentnetd; do
-	cp "$tmp/x/$b" "$install_dir/.$b.new.$$" || die "cannot write to $install_dir"
-	chmod 755 "$install_dir/.$b.new.$$"
-	mv -f "$install_dir/.$b.new.$$" "$install_dir/$b" || die "cannot replace $install_dir/$b"
+	if ! cp "$tmp/x/$b" "$install_dir/.$b.new.$$" || ! chmod 755 "$install_dir/.$b.new.$$"; then
+		rm -f "$install_dir/.agentnet.new.$$" "$install_dir/.agentnetd.new.$$" 2>/dev/null
+		die "cannot write to $install_dir"
+	fi
+done
+replaced=
+for b in agentnet agentnetd; do
+	if ! mv -f "$install_dir/.$b.new.$$" "$install_dir/$b"; then
+		rm -f "$install_dir/.agentnet.new.$$" "$install_dir/.agentnetd.new.$$" 2>/dev/null
+		[ -n "$replaced" ] || die "cannot replace $install_dir/$b"
+		fail "partially installed: $replaced replaced, $b not (cannot replace $install_dir/$b); fix that and rerun the installer"
+	fi
+	replaced="$replaced${replaced:+ and }$b"
 done
 
 say "Installed agentnet $version ($os/$arch) into $install_dir (signature checked with $verifier)."
@@ -320,7 +336,7 @@ case :${PATH:-}: in
 *:"$install_dir":*) ;;
 *) say "Note: $install_dir is not on your PATH. Add it, e.g.: export PATH=\"$install_dir:\$PATH\"" ;;
 esac
-say "Next: agentnet setup"
+say "Next: agentnetd install, then agentnet doctor"
 }
 
 main "$@"

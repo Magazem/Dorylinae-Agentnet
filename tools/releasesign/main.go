@@ -4,6 +4,12 @@
 // machine with a key that is never in GitHub, uploads the two signature
 // files to the draft and only then publishes it. See Docs/ops/release-signing.md.
 //
+// The draft is never trusted (R55-F3, spec Docs/review/57-r55-f3-spec.md):
+// `fetch` checks the tag's own CI run (built from the owner's local commit,
+// on GitHub-hosted runners) and reads the SHA-256 of SHA256SUMS that the run
+// logged; `sign` refuses unless SHA256SUMS has that digest (-expect-sha256)
+// and every archive matches its line (-archives).
+//
 // The signature is a plain Ed25519 signature over the exact bytes of
 // SHA256SUMS (review 50 M8), written two ways from the same key:
 //
@@ -18,10 +24,12 @@
 //	go run ./tools/releasesign keygen -out KEYFILE
 //	go run ./tools/releasesign pubkey -key KEYFILE
 //	go run ./tools/releasesign embed -key KEYFILE -in scripts/install.sh -out scripts/install.sh
-//	go run ./tools/releasesign sign -key KEYFILE SHA256SUMS
-//	go run ./tools/releasesign verify (-pub PUBFILE | -install-sh scripts/install.sh) SHA256SUMS
+//	go run ./tools/releasesign fetch -tag vX.Y.Z -commit SHA40 -out DIR
+//	go run ./tools/releasesign sign -key KEYFILE -expect-sha256 HEX -archives DIR SHA256SUMS
+//	go run ./tools/releasesign verify (-pub PUBFILE | -install-sh scripts/install.sh) [-archives DIR] SHA256SUMS
 //
 // It uses only the Go standard library and imports no internal/ package.
+// Only `fetch` uses the network, through the `gh` CLI; it never reads a key.
 package main
 
 import (
@@ -31,13 +39,16 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -49,8 +60,10 @@ Usage:
   releasesign keygen -out KEYFILE
   releasesign pubkey -key KEYFILE
   releasesign embed -key KEYFILE -in FILE -out FILE
-  releasesign sign -key KEYFILE [-force] SHA256SUMS
-  releasesign verify (-pub PUBFILE | -install-sh FILE) SHA256SUMS
+  releasesign fetch [-repo OWNER/REPO] -tag vX.Y.Z -commit SHA40 -out DIR
+  releasesign fetch -dry-run [-repo OWNER/REPO] -tag dry-run-ID -commit SHA40 -out DIR
+  releasesign sign -key KEYFILE -expect-sha256 HEX -archives DIR [-force] SHA256SUMS
+  releasesign verify (-pub PUBFILE | -install-sh FILE) [-archives DIR] SHA256SUMS
   releasesign check SHA256SUMS   (format and version only; no signature)
 `
 
@@ -69,6 +82,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdEmbed(args[1:], stdout)
 	case "check":
 		err = cmdCheck(args[1:], stdout)
+	case "fetch":
+		err = cmdFetch(args[1:], stdout)
 	case "sign":
 		err = cmdSign(args[1:], stdout)
 	case "verify":
@@ -329,21 +344,42 @@ func cmdCheck(args []string, stdout io.Writer) error {
 func cmdSign(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("sign", flag.ContinueOnError)
 	keyFile := fs.String("key", "", "private key file")
+	expect := fs.String("expect-sha256", "", "SHA-256 of SHA256SUMS as logged by the tag's CI run (64 lowercase hex)")
+	archives := fs.String("archives", "", "folder holding exactly the six archives SHA256SUMS names")
 	force := fs.Bool("force", false, "overwrite existing signature files")
 	if err := parse("sign", args, fs, 1); err != nil {
 		return err
+	}
+	// Both bindings are required (R55-003): without them the signature covers
+	// whatever the draft held when it was downloaded.
+	if *expect == "" {
+		return usageError{"-expect-sha256 is required: the SHA-256 of SHA256SUMS that the tag's CI run logged (release-sums-sha256; Docs/ops/release-signing.md)"}
+	}
+	if !sha256Hex.MatchString(*expect) {
+		return usageError{fmt.Sprintf("-expect-sha256 must be a SHA-256 digest: exactly 64 lowercase hex digits, got %q", *expect)}
+	}
+	if *archives == "" {
+		return usageError{"-archives is required: the folder holding the six archives SHA256SUMS names"}
 	}
 	sumsPath := fs.Arg(0)
 	priv, err := readPrivateKey(*keyFile)
 	if err != nil {
 		return err
 	}
+	// Read once: the digest, the checks and the signature all cover this one
+	// buffer, so the file cannot be swapped between check and sign.
 	sums, err := os.ReadFile(sumsPath) //nolint:gosec // the owner names the file
 	if err != nil {
 		return err
 	}
 	version, err := checkSums(sums)
 	if err != nil {
+		return fmt.Errorf("refusing to sign: format check: %w", err)
+	}
+	if got := sha256Of(sums); got != *expect {
+		return fmt.Errorf("refusing to sign: digest check: SHA256SUMS has SHA-256 %s, expected %s (the digest the CI run logged); this is not the file CI built", got, *expect)
+	}
+	if err := checkArchives(*archives, sums); err != nil {
 		return fmt.Errorf("refusing to sign: %w", err)
 	}
 	pub := priv.Public().(ed25519.PublicKey)
@@ -358,7 +394,69 @@ func cmdSign(args []string, stdout io.Writer) error {
 	if err := writeOut(sumsPath+".minisig", ms, *force); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(stdout, "Signed agentnet %s: wrote %s.sig and %s.minisig\n", version, sumsPath, sumsPath)
+	_, _ = fmt.Fprintf(stdout, "Signed agentnet %s (SHA256SUMS sha256 %s; archives checked): wrote %s.sig and %s.minisig\n", version, *expect, sumsPath, sumsPath)
+	return nil
+}
+
+// sha256Hex matches a digest as sha256sum prints it: 64 lowercase hex.
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func sha256Of(b []byte) string {
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// sumsEntries maps archive name -> digest for a SHA256SUMS that already
+// passed checkSums.
+func sumsEntries(sums []byte) map[string]string {
+	m := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSuffix(string(sums), "\n"), "\n") {
+		m[line[66:]] = line[:64]
+	}
+	return m
+}
+
+// checkArchives requires dir to hold exactly the archives SHA256SUMS names
+// (no other agentnet_* file), each a regular file matching its line. This
+// ties a signature to the files that get published, not only to the list.
+func checkArchives(dir string, sums []byte) error {
+	want := sumsEntries(sums)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("archive check: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "agentnet_") {
+			continue
+		}
+		sum, ok := want[name]
+		if !ok {
+			return fmt.Errorf("archive check: %s is not named in SHA256SUMS", name)
+		}
+		if !e.Type().IsRegular() {
+			return fmt.Errorf("archive check: %s is not a regular file", name)
+		}
+		b, err := os.ReadFile(filepath.Join(dir, name)) //nolint:gosec // a file in the folder the owner names
+		if err != nil {
+			return fmt.Errorf("archive check: %w", err)
+		}
+		if got := sha256Of(b); got != sum {
+			return fmt.Errorf("archive check: %s has SHA-256 %s, SHA256SUMS says %s", name, got, sum)
+		}
+		seen[name] = true
+	}
+	names := make([]string, 0, len(want))
+	for name := range want {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if !seen[name] {
+			return fmt.Errorf("archive check: %s is missing from %s", name, dir)
+		}
+	}
 	return nil
 }
 
@@ -449,6 +547,7 @@ func cmdVerify(args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	pubFile := fs.String("pub", "", "PEM public key file")
 	script := fs.String("install-sh", "", "install.sh whose embedded keys to verify against")
+	archives := fs.String("archives", "", "optional: folder whose archives must be exactly the ones SHA256SUMS names")
 	if err := parse("verify", args, fs, 1); err != nil {
 		return err
 	}
@@ -499,6 +598,13 @@ func cmdVerify(args []string, stdout io.Writer) error {
 	version, err := checkSums(sums)
 	if err != nil {
 		return err
+	}
+	if *archives != "" {
+		if err := checkArchives(*archives, sums); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "OK: agentnet %s SHA256SUMS, .sig and .minisig verify; the six archives in %s match it\n", version, *archives)
+		return nil
 	}
 	_, _ = fmt.Fprintf(stdout, "OK: agentnet %s SHA256SUMS, .sig and .minisig verify\n", version)
 	return nil

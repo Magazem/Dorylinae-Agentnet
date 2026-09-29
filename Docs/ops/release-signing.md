@@ -6,12 +6,13 @@ publishes a **draft** release; the owner signs on their own machine, uploads the
 signatures and publishes the draft. The tool is `tools/releasesign` (Go standard library
 only; `go run ./tools/releasesign --help`).
 
-> **Status (2026-09-29): "Every release" below is the process after ticket R55-F3**
-> (spec `Docs/review/57-r55-f3-spec.md`, pending review and owner approval). `fetch`,
-> `sign -expect-sha256 -archives` and `verify -archives` do not exist until F3 lands.
-> **Do not cut a real release before F3 is merged.** The earlier process signed whatever
-> `SHA256SUMS` was on the draft, and anyone able to edit the draft could have swapped it
-> first (review 55, R55-003).
+> **Status (2026-09-29): "Every release" below is the process of ticket R55-F3**
+> (spec `Docs/review/57-r55-f3-spec.md`, approved D45). `fetch`,
+> `sign -expect-sha256 -archives` and `verify -archives` are implemented on branch
+> `p4/r55-f3`. **Do not cut a real release before F3 is merged and the dry run (spec §7
+> A9) has settled V2, V4 and V5.** The earlier process signed whatever `SHA256SUMS` was on
+> the draft, and anyone able to edit the draft could have swapped it first (review 55,
+> R55-003).
 
 **Why the draft is never trusted.** A draft release can be edited by anyone who can write
 to the repository: a leaked token, or someone who took over your GitHub account. That

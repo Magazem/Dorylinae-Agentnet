@@ -4,3 +4,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # R55-194 / OD-R55F3-4: Go module updates (govulncheck in CI and
+  # release.yml flags the ones that matter).
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"

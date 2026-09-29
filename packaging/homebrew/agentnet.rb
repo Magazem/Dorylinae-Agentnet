@@ -40,7 +40,7 @@ class Agentnet < Formula
 
   def caveats
     <<~EOS
-      Next: agentnet setup
+      Next: agentnetd install, then agentnet doctor
     EOS
   end
 
