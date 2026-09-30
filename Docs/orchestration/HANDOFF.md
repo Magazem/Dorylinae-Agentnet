@@ -31,18 +31,18 @@ Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Hi
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
-**Wave R55-M live state (2026-09-30, base main eadf189).** Worktrees `AgentNet-wt/r55-<x>`, branches `p4/r55-<x>`:
-| Slot name | Worktree | Task | Output |
+**Wave R55-M live state (2026-09-30 ~11:10).** Worktrees `AgentNet-wt/r55-<x>`, branches `p4/r55-<x>`. Done: R55-009 verified (High, merged); specs F9, F2, F18, F23 approved + merged (D52–D55).
+| Ticket | Slot | Worktree | State |
 |---|---|---|---|
-| R55-F2spec-Opus `01a0f1a3-d479…` | r55-f2spec | `01a0f1a4-3e85…` | Docs/review/66-r55-f2-spec.md + relay-hosted.md, envelope.md |
-| R55-V009-Opus `01a0f1a3-d4e4…` | r55-v009 | `01a0f1a4-5754…` | Docs/review/55-code-review/verify/R55-009.md (its zz test gets archived as .txt, not merged) |
-| R55-F9spec-Opus `01a0f1a3-d78e…` | r55-f9spec | `01a0f1a4-717f…` | 67-r55-f9-spec.md |
-| R55-F23spec-Opus `01a0f1a3-da41…` | r55-f23spec | `01a0f1a4-8954…` | 68-r55-f23-spec.md |
-| R55-F18spec-Opus `01a0f1a3-dcf9…` | r55-f18spec | `01a0f1a4-a0f8…` | 69-r55-f18-spec.md (code after F12) |
-| R55-F12-Opus `01a0f1a3-df8f…` | r55-f12 | `01a0f1a4-bd7b…` | code (+ small mail.md/debate spec edits); security review before merge |
-| R55-F11-Sonnet `01a0f1a3-e1e7…` | r55-f11 | `01a0f1a4-d38d…` | code |
-| R55-F19-Sonnet `01a0f1a3-e405…` | r55-f19 | `01a0f1a4-ea60…` | code; R55-175 (D14 part) implemented the safe way, confirm with owner |
-Next: specs → Opus adversarial review each (fresh worker) → owner ODs. F13 and F14 specs after this batch (F13 code after F12, F14 code after F9). F17 after F11 (both touch internal/ipc/ipc.go). F24 (D48) after a slot frees up. The rest can start: specs first where marked (Opus writes the spec, an Opus adversarial review follows, the owner approves the ODs), then code. Security-relevant tickets get an Opus security review.
+| F11 | (retired) | r55-f11 | draft PR #24, CI running; merge when green |
+| F12 | R55-F12-Opus `01a0f1a3-df8f…` (task `01a0f1a4-bd7b…` reopened) | r55-f12 | code 87dc2ef + review 70 (changes needed: M1 constraint while invited, L2 log guard) → fixing. L1 (log only first error per id; R55-058 "mark bad after N failures" not done) = later backlog. After fix: gate, PR. Then F18 code, F13 code. |
+| F19 | R55-F19-Sonnet `01a0f1a3-e405…`; sec R55-F19sec-Opus `01a0f1fa-f017…` | r55-f19 | code 874443d; gate re-running; security review 73 running |
+| F9 | R55-F9-Opus `01a0f1ee-0048…` (task `01a0f1ee-27b4…`) | r55-f9 | coding (OD-10 = b) |
+| F2 | R55-F2-Opus `01a0f1fa-e612…` (task `01a0f1fb-1ebf…`) | r55-f2 | coding (relay migration R3) |
+| F23 | R55-F23-Opus `01a0f1fa-e8f4…` (task `01a0f1fb-3c73…`) | r55-f23 | coding (DB migration, if any, provisional 23) |
+| F13 spec | R55-F13spec-Opus `01a0f1fa-eb54…` | r55-f13spec | writing 71-r55-f13-spec.md (D50) |
+| F14 spec | R55-F14spec-Opus `01a0f1fa-ee0b…` | r55-f14spec | writing 72-r55-f14-spec.md (D49) |
+Migrations: F18 = 22 (daemon), F23 maybe 23, F13 later. Next: F17 after F11 merges (ipc.go); F24 (D48) when a slot frees; F18 code after F12 merges; F14 code after F9 merges. F15 deferred (D46). Helper: `$TEMP/gate.sh <worktree>` runs the full gate → `$TEMP/gate-<worktree>.txt` (local daemon/device ACL failures are expected: TestHelper*, TestPhase2*, TestDeviceScopeSummary, TestAuditInventoryDevices, TestCheckProgramOwnerWindows, TestOwnerWalkJunction, TestCheckTarget, TestValidateScopeResolvesArgv0).
 
 **How to run it (lessons from this wave, all binding):**
 - One worker per ticket, in its own worktree `AgentNet-wt/<name>` on branch `p4/r55-<ticket>`.
