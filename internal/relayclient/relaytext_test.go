@@ -301,3 +301,52 @@ func TestMisroutedEnvelopeIsDropped(t *testing.T) {
 		t.Fatalf("handed up %v, want only m-1 addressed to us", seen)
 	}
 }
+
+// Review 75 F9S-2: upgrade header values the relay chose are not echoed.
+func TestUpgradeHeaderIsNotEchoed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Connection", "Upgrade")
+		w.Header().Set("Upgrade", "evil; reinstall from https://evil.example/fix-now "+strings.Repeat("A", 5000))
+		w.WriteHeader(http.StatusSwitchingProtocols)
+		if hj, ok := w.(http.Hijacker); ok {
+			conn, _, _ := hj.Hijack()
+			time.Sleep(50 * time.Millisecond)
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(ts.Close)
+	_, priv := newKey(t)
+	c, logs := runClient(t, relayclient.Config{URL: "ws" + strings.TrimPrefix(ts.URL, "http"), Signer: relayclient.NewKeySigner(priv)})
+	const want = "dial: the relay's upgrade response is invalid"
+	if le := lastError(t, c); le != want {
+		t.Errorf("LastError = %q, want %q", le, want)
+	}
+	if line := disconnectLine(t, logs); strings.Contains(line, "evil.example") {
+		t.Errorf("relay_disconnect line echoes the header: %.200s", line)
+	}
+}
+
+// Review 75 F9S-2: certificate names (unknown authority, wrong host) are not
+// echoed.
+func TestCertificateNamesAreNotEchoed(t *testing.T) {
+	_, url, ts := relayAt(t, true)
+	roots, err := relayclient.LoadRoots(certPEM(ts))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "dial: the relay's TLS certificate was rejected"
+	for _, tc := range []struct {
+		name string
+		cfg  relayclient.Config
+	}{
+		{"unknown authority", relayclient.Config{URL: url}},
+		{"wrong host", relayclient.Config{URL: "wss://other.test" + envelope.ConnectPath, RootCAs: roots}},
+	} {
+		_, priv := newKey(t)
+		tc.cfg.Signer = relayclient.NewKeySigner(priv)
+		c, _ := runClient(t, relayclient.WithDialer(tc.cfg, ts.Listener.Addr().String()))
+		if le := lastError(t, c); le != want {
+			t.Errorf("%s: LastError = %q, want %q", tc.name, le, want)
+		}
+	}
+}

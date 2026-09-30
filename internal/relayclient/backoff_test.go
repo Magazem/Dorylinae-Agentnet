@@ -2,12 +2,14 @@ package relayclient_test
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 )
 
@@ -134,5 +136,64 @@ func TestBackoffTryAgainLaterFloor(t *testing.T) {
 	}
 	if le := c.State().LastError; le != "closed by relay (status 1013)" {
 		t.Errorf("LastError = %q, want %q", le, "closed by relay (status 1013)")
+	}
+}
+
+// Review 75 F9S-1: the relay's own load shedding answers auth with
+// relay_full or rate_limited and then closes 1013. The client returns on the
+// error frame, so that frame gets the 1013 floor too.
+func TestBackoffShedAfterAuthGetsFloor(t *testing.T) {
+	for _, code := range []string{envelope.CodeRelayFull, envelope.CodeRateLimited} {
+		d := &dialLog{}
+		url := fakeRelay(t, func(ctx context.Context, ws *websocket.Conn) {
+			d.add(&d.accepted)
+			ch, _ := json.Marshal(envelope.Control{Op: envelope.OpChallenge, Version: 1, Nonce: envelope.EncodeNonce(make([]byte, envelope.NonceSize))})
+			if ws.Write(ctx, websocket.MessageText, ch) != nil {
+				return
+			}
+			if _, _, err := ws.Read(ctx); err != nil {
+				return
+			}
+			ef, _ := json.Marshal(envelope.Control{Op: envelope.OpError, Code: code, Message: "retry later"})
+			_ = ws.Write(ctx, websocket.MessageText, ef)
+			d.add(&d.closing)
+			_ = ws.Close(websocket.StatusTryAgainLater, "retry later")
+			d.add(&d.gone)
+		})
+		_, priv := newKey(t)
+		cfg := relayclient.WithBackoffTiming(relayclient.Config{URL: url, Signer: relayclient.NewKeySigner(priv),
+			MinBackoff: testLowBackoff, MaxBackoff: 10 * testFloor}, testStable, testFloor)
+		c, err := relayclient.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { _ = c.Run(ctx); close(done) }()
+		accepted := waitDials(t, d, 3)
+		_, closing, _ := d.snapshot()
+		for i := 1; i < 3; i++ {
+			if gap := accepted[i].Sub(closing[i-1]); gap < 35*time.Millisecond {
+				t.Errorf("%s: gap %d = %v, want >= 0.75 x %v (the 1013 floor)", code, i, gap, testFloor)
+			}
+		}
+		if le, want := c.State().LastError, "relay: "+code; le != want {
+			t.Errorf("LastError = %q, want %q", le, want)
+		}
+		cancel()
+		<-done
+	}
+}
+
+// Review 75 F9S-1: a close with 1001 (going away: a relay drain or restart)
+// does not reset the backoff, however long the connection was up.
+func TestBackoffGoingAwayDoesNotReset(t *testing.T) {
+	_, d := backoffClient(t, testHoldOpen, websocket.StatusGoingAway)
+	accepted := waitDials(t, d, 6)
+	_, _, gone := d.snapshot()
+	for i := 4; i < 6; i++ {
+		if gap := accepted[i].Sub(gone[i-1]); gap < 55*time.Millisecond {
+			t.Errorf("gap after 1001 close %d = %v, want >= 55ms (the backoff was reset)", i, gap)
+		}
 	}
 }

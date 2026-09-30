@@ -469,9 +469,14 @@ backoff, however long it was up, and the next wait is at least `jitter(5 s)` (re
 F9R-4). 1013 is the relay's load-shedding close (relay-hosted.md §2: `relay_full`,
 `rate_limited`, "relay busy", "frame too slow"). Without the floor, every daemon shed at once
 after a long connection would come back within 375–625 ms, into a relay that has just said it
-is overloaded. The delay then doubles from there as usual. `relay_full` or `rate_limited`
-in place of `ready` is a failure too (the connection never became ready), so it is
-retried with the growing backoff. The mail outbox treats `rate_limited` and
+is overloaded. The delay then doubles from there as usual. An `error` frame with
+`relay_full` or `rate_limited` **in place of `ready`** is treated the same way: it is the
+relay's load shedding after `auth` (the relay sends it just before its 1013 close, and the
+client stops reading at the frame), so the backoff never resets and the next wait is at least
+`jitter(5 s)` (review 75 F9S-1). A close with **status 1001 (Going Away)**, a relay drain or
+restart, never resets the backoff either: otherwise every daemon it dropped after a long
+connection would come back at 500 ms together (review 75 F9S-1). The delay keeps doubling
+from where it was. The mail outbox treats `rate_limited` and
 `relay_full` naming one of its rows like `queue_full`: back to queued, resent after
 its backoff ([mail.md](mail.md)). Sending while disconnected
 fails immediately with `ErrNotConnected`; nothing is buffered on the daemon side
@@ -538,7 +543,8 @@ re-read the raw frame.
 | The `op` of an unexpected control frame | Never echoed: the handshake error is `unexpected frame from relay` |
 | WebSocket close reason | Never kept: a close is reported as `closed by relay (status N)` |
 | HTTP redirect target (`Location`) | Never kept: a redirect is reported as `dial: the relay answered with a redirect (not followed)` (review 67b F9R-2) |
-| HTTP headers and TLS certificate names in a failed upgrade | May appear inside the WebSocket or TLS library's error text, which quotes header values (`%q`); covered by the `last_error` bound below (residual, review 67b F9R-2) |
+| HTTP headers in a failed upgrade | Never kept: the WebSocket library's "protocol violation" errors quote upgrade header values, so they are reported as `dial: the relay's upgrade response is invalid` (review 75 F9S-2) |
+| TLS certificate names | Never kept: a certificate that fails verification (unknown authority, wrong host, invalid) is reported as `dial: the relay's TLS certificate was rejected` (review 75 F9S-2) |
 | `queued.ref` | Only looked up among the daemon's own ids; never stored, logged or shown |
 | `pair_code`, `pair_peer` | [pairing.md](pairing.md): a relay-made `code` is refused (`relay_v1`), the card and mailbox announcement are verified. Failure text goes through the pairing choke point ([pairing.md §Logging, audit](pairing.md)). The peer's card name on screen is R55-F10's (R55-055) |
 | Envelope header fields (`from`, `to`, `id`, `type`, `ts`) | `Validate`: strict keys and bounded ASCII sets, before any use |
@@ -548,13 +554,13 @@ re-read the raw frame.
 
 - For an `error` frame in place of `challenge` or `ready`: `relay: <code>`, with the
   converted code only, never the message.
-- For a close by the relay: `closed by relay (status N)`; for a redirect, the fixed text
-  above.
+- For a close by the relay: `closed by relay (status N)`; for a redirect, an invalid
+  upgrade response or a rejected certificate, the fixed texts above.
 - For any other connection error: its text through `displayLine(…, 256)` (at most 256 bytes,
-  the `…` included). This is local text (dial, TLS, timeout). The one relay-influenced part
-  is what the WebSocket and TLS libraries quote from the upgrade response: a header value or
-  a certificate name. It is one line, has no control or escape character, and is at most
-  256 bytes, but its words may be chosen by the relay.
+  the `…` included). This is local text (dial, TLS handshake, timeout). The known library
+  errors that quote relay-chosen words (upgrade header values, certificate names) are
+  replaced by the fixed texts above (review 75 F9S-2); any other library error is one line,
+  has no control or escape character and is at most 256 bytes.
 
 The `relay_disconnect` log line carries this same string as `error`. So one relay
 connection writes at most a few hundred bytes to the daemon log, not up to 1 MiB (review 55

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -245,10 +246,12 @@ func (c *Client) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		var ce websocket.CloseError
 		switch {
-		case errors.As(err, &ce) && ce.Code == websocket.StatusTryAgainLater:
+		case shedding(err):
 			delay = max(delay, c.cfg.tryAgainFloor)
+		case closedWith(err, websocket.StatusGoingAway):
+			// A relay drain or restart: no reset, so the daemons it dropped
+			// do not all come back at MinBackoff together (review 75 F9S-1).
 		case !readyAt.IsZero() && time.Since(readyAt) >= c.cfg.stableAfter:
 			delay = c.cfg.MinBackoff // a lasting connection resets the backoff
 		}
@@ -270,10 +273,38 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
+// shedding reports whether err is the relay shedding load: a close with 1013
+// (Try Again Later), or relay_full / rate_limited in place of ready, which
+// the relay sends just before its 1013 close (review 75 F9S-1). The backoff
+// then never resets and the next wait is at least tryAgainFloor.
+func shedding(err error) bool {
+	var ef envelope.ErrorFrame
+	if errors.As(err, &ef) {
+		return ef.Code == envelope.CodeRelayFull || ef.Code == envelope.CodeRateLimited
+	}
+	return closedWith(err, websocket.StatusTryAgainLater)
+}
+
+// closedWith reports whether err is a close by the relay with status code.
+func closedWith(err error, code websocket.StatusCode) bool {
+	var ce websocket.CloseError
+	return errors.As(err, &ce) && ce.Code == code
+}
+
+// tlsRejected reports whether err is the relay's certificate failing
+// verification. These errors quote certificate names the relay chose.
+func tlsRejected(err error) bool {
+	var hn x509.HostnameError
+	var ua x509.UnknownAuthorityError
+	var ci x509.CertificateInvalidError
+	var cv *tls.CertificateVerificationError
+	return errors.As(err, &hn) || errors.As(err, &ua) || errors.As(err, &ci) || errors.As(err, &cv)
+}
+
 // connError renders a connection error for last_error and the
 // relay_disconnect log line (Docs/protocol/envelope.md, "last_error"): no
-// relay message, close reason or redirect target, one line, at most 256
-// bytes.
+// relay message, close reason, redirect target, upgrade header value or
+// certificate name (review 75 F9S-2), one line, at most 256 bytes.
 func connError(err error) string {
 	var ef envelope.ErrorFrame
 	var ce websocket.CloseError
@@ -284,6 +315,11 @@ func connError(err error) string {
 		return fmt.Sprintf("closed by relay (status %d)", int(ce.Code))
 	case errors.Is(err, errRedirect):
 		return "dial: the relay answered with a redirect (not followed)"
+	case tlsRejected(err):
+		return "dial: the relay's TLS certificate was rejected"
+	case strings.Contains(err.Error(), "WebSocket protocol violation"):
+		// coder/websocket quotes the relay's upgrade header values here.
+		return "dial: the relay's upgrade response is invalid"
 	default:
 		return displaytext.Line(err.Error(), maxLastError)
 	}

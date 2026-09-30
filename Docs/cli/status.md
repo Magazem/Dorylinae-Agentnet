@@ -100,9 +100,11 @@ redirect target
 an `error` frame in place of `challenge` or `ready` is reported as `relay: <code>`. The code
 is one of envelope.md's error codes, or `relay_error` for anything else, and the relay's
 message is dropped. A close by the relay is reported as `closed by relay (status N)`, and a
-redirect as `dial: the relay answered with a redirect (not followed)`. Any other error text
-is the daemon's own dial, TLS or timeout error (it may quote an upgrade header value or a
-certificate name). It is one line, with no control, escape, bidi or zero-width characters,
+redirect as `dial: the relay answered with a redirect (not followed)`. An invalid upgrade
+response is `dial: the relay's upgrade response is invalid` and a rejected certificate
+`dial: the relay's TLS certificate was rejected`, so no upgrade header value or certificate
+name is kept (review 75 F9S-2). Any other error text is the daemon's own dial, TLS or timeout
+error. It is one line, with no control, escape, bidi or zero-width characters,
 and at most 256 bytes, the `…` of a cut included (`displayLine`, [approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings)).
 Human `status` prints it after `(last error: `; it applies `displayLine(…, 256)` again before
 printing. `auth` is always `"v2"`: the relay
