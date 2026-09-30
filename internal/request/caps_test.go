@@ -21,15 +21,22 @@ import (
 // so how they got there does not matter), received at receivedAt.
 func seedIn(t *testing.T, db *sql.DB, peer string, introducer any, state string, receivedAt time.Time, n int) {
 	t.Helper()
+	seedIntro(t, db, peer, introducer, nil, state, receivedAt, n)
+}
+
+// seedIntro is seedIn with the sender's introduction time recorded on the
+// rows (requests.introduced_at, owner decision D62).
+func seedIntro(t *testing.T, db *sql.DB, peer string, introducer, introducedAt any, state string, receivedAt time.Time, n int) {
+	t.Helper()
 	tx, err := db.Begin()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < n; i++ {
 		if _, err := tx.Exec(`INSERT INTO requests (direction, peer, id, team_id, type, urgency, urgency_declared,
-			body, body_hash, state, created, received_at, mail_id, updated, introducer)
-			VALUES ('in', ?, ?, ?, 'task', 'normal', 'normal', '{}', 'h', ?, ?, ?, 'm', ?, ?)`,
-			peer, NewID(), testTeam, state, wireTime(receivedAt), storeTime(receivedAt), storeTime(receivedAt), introducer); err != nil {
+			body, body_hash, state, created, received_at, mail_id, updated, introducer, introduced_at)
+			VALUES ('in', ?, ?, ?, 'task', 'normal', 'normal', '{}', 'h', ?, ?, ?, 'm', ?, ?, ?)`,
+			peer, NewID(), testTeam, state, wireTime(receivedAt), storeTime(receivedAt), storeTime(receivedAt), introducer, introducedAt); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -282,22 +289,33 @@ func TestAutoDeclinedRowsKeepNoContent(t *testing.T) {
 	}
 }
 
-// A21: keys introduced by one owner share the introducer caps, and a key
-// that has since left (its peers row gone) still counts.
-func TestIntroducerCaps(t *testing.T) {
+// introducePeer stores key as a member introduced by owner at introducedAt,
+// as peers.Store.Introduce would.
+func introducePeer(t *testing.T, db *sql.DB, key, owner string, introducedAt time.Time) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, introduced_by)
+		VALUES (?, 'n', 'h', '[]', '{}', ?, 'team', ?)`, key, introducedAt.UTC().Format(time.RFC3339), owner); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A21: keys introduced by one owner in the last 7 days share the introducer
+// caps, and a churned key (its peers row gone) still counts while its
+// introduction is fresh (review 71b F2, owner decision D62).
+func TestIntroducerCapsFreshKeyChurn(t *testing.T) {
 	s, _, _ := newTestStore(t, testTo, &policy{})
+	now := time.Now()
+	s.Now = func() time.Time { return now }
+	introduced := now.Add(-24 * time.Hour).Truncate(time.Second)
+	at := storeTime(introduced)
 	owner := testKey(20)
 	keys := []string{testKey(21), testKey(22), testKey(23)}
 	for _, k := range keys {
-		if _, err := s.DB.Exec(`INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, introduced_by)
-			VALUES (?, 'n', 'h', '[]', '{}', '2026-01-01T00:00:00Z', 'team', ?)`, k, owner); err != nil {
-			t.Fatal(err)
-		}
+		introducePeer(t, s.DB, k, owner, introduced)
 	}
-	now := time.Now()
-	seedIn(t, s.DB, keys[0], owner, StatePending, now.Add(-48*time.Hour), 90)
-	seedIn(t, s.DB, keys[1], owner, StatePending, now.Add(-48*time.Hour), 90)
-	seedIn(t, s.DB, keys[2], owner, StatePending, now.Add(-48*time.Hour), 19)
+	seedIntro(t, s.DB, keys[0], owner, at, StatePending, now.Add(-2*time.Hour), 90)
+	seedIntro(t, s.DB, keys[1], owner, at, StatePending, now.Add(-2*time.Hour), 90)
+	seedIntro(t, s.DB, keys[2], owner, at, StatePending, now.Add(-2*time.Hour), 19)
 	r := freshRequest(keys[2])
 	if err := deliverRequest(t, s, r, now); err != nil {
 		t.Fatal(err)
@@ -305,9 +323,10 @@ func TestIntroducerCaps(t *testing.T) {
 	if st, _, _ := inRow(t, s.DB, keys[2], r.ID); st != StatePending {
 		t.Fatalf("200th for the owner = %s, want pending", st)
 	}
-	var intro sql.NullString
-	if err := s.DB.QueryRow(`SELECT introducer FROM requests WHERE id = ?`, r.ID).Scan(&intro); err != nil || intro.String != owner {
-		t.Fatalf("introducer = %v, %v; want the owner", intro, err)
+	var intro, introAt sql.NullString
+	if err := s.DB.QueryRow(`SELECT introducer, introduced_at FROM requests WHERE id = ?`, r.ID).Scan(&intro, &introAt); err != nil ||
+		intro.String != owner || introAt.String != at {
+		t.Fatalf("introducer = %v, introduced_at = %v, %v; want the owner at %s", intro, introAt, err, at)
 	}
 	r = freshRequest(keys[2])
 	if err := deliverRequest(t, s, r, now); err != nil {
@@ -322,10 +341,7 @@ func TestIntroducerCaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	fresh := testKey(24)
-	if _, err := s.DB.Exec(`INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, introduced_by)
-		VALUES (?, 'n', 'h', '[]', '{}', '2026-01-01T00:00:00Z', 'team', ?)`, fresh, owner); err != nil {
-		t.Fatal(err)
-	}
+	introducePeer(t, s.DB, fresh, owner, now.Add(-time.Minute))
 	r = freshRequest(fresh)
 	if err := deliverRequest(t, s, r, now); err != nil {
 		t.Fatal(err)
@@ -333,19 +349,84 @@ func TestIntroducerCaps(t *testing.T) {
 	if _, code, _ := inRow(t, s.DB, fresh, r.ID); code != "inbox_full" {
 		t.Fatalf("fresh key of the same owner = %q, want inbox_full", code)
 	}
-	// The introducer daily cap: 400 rows in 24 h across the owner's keys.
+	// Once the churned keys' introductions are older than 7 days their open
+	// rows stop counting; the fresh key is bounded by its own caps and the
+	// fresh keys' rows only.
+	later := introduced.Add(IntroducerFreshFor + time.Hour)
+	s.Now = func() time.Time { return later }
+	r = freshRequest(fresh)
+	if err := deliverRequest(t, s, r, later); err != nil {
+		t.Fatal(err)
+	}
+	if st, code, _ := inRow(t, s.DB, fresh, r.ID); st != StatePending {
+		t.Fatalf("fresh key after the churned keys aged out = %s/%q, want pending", st, code)
+	}
+
+	// The introducer daily cap: 400 rows in 24 h across the owner's fresh keys.
 	s2, _, _ := newTestStore(t, testTo, &policy{})
 	for _, k := range keys {
-		if _, err := s2.DB.Exec(`INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, introduced_by)
-			VALUES (?, 'n', 'h', '[]', '{}', '2026-01-01T00:00:00Z', 'team', ?)`, k, owner); err != nil {
-			t.Fatal(err)
-		}
+		introducePeer(t, s2.DB, k, owner, introduced)
 	}
-	seedIn(t, s2.DB, keys[0], owner, StateDeclined, now.Add(-time.Hour), 199)
-	seedIn(t, s2.DB, keys[1], owner, StateDeclined, now.Add(-time.Hour), 199)
-	seedIn(t, s2.DB, keys[2], owner, StateDeclined, now.Add(-time.Hour), 2)
+	seedIntro(t, s2.DB, keys[0], owner, at, StateDeclined, now.Add(-time.Hour), 199)
+	seedIntro(t, s2.DB, keys[1], owner, at, StateDeclined, now.Add(-time.Hour), 199)
+	seedIntro(t, s2.DB, keys[2], owner, at, StateDeclined, now.Add(-time.Hour), 2)
 	if err := deliverRequest(t, s2, freshRequest(keys[2]), now); !errors.Is(err, mail.ErrLimit) {
 		t.Fatalf("401st for the owner in 24 h: %v, want mail.ErrLimit", err)
+	}
+}
+
+// Security review 81 M1, owner decision D62: members introduced more than 7
+// days ago do not share the introducer caps, so two hostile established
+// members of one owner, each within its own caps, cannot lock out an honest
+// member of the same owner, established or newly introduced.
+func TestIntroducerCapsSpareEstablishedMembers(t *testing.T) {
+	now := time.Now()
+	old := now.Add(-30 * 24 * time.Hour).Truncate(time.Second)
+	oldAt := storeTime(old)
+	owner := testKey(30)
+	h1, h2, honest, newcomer := testKey(31), testKey(32), testKey(33), testKey(34)
+	setup := func(s *Store) {
+		for _, k := range []string{h1, h2, honest} {
+			introducePeer(t, s.DB, k, owner, old)
+		}
+		introducePeer(t, s.DB, newcomer, owner, now.Add(-time.Hour))
+	}
+
+	// Open cap: each hostile key holds 100 open requests, its own cap.
+	s, _, _ := newTestStore(t, testTo, &policy{})
+	setup(s)
+	seedIntro(t, s.DB, h1, owner, oldAt, StatePending, now.Add(-48*time.Hour), 100)
+	seedIntro(t, s.DB, h2, owner, oldAt, StatePending, now.Add(-48*time.Hour), 100)
+	for _, k := range []string{honest, newcomer} {
+		r := freshRequest(k)
+		if err := deliverRequest(t, s, r, now); err != nil {
+			t.Fatal(err)
+		}
+		if st, code, _ := inRow(t, s.DB, k, r.ID); st != StatePending {
+			t.Fatalf("member %s's first request = %s/%q, want pending", k[:8], st, code)
+		}
+	}
+	// The hostile keys are still bounded by their own open cap.
+	r := freshRequest(h1)
+	if err := deliverRequest(t, s, r, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, code, _ := inRow(t, s.DB, h1, r.ID); code != "inbox_full" {
+		t.Fatalf("hostile key's 101st open = %q, want inbox_full", code)
+	}
+
+	// Daily cap: each hostile key sent 200 today, its own cap.
+	s2, _, _ := newTestStore(t, testTo, &policy{})
+	setup(s2)
+	seedIntro(t, s2.DB, h1, owner, oldAt, StateDeclined, now.Add(-time.Hour), 200)
+	seedIntro(t, s2.DB, h2, owner, oldAt, StateDeclined, now.Add(-time.Hour), 200)
+	for _, k := range []string{honest, newcomer} {
+		if err := deliverRequest(t, s2, freshRequest(k), now); err != nil {
+			t.Fatalf("member %s's first request today: %v, want accepted", k[:8], err)
+		}
+	}
+	if err := deliverRequest(t, s2, freshRequest(h2), now); !errors.Is(err, mail.ErrLimit) {
+		t.Fatalf("hostile key's 201st today: %v, want mail.ErrLimit", err)
 	}
 }
 

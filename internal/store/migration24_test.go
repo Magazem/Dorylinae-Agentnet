@@ -9,7 +9,7 @@ import (
 )
 
 // Migration 24 (R55-F13, Docs/protocol/retention.md §Migration) adds the cap
-// and prune indexes and requests.introducer, and rewrites no data: a
+// and prune indexes and requests.introducer and introduced_at, and rewrites no data: a
 // mail_inbox row written before it keeps its plaintext (agentnet prune
 // blanks it, review 71b F4). Opening again is a no-op. Migration 25 lets an
 // approval of kind data_prune be stored (test A10 of
@@ -24,7 +24,7 @@ func TestMigration24IndexesNoRewrite(t *testing.T) {
 	// Back to schema 23 with a pre-F13 inbox row that holds plaintext.
 	for _, q := range []string{
 		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
-		`ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
+		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
 		`DELETE FROM migrations WHERE version > 23`,
 		`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed)
 		 VALUES ('k', 'm-1', 'request', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00.000Z', '{"secret":"PLAINTEXT"}')`,
@@ -47,9 +47,11 @@ func TestMigration24IndexesNoRewrite(t *testing.T) {
 				t.Fatalf("index %s: %d, %v", idx, n, err)
 			}
 		}
-		var n int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name = 'introducer'`).Scan(&n); err != nil || n != 1 {
-			t.Fatalf("requests.introducer: %d, %v", n, err)
+		for _, col := range []string{"introducer", "introduced_at"} {
+			var n int
+			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('requests') WHERE name = ?`, col).Scan(&n); err != nil || n != 1 {
+				t.Fatalf("requests.%s: %d, %v", col, n, err)
+			}
 		}
 		var signed string
 		if err := db.QueryRowContext(ctx, `SELECT signed FROM mail_inbox WHERE id = 'm-1'`).Scan(&signed); err != nil || signed != `{"secret":"PLAINTEXT"}` {

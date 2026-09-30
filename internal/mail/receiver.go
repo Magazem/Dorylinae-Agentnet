@@ -45,11 +45,14 @@ const (
 
 // Kind describes how the receiver processes one known application kind.
 type Kind struct {
-	// Inbox stores a mail_inbox row with the verified plaintext as proof.
+	// Inbox stores a mail_inbox row for dedupe. Since R55-F13 the row is
+	// blank (signed = ''): the plaintext is not kept a second time
+	// (Docs/protocol/mail.md §Dedupe and inbox).
 	Inbox bool
 	// Apply writes the kind-specific rows. It runs inside the dedupe
 	// transaction, so it must only use tx. An error rolls everything back and
-	// nothing is acked, except an error wrapping ErrBadBody (see there). An
+	// nothing is acked, except an error wrapping ErrBadBody or ErrLimit (see
+	// there). An
 	// error that quotes body content must wrap ErrBadBody; the receiver never
 	// logs an Apply error's text either way (errClass).
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error

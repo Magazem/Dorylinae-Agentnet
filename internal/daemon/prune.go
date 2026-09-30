@@ -206,12 +206,15 @@ func createPruneApproval(ctx context.Context, db *sql.DB, apprStore *approval.St
 		return approvalID
 	}
 	action := approval.Action{
-		// Precondition compares (R55-F5): the counts at the same cutoff and
-		// the same instant, re-read in the confirm transaction. A request
-		// that changed state since, or another prune, rejects it.
-		Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Prune, error) {
-			c, err := retention.CountTx(ctx, tx, cutoff, t)
-			return pruneFacts(olderThan, cutoff, c), err
+		// The counts are bound to the approval as counted here, not re-counted
+		// in the confirm transaction on the daemon's only connection (review
+		// 81 L1). The rebuild still compares the summary from these facts
+		// with the one shown. A change after counting can only take items
+		// out of the set: an item is in it only if its updated is before the
+		// fixed cutoff, and every change sets updated to now. Only mail_inbox
+		// rows whose mail_seen row ages out can join (retention.md §Approval).
+		Rebuild: rebuildWith(facts, func(context.Context, *sql.Tx) (approvaltext.Prune, error) {
+			return facts, nil
 		}, approvaltext.BuildPrune),
 		// Approval only allows the removal: the calls that follow remove in
 		// bounded batches, each in its own transaction (retention.md §IPC).

@@ -246,7 +246,7 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 			// 22 (work_sessions.runner), 21 (experience_records), 20
 			// (decisions) and 19 (debates, which alters work_sessions).
 			`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
-			`ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
+			`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
 			`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`,
 			`DROP TABLE experience_records`,
 			`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,

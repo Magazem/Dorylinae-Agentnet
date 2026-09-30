@@ -546,13 +546,16 @@ ALTER TABLE work_sessions ADD COLUMN result_mail TEXT;
 	// Per-peer caps and prune (Docs/protocol/retention.md §Migration,
 	// R55-F13). Indexes and one column only, no data rewrite: the old
 	// mail_inbox copies are blanked by agentnet prune, never here (review 71b
-	// F4). requests.introducer is the sender's introduced_by at receipt (in
-	// rows only; NULL for rows from before this migration).
+	// F4). requests.introducer is the sender's introduced_by at receipt and
+	// requests.introduced_at its introduction time (its paired_at), which the
+	// introducer caps count by (owner decision D62): in rows only; NULL for a
+	// directly paired sender and for rows from before this migration.
 	{24, "retention_caps", `
 CREATE INDEX requests_peer_state ON requests (direction, peer, state);
 ALTER TABLE requests ADD COLUMN introducer TEXT;
-CREATE INDEX requests_introducer_state ON requests (direction, introducer, state);
-CREATE INDEX requests_introducer_time ON requests (direction, introducer, received_at);
+ALTER TABLE requests ADD COLUMN introduced_at TEXT;
+CREATE INDEX requests_introducer_state ON requests (direction, introducer, introduced_at, state);
+CREATE INDEX requests_introducer_time ON requests (direction, introducer, introduced_at, received_at);
 CREATE INDEX mail_inbox_received ON mail_inbox (received_at);
 `},
 	// agentnet prune --yes needs a human approval (owner decision D57,

@@ -208,9 +208,9 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
      (a request id re-used after [`prune`](retention.md#why-35-days) removed its debate but
      kept its Decision; review 71b F8).
    - with no row, and the sender is **over a daily cap** ([Per-peer caps](#per-peer-caps-r55-f13)):
-     it already has 200 `in` rows whose `received_at` falls in the last 24 h, or it is an
-     introduced peer and the keys introduced by the same owner already have 400 (any state,
-     auto-declined and cancelled rows included). The mail is [refused for a
+     it already has 200 `in` rows whose `received_at` falls in the last 24 h, or it is a peer
+     introduced in the last 7 days and the keys introduced by the same owner in the last 7 days
+     already have 400 (any state, auto-declined and cancelled rows included). The mail is [refused for a
      limit](#per-peer-caps-r55-f13): no row, no reply, and a cancel tombstone stays in place.
    - with no row, and a [cancel tombstone](#cancel-od-p1-11) for `(msg.from, id)`: store the
      row with `state = cancelled`, `state_seq = 1`, `first_response` NULL, `reason` from the
@@ -226,8 +226,9 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
    - `unknown_team`: `team` is not a local team in state `active`.
    - `not_team_member`: `msg.from` or self is not in `team_members` of that team.
    - `inbox_full`: the sender already has **100** open `in` rows here (state `pending`,
-     `deferred` or `accepted`), or it is an introduced peer and the keys introduced by the same
-     owner already have **200**: the **open caps** of [Per-peer caps](#per-peer-caps-r55-f13).
+     `deferred` or `accepted`), or it is a peer introduced in the last 7 days and the keys
+     introduced by the same owner in the last 7 days already have **200**: the **open caps** of
+     [Per-peer caps](#per-peer-caps-r55-f13).
 
    An auto-declined row keeps **no content**: `body` is stored as `{}` (its `body_hash` is
    the hash of the received canonical request, so step 2 still recognises a resend), and the
@@ -241,8 +242,11 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
 5. Insert the `in` row (`state = pending`, `received_at = now`).
 
 Every `in` row, whatever step stores it (3, 5 or the tombstone case of 2), records
-`introducer` = the sender's `peers.introduced_by` at that moment (NULL for a directly paired
-sender, [team.md §Introduced peers](team.md#introduced-peers)).
+`introducer` = the sender's `peers.introduced_by` at that moment and `introduced_at` = its
+introduction time, the sender's `peers.paired_at` (both NULL for a directly paired sender,
+[team.md §Introduced peers](team.md#introduced-peers)). An introduced peer's `paired_at` is
+the local time the first roster naming it was stored; a later roster keeps it, and garbage
+collection followed by a new introduction sets a new one.
 
 After commit, for a new row: audit `request.in` (or `request.auto_decline`), and
 [notify](notify.md) if the row is `pending`.
@@ -278,20 +282,32 @@ not already hold (duplicates and conflicts of step 2 are never capped):
 |---|---|---|---|
 | **Open cap** | `in` rows from this peer in state `pending`, `deferred` or `accepted` | 100 | The new request is stored **declined** with code `inbox_full` (step 3), and the sender is told by the usual `request.decline`. This is the clear refusal: the sender's mirror ends `declined (inbox_full)`, and the sender may send a new request once the recipient has finished some |
 | **Daily cap** | `in` rows from this peer with `received_at ≥ now − 24 h`, in any state | 200 | The mail is **refused for a limit**: no row, no `request.decline` (see below) |
-| **Introducer open cap** | open `in` rows (as above) whose `introducer` is the sender's `introduced_by` | 200 | As the open cap (`inbox_full`) |
-| **Introducer daily cap** | `in` rows with that `introducer` and `received_at ≥ now − 24 h` | 400 | As the daily cap |
+| **Introducer open cap** | open `in` rows (as above) whose `introducer` is the sender's `introduced_by` and `introduced_at ≥ now − 7 d`; only for a sender introduced in the last 7 days | 200 | As the open cap (`inbox_full`) |
+| **Introducer daily cap** | `in` rows with that `introducer`, `introduced_at ≥ now − 7 d` and `received_at ≥ now − 24 h`; only for a sender introduced in the last 7 days | 400 | As the daily cap |
 
 **Why introducer caps (review 71b F2).** A team owner introduces keys into its roster
 ([team.md](team.md#introduced-peers)), and a key it introduces is trusted `team`, so its
 requests are stored `pending` with their content. Per-key caps alone would let a hostile owner
 multiply them: introduce 31 fresh keys, have each fill its 100 open slots, replace them in the
 next roster epoch, and repeat. Garbage collection removes the old keys' `peers` rows but not
-their requests. The introducer caps are counted on the stored `introducer` column, so keys
-that have since left the roster still count. They apply only to senders whose
-`introduced_by` is not NULL; the owner's own requests count only on its own key, and a key
-that the user pairs directly (which clears `introduced_by`) counts only on itself from then on.
-The values are twice the per-key ones so that an honest team of up to 32 members sharing one
-owner is not refused at a normal pace (OD-F13-16).
+their requests. The introducer caps are counted on the stored `introducer` and
+`introduced_at` columns, so keys that have since left the roster still count. They apply only
+to senders whose `introduced_by` is not NULL; the owner's own requests count only on its own
+key, and a key that the user pairs directly (which clears `introduced_by`) counts only on
+itself from then on. The values are twice the per-key ones so that an honest team of up to 32
+members sharing one owner is not refused at a normal pace (OD-F13-16).
+
+**Only fresh keys (owner decision D62, review 81 M1).** The introducer caps count only
+requests from keys introduced in the last **7 days** (by their `introduced_at`), and apply only
+to a sender that was itself introduced in the last 7 days. The churn attack needs fresh keys;
+counting every member instead would let two hostile members of one owner, each within its own
+caps, refuse every other member of that owner (`inbox_full`, or `limit` for the whole 24 h).
+An established member (introduced more than 7 days ago) is bounded by its own per-key caps
+only, and its requests no longer count towards anyone else's. A hostile owner can still
+bring in a fresh set of keys every 7 days, each set bounded by the introducer caps while it
+is fresh; its keys that turn established are then bounded by their per-key caps, and the
+recipient removes an offending member with `peers remove` (it is named in `mail.reject
+{limit}` and the requests table).
 
 The open cap bounds the requests a human or agent still has to look at; its rows keep their
 content. The daily cap bounds everything else a peer can create without anyone acting,
@@ -317,10 +333,19 @@ recipient's audit log can (`mail.reject` reason `limit`). The request is not los
 since the request id is still unknown here, so a resend after the window has passed is
 accepted. Nothing resends automatically.
 
+The daily cap counts by `received_at`, the recipient's receipt time, not by the request's
+`created`. A relay that holds an honest peer's mail (up to the 14-day [receive age
+limit](mail.md#receive-age-limit)) and then delivers it in one burst can therefore bring
+that peer over the daily cap, and the requests past it are refused for a limit (review 81
+L2). The refusal is still one audited `mail.reject {limit}` per genuine peer-signed mail;
+the remedy is the same `request resend` after the window. A relay gains little from this:
+it can already turn delay into a permanent refusal through the receive age limit.
+
 A `pending` or `deferred` request that the user leaves alone keeps its slot in the open cap
 until someone declines, accepts or defers it (a defer keeps it open) or the sender cancels
 it. `accepted` counts until the request completes. The numbers are constants of
-`internal/request` (`MaxOpenPerPeer`, `MaxNewPerPeerPerDay`), not settings.
+`internal/request` (`MaxOpenPerPeer`, `MaxNewPerPeerPerDay`, `MaxOpenPerIntroducer`,
+`MaxNewPerIntroducerPerDay`, `IntroducerFreshFor`), not settings.
 
 ## Lifecycle
 
@@ -780,8 +805,9 @@ a new migration 12 (ticket 1.6a), and the webhook queue moves to migration 13
 -- migration N (R55-F13; N = the next free version when it merges): the per-peer caps
 CREATE INDEX requests_peer_state ON requests (direction, peer, state);
 ALTER TABLE requests ADD COLUMN introducer TEXT;    -- in only: sender's introduced_by at receipt, NULL if directly paired
-CREATE INDEX requests_introducer_state ON requests (direction, introducer, state);
-CREATE INDEX requests_introducer_time ON requests (direction, introducer, received_at);
+ALTER TABLE requests ADD COLUMN introduced_at TEXT; -- in only: sender's introduction time (paired_at), NULL if directly paired (D62)
+CREATE INDEX requests_introducer_state ON requests (direction, introducer, introduced_at, state);
+CREATE INDEX requests_introducer_time ON requests (direction, introducer, introduced_at, received_at);
 ```
 
 The daily cap counts with the existing `requests_peer_time` index. The full migration, with
