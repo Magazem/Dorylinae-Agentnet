@@ -1,0 +1,110 @@
+package relay_test
+
+// Review 55 verification of R55-009 (T10-02) on current main (F1 merged).
+// TEMPORARY, never merged: archived under Docs/review/55-code-review/verify/.
+//
+// Claim under test: queued frames are re-sent in full from cursor 0 on every
+// reconnect until acked, and nothing bounds bytes delivered or redelivered per
+// key or per prefix. A stranger uploads a queue once and downloads it up to 20
+// times a minute for the 7-day TTL (relay egress and single-DB read
+// amplification). F1 (relay budget fairness) added per-frame deadlines, three
+// memory budgets with per-prefix shares, and heaviest/stale eviction — none of
+// which is a delivered-bytes rate cap, so the amplification is expected to
+// persist. R55-F2 is the ticket that would fix it, and it is not merged.
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
+)
+
+// TestVerifyR55009_RedeliveryAmplification reproduces the T10-02 measurement
+// on current main with the default budgets. A recipient that reads its whole
+// queue fast and never acks re-downloads it on every one of 20 reconnects a
+// minute; the sender uploaded it once.
+func TestVerifyR55009_RedeliveryAmplification(t *testing.T) {
+	e := newLimitEnv(t, relay.Options{})
+	snd, rcv := newPeer(t), newPeer(t)
+	cs := e.authed(snd, "10.1.0.1")
+	const n, size = 8, 700 << 10 // ~5.5 MiB of frames, under the 8 MiB per-pair cap
+	for i := range n {
+		expectQueued(t, e.send(cs, snd, rcv.key, fmt.Sprintf("q%d", i), payload(size)), fmt.Sprintf("q%d", i))
+	}
+	uploaded := 0
+	for range n {
+		uploaded += len(mustJSON(snd.env(rcv.key, "q0", payload(size))))
+	}
+	var downloaded int
+	for minute := range 2 {
+		for range 20 { // the per-key reconnect limit
+			c := e.authed(rcv, "10.2.0.1")
+			c.SetReadLimit(2 << 20)
+			for range n {
+				rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_, frame, err := c.Read(rctx)
+				cancel()
+				if err != nil {
+					t.Fatalf("minute %d: read: %v", minute, err)
+				}
+				downloaded += len(frame)
+			}
+			_ = c.CloseNow() // never acks; F1 eviction never fires because it kept up
+			waitConnected(t, e.s, rcv.key, false)
+		}
+		e.clock.Advance(time.Minute)
+	}
+	q, _ := e.s.Queued(rcv.key)
+	t.Logf("R55-009 on current main (F1 merged): uploaded %d MiB once; downloaded %d MiB in 2 (fake) minutes over 40 reconnects; still queued: %d",
+		uploaded>>20, downloaded>>20, q)
+	if downloaded < 20*uploaded {
+		t.Fatalf("NOT REPRODUCED: downloaded %d, uploaded %d (< 20x)", downloaded, uploaded)
+	}
+	if q != n {
+		t.Fatalf("rows did not survive unacked reconnects: still queued %d, want %d", q, n)
+	}
+}
+
+// TestVerifyR55009_At41pFlags repeats the measurement at the 4.1p relay flags
+// (--max-inflight 48MiB, --queue-max-total 1GiB, accounts off) to confirm the
+// per-prefix outbound share (6 MiB) added by F1 does not throttle a recipient
+// that keeps reading: the delivered bytes still far exceed the uploaded bytes.
+func TestVerifyR55009_At41pFlags(t *testing.T) {
+	e := newLimitEnv(t, relay.Options{
+		MaxInflight:   48 << 20,
+		QueueMaxTotal: 1 << 30,
+	})
+	snd, rcv := newPeer(t), newPeer(t)
+	cs := e.authed(snd, "10.1.0.1")
+	const n, size = 8, 700 << 10
+	for i := range n {
+		expectQueued(t, e.send(cs, snd, rcv.key, fmt.Sprintf("q%d", i), payload(size)), fmt.Sprintf("q%d", i))
+	}
+	uploaded := 0
+	for range n {
+		uploaded += len(mustJSON(snd.env(rcv.key, "q0", payload(size))))
+	}
+	var downloaded int
+	for range 20 { // one fake minute is enough to show the ratio
+		c := e.authed(rcv, "10.2.0.1")
+		c.SetReadLimit(2 << 20)
+		for range n {
+			rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, frame, err := c.Read(rctx)
+			cancel()
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			downloaded += len(frame)
+		}
+		_ = c.CloseNow()
+		waitConnected(t, e.s, rcv.key, false)
+	}
+	t.Logf("R55-009 at 4.1p flags (48MiB inflight, 1GiB queue): uploaded %d MiB once; downloaded %d MiB in 1 (fake) minute over 20 reconnects",
+		uploaded>>20, downloaded>>20)
+	if downloaded < 10*uploaded {
+		t.Fatalf("NOT REPRODUCED at 4.1p: downloaded %d, uploaded %d", downloaded, uploaded)
+	}
+}
