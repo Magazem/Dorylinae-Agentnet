@@ -17,7 +17,7 @@ adds a **redelivery budget** per key and per prefix (R55-009), refuses envelopes
 is not base64 (R55-010, see [envelope.md](envelope.md#forwarding)) and makes the expiry sweep
 work in **bounded batches** with a **bounded WAL** (R55-011). It is a proposal until the owner
 approves it after its adversarial review; open decisions are
-[OD-R55F2-1…8](#open-decisions-r55-f2) at the end of this document. Summary, plan and
+[OD-R55F2-1…10](#open-decisions-r55-f2) at the end of this document. Summary, plan and
 acceptance tests: [../review/66-r55-f2-spec.md](../review/66-r55-f2-spec.md).
 
 This document changes the relay of [envelope.md](envelope.md) so that it can run on a public
@@ -518,10 +518,19 @@ again to the same key, on a later connection, is a **redelivery**.
 - **Which rows are redeliveries.** Drains deliver a key's rows in `seq` order and a new row
   always gets a larger `seq`, so the rows a key has been sent are exactly those with
   `seq ≤ H(key)`, its **delivered high-water mark**. The relay keeps H persistently in a
-  small table `queue_delivered (to_key PRIMARY KEY, seq)` (relay migration **R3**), raised by
-  one upsert per drained batch that contains a first delivery (redeliveries write nothing). It
+  small table `queue_delivered (to_key PRIMARY KEY, seq)` (relay migration **R3**). It
   survives a restart, so a restart does not turn redeliveries into free first deliveries. The
   sweep deletes marks of keys that have no queued rows left.
+- **H is raised before the frames are sent (review 66b H1).** A drain **claims** its batch:
+  in one transaction under the queue lock it reads H, reads the batch, and raises H to the
+  batch's highest first-delivery `seq`, and only then hands the frames to the buffer. A
+  connection that drops half-way through a batch therefore cannot get the same rows again as
+  "first" deliveries on its next connection (raising H after the send would have let a key
+  that closes mid-batch replay its first batch, ≈ 2 MiB, on every one of its 20 reconnects a
+  minute). Two connections of one key (a replacement) cannot both claim the same rows as
+  first deliveries. A claimed row that never reached the daemon is, on the next connection, a
+  redelivery: the honest case is covered by the budget below. If the claim fails (database
+  error), nothing is sent.
 - **An honest daemon rarely pays.** It acks as it receives, so after a dropped connection it
   is redelivered only what was in flight: at most its outbound buffer (4 MiB), one drain batch
   (≈ 2 MiB) and what was in transit. The key's 32 MiB burst covers several such reconnects
@@ -531,20 +540,44 @@ again to the same key, on a later connection, is a **redelivery**.
 
 Each drain step reads the connection's rows oldest first from its cursor, as today:
 
-1. A row with `seq > H` is a first delivery: it is sent, and H is raised after the batch.
-2. A row with `seq ≤ H` is sent only if both buckets hold its bytes (they are taken).
+1. A row with `seq > H` is a first delivery: it is claimed (H raised, above) and sent.
+2. A row with `seq ≤ H` is sent only if both buckets hold its bytes (they are taken), and
+   only if no other connection of the same prefix is waiting for redelivery budget ahead of
+   it (rule 6).
 3. Otherwise it is **skipped**: not sent now, left in the queue. The connection records
    `skipFrom` (that row's `seq`), `skipTo` (H at that moment) and the row's size, and jumps its
    cursor to `skipTo`. It goes on with the first deliveries after `skipTo`, so **new mail is
    still delivered**, and the skipped rows' frames are never read again on this connection
-   until the retry. A key over budget costs no database reads of its old rows.
-4. **Retry.** Once a minute (the sweep tick) the relay looks at every connection with a
-   skipped range. If the key's and prefix's buckets now hold the first skipped row's size, it
-   drains the range `[skipFrom, skipTo]` again under the rules above (rows acked meanwhile are
-   gone; rows skipped again keep a new, narrower range). During the retry the connection is
-   draining, so direct sends to it take the queue path, as for any backlog.
-5. A key's next connection starts from cursor 0 as today, and its rows `≤ H` are
-   redeliveries charged as above.
+   until the retry.
+4. **No frame is read to decide a skip (review 66b M1).** Before reading frames at a cursor
+   below H, the drain reads only the first such row's `seq` and size (`LENGTH(frame)` is read
+   from the record header, not the blob) and checks the buckets and rule 6. A skip therefore
+   costs an index lookup, not a 1 MiB read, also on the **first** batch of every new
+   connection: a key that reconnects 20 times a minute with its budget spent makes the relay
+   read no frame of its old rows.
+5. **Retry.** Once a minute (the sweep tick) the relay serves the waiting connections of each
+   prefix in the order they started waiting (rule 6). A connection whose key's and prefix's
+   buckets now hold its first skipped row's size drains the range `[skipFrom, skipTo]` again
+   under the rules above (rows acked meanwhile are gone; rows skipped again keep a new,
+   narrower range), then resumes at the cursor it had before the retry (rows it already got
+   as first deliveries are not sent again). During the retry the connection is draining, so
+   direct sends to it take the queue path, as for any backlog.
+6. **Fair order within a prefix (review 66b H2).** The prefix bucket is shared by every key
+   behind one /24 or /48, including an attacker's. Without an order, a key that asks 20 times
+   a minute takes each refill before an honest neighbour's once-a-minute retry, and the
+   honest key's unacked rows could wait until they expire: **loss**, not delay. So a
+   connection that is skipped for want of **prefix** budget joins its prefix's wait list
+   (in memory, one entry per connection, removed when the connection closes). While the list
+   is not empty, a redelivery on any connection of that prefix that is not being served from
+   the list is skipped and that connection joins the tail; refills go to the list in order.
+   A connection whose own **key** bucket cannot pay keeps its place and the next one is
+   served. A served connection that is skipped again re-joins at the tail. A key's wait is
+   therefore bounded by what the connections ahead of it may redeliver: at most
+   `--queue-max-total` ÷ the prefix rate (8 h with the 4.1p unit's 1 GiB and 128 MiB/h;
+   32 h at the 4 GiB default), well inside the 7-day TTL.
+7. A key's next connection starts from cursor 0 as today, and its rows `≤ H` are
+   redeliveries charged as above (it joins the wait list anew; a place is not kept across
+   connections).
 
 Retried rows reach the daemon after newer ones. That is already possible today (a
 redelivery after a reconnect follows the frames the daemon received before the drop), and
@@ -583,6 +616,14 @@ relay, the daemon **acks** a frame it cannot parse when its routing fields are v
   stays near one batch (≈ 2 × 32 MiB with `secure_delete`) while a sweep runs and returns to at
   most 64 MiB after it. A backup (`VACUUM INTO`) running at the same time holds a read
   snapshot, so the WAL can grow while it runs; the next large sweep truncates it.
+- **The `TRUNCATE` checkpoint never waits (review 66b M3).** `TRUNCATE` calls the busy
+  handler until no other connection reads an old snapshot, and the relay's `busy_timeout` is
+  5 s. A `relay backup` (another process) running at that moment would hold the relay's only
+  database connection, and so every add, ack and drain, for up to 5 s: R55-011 again, smaller.
+  So the relay runs it as `PRAGMA busy_timeout = 0`, `PRAGMA wal_checkpoint(TRUNCATE)`,
+  `PRAGMA busy_timeout = 5000` on its connection, under the queue lock. A busy result is not
+  an error: the checkpoint is skipped (the limit above still applies at the next WAL reset)
+  and tried again after the next large sweep.
 - `add` starts its 10 s deadline after it takes the queue lock (today: before), so an add
   that waited behind a batch still has its full time.
 - The free-disk floor (`--queue-min-free-disk`) is checked on `add` only; after this change
@@ -610,16 +651,22 @@ Rough costs at the 4.1p flags. "Prefix" is a /24 or a /48.
 
 | Attack | Today | After R55-F2 |
 |---|---|---|
-| **R55-009 / T10-02**, redelivery amplification | 1 prefix, 12 keys × 32 MiB queued (384 MiB, uploaded once), 20 reconnects / min / key without acks: ≈ 7.5 GiB / min egress for 7 days, plus a full-queue SQLite read per reconnect | First delivery: 384 MiB once (what it uploaded). Then at most 128 MiB burst + 128 MiB / hour per recipient prefix (≈ 0.3 Mbit/s). 16 prefixes: ≈ 2 GiB / hour (≈ 5 Mbit/s). Reconnecting gains nothing, and once the budget is spent no old row is read from the database again |
+| **R55-009 / T10-02**, redelivery amplification | 1 prefix, 12 keys × 32 MiB queued (384 MiB, uploaded once), 20 reconnects / min / key without acks: ≈ 7.5 GiB / min egress for 7 days, plus a full-queue SQLite read per reconnect | First delivery: 384 MiB once (what it uploaded; H is claimed before the send, so closing mid-batch does not replay it). Then at most 128 MiB burst + 128 MiB / hour per recipient prefix (≈ 0.3 Mbit/s). 16 prefixes: ≈ 2 GiB / hour (≈ 5 Mbit/s). Reconnecting gains nothing, and once the budget is spent no old row's frame is read from the database again, not even on a new connection's first batch |
 | **R55-010 / T6a-02**, unparseable junk fills a victim's queue | 4 keys, 1000 junk rows: the victim gets `queue_full` for 7 days and re-downloads the junk at every connect | The junk is refused at the door (`bad_envelope`). Parseable junk is acked and deleted at the victim's next connect (O-015, as accepted); rows already queued by an older relay are acked by updated daemons |
 | **R55-011 / C02-02**, one-statement sweep | ≈ 16 prefixes fill 1 GiB in one minute: 7 days later an 11–14 s stall and a 1 GiB WAL; at 2 GiB a rollback livelock | Batches of ≤ 32 MiB: the lock is held ≈ 0.35 s at a time, the WAL is ≤ 64 MiB after the tick, and no size of expiry can livelock |
 
 **Residuals** (added to [What the limits do not stop](#what-the-limits-do-not-stop)):
 
 - The prefix redelivery budget is shared. An attacker in the same /24 as an honest recipient
-  (a shared NAT) can spend it; the honest recipient's unacked rows then wait for the retry or
-  its next connection. New rows still arrive. Delay, not loss.
-- Many prefixes scale the budget linearly (N × 128 MiB / hour).
+  (a shared NAT) can spend it; the honest recipient's unacked rows then wait their turn in the
+  prefix's wait list (rule 6), at most `--queue-max-total` ÷ the prefix rate (8 h on the 4.1p
+  unit), inside the 7-day TTL. New rows still arrive. Delay, not loss. (A row whose redelivery
+  falls in its last hours before expiry can still expire while it waits.)
+- Many prefixes scale the budget linearly (N × 128 MiB / hour). There is no relay-wide
+  redelivery ceiling (OD-R55F2-9); the early relay is IPv4-only (OD-R55F1-7 (c)), so N costs
+  one /24 each.
+- A relay restart refills every redelivery bucket (they are in memory, as every other
+  limit): one burst per key and prefix per restart. Only the operator restarts the relay.
 - First deliveries are not budgeted: a prefix can make the relay send what it uploaded, as it
   can already with direct forwarding.
 
@@ -667,8 +714,8 @@ together: `--behind-proxy` without `--client-ip-header` is a usage error.
   hold the outbound budget with sinks that read fast enough not to be evicted, and so delay
   direct mail while it pays (OD-R55F1-9).
 - (R55-F2) An attacker behind the same /24 as an honest recipient can spend that prefix's
-  redelivery budget; the recipient's unacked rows then wait for the retry or its next
-  connection (new rows still arrive). Many prefixes scale the redelivery budget linearly, and
+  redelivery budget; the recipient's unacked rows then wait their turn in the prefix's wait
+  list, at most `--queue-max-total` ÷ the prefix rate (new rows still arrive). Many prefixes scale the redelivery budget linearly, and
   first deliveries are not budgeted (they cost the attacker the same upload). See
   [Residuals](#attacks-from-review-55-after-r55-f2).
 - A bound account can spend its own team's quota (its teammates' problem, visible in the
@@ -691,6 +738,20 @@ mark per recipient ([§2](#first-delivery-and-redelivery-r55-009)).
 **R1…**, independent of the daemon's 1…21 (22 is the next daemon number). R1 adopts the
 existing `queue` table as is (a relay started on an old file keeps its queue) and adds the
 index `queue_by_sender (from_key, enqueued)` that the 4.0b caps need (review 50 M3).
+
+**R3 and rollback (R55-F2, review 66b M2).** R3 is `R3_queue_delivered`; it takes the number
+the Phase 4 plan had given `beta_invites`, whose tables move to R4 and the later ones up by one
+([49-phase4-tickets.md](../review/49-phase4-tickets.md)). R3 is one idempotent
+`CREATE TABLE IF NOT EXISTS`, so a half-applied run (R55-038) re-applies cleanly. A relay
+binary older than R3 **refuses to open** an R3 database ("schema version 3 is newer than this
+binary"), so rolling F2 back needs one of: restore the backup taken before the upgrade (the
+deploy takes one: `relay backup` before replacing the binary), or, with the relay stopped,
+`DELETE FROM relay_migrations WHERE version = 3; DROP TABLE queue_delivered;` with the
+`sqlite3` tool. Both are safe: without H the next binary treats every queued row as a first
+delivery once. Re-upgrading re-creates the table. The runbook
+(`Docs/ops/early-relay-deploy.md`) gets both steps. Note that a newer `relay admin` run
+against the database of an older running relay applies R3 too, and the older relay then
+refuses to **restart**: upgrade the relay binary and `relay` admin tool together.
 
 ### Backup
 
@@ -850,7 +911,8 @@ therefore sends a Phase 4 control frame (`bind_*`, `unbind`, `invite_redeem`,
 - R55-F2 (full list in [66-r55-f2-spec.md](../review/66-r55-f2-spec.md#4-acceptance-tests)):
   a key that never acks is redelivered at most its budget (and its prefix at most the prefix
   budget) however often it reconnects, while new rows still reach it; an honest reconnect
-  gets its unacked rows at once; skipped rows are retried when the budget refills; a
+  gets its unacked rows at once; skipped rows are retried when the budget refills, in wait-list
+  order within a prefix; closing mid-batch replays nothing; a
   non-base64 payload gets `bad_envelope` and is not queued; a 1 GiB expiry is deleted in
   batches of ≤ 32 rows with the lock released between them and leaves a WAL ≤ 64 MiB.
 - A restore followed by `--replay-journal` keeps an unbind and an invite redemption made after
@@ -1019,10 +1081,29 @@ Each has a recommendation; the owner decides after the adversarial review.
   (c) 256 rows per batch: fewer transactions, but the lock is held up to ≈ 2.7 s at a time.
   **Recommended: (a).**
 - **OD-R55F2-8: WAL bound.**
-  (a) `journal_size_limit` 64 MiB, plus `wal_checkpoint(TRUNCATE)` after a tick that deleted
+  (a) `journal_size_limit` 64 MiB, plus a non-waiting `wal_checkpoint(TRUNCATE)` after a tick that deleted
   more than 64 MiB.
   (b) `journal_size_limit` only: the file shrinks only when the next checkpoint resets the
   WAL, which it does on the next write, so it can stay large while the relay is idle.
   (c) `wal_checkpoint(TRUNCATE)` after every tick that deleted anything: a checkpoint (and
   an fsync) every minute on a busy relay.
+  **Recommended: (a).**
+- **OD-R55F2-9: a relay-wide redelivery ceiling (review 66b).**
+  (a) None: the redelivery egress grows with the number of attacking prefixes
+  (N × 128 MiB / hour); on the IPv4-only early relay each costs a /24.
+  (b) A third bucket, relay-wide (e.g. 2 GiB / hour ≈ 4.8 Mbit/s), served through the same
+  wait lists: a hard ceiling on the uplink and the traffic allowance, but then enough
+  prefixes delay every recipient's redeliveries, not only their neighbours'.
+  (c) (a) now, (b) with accounts or before the relay gets an AAAA record.
+  **Recommended: (c).** At 16 prefixes the egress is ≈ 5 Mbit/s (≈ 1.6 TB / month of a
+  20 TB allowance); the ceiling's cost (relay-wide delay) is worth paying only once /48s
+  make prefixes cheap.
+- **OD-R55F2-10: order within a prefix (review 66b H2).**
+  (a) A wait list per prefix, served in order; a key's wait is at most
+  `--queue-max-total` ÷ the prefix rate (8 h on the 4.1p unit).
+  (b) No order (the draft): an attacker behind the same NAT can take every refill, and the
+  honest key's unacked rows can wait until they expire (loss).
+  (c) Exempt a key from the prefix bucket once it has waited an hour: simpler, but every
+  attacker key gets the same exemption, so one prefix again redelivers up to
+  `--queue-max-total` an hour.
   **Recommended: (a).**

@@ -51,7 +51,7 @@ stolen backup) cannot read it:
   `{"v":1,"text":…,"doctor":…|null,"version":…,"os":…,"created":…}`, or `age` if OD-P4-11
   picks it for backups too (one tool for the owner to learn).
 - Sent as control frame `{"op":"feedback","id":"fb_…","sealed":"<base64>"}` (≤ 16 KiB); the
-  relay stores `feedback(id, account_id, team_id, received, sealed)` (relay migration R6) and
+  relay stores `feedback(id, account_id, team_id, received, sealed)` (relay migration R7, renumbered by R55-F2) and
   answers `feedback_ok`. Retention: a note is deleted from the relay when it is exported, and
   after 90 days whether or not it was exported (review 50 L17).
 - The owner reads notes offline: `relay admin feedback export > notes.bin` on the host, then

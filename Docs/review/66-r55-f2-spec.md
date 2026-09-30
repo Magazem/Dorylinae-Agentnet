@@ -6,7 +6,8 @@ treated as **High**, D47), **R55-010** (T6a-02, Medium), **R55-011** (C02-02, Me
 in `verify/C02-02.md`). Owner context: D43 (4.1p is deployed; **F2 before the beta**), D47
 (F2 has priority and gets a High-level Opus security review). Based on main `eadf189`, after
 R55-F1 (merged; `internal/relay/relay.go`, `limits.go`, `budget.go` read as they are now).
-Status: **draft, awaiting adversarial review, then owner approval** (HANDOFF rule 3).
+Status: **adversarially reviewed (review 66b, fixed in place), awaiting owner approval**
+(HANDOFF rule 3).
 
 Spec changes (all docs, no code):
 
@@ -61,7 +62,8 @@ Spec changes (all docs, no code):
 - R55-011: the relay pauses ≈ 0.35 s at a time, never 11 s, and the WAL is ≤ 64 MiB after.
 
 **Cost to honest users:** none in normal use. A daemon behind the same office or carrier NAT
-as an attacker can have its *re-sends* delayed (new mail still arrives). A future change of
+as an attacker can have its *re-sends* delayed, by at most 8 hours on the early relay (it
+waits its turn; new mail still arrives). A future change of
 the envelope format must be negotiated, because old daemons now discard what they cannot
 parse.
 
@@ -77,14 +79,21 @@ parse.
   receiving connection 128 MiB / hour (burst 128 MiB, `--queue-redeliver-per-prefix`), both or
   neither.
 - "Already delivered" = `seq ≤ H(key)`, a persistent high-water mark in a new table
-  `queue_delivered (to_key PRIMARY KEY, seq)` (migration R3), raised once per drained batch
-  that contains a first delivery. This relies on drains handing a key's rows over in `seq`
-  order and new rows always getting a larger `seq` (both true today; a test pins them).
+  `queue_delivered (to_key PRIMARY KEY, seq)` (migration R3), raised when a batch with a first
+  delivery is **claimed**, before its frames are sent (review 66b H1), in the same transaction
+  that reads it. This relies on drains handing a key's rows over in `seq` order and new rows
+  always getting a larger `seq` (both true today; a test pins them).
 - Over budget: the row is **skipped**; the connection records `skipFrom`, `skipTo` (= H) and
   the first skipped row's size, jumps its cursor to `skipTo` and goes on with first
   deliveries. No frame of a skipped row is read again on this connection until the retry.
-- Retry: on the per-minute sweep tick, a connection with a skipped range whose key and prefix
-  buckets hold the first skipped row's size drains `[skipFrom, skipTo]` again (same rules).
+- The skip decision reads only the first old row's `seq` and `LENGTH(frame)`, never a frame
+  (review 66b M1), also on a new connection's first batch.
+- Fair order (review 66b H2): a connection skipped for want of prefix budget joins its
+  prefix's wait list; while the list is not empty, no other connection of that prefix may
+  redeliver; refills serve the list in order.
+- Retry: on the per-minute sweep tick, each prefix's wait list is served in order: a
+  connection whose key and prefix buckets hold its first skipped row's size drains
+  `[skipFrom, skipTo]` again (same rules), then resumes at its previous cursor.
 - Logging (`queue_redeliver_key`, `queue_redeliver_prefix`) and metrics
   (`relay_queue_redelivered_bytes_total`, `relay_queue_redeliveries_skipped_total`).
 
@@ -147,7 +156,8 @@ High level before merge (D47, rule 4). Files and functions:
   (`payload: not a base64 string`). Return the decoded header together with the payload
   error, so `route` can put the id in `ref`.
 - New `AckTarget(frame []byte) (from, id, typ string, ok bool)`: the same decode, no payload
-  check; `ok` when `from` is a valid key and `id` valid.
+  check; `ok` when `json.Unmarshal` returned nil and `Header.Validate()` passes (every routing
+  field, as the relay required at ingress; review 66b L1).
 - `Parse` is unchanged (the daemon stays lenient).
 
 **`internal/relay/relay.go`**
@@ -155,22 +165,30 @@ High level before merge (D47, rule 4). Files and functions:
 - `route`: `bad_envelope` with `ref = h.ID` when the header itself was valid and only the
   payload failed; unchanged otherwise. Runs before the ephemeral branch, so presence is
   covered.
-- `drainStep`: after `q.next`, read H with `q.lastDelivered(c.key)` (a primary-key lookup,
-  once per batch, so a replaced connection's late raise is seen). For each row: `seq > H` →
-  send; `seq ≤ H` → `s.lim.redeliverAllowed(c.key, c.prefix, len(frame))`; refused → record
-  the skip in `c` (under `c.mu`), move `c.cursor` to `max(c.cursor, H)` and skip the batch's
-  remaining rows `≤ H`. After the batch's frames are handed over, `q.markDelivered(c.key,
-  maxFirstSeq)` if the batch had a first delivery. The F1 reservation and eviction logic is
+- `drainStep` (review 66b H1, M1): replace `q.next` with `q.claim(c.key, c.cursor, …)`,
+  which in **one transaction under `q.mu`** reads H, and if `cursor < H` returns only the
+  first old row's `seq` and `LENGTH(frame)` (a *probe*, no frame); otherwise reads the batch
+  of rows `> cursor` (all first deliveries) and raises H to its last `seq` before returning.
+  On a probe: `s.redeliverAllowed(c, size)` (buckets and the prefix wait list); refused →
+  record the skip in `c` (under `c.mu`), set `c.cursor = H`, join the wait list if the prefix
+  refused, and loop; allowed → read the old rows `(cursor, H]` as a batch (they are
+  redeliveries, H unchanged), charging each row's size before handing it over and stopping
+  at the first row the buckets refuse (that one is recorded as the skip). A claim error →
+  nothing is sent, as a `next` error today. The F1 reservation and eviction logic is
   unchanged; skipped rows release their share of the reservation (`unreserve`, as unused
   bytes are today).
-- Retry: `Server.retrySkipped()` called from `sweepLoop` after `Sweep`: snapshot `s.conns`;
-  for each connection with a skipped range whose buckets `has` the recorded size, start a
-  range drain (`seq BETWEEN skipFrom AND skipTo`) under `drainWG`, serialised with the normal
-  drain through `c.draining` (only when not draining; otherwise try next tick). When the
-  range is done it falls through to a normal `drainStep` loop, because direct forwarding was
-  off meanwhile.
+- Retry: `Server.retrySkipped()` called from `sweepLoop` after `Sweep`: for each prefix's
+  wait list (next to the buckets, under `limits.mu`; a connection is removed on close), in
+  order, a connection whose buckets `has` the recorded size starts a range drain
+  (`seq BETWEEN skipFrom AND skipTo`) under `drainWG`, serialised with the normal drain
+  through `c.draining` (only when not draining; otherwise it keeps its place). Connections
+  skipped by their **key** bucket only (on no wait list) are retried the same way. The range
+  drain uses its own cursor; when it is done `c.cursor` is what it was before the retry and
+  the normal `drainStep` loop continues, because direct forwarding was off meanwhile.
 - `Sweep`: loop `q.sweepBatch()` until it deletes nothing, 30 s have passed, or `stopSweep`
-  is closed; sum counts and bytes; if bytes > 64 MiB run `PRAGMA wal_checkpoint(TRUNCATE)`;
+  is closed; sum counts and bytes; if bytes > 64 MiB run `q.truncateWAL()` (under `q.mu`:
+  `busy_timeout = 0`, `wal_checkpoint(TRUNCATE)`, `busy_timeout = 5000`; `SQLITE_BUSY` is
+  skipped silently, review 66b M3);
   then `q.pruneDelivered()`; log once per tick as today (`queue_expire`, count).
 - `Stats` gains the two counters; `cmd/relay/main.go` prints them on the metrics listener.
 
@@ -179,9 +197,14 @@ High level before merge (D47, rule 4). Files and functions:
 - `openRelayDB`: add `&_pragma=journal_size_limit(67108864)` to the file DSN.
 - Migration `{3, "R3_queue_delivered", "CREATE TABLE IF NOT EXISTS queue_delivered (to_key
   TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID;"}`.
-- `lastDelivered(to) (int64, error)`; `markDelivered(to, seq) error` =
-  `INSERT … ON CONFLICT(to_key) DO UPDATE SET seq = MAX(seq, excluded.seq)` (never lowers H).
-- `nextRange(to, from, to2, limit, maxBytes)` for the retry (or a parameter on `next`).
+- `claim(to, after, limit, maxBytes)` as above: `BEGIN`, read H, probe or read, and for a
+  first-delivery batch `INSERT … ON CONFLICT(to_key) DO UPDATE SET seq = MAX(seq,
+  excluded.seq)` (never lowers H), `COMMIT`, all under `q.mu`. The probe is `SELECT seq,
+  LENGTH(frame) FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ?
+  ORDER BY seq LIMIT 1` (`LENGTH` of a blob reads the record header, not its pages).
+- `nextRange(to, from, to2, limit, maxBytes)` for redeliveries and the retry.
+- R3 takes the number the Phase 4 plan gave `beta_invites`; the plan moves up by one
+  (`49-phase4-tickets.md`, `invites.md`, `telemetry.md`, `feedback.md` updated, review 66b M2).
 - `sweepBatch() (n int64, bytes int64, err error)`: its own 10 s context taken **after**
   `q.mu.Lock()`; `DELETE FROM queue WHERE seq IN (SELECT seq FROM queue WHERE enqueued < ?
   ORDER BY enqueued LIMIT 32) RETURNING from_key, LENGTH(frame)`; collect, and call `adjust`
@@ -200,7 +223,9 @@ High level before merge (D47, rule 4). Files and functions:
 - Two `bucketSet`s (`redeliverKey`, `redeliverPrefix`) at `rate = bytes / 3600`.
 - `redeliverAllowed(key, prefix string, n int) string` (both or neither, via `has` then
   `take`, returning `limitRedeliverKey` / `limitRedeliverPrefix`), and `redeliverHas(key,
-  prefix, n) bool` for the retry check.
+  prefix, n) bool` for the retry check. The prefix wait list sits next to the buckets, under
+  `limits.mu`: `redeliverAllowed` refuses with `limitRedeliverPrefix` a connection that is not
+  the one being served while its prefix's list is not empty (review 66b H2).
 - Limit names `queue_redeliver_key`, `queue_redeliver_prefix`.
 
 **`internal/relay/conn.go`**: under `c.mu`: `skipFrom, skipTo, skipSize int64`.
@@ -209,7 +234,7 @@ High level before merge (D47, rule 4). Files and functions:
 int64` (0 = default, negative = off, tests only).
 
 **`internal/relayclient/relayclient.go` `dispatch`**: on `envelope.Parse` error →
-`envelope.AckTarget(frame)`; if ok and `!envelope.IsEphemeral(typ)` → send the ack for
+`envelope.AckTarget(frame)` (see above: ok only for a header the relay would accept); if ok and `!envelope.IsEphemeral(typ)` → send the ack for
 `(from, id)`; count the frame (acked or not) and emit at most one Warn per minute
 (`event=relay_bad_frame`, `count`, `acked`). The `Classify` failure branch is counted in the
 same line.
@@ -240,6 +265,9 @@ inverted. Fake clock: `limitEnv.clock`.
    - Reads use a short timeout (e.g. 300 ms) and count what arrives instead of failing.
    - Assert: the first connection gets all 8 (first delivery is not budgeted); in total
      `downloaded ≤ uploaded + 2 MiB + 2 min × (2 MiB / h) + one frame`; `Queued` is still 8.
+   - Variant (review 66b H1): each connection closes after reading **one** frame of its
+     batch; over 40 reconnects the same bound holds (closing mid-batch replays no row as a
+     first delivery).
    - Then advance 1 h and reconnect: redeliveries resume (the budget refilled).
 2. **C02-02** (`zz_review55_C02-02_test.go` → `TestQueueSweepBatched`, internal
    `package relay`, production DSN via `openQueue`).
@@ -247,7 +275,10 @@ inverted. Fake clock: `limitEnv.clock`.
      manual 1 GiB and 2 GiB run; the report records the timings).
    - Assert: every row deleted, totals 0, no transaction deleted more than 32 rows (hook or
      counter), a concurrent `add` started during the sweep returns within 1 s, the WAL file
-     is ≤ 64 MiB + 1 MiB afterwards, and `PRAGMA journal_size_limit` is 67108864.
+     is ≤ 64 MiB + 1 MiB afterwards, and `PRAGMA journal_size_limit` is 67108864. The `add`
+     bound is relative, not wall-clock (review 66b L3): the add returns within the longest
+     batch the hook measured plus 500 ms (a slow CI disk makes batches slower, not the bound
+     wrong).
 
 ### New tests
 
@@ -261,10 +292,12 @@ inverted. Fake clock: `limitEnv.clock`.
    delivered while its old rows are skipped; after the clock passes the refill and
    `RetrySkipped()` runs, the skipped rows arrive, oldest first, and are charged.
 6. **No database reads after a skip.** With the budget spent, a reconnect reads no frame of
-   an old row (a query counter, or `next` called only with `seq > H`).
+   an old row, **including on its first batch** (a counter of frames read; only the probe
+   touches old rows, review 66b M1).
 7. **H is persistent and monotonic.** With a queue file: deliver, restart the relay,
    reconnect without acking → the rows count as redeliveries. Two overlapping connections of
-   one key (replacement) never lower H (`markDelivered` with a smaller seq is a no-op).
+   one key (replacement) never lower H and never both get the same row as a first delivery
+   (the claim, review 66b H1).
 8. **Delivery order pins the H rule.** Rows added while a drain is running, and busy-path
    rows of a connected key, all get `seq > H` at the time they are added.
 9. **Migration R3.** An R2 database with queued rows opens, gets `queue_delivered`, and its
@@ -272,7 +305,7 @@ inverted. Fake clock: `limitEnv.clock`.
 10. **Payload refused (`bad_envelope`)** — `TestRelayRefusesBadPayload`. Each of these gets
     `bad_envelope`, is not queued (`Queued` 0) and is not forwarded to an online recipient:
     `"payload":1`, `{}`, `[]`, `null`, no `payload`, `"not base64!"`, `"QQ"` (unpadded),
-    `"QQ==QUFB"` (padding inside), `"QUFB"` (escape), a good `"payload":"QQ=="`
+    `"QQ==QUFB"` (padding inside), `"\u0051UFB"` (an escape; review 66b L2), a good `"payload":"QQ=="`
     followed by `"payload":1`, and a good one followed by `"PAYLOAD":1`. Accepted and
     forwarded byte for byte: `""`, `"QQ=="`, `"QUFB"`, a 700 KiB valid payload, and a bad
     `"payload":1` followed by a good `"payload":"QQ=="` (last wins). A presence envelope
@@ -288,9 +321,11 @@ inverted. Fake clock: `limitEnv.clock`.
 13. **Ack-forgery guard.** For a corpus of frames with two `from` keys, `From`/`FROM`
     variants and two `id` keys, the `(from, id)` the client acks equals what the relay's
     `ParseHeader` decoding yields for the same frame. End to end on a real relay with an
-    older-relay test switch that skips the payload check: stranger A sends
-    `{"from":"<P>",…,"from":"<A>","id":"<id of P's queued mail>","payload":1}` to victim V;
-    V acks `(A, id)` and P's queued mail to V is still delivered.
+    old-relay row, stored with `q.add` directly by an internal test (`package relay`), as a
+    relay before R55-F2 would have stored it (no production switch; review 66b L2): stranger
+    A's frame
+    `{"from":"<P>",…,"from":"<A>","id":"<id of P's queued mail>","payload":1}` is
+    queued for victim V; V acks `(A, id)` and P's queued mail to V is still delivered.
 14. **Sweep failure keeps progress.** A hook fails the 3rd batch: batches 1–2 stay deleted,
     the in-memory totals equal a `rebuildTotals` scan, and the next `Sweep` finishes.
 15. **Tick budget.** With a tiny time budget the sweep deletes at least one batch per tick
@@ -300,10 +335,23 @@ inverted. Fake clock: `limitEnv.clock`.
     expired, and keeps the mark of a key that still has rows.
 17. **cmd/relay.** The two flags parse with units, appear in `-h` with their defaults, are
     printed on the start line, and the metrics endpoint shows the two new counters.
+18. **Fair order in a prefix (review 66b H2).** Prefix budget 4 MiB, key budgets large.
+    Attacker keys A1…A4 and honest key V in 10.2.0.0/24, each with 4 MiB redeliverable;
+    the A keys reconnect 20 / min, V only when its connection drops once. Over 3 fake hours
+    V's rows are redelivered within `(4 × 4 MiB + 4 MiB) ÷ prefix rate` of its skip, and no
+    A key redelivers while V waits ahead of it. A closed connection leaves the wait list.
+19. **Non-waiting checkpoint (review 66b M3).** With a second connection holding a read
+    transaction on the file, a sweep of > 64 MiB returns without waiting for the busy
+    timeout (e.g. within 1 s against the 5 s timeout) and the next large sweep after the
+    reader ends truncates the WAL.
+20. **R3 rollback (review 66b M2).** After the documented `DELETE FROM relay_migrations
+    WHERE version = 3; DROP TABLE queue_delivered;`, a binary with only R1–R2 in
+    `relayMigrations` (the test truncates the slice) opens the file and keeps its rows;
+    re-opening with R3 re-creates the table and the rows are first deliveries.
 
 ### Merge gate
 
-HANDOFF rule 5 as usual, plus the per-OS lint. Run tests 1, 3, 5 and 13 with `-count=3`.
+HANDOFF rule 5 as usual, plus the per-OS lint. Run tests 1, 3, 5, 13 and 18 with `-count=3`.
 Delete any `zz_review55_T10-02_test.go` / `zz_review55_C02-02_test.go` from `internal/relay`
 if present (the converted tests are new files). Update `deploy/early/agentnet-relay.service`
 and `Docs/ops/early-relay-deploy.md`.
@@ -337,10 +385,14 @@ Full text with options in
 | OD-R55F2-5 | Relay payload rule | (a) required string, no escapes, padded std base64, all envelopes; (b) as (a) but accept missing/`null`; (c) no relay change | **(a)** |
 | OD-R55F2-6 | Daemon acks what it cannot parse | (a) ack via the relay's own header decoding, non-ephemeral only, not handed up, one Warn/min; (b) never ack; (c) (a) + `doctor` count | **(a)** |
 | OD-R55F2-7 | Sweep batch | (a) 32 rows, lock released between, 30 s per tick; (b) byte-bounded batches; (c) 256 rows | **(a)** |
-| OD-R55F2-8 | WAL bound | (a) `journal_size_limit` 64 MiB + `TRUNCATE` after big sweeps; (b) limit only; (c) `TRUNCATE` after every sweep | **(a)** |
+| OD-R55F2-8 | WAL bound | (a) `journal_size_limit` 64 MiB + non-waiting `TRUNCATE` after big sweeps; (b) limit only; (c) `TRUNCATE` after every sweep | **(a)** |
+| OD-R55F2-9 | Relay-wide redelivery ceiling (review 66b) | (a) none, linear in prefixes; (b) relay-wide bucket through the same wait lists; (c) (a) now, (b) with accounts or IPv6 | **(c)** |
+| OD-R55F2-10 | Order within a prefix (review 66b H2) | (a) per-prefix wait list, wait ≤ queue-max-total ÷ prefix rate; (b) no order (draft; loss possible); (c) exempt after 1 h of waiting | **(a)** |
 
-None reopens an owner decision. OD-R55F2-1 (a) and -3 (a) together are what D47's "High"
-rating asks for: they remove the amplification, not just slow it.
+None reopens an owner decision. OD-R55F2-1 (a), -3 (a) and the claim-before-send rule
+(review 66b H1) together are what D47's "High" rating asks for: redelivery egress is bounded
+per recipient prefix and no longer grows with reconnects. It is not bounded relay-wide
+(OD-R55F2-9).
 
 ## 7. Notes for the adversarial reviewer
 
@@ -378,3 +430,118 @@ Points I am least sure of:
   (here: within budget at once, else by the retry; its per-row counter / not-before
   alternative is OD-R55F2-1 (c) and -4 (b)), no reliance on F1's memory budgets, and
   R55-010 closed in the same ticket.
+
+## Review 66b (adversarial, R55-F2rev-Opus `claude-opus-5-5`, 2026-09-30)
+
+Scope: this spec at 8363e27 and its edits to `relay-hosted.md` and `envelope.md`, checked against
+`99-report.md` R55-009/010/011 and §4 F2, `verify/R55-009.md` (main), `verify/C02-02.md`, the F1
+spec (56), and the code on the branch base (`internal/relay/{queue,relay,conn,limits}.go`,
+`internal/envelope/{envelope,frames}.go`, `internal/relayclient/relayclient.go`,
+`deploy/early/agentnet-relay.service`; `internal`, `cmd` and `deploy` are identical to main
+4678b1f). Docs only; no tests run. All findings below are **fixed in place**.
+
+Files changed by this review: `Docs/review/66-r55-f2-spec.md`, `Docs/protocol/relay-hosted.md`,
+`Docs/protocol/envelope.md`, `Docs/review/49-phase4-tickets.md`, `Docs/protocol/invites.md`,
+`Docs/protocol/telemetry.md`, `Docs/protocol/feedback.md`.
+
+### Findings
+
+- **H1 · High · closing mid-batch replayed first deliveries.** The draft raised H "after the
+  batch's frames are handed over". `drainStep` returns as soon as `sendReserved` fails
+  (`relay.go:1043-1046`), so a key that closes its connection after one frame of each batch
+  never raises H, and its first batch (up to `drainBatchBytes` + one frame, ≈ 2 MiB) is a free
+  "first delivery" on every one of its 20 reconnects a minute: ≈ 40 MiB/min per key, any
+  number of keys per prefix. This reopened R55-009 at roughly 1/15 of the original rate.
+  Two connections of one key (a replacement) could also both deliver the same rows as first
+  deliveries. **Fix:** the drain *claims* a batch (read H, read rows, raise H) in one
+  transaction under `q.mu` before sending; a claim error sends nothing. Claimed rows that never
+  arrived are redeliveries on the next connection. The honest case fits the key budget: an
+  honest daemon evicted by F1 pays at most one batch plus its buffer per eviction.
+  relay-hosted.md §First delivery, §3 plan (`claim`), tests 1 (variant) and 7.
+- **H2 · High · the shared prefix bucket could turn "delay" into loss.** The retry runs once
+  a minute; an attacker key behind the same NAT asks at every reconnect (20/min) and takes
+  every refill before it. An honest neighbour's unacked rows could therefore wait until they
+  expire: the draft's "delay, not loss" did not hold, and genuine drops must redeliver (verify
+  note). **Fix:** a per-prefix wait list served in order (rule 6): while it is not empty, no
+  other connection of the prefix may redeliver; a key whose own bucket is short keeps its
+  place. A key's wait is at most `--queue-max-total` ÷ prefix rate (8 h on the 4.1p unit,
+  32 h at the 4 GiB default), inside the TTL. Rejected alternative: an hourly exemption.
+  Every attacker key would get it too, so one prefix would be back to `--queue-max-total` per
+  hour. OD-R55F2-10; test 18.
+- **M1 · Medium · every reconnect still read a batch of old frames.** The draft decided the
+  skip *after* `q.next` had read the batch. So each new connection read up to ≈ 2 MiB of old
+  frames from the single SQLite connection before skipping, 20 times a minute per key: the
+  "single-DB load" part of R55-009 in the verify. "A key over budget costs no database reads"
+  was only true within one connection. **Fix:** a probe reads only `seq` and `LENGTH(frame)`
+  of the first old row (header-only in SQLite) before any frame is read. Rule 4; test 6.
+- **M2 · Medium · migration R3 collided with the Phase 4 plan and had no rollback.**
+  `49-phase4-tickets.md` and `invites.md` give R3 to `beta_invites` (4.3a), and R4–R6 to quota,
+  telemetry and feedback. F2 lands first, so F2 is R3 and the plan moves up by one (all four
+  documents updated). A pre-R3 binary refuses an R3 database (`queue.go:240-242`). Rollback
+  therefore needs either a pre-upgrade `relay backup` or two `sqlite3` statements. Both are now
+  in relay-hosted.md §3 and must go into the runbook. R3 is one idempotent `CREATE TABLE IF NOT
+  EXISTS`, so R55-038 (no two-opener guard) does not affect it. Test 20.
+- **M3 · Medium · the `TRUNCATE` checkpoint could stall the relay for 5 s.** `TRUNCATE` runs
+  the busy handler (`busy_timeout(5000)` in the DSN) while another connection reads an old
+  snapshot, which is what `relay backup` does (`VACUUM INTO`, in a second process). On the
+  relay's only connection this blocks every add, ack and drain: a smaller R55-011. **Fix:**
+  run it with `busy_timeout = 0` and skip it on `SQLITE_BUSY`. Test 19.
+- **L1 · Low · the ack path accepted headers the relay would have refused.** `AckTarget`
+  required only a valid `from` and `id`. A frame with, say, `"team":5` decodes with an error
+  but keeps `from`/`id`. Only a hostile relay can deliver such a frame, and it can delete rows
+  anyway, but the rule "ack only what passed ingress" should be exact. **Fix:** `ok` needs a
+  nil decode error and `Header.Validate()`. envelope.md §Client behaviour.
+- **L2 · Low · two acceptance tests could not be written as stated.** Test 10 listed `"QUFB"`
+  as both refused ("escape"; evidently a lost `QUFB`) and accepted; it is now
+  `"QUFB"`. Test 13 needed a production "older-relay switch" to skip the payload check;
+  now an internal test stores the row with `q.add`.
+- **L3 · Low · a wall-clock 1 s bound in test 2.** A 32 MiB `secure_delete` batch on a slow CI
+  disk can exceed it. The bound is now relative to the longest batch the hook measured.
+
+### Checked and found sound (no change)
+
+- **Payload parser differential.** The relay struct and `Envelope` decode with the same
+  `encoding/json` field matching: the last key wins, and matching is case-insensitive,
+  including the `ſ`/`K` folds (e.g. `"tſ"` matches `ts` in both). In both, `json.Unmarshal`
+  validates the whole input (UTF-8, syntax) before decoding. Escape-free plus the padded
+  alphabet is exactly what `base64.StdEncoding` accepts (its `\r\n` skipping cannot occur in an
+  unescaped JSON string). Go's `json.Marshal` escapes only `<>&` and control characters, none
+  of which is in the base64 alphabet, so honest frames pass. `null` does reach a value-type
+  `UnmarshalJSON` and is refused. The only envelope producer is `Envelope.Marshal` (there is no
+  other SDK in the repo).
+- **Ack forgery.** Both sides use the same `Classify` (`frames.go:188`), so no frame is an
+  envelope to the relay and a control frame to the client. Pairing and other relay replies
+  are control frames. The relay deletes only rows whose `to_key` is the connection's key.
+- **Key rotation** does not beat the prefix bucket: fresh keys still share their prefix's
+  128 MiB/h. **IPv6 /48s** make prefixes cheap, but the early relay is IPv4-only (F1
+  OD-7 (c)). The linear growth with prefixes is OD-R55F2-9.
+- **H after DB loss or restore.** A lost database loses its rows too. A restore brings back rows
+  and H from the same `VACUUM INTO` snapshot, `sqlite_sequence` included, so new `seq` values
+  stay above H. Rows acked after the backup come back once (as today). The prune deletes H only
+  for a key with no rows, and any later row gets a larger `seq`. The attacker can trigger none
+  of these.
+- **Sweep under concurrent add/ack.** Each batch is one statement under `q.mu`, and running
+  `adjust` only after success keeps the totals exact. Go's mutex hands over to a waiter after
+  1 ms, so `add` waits at most about one batch.
+- **Defaults on the 1 GiB unit.** The wait lists hold one entry per connection (at most 2000),
+  and the redelivery buckets reuse the pruned `bucketSet`. GOMEMLIMIT is not affected.
+  `journal_size_limit` 64 MiB fits within the 512 MiB free-disk floor.
+
+### Final open decisions
+
+| OD | Options | Recommended |
+|---|---|---|
+| OD-R55F2-1 budget counts | (a) redeliveries only, key + prefix; (b) every queue delivery; (c) hold-back timer | **(a)** |
+| OD-R55F2-2 over budget | (a) skip, deliver new rows, retry; (b) pause the drain; (c) close 1013 | **(a)** |
+| OD-R55F2-3 sizes | (a) 32 MiB/h key, 128 MiB/h prefix; (b) 8 / 32; (c) 128 / 512 | **(a)** |
+| OD-R55F2-4 "delivered" state | (a) persistent H table (R3), claimed before send; (b) per-row column; (c) memory only | **(a)** |
+| OD-R55F2-5 relay payload rule | (a) required, escape-free, padded std base64, every envelope; (b) also missing/`null`; (c) none | **(a)** |
+| OD-R55F2-6 daemon acks unparseable | (a) ack via the relay's header decoding when the header fully validates, non-ephemeral only; (b) never; (c) (a) + `doctor` | **(a)** |
+| OD-R55F2-7 sweep batch | (a) 32 rows, lock released, 30 s/tick; (b) byte-bounded; (c) 256 rows | **(a)** |
+| OD-R55F2-8 WAL bound | (a) limit 64 MiB + non-waiting `TRUNCATE` after big sweeps; (b) limit only; (c) `TRUNCATE` every tick | **(a)** |
+| OD-R55F2-9 relay-wide ceiling | (a) none; (b) relay-wide bucket through the wait lists; (c) (a) now, (b) with accounts or IPv6 | **(c)** |
+| OD-R55F2-10 order within a prefix | (a) wait list, wait ≤ queue-max-total ÷ prefix rate; (b) none; (c) exempt after 1 h | **(a)** |
+
+**Verdict:** approve after these fixes. No Critical. H1 and H2 were real (a replay of the
+amplification, and possible loss of honest mail); the edits above close both. The spec is
+ready for the owner's OD decisions.

@@ -33,7 +33,7 @@ So there are exactly two sources, and nothing else leaves a machine:
 4. **Transparency:** `agentnet telemetry show` prints the exact JSON of the next report and the
    last 12 sent reports; the relay counters are listed in this document.
 
-## Relay counters (ticket 4.6a, relay migration R5)
+## Relay counters (ticket 4.6a, relay migration R6, renumbered by R55-F2)
 
 `telemetry_daily(group_id, day, name, value)`, one row per counter per quota group per UTC day,
 updated in memory and flushed every minute (a crash loses at most a minute of counts).

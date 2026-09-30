@@ -323,7 +323,8 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   again on the next connection. From R55-F2 such a **redelivery** is charged to the
   recipient key's and its network prefix's redelivery budgets; past them it is
   skipped for now (newer envelopes are still delivered) and sent again when the budget
-  has refilled, on the same connection or the next one
+  has refilled, in turn with the other keys of the same prefix, on the same connection or
+  the next one
   ([relay-hosted.md §2](relay-hosted.md#offline-queue-delivery-and-expiry-r55-f2)).
   A first delivery is never held back. The daemon (`internal/relayclient`) keeps the
   last 8192 `(from, id)` pairs it handed up and drops repeats, still acking
@@ -482,8 +483,10 @@ any future parse difference). The ack is sent only when all of these hold:
 
 1. The frame is not a control frame.
 2. `envelope.ParseHeader`'s JSON decoding of the frame (the one the relay used at
-   ingress, [Forwarding](#forwarding) step 1) gives a `from` that is a valid key and an
-   `id` that is valid. The client must use **that function's decoding**, never a
+   ingress, [Forwarding](#forwarding) step 1) succeeds and every routing field validates,
+   exactly as the relay required at ingress; only the payload verdict is ignored (review
+   66b L1: a frame the relay would not have accepted is not acked either). The client must
+   use **that function's decoding**, never a
    second parser, a first-wins rule or a hand-written scan. The relay checked at
    ingress that this `from` is the key that sent the frame; the ack
    `{"op":"ack","from":<from>,"ref":<id>}` therefore names only the sender's own

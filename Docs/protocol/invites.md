@@ -111,7 +111,7 @@ at beta week 4 **after the outside security review's findings are fixed or docum
 have at least 6 weeks of use before weeks 9–12 are measured. 8 seats per quota group. Codes
 expire after **48 hours** (D36); the owner issues a new code on request.
 
-## Relay storage (relay migration R3; `quota_*` tables are created in R2 with accounts)
+## Relay storage (relay migration R4, renumbered by R55-F2; `quota_*` tables are created in R2 with accounts)
 
 | Table | Columns |
 |---|---|

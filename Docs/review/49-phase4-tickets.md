@@ -75,13 +75,15 @@ opens a database at the previous relay version with rows in it and migrates):
 |---|---|---|---|
 | R1 | `relay_base` | `relay_migrations`; adopts the existing `queue` table unchanged (old queue files keep their envelopes); adds index `queue_by_sender (from_key, enqueued)` for the 4.0b caps (review 50 M3) | 4.1a |
 | R2 | `accounts` | `accounts`, `account_keys`, `bind_requests`, `web_sessions`, `quota_groups`, `quota_group_members` | 4.2a |
-| R3 | `beta_invites` | `beta_invites` | 4.3a |
-| R4 | `quota_usage` | `quota_usage` | 4.1c |
-| R5 | `telemetry` | `telemetry_daily`, `telemetry_weekly` | 4.6a |
-| R6 | `feedback` | `feedback` | 4.7a |
+| R3 | `queue_delivered` | `queue_delivered` (delivered high-water mark, review 66) | R55-F2 |
+| R4 | `beta_invites` | `beta_invites` | 4.3a |
+| R5 | `quota_usage` | `quota_usage` | 4.1c |
+| R6 | `telemetry` | `telemetry_daily`, `telemetry_weekly` | 4.6a |
+| R7 | `feedback` | `feedback` | 4.7a |
 
-R4–R6 are built in parallel (wave P4-5) and **merge in the order 4.1c, 4.6a, 4.7a**; a later
-ticket renumbers nothing, it rebases onto the earlier migration. R5 also holds
+R5–R7 are built in parallel (wave P4-5) and **merge in the order 4.1c, 4.6a, 4.7a**; a later
+ticket renumbers nothing, it rebases onto the earlier migration. (R3 went to R55-F2, review
+66b, which merges before the beta; the plan's R3–R6 moved up by one.) R6 also holds
 `telemetry_seen` (review 50 M9).
 
 ## Tickets
@@ -104,11 +106,11 @@ workers at once, HANDOFF §5).
 | 4.2a | Accounts core (relay): R2, `--accounts`, account states in `ready`, `bind_*` frames, bound-only routing, revocation, suspension, admin CLI (`relay admin account …`), per-account pairing limits | G-4.0, 4.1a | R2 | L | **yes** | Opus | 4.4a |
 | 4.2b | Web login: GitHub OAuth (and/or magic link per OD-P4-2), login / code / confirm / account pages, cookies, CSRF, CSP, rate limits | 4.2a | — | L | **yes** | Opus | 4.2c, 4.3a |
 | 4.2c | Daemon + CLI: `account_*` IPC, `agentnet login/logout`, account in `status`, `account_required` errors with hints, audit; relay-supplied `url` checked before the OS opener, relay strings sanitised (review 50 H3) | 4.2a | — | M | **yes** (R-4.2: untrusted relay input reaches the OS opener) | Opus | 4.2b, 4.3a |
-| 4.3a | Beta invites and quota groups: R3, `invite_redeem`, `relay admin invite/group`, admission by pairing vouched by the issuer (`pair_admit`, OD-P4-6, review 50 H2), seats, contact removal, `--invite` on `login` | 4.2a | R3 | M | **yes** (authorization) | Opus (authorization, D26) | 4.2b, 4.2c |
-| 4.1c | Quotas: R4, charge per sender's quota group, soft mode + `quota_warning`, hard mode behind a flag, daemon display | 4.3a | R4 | S | — | Sonnet | 4.6a, 4.7a |
-| 4.6a | Relay telemetry counters: R5, daily counters, weekly totals intake (strict parser of untrusted reports, once per key and week), `relay admin stats` | 4.3a | R5 | M | **yes** (R-4.6: parses untrusted input) | Sonnet | 4.1c, 4.7a |
+| 4.3a | Beta invites and quota groups: R4, `invite_redeem`, `relay admin invite/group`, admission by pairing vouched by the issuer (`pair_admit`, OD-P4-6, review 50 H2), seats, contact removal, `--invite` on `login` | 4.2a | R4 | M | **yes** (authorization) | Opus (authorization, D26) | 4.2b, 4.2c |
+| 4.1c | Quotas: R5, charge per sender's quota group, soft mode + `quota_warning`, hard mode behind a flag, daemon display | 4.3a | R5 | S | — | Sonnet | 4.6a, 4.7a |
+| 4.6a | Relay telemetry counters: R6, daily counters, weekly totals intake (strict parser of untrusted reports, once per key and week), `relay admin stats` | 4.3a | R6 | M | **yes** (R-4.6: parses untrusted input) | Sonnet | 4.1c, 4.7a |
 | 4.6b | Daemon report: migration 22, weekly builder from local tables, `telemetry_report`, `agentnet telemetry`, `TestTelemetryHasNoContent` | 4.6a | 22 | M | **yes** (privacy invariant) | Sonnet | 4.9a |
-| 4.7a | `agentnet feedback`: sealing to the compiled-in operator key, R6, export/open, limits; `CHANGELOG.md` + release-notes step | 4.3a | R6 | S | **yes** (with 4.6b) | Sonnet | 4.1c, 4.6a |
+| 4.7a | `agentnet feedback`: sealing to the compiled-in operator key, R7, export/open, limits; `CHANGELOG.md` + release-notes step | 4.3a | R7 | S | **yes** (with 4.6b) | Sonnet | 4.1c, 4.6a |
 | 4.4a | Release pipeline: tag-triggered build of all binaries for 3 OSes × amd64/arm64 (release builds without `testhooks`), SHA-256 sums **signed** (OD-P4-19), `install.sh` (verifies the signature as in [§install](#install-44)), Homebrew tap formula, version check in `ready` (`min_client`) | specs approved | — | M | **yes** (supply chain) | Opus (signature verification, D26) | 4.2a |
 | 4.4b | Windows: per-user MSI (OD-P4-13), code signing in CI, `agentnetd` runs **windowless at logon** (board todo), uninstall | 4.4a, 4.9a (its acceptance runs `setup`); certificate optional (D36) | — | M | **yes** | Opus (OS-level) | any |
 | 4.4c | `agentnet doctor` + relay state in `status` (board todo): checks of [§CLI contracts](#doctor) except `account` (added by 4.2c) | 4.0a | — | M | — | Sonnet | 4.0b, 4.4d |
@@ -141,7 +143,7 @@ integers and a sealed note); 4.1b deploy config; 4.8b, 4.8c.
 | P4-2 | 4.0b (Opus) ∥ 4.4c (Sonnet) ∥ 4.4d (Sonnet) | starts after 4.1a and 4.0a merge; then **R-4.0**, 4.0d, **G-4.0** |
 | P4-3 | 4.2a (Opus) ∥ 4.4a (Sonnet) | + the owner's hosting / domain / OAuth-app setup |
 | P4-4 | 4.2b (Opus) ∥ 4.2c (Opus) ∥ 4.3a (Opus) | then R-4.2 |
-| P4-5 | 4.1c ∥ 4.6a ∥ 4.7a (all Sonnet) | merge order 4.1c, 4.6a, 4.7a (R4, R5, R6) |
+| P4-5 | 4.1c ∥ 4.6a ∥ 4.7a (all Sonnet) | merge order 4.1c, 4.6a, 4.7a (R5, R6, R7) |
 | P4-6 | 4.6b (Sonnet) ∥ 4.1b (Sonnet) ∥ 4.3b (Lite) | 4.9a depends on 4.6b, so it is not in this wave (review 50 M11) |
 | P4-7 | 4.9a (Sonnet) ∥ 4.4b (Opus, when the certificate is there) | then R-4.6, R-4.4 |
 | P4-8 | 4.9b ∥ 4.5a | then 4.P; 4.8b and 4.8c run during beta weeks 1–3; 4.8a (the outside-review pack) is no longer needed before wave 2 — it is built before public launch, ahead of the outside review (D41) |
@@ -315,7 +317,7 @@ edited.
 
 ### 4.3a Invites and quota groups (review)
 
-- Files: `internal/relay` (R3, invites, quota groups, admission in `pairRedeem`, `group_full`),
+- Files: `internal/relay` (R4, invites, quota groups, admission in `pairRedeem`, `group_full`),
   `cmd/relay` (`admin invite|group`), `internal/daemon` + `cmd/agentnet` (`login --invite`,
   `team join` reports `group_full`), `Docs/cli/team.md`, tests.
 - Acceptance: invites.md acceptance lines, on the CI matrix (plan 4.3: macOS, Linux, Windows),
@@ -324,7 +326,7 @@ edited.
 
 ### 4.1c Quotas
 
-- Files: `internal/relay` (R4, charging, soft/hard modes, `quota_warning`), `internal/daemon`
+- Files: `internal/relay` (R5, charging, soft/hard modes, `quota_warning`), `internal/daemon`
   (display in `status`/`doctor`, one notification a day), tests.
 - Acceptance: at 80 % a warning frame once per day per key; at 100 % soft mode routes and
   alerts (metric), hard mode refuses new mail with `quota_exceeded` while acks, pairing and
@@ -332,7 +334,7 @@ edited.
 
 ### 4.6a / 4.6b Telemetry (4.6b review)
 
-- Files 4.6a: `internal/relay` (R5, counters, report intake and validation), `cmd/relay`
+- Files 4.6a: `internal/relay` (R6, counters, report intake and validation), `cmd/relay`
   (`admin stats`), tests. 4.6b: `internal/telemetry` (builder, schema), migration 22,
   `internal/daemon` (weekly send, IPC), `cmd/agentnet/telemetry.go`, `Docs/cli/telemetry.md`,
   `internal/store/store_test.go`, tests.
@@ -340,7 +342,7 @@ edited.
 
 ### 4.7a Feedback (review with 4.6b)
 
-- Files: `internal/feedback` (seal/open), `internal/relay` (R6, intake, export),
+- Files: `internal/feedback` (seal/open), `internal/relay` (R7, intake, export),
   `cmd/relay` (`admin feedback export|open`), `cmd/agentnet/feedback.go`, `Docs/cli/feedback.md`,
   `CHANGELOG.md` (new, Keep a Changelog format), the release checklist in
   `Docs/ops/relay-runbook.md` ("every beta week ships one release with a changelog entry").
