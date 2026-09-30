@@ -29,7 +29,20 @@ Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Hi
 | F23 | Agent-card and peer-input strictness | yes | — | before F10 |
 | F24 | Presence and teams | small | **D8** | any time |
 
-Ask the owner D2, D8, D10 and D12 (99-report §6) before coding the tickets that need them. The rest can start: specs first where marked (Opus writes the spec, an Opus adversarial review follows, the owner approves the ODs), then code. Security-relevant tickets get an Opus security review.
+**Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
+
+**Wave R55-M live state (2026-09-30, base main eadf189).** Worktrees `AgentNet-wt/r55-<x>`, branches `p4/r55-<x>`:
+| Slot name | Worktree | Task | Output |
+|---|---|---|---|
+| R55-F2spec-Opus `01a0f1a3-d479…` | r55-f2spec | `01a0f1a4-3e85…` | Docs/review/66-r55-f2-spec.md + relay-hosted.md, envelope.md |
+| R55-V009-Opus `01a0f1a3-d4e4…` | r55-v009 | `01a0f1a4-5754…` | Docs/review/55-code-review/verify/R55-009.md (its zz test gets archived as .txt, not merged) |
+| R55-F9spec-Opus `01a0f1a3-d78e…` | r55-f9spec | `01a0f1a4-717f…` | 67-r55-f9-spec.md |
+| R55-F23spec-Opus `01a0f1a3-da41…` | r55-f23spec | `01a0f1a4-8954…` | 68-r55-f23-spec.md |
+| R55-F18spec-Opus `01a0f1a3-dcf9…` | r55-f18spec | `01a0f1a4-a0f8…` | 69-r55-f18-spec.md (code after F12) |
+| R55-F12-Opus `01a0f1a3-df8f…` | r55-f12 | `01a0f1a4-bd7b…` | code (+ small mail.md/debate spec edits); security review before merge |
+| R55-F11-Sonnet `01a0f1a3-e1e7…` | r55-f11 | `01a0f1a4-d38d…` | code |
+| R55-F19-Sonnet `01a0f1a3-e405…` | r55-f19 | `01a0f1a4-ea60…` | code; R55-175 (D14 part) implemented the safe way, confirm with owner |
+Next: specs → Opus adversarial review each (fresh worker) → owner ODs. F13 and F14 specs after this batch (F13 code after F12, F14 code after F9). F17 after F11 (both touch internal/ipc/ipc.go). F24 (D48) after a slot frees up. The rest can start: specs first where marked (Opus writes the spec, an Opus adversarial review follows, the owner approves the ODs), then code. Security-relevant tickets get an Opus security review.
 
 **How to run it (lessons from this wave, all binding):**
 - One worker per ticket, in its own worktree `AgentNet-wt/<name>` on branch `p4/r55-<ticket>`.
