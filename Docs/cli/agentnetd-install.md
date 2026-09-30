@@ -50,17 +50,32 @@ until the disk was full. The daemon now writes its log itself, rotated, and it
 
 `agentnetd.out.log` gets only what the daemon writes to stdout and stderr outside its log:
 the `listening on` line at each start, the insecure-relay notice, a fatal start error and a
-Go runtime crash report. None of it is written per frame, so it is not rotated. The one way
-it grows fast is a crash loop (launchd restarts the daemon at most every 10 s), and that
-needs a daemon bug; the file is small otherwise (residual, OD-F14-3). It gets
-its own file because launchd holds its own descriptor for that path. If both wrote one file,
-the rotation would leave launchd writing into `agentnetd.log.1`, which the next rotation
-deletes.
+Go runtime crash report. None of it is written per frame. The one way it grows fast is a
+crash loop: launchd restarts the daemon at most every 10 s, and each Go crash report can be
+tens of KB. That needs a daemon bug, but a relay that finds a panic in the receive path
+could trigger it at will, so (OD-F14-3 (e), recommended in review 72b) the daemon bounds
+the file too: at start, if its stderr is a regular file named `agentnetd.out.log` in the
+config directory and that file is over 1 MiB, it renames it to `agentnetd.out.log.1`
+(replacing an older one). launchd opens `StandardOutPath` and `StandardErrorPath` again
+each time it starts the job, so the next start writes a fresh file; the current run keeps
+writing to `.1`. The latest crash report is therefore always in one of the two files, and
+together they stay near 2 MiB plus one run's output. (The implementer confirms the
+reopen-per-start behaviour on a Mac once; if launchd kept the descriptor, the rename would
+still be harmless and only the bound would be lost.)
+
+It gets its own file because the daemon's stdout and stderr are descriptors that launchd
+opened on that path at start, which the log rotation cannot move. If both wrote one file,
+the rotation would leave stdout and stderr writing into `agentnetd.log.1`, which the next
+rotation deletes, and the size count would miss those writes.
 
 **Existing installs.** A plist written before R55-F14 keeps the old behaviour until
 `agentnetd install` is run again (see [Behaviour to know about](#behaviour-to-know-about)).
-With its first log line the daemon then moves the old, possibly large `agentnetd.log` to
-`agentnetd.log.1` if it is over 1 MiB, and the next rotation deletes it.
+Until then the file is still unrotated, but the new binary already
+[limits relay-driven lines](../protocol/envelope.md#relay-driven-log-lines-daemon), so a
+flood adds a few MB a day, not GBs an hour. After the re-install, the daemon's first log
+line moves the old, possibly large `agentnetd.log` to `agentnetd.log.1` if it is over
+1 MiB. The next rotation deletes it; that may take weeks at a normal rate, so delete
+`agentnetd.log.1` by hand to reclaim the space at once.
 
 Run `agentnetd install --dry-run` to see the exact plist, unit or task XML for your machine.
 

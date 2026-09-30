@@ -177,12 +177,15 @@ a forged `fin` gives `bad_binding` or `bad_handshake`; garbage gives `decrypt` o
 of these wrote a `session.reject` row (30 a minute, in an audit log that is never pruned).
 Older logs still hold such rows; no new ones are written.
 
-**Log line.** Every reject goes to one log line per minute: `event=session_reject`, with
+**Log line.** Every reject is counted into one log line per minute, written at the end of
+the minute: `event=session_reject`, with `count`, `reasons` (the count per reason), and
 `reason`, `type`, `peer` and `session` (the first 8 hex of `sid`, when the payload has one)
-of the first reject in the minute, and `suppressed_before`, the number of rejects not
-logged since the previous line. Never the envelope `id`, ciphertext or plaintext. This is
+of the first reject in the minute. Never the envelope `id`, ciphertext or plaintext. This is
 the daemon's [relay-driven log rule](envelope.md#relay-driven-log-lines-daemon). A full
-session inbox (`event=session_drop`) follows the same rule.
+session inbox (`event=session_drop`) and a failed send (`event=session_send_failed`; a
+forged `init` makes the daemon answer with a `resp`) follow the same rule. Every reject
+except `unpaired` is also counted into the daily `relay.reject_summary` audit row if the
+owner picks OD-F14-7 (b) ([audit.md](audit.md#who-may-cause-a-row-r55-f14)).
 
 `session.open` detail: `{"peer":"<key>","role":"initiator|responder","session":"<8 hex>"}`.
 

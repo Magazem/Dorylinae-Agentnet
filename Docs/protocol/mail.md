@@ -233,26 +233,37 @@ with any `from`, including the key of a paired peer, and it can replay any envel
 carried. So a reject is audited only if a relay alone could not have caused it:
 
 - **Audited** as `mail.reject {peer, id?, reason}`: steps 8, 9, 10 and 12, and `bad_body`
-  ([Dedupe and inbox](#dedupe-and-inbox)). From step 8 on, `msg` carries the peer's
-  verified signature. These are the only rejects that name the peer as a fact.
+  ([Dedupe and inbox](#dedupe-and-inbox)), except the step 12 case below. From step 8 on,
+  `msg` carries the peer's verified signature, and the checks judge content the peer signed
+  (step 4 binds the envelope `id` and `to` into the HPKE open, so the relay cannot re-address
+  or re-id a genuine mail either). These are the only rejects that name the peer as a fact.
 - **Logged only**, never audited: steps 1 to 7 (the `from` is only the relay's claim;
   `unpaired` is D49), and `stale` (step 11 and the
   [receive age limit](#receive-age-limit)), because the relay has a copy of every mail it
-  carried and can replay old ones after `mail_seen` has forgotten them.
+  carried and can replay old ones after `mail_seen` has forgotten them. Also logged only: a
+  step 12 `bad_keys` whose only fault is the announcement's time window (`not_after` has
+  passed, `ErrAnnouncementExpired`). Step 12 runs before dedupe and `keys` has no receive age
+  limit, so a relay replaying a genuine `keys` mail after its announcement expired (within
+  the 30 days of step 11) gets this reject without the peer doing anything wrong (review
+  72b).
 - **Once per envelope.** A `(peer, id)` that has already been audited as rejected during this
   run is not audited again. The daemon keeps a bounded in-memory set of the last 4096 such
   pairs. A relay replaying one genuine rejected envelope therefore adds one row, not one row
   per replay. `bad_body` already works this way through `mail_seen`
-  ([Dedupe and inbox](#dedupe-and-inbox)).
+  ([Dedupe and inbox](#dedupe-and-inbox)). A restart empties the set, so the relay can
+  replay each such envelope once more per run (at most as many rows as the peer sent bad
+  mail in the last 30 days, per restart; residual, OD-F14-5).
 - **Rate limit.** At most 30 audited rejects per minute. The rest are counted in the log as
   `event=mail_reject_suppressed`.
 - **`id` only when valid.** `id` is in the detail only if it matches the `id` format of
   [Message](#message) (`ValidID`); otherwise the detail is `{peer, reason}`.
 
-Every reject, audited or not, goes to one log line per minute (`event=mail_reject`, with
-`reason`, `step` and `peer` of the first reject in the minute and `suppressed_before`, the
-number of rejects not logged since the previous line; never the `id`). This is the
-daemon's [relay-driven log rule](envelope.md#relay-driven-log-lines-daemon).
+Every reject, audited or not, is counted into one log line per minute (`event=mail_reject`,
+written at the end of the minute: `count`, `reasons` with the count per reason, and
+`reason`, `step` and `peer` of the first reject in the minute; never the `id`). This is the
+daemon's [relay-driven log rule](envelope.md#relay-driven-log-lines-daemon). The rejects
+that are logged only are also counted into the daily `relay.reject_summary` audit row if
+the owner picks OD-F14-7 (b) ([audit.md](audit.md#who-may-cause-a-row-r55-f14)).
 
 | # | Check | Reject reason |
 |---|---|---|

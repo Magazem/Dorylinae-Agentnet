@@ -559,26 +559,43 @@ T5-01). How often such lines may appear is the rule below.
 
 R55-F14 (D49; review 55 R55-016, R55-042). A relay can send frames as fast as the daemon
 reads them. So no log line may be written **once per frame** that a relay can cause.
-Each such event is logged **at most once a minute**. The line that is written describes the
-first occurrence in its minute and carries `suppressed_before`, the number of occurrences not
-logged since the previous line of that event (0 if none). The count is written with the next
-line, as in the relay's own [Logging rule](#logging-rule). The limiter keys on the **event
-name only**, a fixed set in the code, never on a relay-chosen value (key, id, type). So its
-memory stays constant during a flood from many keys, and at most one line a minute per event
-reaches the log whatever the relay sends.
+Each such event is logged **at most once a minute, as a count** (review 72b; this is R55-F2's
+`relay_bad_frame` rule applied to every relay-driven event):
 
-| Event | Where | Level | Fields besides `suppressed_before` |
-|---|---|---|---|
-| `relay_bad_frame` | `relayclient`: `Classify` or `Parse` failed (R55-F2) | Warn | `acked` |
-| `relay_misrouted` | `relayclient`: `to` is not the own key (R55-F9, above) | Debug | `type`, `id` |
-| `relay_ack_failed` | `relayclient`: sending the `ack` failed | Warn | `id`, `error` |
-| `mail_reject` | mail opener and receiver, every reject ([mail.md](mail.md#receiving-verification-order)) | Info | `reason`, `step`, `peer` |
-| `session_reject` | session manager, every reject ([session.md](session.md#rejection)) | Info | `reason`, `type`, `peer`, `session`? |
-| `session_drop` | session manager: inbox full | Warn | `type` |
+- The first occurrence starts a one-minute window for its event. Nothing is written yet.
+- At the end of the window one line is written. It carries `count` (occurrences in the
+  window), the fields of the **first** occurrence, and, for an event with a reason,
+  `reasons`: the count per reason, e.g. `unpaired=950 bad_signature=49`. The next occurrence
+  starts a new window.
+- The pending line is also written when the daemon stops (and, for `relayclient` events,
+  when the connection ends), so the count of a flood that stops is never lost.
+
+The limiter keys on the **event name only**, a fixed set in the code, never on a
+relay-chosen value (key, id, type, error code). A reason is a constant of the code too (the
+reject reasons of [mail.md](mail.md#receiving-verification-order) and
+[session.md](session.md#rejection)), so the per-reason counts are bounded as well. Memory
+stays constant during a flood from many keys, and at most one line a minute per event
+reaches the log whatever the relay sends. The per-reason counts mean that flooding one
+reason (say `unpaired`) cannot hide a different one (say `bad_signature` under a paired
+peer's `from`) in the same minute: it still shows in `reasons`. The peer of such a hidden
+occurrence is not named; see OD-F14-7 in [review 72](../review/72-r55-f14-spec.md) for the
+audit summary that keeps the counts.
+
+| Event | Where | Level | Fields besides `count` (first occurrence) | `reasons` |
+|---|---|---|---|---|
+| `relay_bad_frame` | `relayclient`: `Classify` or `Parse` failed (R55-F2, unchanged) | Warn | `acked` (a count) | no |
+| `relay_misrouted` | `relayclient`: `to` is not the own key (R55-F9, above) | Debug | `type`, `id` | no |
+| `relay_error_frame` | `relayclient`: an `error` control frame (R55-F9) | Debug | `code`, `ref`, `message` (as F9 sanitises them) | no |
+| `relay_ack_failed` | `relayclient`: sending the `ack` failed | Warn | `id`, `error` | no |
+| `mail_reject` | mail opener and receiver, every reject ([mail.md](mail.md#receiving-verification-order)) | Info | `reason`, `step`, `peer` | yes |
+| `mail_ack_failed` | mail receiver: the ack could not be sent (was `ack_no_mailbox_key`, `ack_seal_failed`, `ack_send_failed`, one Warn per replayed mail) | Warn | `reason`, `id`, `error`? | yes: `no_mailbox_key`, `seal_failed`, `send_failed` |
+| `session_reject` | session manager, every reject ([session.md](session.md#rejection)) | Info | `reason`, `type`, `peer`, `session`? | yes |
+| `session_drop` | session manager: inbox full | Warn | `type` | no |
+| `session_send_failed` | session manager: a send failed (a forged `init` makes the daemon send a `resp`) | Warn | `type`, `error` | no |
 
 Presence keeps its own per-peer Debug limiter ([presence.md](presence.md)). The limiter
-spends the minute's line even at a level the handler does not print. So running at Debug does
-not change how many lines each event gets.
+counts at every level, even one the handler does not print, so running at Debug does not
+change how many lines each event gets.
 
 Connection lines (`relay_connect`, `relay_disconnect`, and the `min_client` warning) are
 written once per connection, not per frame. The [reconnect backoff](#client-behaviour-daemon)
@@ -586,8 +603,9 @@ bounds them: the delay resets only after 30 s up after `ready`, so a relay that 
 dropping the daemon gets at most about one connect line and one disconnect line every 30 s.
 They are not limited further, because each one is useful.
 
-Worst case: the six limited events give at most six lines a minute (about 2 MB a day). Add
+Worst case: the nine limited events give at most nine lines a minute (about 3 MB a day). Add
 the connection lines and a flood of every kind still leaves the rotated log (`--log-file`,
 1 MiB plus one old generation; macOS and Windows, see
-[agentnetd-install.md](../cli/agentnetd-install.md#logs)) about half a day of history. On
-Linux the journal applies its own limits.
+[agentnetd-install.md](../cli/agentnetd-install.md#logs)) several hours of history. A relay
+can therefore push older lines out of the rotated log within hours; the log is for
+diagnosis, not evidence (OD-F14-7). On Linux the journal applies its own limits.

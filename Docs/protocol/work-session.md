@@ -5,7 +5,7 @@ helper, D13). Ticket split: [../review/23-phase2-tickets.md](../review/23-phase2
 Change this document first.
 
 > **Naming.** [session.md](session.md) is the Noise XX transport session (envelope types
-> `session.*`, audit `session.open` / `session.reject`, in-memory only). That document and
+> `session.*`, audit `session.open` (and `session.reject` before R55-F14), in-memory only). That document and
 > its names stay unchanged. The object specified here is a **work session**: the bounded,
 > persisted piece of work that an accepted request becomes. Its id starts with `s-`, its
 > mail kinds and audit actions start with `ws.`, and its IPC methods start with `ws_`. The

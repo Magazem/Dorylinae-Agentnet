@@ -314,9 +314,26 @@ envelope it carried, is **logged** under the daemon's
 |---|---|---|
 | Mail reject, steps 1–7 (`unpaired`, `malformed` at 2 or 5, `key_miss`, `decrypt`, `sender_mismatch`, `bad_signature`) | `mail.reject`, 30/min | log only |
 | Mail reject `stale` (step 11, receive age limit) | `mail.reject`, 30/min | log only (a relay replays old mail) |
-| Mail reject, steps 8, 9, 10, 12, and `bad_body` | `mail.reject`, 30/min | `mail.reject`, once per `(peer, id)` per run, 30/min, `id` only when valid ([mail.md](mail.md#receiving-verification-order)) |
+| Mail reject step 12 `bad_keys` for an expired announcement only | `mail.reject`, 30/min | log only (a relay replays a genuine `keys` mail after `not_after`) |
+| Mail reject, steps 8, 9, 10, 12 (other cases), and `bad_body` | `mail.reject`, 30/min | `mail.reject`, once per `(peer, id)` per run, 30/min, `id` only when valid ([mail.md](mail.md#receiving-verification-order)) |
 | Every session reject | `session.reject`, 30/min | log only ([session.md](session.md#rejection)) |
 | `mail.in` of a kind this daemon does not register | `kind` as sent | `kind: "unknown"` |
+
+**Daily summary (OD-F14-7, recommended (b); review 72b).** Logged-only rejects leave no
+lasting trace: under a flood the rotated daemon log keeps only hours of history, and a relay
+can push older lines out on purpose. Yet some of them are the evidence a user wants when a
+relay turns hostile: `bad_signature`, `sender_mismatch` or `decrypt` under a **paired**
+peer's `from` (the relay tampering with or forging that peer's traffic), or session
+`bad_binding`. So, if the owner picks (b), the daemon keeps in memory a count per
+`(layer, reason)` of every logged-only reject **except `unpaired`** (D49: those are counted
+in the log only), and writes one row `relay.reject_summary {since, until, mail: {reason:
+count}, session: {reason: count}}` (actor `daemon`) once a day and at a clean stop, only if
+a count is non-zero. The keys are the fixed reason names of
+[mail.md](mail.md#receiving-verification-order) and [session.md](session.md#rejection);
+counts are integers. So a relay can change the numbers but not the number of rows: at most
+one a day plus one per stop the user makes (a crash writes none), about 365 rows and
+< 150 KB a year. No peer key is in the row (a per-peer map would let the relay choose its
+size); the log's first-occurrence fields name one.
 
 Rows written before R55-F14 stay; the chain is not touched. A new audit action that could be
 caused by the relay must name its bound in its spec. The review of each spec checks this.

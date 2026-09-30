@@ -256,7 +256,8 @@ receiver then:
 1. rolls back the transaction;
 2. in a new transaction inserts only the `mail_seen` row and commits, so a resend is
    re-acked without being re-evaluated;
-3. audits `mail.reject {peer, id, reason: "bad_body"}`, rate-limited like other rejects;
+3. audits `mail.reject {peer, id, reason: "bad_body"}`, rate-limited like other audited
+   rejects ([mail.md](mail.md#receiving-verification-order), R55-F14);
 4. acks the id under `rejected` ([mail.md §Ack](mail.md#ack)). The sender's outbox row ends
    `failed` (`rejected`). Before R55-F18 the id was acked under `unsupported` and the row
    ended `failed` (`unsupported_kind`), which a sender could not tell from an unknown kind
