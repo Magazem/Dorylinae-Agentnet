@@ -81,10 +81,14 @@ Failures print `agentnet: pairing failed: <message> (<code>)` on stderr. Both co
 daemon already bounded (code at most 64 bytes, message at most 200). A relay's code is one of
 [envelope.md](../protocol/envelope.md#error-frame-relay---daemon)'s codes or `relay_error`,
 and every failure's code and message have gone through `displayLine` at the daemon's pairing
-choke point ([pairing.md](../protocol/pairing.md), R55-F9). The CLI applies
-`displayLine` to both again before printing, so neither can hold a line break, an escape
-sequence or a bidi control. It cannot draw a fake `Paired with …` line either. The
-`pair.fail` audit row stores the same converted `code` and `reason`.
+choke point ([pairing.md](../protocol/pairing.md), R55-F9). For a relay error the message is
+**daemon-owned text** for the code, never the relay's words (OD-R55F9-10 = b): a fixed
+sentence per known code, and `the relay refused the request` for `relay_error`. The relay's
+message (sanitised) is kept only in the `pair.fail` audit row's `reason` and the daemon's
+Debug log. The CLI does the same mapping itself for a relay code (against an older daemon)
+and applies `displayLine` to both strings again before printing, so neither can hold a line
+break, an escape sequence or a bidi control. It cannot draw a fake `Paired with …` line
+either.
 
 ## `--json` output
 

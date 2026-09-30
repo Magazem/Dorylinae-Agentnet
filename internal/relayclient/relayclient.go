@@ -18,11 +18,13 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
@@ -36,14 +38,26 @@ var ErrNotConnected = errors.New("relayclient: not connected to the relay")
 // (Docs/protocol/relay-hosted.md §1, "Daemon rule, no downgrade").
 var ErrNoAuthV2 = errors.New("relayclient: relay does not support auth v2")
 
+// errRedirect is the dial error for a relay that answers the upgrade with a
+// redirect. The *url.Error around it quotes the relay's Location, so
+// connError reports it as fixed text (review 67b F9R-2).
+var errRedirect = errors.New("relay redirects are not followed")
+
 // MailType is the envelope type of sealed mail, which bypasses the seen-set.
 const MailType = "mail"
 
 const (
 	defaultMinBackoff = 500 * time.Millisecond
 	defaultMaxBackoff = 30 * time.Second
-	handshakeTimeout  = 15 * time.Second
-	writeTimeout      = 10 * time.Second
+	// defaultStableAfter is how long a connection must stay up after ready
+	// before the backoff resets (OD-R55F9-5); defaultTryAgainFloor is the
+	// least delay after a close with status 1013 (OD-R55F9-9).
+	defaultStableAfter   = 30 * time.Second
+	defaultTryAgainFloor = 5 * time.Second
+	// maxLastError bounds last_error and the relay_disconnect log line.
+	maxLastError     = 256
+	handshakeTimeout = 15 * time.Second
+	writeTimeout     = 10 * time.Second
 )
 
 // Config configures a Client.
@@ -77,6 +91,9 @@ type Config struct {
 
 	// dialContext replaces the TCP dial (tests only, via export_test.go).
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// stableAfter and tryAgainFloor replace defaultStableAfter and
+	// defaultTryAgainFloor (tests only, via export_test.go).
+	stableAfter, tryAgainFloor time.Duration
 }
 
 // Client keeps one authenticated connection to a relay.
@@ -98,9 +115,10 @@ type Client struct {
 
 	// connSince is when the current Connected() value began (a connect or a
 	// disconnect), for status/doctor's "since" (Docs/review/49-phase4-tickets.md
-	// §CLI contracts). lastErr is the most recent connection error's message,
-	// content-free (a dial or handshake failure, never an envelope payload or
-	// a peer identity).
+	// §CLI contracts). lastErr is the most recent connection error as
+	// connError renders it: content-free (never an envelope payload, a peer
+	// identity, or the relay's error message, close reason or redirect
+	// target), one line, at most 256 bytes.
 	connSince time.Time
 	lastErr   string
 
@@ -148,6 +166,12 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.MaxBackoff < cfg.MinBackoff {
 		cfg.MaxBackoff = max(defaultMaxBackoff, cfg.MinBackoff)
+	}
+	if cfg.stableAfter <= 0 {
+		cfg.stableAfter = defaultStableAfter
+	}
+	if cfg.tryAgainFloor <= 0 {
+		cfg.tryAgainFloor = defaultTryAgainFloor
 	}
 	c := &Client{cfg: cfg, url: u.String(), pub: cfg.Signer.Public(), log: cfg.Logger, seen: newSeenSet(seenCapacity),
 		origin: origin, loopback: envelope.IsLoopbackHost(u.Hostname()), connSince: time.Now()}
@@ -209,24 +233,37 @@ func (c *Client) write(ctx context.Context, frame []byte) error {
 
 // Run connects and stays connected, reconnecting with backoff, until ctx is
 // cancelled. It always returns ctx.Err().
+//
+// The backoff resets only after a connection stayed up stableAfter (30 s)
+// after ready, and never after a close with status 1013, which instead sets
+// the next delay to at least tryAgainFloor (Docs/protocol/envelope.md
+// §Client behaviour, R55-F9).
 func (c *Client) Run(ctx context.Context) error {
 	delay := c.cfg.MinBackoff
 	for {
 		start := time.Now()
-		authed, err := c.session(ctx)
+		readyAt, err := c.session(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if authed {
-			delay = c.cfg.MinBackoff // a working connection resets the backoff
+		switch {
+		case shedding(err):
+			delay = max(delay, c.cfg.tryAgainFloor)
+		case closedWith(err, websocket.StatusGoingAway):
+			// A relay drain or restart: no reset, so the daemons it dropped
+			// do not all come back at MinBackoff together (review 75 F9S-1).
+		case !readyAt.IsZero() && time.Since(readyAt) >= c.cfg.stableAfter:
+			delay = c.cfg.MinBackoff // a lasting connection resets the backoff
 		}
+		var msg string
 		if err != nil {
+			msg = connError(err)
 			c.mu.Lock()
-			c.lastErr = err.Error()
+			c.lastErr = msg
 			c.mu.Unlock()
 		}
 		wait := jitter(delay)
-		c.log.Warn("relay connection lost", "event", "relay_disconnect", "error", err, "retry_in", wait.Round(time.Millisecond), "connected_for", time.Since(start).Round(time.Millisecond))
+		c.log.Warn("relay connection lost", "event", "relay_disconnect", "error", msg, "retry_in", wait.Round(time.Millisecond), "connected_for", time.Since(start).Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -236,14 +273,66 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 }
 
+// shedding reports whether err is the relay shedding load: a close with 1013
+// (Try Again Later), or relay_full / rate_limited in place of ready, which
+// the relay sends just before its 1013 close (review 75 F9S-1). The backoff
+// then never resets and the next wait is at least tryAgainFloor.
+func shedding(err error) bool {
+	var ef envelope.ErrorFrame
+	if errors.As(err, &ef) {
+		return ef.Code == envelope.CodeRelayFull || ef.Code == envelope.CodeRateLimited
+	}
+	return closedWith(err, websocket.StatusTryAgainLater)
+}
+
+// closedWith reports whether err is a close by the relay with status code.
+func closedWith(err error, code websocket.StatusCode) bool {
+	var ce websocket.CloseError
+	return errors.As(err, &ce) && ce.Code == code
+}
+
+// tlsRejected reports whether err is the relay's certificate failing
+// verification. These errors quote certificate names the relay chose.
+func tlsRejected(err error) bool {
+	var hn x509.HostnameError
+	var ua x509.UnknownAuthorityError
+	var ci x509.CertificateInvalidError
+	var cv *tls.CertificateVerificationError
+	return errors.As(err, &hn) || errors.As(err, &ua) || errors.As(err, &ci) || errors.As(err, &cv)
+}
+
+// connError renders a connection error for last_error and the
+// relay_disconnect log line (Docs/protocol/envelope.md, "last_error"): no
+// relay message, close reason, redirect target, upgrade header value or
+// certificate name (review 75 F9S-2), one line, at most 256 bytes.
+func connError(err error) string {
+	var ef envelope.ErrorFrame
+	var ce websocket.CloseError
+	switch {
+	case errors.As(err, &ef):
+		return ef.Error()
+	case errors.As(err, &ce):
+		return fmt.Sprintf("closed by relay (status %d)", int(ce.Code))
+	case errors.Is(err, errRedirect):
+		return "dial: the relay answered with a redirect (not followed)"
+	case tlsRejected(err):
+		return "dial: the relay's TLS certificate was rejected"
+	case strings.Contains(err.Error(), "WebSocket protocol violation"):
+		// coder/websocket quotes the relay's upgrade header values here.
+		return "dial: the relay's upgrade response is invalid"
+	default:
+		return displaytext.Line(err.Error(), maxLastError)
+	}
+}
+
 // session makes one connection attempt and serves it until it fails.
-// authed reports whether authentication completed.
-func (c *Client) session(ctx context.Context) (authed bool, err error) {
+// readyAt is when the relay's ready was read, zero if it never was.
+func (c *Client) session(ctx context.Context) (readyAt time.Time, err error) {
 	hctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	conn, _, err := websocket.Dial(hctx, c.url, &websocket.DialOptions{HTTPClient: c.http}) //nolint:bodyclose // the library closes the handshake body
 	if err != nil {
 		cancel()
-		return false, fmt.Errorf("dial: %w", err)
+		return time.Time{}, fmt.Errorf("dial: %w", err)
 	}
 	defer func() { _ = conn.CloseNow() }()
 	conn.SetReadLimit(envelope.MaxFrameBytes)
@@ -251,8 +340,9 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	ready, err := c.handshake(hctx, conn)
 	cancel()
 	if err != nil {
-		return false, err
+		return time.Time{}, err
 	}
+	readyAt = time.Now()
 
 	c.mu.Lock()
 	c.conn = conn
@@ -282,10 +372,10 @@ func (c *Client) session(ctx context.Context) (authed bool, err error) {
 	for {
 		typ, frame, err := conn.Read(ctx)
 		if err != nil {
-			return true, err
+			return readyAt, err
 		}
 		if typ != websocket.MessageText {
-			return true, errors.New("relay sent a binary frame")
+			return readyAt, errors.New("relay sent a binary frame")
 		}
 		c.dispatch(ctx, frame)
 	}
@@ -362,7 +452,7 @@ func newHTTPClient(cfg Config, loopback bool) *http.Client {
 	return &http.Client{
 		Transport: tr,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return errors.New("relay redirects are not followed")
+			return errRedirect
 		},
 	}
 }
@@ -445,8 +535,11 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	if f.Control != nil {
 		switch {
 		case f.Control.Op == envelope.OpError:
+			ef := errorFrame(*f.Control)
+			// The relay's message is shown nowhere else (OD-R55F9-10).
+			c.log.Debug("relay error frame", "event", "relay_error_frame", "code", ef.Code, "ref", ef.Ref, "message", ef.Message)
 			if c.cfg.OnError != nil {
-				c.cfg.OnError(envelope.ErrorFrame{Code: f.Control.Code, Message: f.Control.Message, Ref: f.Control.Ref})
+				c.cfg.OnError(ef)
 			}
 		case f.Control.Op == envelope.OpQueued:
 			if c.cfg.OnQueued != nil {
@@ -460,6 +553,17 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	e, err := envelope.Parse(frame)
 	if err != nil {
 		c.log.Warn("ignoring invalid envelope from relay", "error", err)
+		return
+	}
+	// An envelope for another key is never handed up and does not enter the
+	// seen-set. A queued type is acked so the relay does not redeliver it; an
+	// ephemeral one is never acked (Docs/protocol/envelope.md §Client
+	// behaviour, R55-F9).
+	if e.To != envelope.KeyString(c.pub) {
+		c.log.Debug("dropping envelope addressed to another key", "event", "relay_misrouted", "type", e.Type, "id", e.ID)
+		if !envelope.IsEphemeral(e.Type) {
+			c.ack(ctx, e)
+		}
 		return
 	}
 	// Ephemeral envelopes (presence) are never queued by the relay, so there is

@@ -11,12 +11,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
@@ -96,6 +96,10 @@ var (
 type Failure struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// reason is the pair.fail audit reason when it is not Message: for a
+	// relay error, the relay's converted message, which is never shown
+	// (OD-R55F9-10).
+	reason string
 }
 
 // Status is a snapshot of one pairing.
@@ -567,12 +571,10 @@ func (m *Manager) HandleError(e envelope.ErrorFrame) {
 		m.reissue(s)
 		return
 	}
-	// The relay chooses both strings; bound them before they reach the audit log.
-	code := e.Code
-	if len(code) > maxCodeLen {
-		code = strings.ToValidUTF8(code[:maxCodeLen], "")
-	}
-	m.finish(e.Ref, StateFailed, nil, &Failure{Code: code, Message: truncate(e.Message)})
+	// relayclient converted the frame (a known code or relay_error, a
+	// one-line message). Only daemon text is shown; the relay's message goes
+	// to the audit row (OD-R55F9-10).
+	m.finish(e.Ref, StateFailed, nil, &Failure{Code: e.Code, Message: envelope.ErrorText(e.Code), reason: e.Message})
 }
 
 // reissue answers pair_lookup_taken with a completely new code.
@@ -650,15 +652,15 @@ func (m *Manager) verifyPeer(ctl envelope.Control) (*peerMaterial, *Failure) {
 		}
 	}
 	if err != nil {
-		return nil, &Failure{Code: FailBadCard, Message: truncate("rejected the peer's Agent Card: " + err.Error())}
+		return nil, &Failure{Code: FailBadCard, Message: "rejected the peer's Agent Card: " + err.Error()}
 	}
 	card, err := canonicalPart(ctl.Card, "card")
 	if err != nil {
-		return nil, &Failure{Code: FailBadCard, Message: truncate("rejected the peer's Agent Card: " + err.Error())}
+		return nil, &Failure{Code: FailBadCard, Message: "rejected the peer's Agent Card: " + err.Error()}
 	}
 	_, mbox, err := mail.ParseAnnouncement(ctl.Mbox, ctl.PublicKey, m.cfg.Now())
 	if err != nil {
-		return nil, &Failure{Code: FailBadMbox, Message: truncate("rejected the peer's mailbox key announcement: " + err.Error())}
+		return nil, &Failure{Code: FailBadMbox, Message: "rejected the peer's mailbox key announcement: " + err.Error()}
 	}
 	// Store the canonical card, which the tags cover, not the relay's bytes:
 	// those may carry extra top-level members that no tag covers.
@@ -698,7 +700,7 @@ func (m *Manager) onPeerV1(s *session, ctl envelope.Control) {
 		card, err = canonicalPart(ctl.Card, "card")
 	}
 	if err != nil {
-		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailBadCard, Message: truncate("rejected the peer's Agent Card: " + err.Error())})
+		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailBadCard, Message: "rejected the peer's Agent Card: " + err.Error()})
 		return
 	}
 	peer, fail := m.store(sc, card, TrustRelay, nil)
@@ -994,6 +996,7 @@ func (m *Manager) finish(id, state string, peer *Peer, fail *Failure) {
 // end is finish; completer is true only for checkConfirm, which may end a
 // pairing it has claimed.
 func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer bool) {
+	fail = cleanFailure(fail)
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	if !ok || s.st.State != StatePending || (s.completing && !completer) {
@@ -1046,7 +1049,10 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		return
 	}
 	detail["code"] = fail.Code
-	detail["reason"] = truncate(fail.Message)
+	detail["reason"] = fail.Message
+	if fail.reason != "" {
+		detail["reason"] = fail.reason
+	}
 	m.audit(context.Background(), audit.ActorDaemon, ActionPairFail, detail)
 }
 
@@ -1088,9 +1094,19 @@ func newID() (string, error) {
 	return idPrefix + hex.EncodeToString(b[:]), nil
 }
 
-func truncate(s string) string {
-	if len(s) > maxReasonLen {
-		return strings.ToValidUTF8(s[:maxReasonLen], "")
+// cleanFailure is the one choke point for every pairing failure
+// (Docs/protocol/pairing.md §Logging, audit; R55-F9): before the status,
+// pair_status or the pair.fail row sees it, the code becomes one display-safe
+// line of at most 64 bytes and the message and reason of at most 200. The
+// bad_card and bad_mbox messages quote verifier text that may name keys a
+// peer or relay chose (review 55 C06-02).
+func cleanFailure(f *Failure) *Failure {
+	if f == nil {
+		return nil
 	}
-	return s
+	return &Failure{
+		Code:    displaytext.Line(f.Code, maxCodeLen),
+		Message: displaytext.Line(f.Message, maxReasonLen),
+		reason:  displaytext.Line(f.reason, maxReasonLen),
+	}
 }

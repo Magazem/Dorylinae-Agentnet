@@ -3,6 +3,7 @@
 // renderings, R55-F5): the hidden predicate shared by the approval-summary
 // builder, device.DisplayQuote and decision.Visible, the two renderings Name
 // and Quote, and the display-safe check the approval store and window apply.
+// Line is the one-line rendering of untrusted diagnostic text (R55-F9).
 // It imports only the standard library, so every package can use it.
 package displaytext
 
@@ -84,7 +85,20 @@ func Safe(s string) bool {
 // fingerprint-shaped text become "…"; an empty result is "(no name)". The
 // name is never cut (OD-R55F5-4).
 func Name(s string) string {
-	// Steps 1-3: hidden runes, spaces, stacked marks.
+	rs := clean(s)
+	rs = blankDigitRuns(rs)
+	rs = blankFingerprints(rs)
+	out := strings.TrimSpace(string(rs))
+	if out == "" {
+		return "(no name)"
+	}
+	return out
+}
+
+// clean is steps 1-3 of displayName: hidden runes that render as space become
+// one space and the others are removed, spaces collapse and are trimmed, and
+// at most 2 combining marks stay on each base.
+func clean(s string) []rune {
 	rs := make([]rune, 0, len(s))
 	marks := 0
 	for _, r := range s { // invalid UTF-8 decodes as U+FFFD
@@ -110,13 +124,48 @@ func Name(s string) string {
 	for len(rs) > 0 && rs[len(rs)-1] == ' ' {
 		rs = rs[:len(rs)-1]
 	}
-	rs = blankDigitRuns(rs)
-	rs = blankFingerprints(rs)
-	out := strings.TrimSpace(string(rs))
-	if out == "" {
-		return "(no name)"
+	return rs
+}
+
+// lineScan is how much of its input Line reads: a longer input is cut there
+// first, and the unread rest counts as a cut (Docs/protocol/envelope.md,
+// "The daemon's reading").
+const lineScan = 4096
+
+// ellipsis marks a cut.
+const ellipsis = "…"
+
+// Line is displayLine of Docs/protocol/approval.md §Sanitising, for
+// diagnostic text from an untrusted source (a relay's error message, a
+// connection error): steps 1-3 of Name, with no digit or fingerprint
+// blanking, on one line of at most maxBytes bytes. A cut lands on a rune boundary,
+// drops trailing spaces and ends in "…", which counts towards maxBytes. "" stays
+// "". maxBytes is at least 4.
+func Line(s string, maxBytes int) string {
+	cut := false
+	if len(s) > lineScan {
+		i := lineScan
+		for i > 0 && !utf8.RuneStart(s[i]) {
+			i--
+		}
+		s, cut = s[:i], true
 	}
-	return out
+	out := string(clean(s))
+	if !cut && len(out) <= maxBytes {
+		return out
+	}
+	budget := maxBytes - len(ellipsis)
+	if budget < 0 {
+		return ""
+	}
+	end := 0
+	for i, r := range out {
+		if i+utf8.RuneLen(r) > budget {
+			break
+		}
+		end = i + utf8.RuneLen(r)
+	}
+	return strings.TrimRight(out[:end], " ") + ellipsis
 }
 
 func isNumber(r rune) bool { return unicode.Is(unicode.N, r) }

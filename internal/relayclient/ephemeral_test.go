@@ -19,11 +19,10 @@ import (
 // Presence is handed up without touching the seen-set and is never acked, so a
 // heartbeat flood cannot evict a session.* id.
 func TestPresenceBypassesSeenSetAndIsNotAcked(t *testing.T) {
-	_, priv := newKey(t)
+	pub, priv := newKey(t)
 	senderPub, _ := newKey(t)
 	from := envelope.KeyString(senderPub)
-	recvPub, _ := newKey(t)
-	to := envelope.KeyString(recvPub)
+	to := envelope.KeyString(pub) // the client itself: dispatch drops envelopes for other keys
 	mk := func(typ, id string) []byte {
 		raw, err := envelope.Envelope{From: from, To: to, Type: typ, ID: id, TS: time.Now().UTC().Format(time.RFC3339Nano), Payload: []byte("x")}.Marshal()
 		if err != nil {

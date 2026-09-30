@@ -19,11 +19,10 @@ import (
 // the mail layer and are re-acked; other types are still handed up once. Every
 // delivery is acked to the relay either way.
 func TestMailBypassesSeenSetOthersDoNot(t *testing.T) {
-	_, priv := newKey(t)
+	pub, priv := newKey(t)
 	senderPub, _ := newKey(t)
 	from := envelope.KeyString(senderPub)
-	recvPub, _ := newKey(t)
-	to := envelope.KeyString(recvPub)
+	to := envelope.KeyString(pub) // the client itself: dispatch drops envelopes for other keys
 	mk := func(typ, id string) []byte {
 		raw, err := envelope.Envelope{From: from, To: to, Type: typ, ID: id, TS: time.Now().UTC().Format(time.RFC3339Nano), Payload: []byte("x")}.Marshal()
 		if err != nil {

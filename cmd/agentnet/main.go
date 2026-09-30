@@ -13,12 +13,18 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
 const summary = "AgentNet CLI: talks to the local agentnetd daemon."
+
+// maxLastError bounds the relay's last_error on screen (Docs/cli/status.md):
+// the daemon already bounds it, the CLI applies the rule again in case an
+// older daemon does not (R55-F9).
+const maxLastError = 256
 
 // Exit codes; documented in Docs/cli/status.md.
 const (
@@ -255,7 +261,7 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 		}
 		lastErr := ""
 		if res.Relay.LastError != "" {
-			lastErr = " (last error: " + res.Relay.LastError + ")"
+			lastErr = " (last error: " + displaytext.Line(res.Relay.LastError, maxLastError) + ")"
 		}
 		_, _ = fmt.Fprintf(stdout, "  relay:    %s, auth %s%s%s\n", state, res.Relay.Auth, since, lastErr)
 		if meets, ok := version.MeetsMinimum(res.Version, res.Relay.MinClient); ok && !meets {

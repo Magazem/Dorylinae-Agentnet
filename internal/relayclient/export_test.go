@@ -3,6 +3,7 @@ package relayclient
 import (
 	"context"
 	"net"
+	"time"
 )
 
 // AuthVersion exposes authVersion to the external tests.
@@ -39,3 +40,10 @@ type peerConn struct {
 }
 
 func (c peerConn) RemoteAddr() net.Addr { return c.peer }
+
+// WithBackoffTiming sets how long a connection must stay up after ready
+// before the backoff resets, and the least delay after a close with 1013.
+func WithBackoffTiming(cfg Config, stableAfter, tryAgainFloor time.Duration) Config {
+	cfg.stableAfter, cfg.tryAgainFloor = stableAfter, tryAgainFloor
+	return cfg
+}

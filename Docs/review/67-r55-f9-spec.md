@@ -193,12 +193,15 @@ the target locations. Invert them and keep them as normal tests (rename them off
    `Name`'s existing tests pass unchanged.
 5. **Ping**: a session test where the relay refuses the `session.init` with an ESC/OSC 8
    message.
-   - `PingStatus.Error` holds a clean message and a known or `relay_error` code.
+   - `PingStatus.Error` holds a known or `relay_error` code and, per OD-R55F9-10 = (b), the
+     daemon's text for it (`envelope.ErrorText`), not the relay's message.
    - A CLI test (fake daemon returning a raw ESC + `\n` message, the older-daemon case):
      `agentnet ping` stderr is one line with no ESC.
 6. **Pair**: `Manager.HandleError` with code `x\x1b` and message `\x1b[2K\rPaired with alice`,
    after conversion.
-   - `Status.Error` and the `pair.fail` audit detail hold no ESC/CR.
+   - `Status.Error` and the `pair.fail` audit detail hold no ESC/CR. `Status.Error.Message`
+     is the daemon's text (`the relay refused the request`), and the sanitised relay message
+     is only in the audit `reason` (OD-R55F9-10 = b).
    - A CLI test with a fake daemon returning raw text: stderr is one line starting
      `agentnet: pairing failed:` with no ESC.
    - `pair_lookup_taken` still triggers `reissue`.
@@ -315,7 +318,20 @@ approval.
 | OD-R55F9-7 | Relay message bound | (a) 200 bytes, `…` included (= pairing `maxReasonLen`); (b) another bound | **(a)** |
 | OD-R55F9-8 | Clear `last_error` on a successful connection | (a) no, "most recent error" as documented; (b) clear on `ready` | **(a)** |
 | OD-R55F9-9 (new) | Close 1013 (Try Again Later) and the backoff | (a) never reset on 1013, next wait ≥ `jitter(5 s)`; (b) no special case (a long connection shed with 1013 returns in ~0.5 s); (c) honour a relay-sent retry hint (none exists in the protocol) | **(a)** |
-| OD-R55F9-10 (new) | Relay message on `ping` / `pair` output | (a) show the sanitised relay message (spec as written); (b) show a daemon-owned text per known code and a fixed `the relay refused the request` for `relay_error`, keeping the relay message only in the `pair.fail` audit `reason` and at Debug | **(a)** for F9 (it meets R55-014's fix direction, and the message is the only diagnostic for `relay_error`); (b) is the stricter follow-up if the owner wants no relay words on screen at all |
+| OD-R55F9-10 (new) | Relay message on `ping` / `pair` output | (a) show the sanitised relay message (spec as written); (b) show a daemon-owned text per known code and a fixed `the relay refused the request` for `relay_error`, keeping the relay message only in the `pair.fail` audit `reason` and at Debug | **(a)** for F9 (it meets R55-014's fix direction, and the message is the only diagnostic for `relay_error`); (b) is the stricter follow-up if the owner wants no relay words on screen at all. **Owner decision (D52): (b).** |
+
+**OD-R55F9-10 = (b), as implemented.** `envelope.ErrorText(code)` holds the daemon's text: one
+fixed sentence per known code, and `the relay refused the request` for `relay_error` or
+anything else. `session.HandleError` fails a ping with `ErrorText(code)`, and
+`peers.HandleError` fails a pairing with `ErrorText(code)` as the status and `pair_status`
+message; the converted relay message is kept only as the `pair.fail` audit `reason` (an
+unexported `Failure.reason`, which also goes through the choke point). `relayclient` logs each
+converted `error` frame at Debug (`event=relay_error_frame`, `code`, `ref`, `message`), a
+per-frame line for F14's rate limit. The CLI (`ping`, `pair`) applies the same mapping for a
+relay code, so an older daemon's raw message is not shown either, then `displayLine` as
+planned. Tests 5 and 6 below assert on the daemon text. Spec text changed accordingly in
+envelope.md (the daemon's reading, relay-text table), pairing.md (§Logging, audit), ipc.md
+(`ping_status`), ping.md and pair.md.
 
 ### Files changed by review 67b
 

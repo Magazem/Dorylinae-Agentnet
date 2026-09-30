@@ -96,7 +96,74 @@ const (
 	CodeBadPairing      = "bad_pairing"
 	CodeLookupTaken     = "pair_lookup_taken"
 	CodePairV1Disabled  = "pair_v1_disabled"
+
+	// CodeRelayError is daemon-side only, never sent by a relay: the code an
+	// error frame gets when its code is not one of the above (R55-F9).
+	CodeRelayError = "relay_error"
 )
+
+// errorCodes is every code a relay may send, the table of
+// Docs/protocol/envelope.md §error frame. Keep it next to the consts: a test
+// fails if a Code* constant is missing here.
+var errorCodes = []string{
+	CodeAuthFailed, CodeBadEnvelope, CodeBadSender, CodePeerOffline, CodePeerBusy, CodeQueueFull, CodeInternal,
+	CodeRateLimited, CodeRelayFull,
+	CodeAccountRequired, CodeAccountSuspended, CodeAccountRevoked, CodeAlreadyBound, CodeBindExpired, CodeBindDenied,
+	CodePairInvalid, CodePairRateLimited, CodePairLimit, CodeBadPairing, CodeLookupTaken, CodePairV1Disabled,
+}
+
+// KnownErrorCode reports whether code is one a relay may send. CodeRelayError
+// is not: a relay sending it is converted to the same value anyway.
+func KnownErrorCode(code string) bool {
+	for _, c := range errorCodes {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
+
+// errorTexts is the daemon's own text for each relay error code, shown by
+// ping and pair in place of the relay's message (OD-R55F9-10 = b).
+var errorTexts = map[string]string{
+	CodeAuthFailed:       "the relay refused the authentication",
+	CodeBadEnvelope:      "the relay refused a malformed message",
+	CodeBadSender:        "the relay refused the sender key",
+	CodePeerOffline:      "the peer is not connected to the relay",
+	CodePeerBusy:         "the peer is busy",
+	CodeQueueFull:        "the relay's queue for the peer is full",
+	CodeInternal:         "the relay had an internal error",
+	CodeRateLimited:      "the relay is rate limiting this daemon; try again later",
+	CodeRelayFull:        "the relay is full; try again later",
+	CodeAccountRequired:  "the relay requires a bound account for this",
+	CodeAccountSuspended: "the relay account is suspended",
+	CodeAccountRevoked:   "the relay account was revoked",
+	CodeAlreadyBound:     "this key is already bound to an account",
+	CodeBindExpired:      "the account binding expired",
+	CodeBindDenied:       "the account binding was denied",
+	CodePairInvalid:      "the pairing code is invalid, expired or already used",
+	CodePairRateLimited:  "too many pairing attempts; try again later",
+	CodePairLimit:        "too many pending pairing codes; try again later",
+	CodeBadPairing:       "the relay refused the pairing request",
+	CodeLookupTaken:      "the pairing code clashed with another; ask for a new one",
+	CodePairV1Disabled:   "the relay no longer supports legacy (v1) pairing",
+}
+
+// ErrorText is the daemon-owned text for a relay error code: fixed per known
+// code, and "the relay refused the request" for CodeRelayError or anything
+// else. It never contains relay-chosen words.
+func ErrorText(code string) string {
+	if t, ok := errorTexts[code]; ok {
+		return t
+	}
+	return "the relay refused the request"
+}
+
+// ValidID reports whether s is a valid envelope id: 1 to 128 bytes of
+// [A-Za-z0-9._:-], the rule Validate applies.
+func ValidID(s string) bool {
+	return s != "" && len(s) <= maxIDLen && allBytes(s, isIDByte)
+}
 
 // NonceSize is the challenge nonce length in bytes.
 const NonceSize = 32
@@ -175,7 +242,9 @@ type ErrorFrame struct {
 	Ref string
 }
 
-func (e ErrorFrame) Error() string { return "relay: " + e.Code + ": " + e.Message }
+// Error is "relay: <code>": the message is relay text and stays out of
+// errors, logs and last_error (R55-F9).
+func (e ErrorFrame) Error() string { return "relay: " + e.Code }
 
 // Frame classifies a received frame: exactly one of Control or Envelope is set.
 type Frame struct {
