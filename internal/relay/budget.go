@@ -291,11 +291,15 @@ func (c *conn) age(k budgetKind) time.Time {
 // caller holds no bmu.
 func (l *ledger) evictFor(r *conn, k budgetKind, n int64, over bool) bool {
 	h, prefix := l.pick(r, k, n, over)
-	if h == nil || !h.evict("relay busy; retry later") {
+	if h == nil {
 		return false
 	}
+	var logHit func()
 	if l.hit != nil {
-		l.hit(evictLimits[k], "prefix", prefix)
+		logHit = func() { l.hit(evictLimits[k], "prefix", prefix) }
+	}
+	if !h.evict("relay busy; retry later", logHit) {
+		return false
 	}
 	return true
 }

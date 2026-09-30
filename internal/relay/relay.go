@@ -836,9 +836,7 @@ func (s *Server) growRead(c *conn, n int64) error {
 // frameTimedOut ends c, whose frame was not read within frameTimeout, as an
 // eviction: every charge is released at once and the close is bounded.
 func (s *Server) frameTimedOut(c *conn) {
-	if c.evict("frame too slow; retry later") {
-		s.lim.hit(limitFrameTimeout, "peer", short(c.key))
-	}
+	c.evict("frame too slow; retry later", func() { s.lim.hit(limitFrameTimeout, "peer", short(c.key)) })
 }
 
 // route forwards one frame from sender. It returns false if the frame is a

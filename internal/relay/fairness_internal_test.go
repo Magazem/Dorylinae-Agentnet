@@ -143,7 +143,7 @@ func TestEvictionDoesNotDoubleUncharge(t *testing.T) {
 		t.Fatal("H holds nothing")
 	}
 
-	if !h.evict("relay busy; retry later") {
+	if !h.evict("relay busy; retry later", nil) {
 		t.Fatal("evict refused")
 	}
 	if u := used(); u != base {
@@ -161,7 +161,7 @@ func TestEvictionDoesNotDoubleUncharge(t *testing.T) {
 		t.Fatal("an evicted connection's read was charged")
 	}
 	h.release() // ServeHTTP's defer
-	if h.evict("again") {
+	if h.evict("again", nil) {
 		t.Fatal("evicted twice")
 	}
 	if u := used(); u != base {
