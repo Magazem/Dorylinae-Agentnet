@@ -302,6 +302,9 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D50 | 2026-09-30 (review 55 D12): **retention = per-peer cap on stored incoming open requests (clear refusal when full) + blank `mail_inbox.signed` after apply + a user `agentnet prune --older-than` command for finished items.** No automatic deletion of content. Ticket F13. |
 | D51 | 2026-09-30 (review 55 D14, R55-175 only): **peer-chosen URLs in Slack/Discord webhook text are made non-clickable** (U+200B after the scheme's ':'), Slack unfurl off, Discord embeds suppressed; generic JSON webhooks unchanged. Ticket F19. Other D14 items still open. |
 | D52 | 2026-09-30: **R55-F9 spec approved** (Docs/review/67-r55-f9-spec.md + review 67b): OD-R55F9-1..9 as recommended (a); **OD-R55F9-10 = (b)**: `ping`/`pair` print only daemon-owned text per known code and a fixed "the relay refused the request" for `relay_error`; the sanitised relay message goes only to the `pair.fail` audit `reason` and the Debug log. |
+| D53 | 2026-09-30: **R55-F2 spec approved** (Docs/review/66-r55-f2-spec.md + review 66b): OD-R55F2-1..8 (a), **OD-9 (c)** (no relay-wide redelivery ceiling now; add with accounts or IPv6), OD-10 (a) (per-prefix wait list). Takes migration R3; the Phase 4 plan's R3–R6 become R4–R7. |
+| D54 | 2026-09-30: **R55-F18 spec approved** (Docs/review/69-r55-f18-spec.md + review 69b): OD-F18-1..9 all (a). New ack member `rejected` (sent alone); migration 22 `work_sessions.runner` (also undo it in internal/audit/chain_test.go rewind, not only store_test.go). Code after F12. |
+| D55 | 2026-09-30: **R55-F23 spec approved** (Docs/review/68-r55-f23-spec.md + review 68b): OD-1..6 all (a). Vectors P1, N1–N15. |
 
 Still open (not urgent): `Docs/` vs `docs/` casing. OD-P4-20 outside security review timing is
 settled (before public launch, D41). Accounts and code signing are settled by D36; hosting by
