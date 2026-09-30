@@ -267,8 +267,12 @@ described under [`expired`](#states).
 
 In **one SQLite transaction**:
 
-1. `INSERT INTO mail_seen (from_key, id, received_at)`. If the row already exists, this is a
-   **duplicate**. Roll back, do not process it again, and **re-send the ack** for `id`.
+1. `INSERT INTO mail_seen (from_key, id, received_at)`. If the row already exists, **or a
+   `mail_inbox` row `(from_key, id)` exists**, this is a **duplicate**. Roll back, do not
+   process it again, and **re-send the ack** for `id`. (`mail_seen` is pruned, `mail_inbox`
+   is not: without the second check a peer re-using one of its own ids after 35 days would
+   pass dedupe, apply again, then fail on the inbox primary key and never be acked; review
+   55 R55-017.)
 2. Process by kind:
    - `keys`: apply the announcement ([below](#kind-keys)). There is no inbox row.
    - A known application kind (Phase 1+): insert the `mail_inbox` row with the verified
@@ -281,9 +285,19 @@ In **one SQLite transaction**:
    daemon-side per-kind count of owner decision 4.
 4. **After commit**, send the ack.
 
+Any other error in this transaction (database, a kind's apply that is not a bad body, the inbox
+insert, the commit) rolls it back and sends no ack, so the sender resends. The daemon logs it
+**once per `(from, id)`** (`event=mail_receive_failed`, with peer, id, kind, the failed step and
+an error class such as an SQLite result code; never the error text, so no body content), not on every redelivery (review 55 R55-058). What a kind's apply prepares for
+its after-commit step belongs to that one delivery and is discarded with it.
+
 `mail_seen` rows are pruned when `received_at < now − 35 d`, which runs daily and at start.
 A replay of a pruned id carries a `created` older than `now − 30 d + 10 min`, so step 11
-rejects it. Pruning can never re-admit a replay.
+rejects it. Pruning can never re-admit a replay. A **re-used** id (a new mail from the same
+peer with a fresh `created`) is still a duplicate while its `mail_inbox` row exists. The two
+tables are one dedupe set: `mail_inbox` rows are kept today (retention is owner decision
+D12), and any future pruning of `mail_inbox` runs in the same pass as `mail_seen` with at
+least the same age, so an id never leaves one table while the other still holds it.
 
 ## Ack
 

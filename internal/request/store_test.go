@@ -138,7 +138,6 @@ func deliverRequest(t *testing.T, s *Store, req *Request, msgCreated time.Time) 
 	}
 	if err := s.apply(ctx, tx, op); err != nil {
 		_ = tx.Rollback()
-		pendingApply.Delete(op)
 		return err
 	}
 	if err := tx.Commit(); err != nil {

@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
+
+	"modernc.org/sqlite"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
@@ -34,6 +37,10 @@ const (
 	ReceiveMaxAge = 14 * 24 * time.Hour
 
 	pruneInterval = 24 * time.Hour
+
+	// maxFailLogged bounds the (from, id) pairs remembered for logFailure. At
+	// the bound the set starts over, so a pair may be logged again.
+	maxFailLogged = 4096
 )
 
 // Kind describes how the receiver processes one known application kind.
@@ -42,7 +49,9 @@ type Kind struct {
 	Inbox bool
 	// Apply writes the kind-specific rows. It runs inside the dedupe
 	// transaction, so it must only use tx. An error rolls everything back and
-	// nothing is acked, except an error wrapping ErrBadBody (see there).
+	// nothing is acked, except an error wrapping ErrBadBody (see there). An
+	// error that quotes body content must wrap ErrBadBody; the receiver never
+	// logs an Apply error's text either way (errClass).
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error
 	// After runs once after the commit of a mail that was not a duplicate. It
 	// must not block for long; it may be nil.
@@ -81,6 +90,9 @@ type Receiver struct {
 
 	commit    func(*sql.Tx) error // test hook; defaults to tx.Commit
 	beforeBad func()              // test hook; runs between the two bad-body transactions
+
+	failMu     sync.Mutex
+	failLogged map[string]struct{} // (from, id) pairs logFailure has logged
 }
 
 // ErrNoKindHandler is returned for mail of kind keys when no handler is
@@ -151,6 +163,7 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 
 	res, err := r.store(ctx, op, k, known)
 	if err != nil {
+		r.logFailure(op, known, err)
 		return err
 	}
 	if res == seenBad || res == seenDupBad {
@@ -175,6 +188,74 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	return nil
 }
 
+// stageError is a receive error that is not a rejection, tagged with the fixed
+// step of the dedupe transaction that failed. Its text is the same as before
+// (mail: <step>: <cause>).
+type stageError struct {
+	stage  string // fixed name: begin, record seen, read inbox, apply, ...
+	prefix string // the message prefix; the stage unless it names the kind
+	err    error
+}
+
+func stageErr(stage string, err error) error {
+	return &stageError{stage: stage, prefix: stage, err: err}
+}
+
+func (e *stageError) Error() string { return "mail: " + e.prefix + ": " + e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
+// errClass names the cause of a receive error by a fixed class only: context
+// cancellation, an SQLite result code, or "other". A kind's Apply error text is
+// never logged, so no body content can reach the log even if an Apply error
+// were to quote it (review 70 L2).
+func errClass(err error) string {
+	var se *sqlite.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.As(err, &se):
+		if name, ok := sqlite.ErrorCodeString[se.Code()]; ok {
+			return name
+		}
+		return fmt.Sprintf("sqlite_%d", se.Code())
+	}
+	return "other"
+}
+
+// logFailure logs a receive error that is not a rejection (a database,
+// Apply, inbox or commit error): the mail was rolled back and not acked, so the
+// sender resends it. Each (from, id) is logged once, not on every redelivery
+// (review 55 R55-058). The line names the failed step and the error class
+// (errClass), never the error text, so it carries no body content.
+func (r *Receiver) logFailure(op *Opened, known bool, err error) {
+	key := op.Msg.From + "\x00" + op.Msg.ID
+	r.failMu.Lock()
+	_, seen := r.failLogged[key]
+	if !seen {
+		if r.failLogged == nil || len(r.failLogged) >= maxFailLogged {
+			r.failLogged = map[string]struct{}{}
+		}
+		r.failLogged[key] = struct{}{}
+	}
+	r.failMu.Unlock()
+	if seen {
+		return
+	}
+	kind := op.Msg.Kind
+	if !known {
+		kind = "unknown"
+	}
+	stage := "other"
+	var se *stageError
+	if errors.As(err, &se) {
+		stage = se.stage
+	}
+	r.log().Warn("mail: receive failed, not acked", "event", "mail_receive_failed",
+		"peer", op.Msg.From, "id", op.Msg.ID, "kind", kind, "stage", stage, "cause", errClass(err))
+}
+
 type seenResult int
 
 const (
@@ -188,17 +269,28 @@ const (
 func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (seenResult, error) {
 	tx, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return seenNew, fmt.Errorf("mail: begin: %w", err)
+		return seenNew, stageErr("begin", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after a successful commit
 	at := r.now().UTC().Format(StoreTimeFmt)
 	res, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`, op.Msg.From, op.Msg.ID, at)
 	if err != nil {
-		return seenNew, fmt.Errorf("mail: record seen: %w", err)
+		return seenNew, stageErr("record seen", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return seenAs(ctx, tx, op) // rolled back by the deferred Rollback
+	}
+	// mail_seen is pruned after 35 d, mail_inbox is not: an id still in
+	// mail_inbox is a duplicate too, so a re-used id is never applied a
+	// second time (review 55 R55-017, mail.md §Dedupe and inbox).
+	var inInbox int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mail_inbox WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&inInbox); err != nil {
+		return seenNew, stageErr("read inbox", err)
+	}
+	if inInbox > 0 {
+		return seenDup, nil // rolled back by the deferred Rollback
 	}
 	if known {
 		if k.Apply != nil {
@@ -206,7 +298,7 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 				if errors.Is(err, ErrBadBody) {
 					return r.storeBad(ctx, tx, op, at)
 				}
-				return seenNew, fmt.Errorf("mail: apply %s: %w", op.Msg.Kind, err)
+				return seenNew, &stageError{stage: "apply", prefix: "apply " + op.Msg.Kind, err: err}
 			}
 		}
 		if k.Inbox {
@@ -221,7 +313,7 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
 				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at, string(signed)); err != nil {
-				return seenNew, fmt.Errorf("mail: store inbox: %w", err)
+				return seenNew, stageErr("store inbox", err)
 			}
 		}
 	}
@@ -230,7 +322,7 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		commit = (*sql.Tx).Commit
 	}
 	if err := commit(tx); err != nil {
-		return seenNew, fmt.Errorf("mail: commit: %w", err)
+		return seenNew, stageErr("commit", err)
 	}
 	return seenNew, nil
 }
@@ -240,7 +332,7 @@ func seenAs(ctx context.Context, tx *sql.Tx, op *Opened) (seenResult, error) {
 	var got string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT received_at FROM mail_seen WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&got); err != nil {
-		return seenNew, fmt.Errorf("mail: read seen: %w", err)
+		return seenNew, stageErr("read seen", err)
 	}
 	if strings.HasSuffix(got, badBodyMark) {
 		return seenDupBad, nil
@@ -259,14 +351,14 @@ func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at stri
 	}
 	tx2, err := r.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return seenNew, fmt.Errorf("mail: begin: %w", err)
+		return seenNew, stageErr("begin", err)
 	}
 	defer func() { _ = tx2.Rollback() }()
 	res, err := tx2.ExecContext(ctx,
 		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`,
 		op.Msg.From, op.Msg.ID, at+badBodyMark)
 	if err != nil {
-		return seenNew, fmt.Errorf("mail: record bad body: %w", err)
+		return seenNew, stageErr("record bad body", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return seenAs(ctx, tx2, op)
@@ -276,7 +368,7 @@ func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at stri
 		commit = (*sql.Tx).Commit
 	}
 	if err := commit(tx2); err != nil {
-		return seenNew, fmt.Errorf("mail: commit: %w", err)
+		return seenNew, stageErr("commit", err)
 	}
 	return seenBad, nil
 }

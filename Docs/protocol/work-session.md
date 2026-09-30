@@ -142,9 +142,12 @@ On `ws.state` from `msg.from` = A:
    `row.cancel = 'refused'`. A applies a `ws.cancel` only in `open`, and it re-sends
    `last_state` when it refuses one, so such an echo is A's refusal ([Cancel](#cancel)).
    An older `seq` (a reordered mail) is not an echo and changes nothing (review 69b F4).
+   Else, if the row is already `closed`: ignore, audit `ws.ignored {session, peer, kind,
+   reason: "closed"}`. Closed is final on B too, so a later state can neither reopen the
+   mirror nor close it a second time (review 55 R55-067).
 4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `verification` (if
    present), `state_at`. B does **not**
-   check the transition; A is authoritative and the higher `seq` wins. The `cancel` mark
+   check the transition otherwise; A is authoritative and the higher `seq` wins. The `cancel` mark
    (R55-F18): new state `closed` or `open` → `cancel` = NULL (the wish is answered, or a new
    round started); new state `awaiting_result` or `quarantined` while `cancel = 'requested'`
    → `cancel = 'refused'`.

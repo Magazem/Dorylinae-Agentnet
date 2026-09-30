@@ -131,6 +131,10 @@ automatically; no human step (OD-P3-5).
    (for `cancelled`: no `decision`, no `sig`, and no Decision row). `entries` is the number
    of transcript slots A applied (a B entry that arrived after the close is not counted);
    `constraints` is the sorted list of constraint ids A holds.
+   B refuses (`mail.ErrBadBody`, [request.md §Invalid bodies](request.md#invalid-bodies)) a
+   close whose `constraints` is not strictly ascending (unsorted or repeating an id) or holds
+   more than 10 ids (review 55 R55-021). A derivation on B that still exceeds `MaxDecision`
+   is refused as a mismatch (`decision.refuse` reason `size`), never retried.
 2. **B** applies it after its transcript has all `entries` slots **and** every constraint id
    listed in `constraints` (a close that overtakes an A entry or an A constraint is held in
    `close_body` until it arrives; review 43 H2). B does **not** wait for what only B could

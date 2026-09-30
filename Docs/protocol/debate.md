@@ -364,10 +364,20 @@ dependency"). It appears in the Decision under **human decisions**.
   `debate.constraint {session, peer, id, approval}`, and send `debate.constraint {at, id,
   request, session, text}` to the peer. The peer stores it (author = `msg.from`) and
   notifies `debate.constraint`. Precondition at confirm: the debate is still in one of the
-  three phases above (else `rejected`, reason `precondition`).
+  three phases above (else `rejected`, reason `precondition`). A receiver whose debate is
+  `closing`, `closed` or `broken` does not store it (`debate.ignored {reason: "closed"}`).
+  While the receiver's debate is still `invited` (review 55 R55-070): **B** ignores it
+  (`debate.ignored {reason: "state"}`), because B has not accepted, so no A constraint can be
+  legitimate. **A** stores it as usual while its `out` request is `pending` or `deferred`: B
+  accepts before it can constrain, but its constraint can overtake the `request.accept` and
+  the slot-1 entry, exactly as in [Applying peer entries](#submitting-entries) (review 43 M3;
+  review 70 M1). Once that request is gone or no longer pending or deferred, A ignores it with
+  reason `state`. Nothing ignored shows or counts toward the limit.
 - **Ordering.** Constraints are not slots. They are a set, ordered in the Decision by
   `(at, id)`. A's `debate.close` lists the ids A holds as `active`; both Decisions contain
   exactly those ([decision.md](decision.md#derivation)). **A is authoritative for the set.**
+  The list is strictly ascending and holds at most 10 ids; B refuses any other list as a bad
+  body ([decision.md §Signing](decision.md#signing)).
   An A-authored constraint mail can be overtaken by the close, so B holds the close until it
   has every listed id ([decision.md §Signing](decision.md#signing), review 43 H2); B cannot
   tell a missing A constraint from an id A made up, so it holds either way and its abandon is

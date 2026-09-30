@@ -260,10 +260,10 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 		if err := insertDecision(ctx, tx, r, canon, own, "", "", claimed, DecisionPeerRefused, now); err != nil {
 			return err
 		}
-	case errors.Is(err, decision.ErrIncomplete), errors.Is(err, decision.ErrClosedBeforeOpened):
-		// B holds no record (no position, or a close before the request
-		// was created): the refusal carries the hash of the empty message,
-		// which no Decision has.
+	case errors.Is(err, decision.ErrIncomplete), errors.Is(err, decision.ErrClosedBeforeOpened), errors.As(err, new(*decision.TooLargeError)):
+		// B holds no record (no position, a close before the request was
+		// created, or a record over MaxDecision): the refusal carries the
+		// hash of the empty message, which no Decision has.
 		own = decision.Hash(nil)
 	default:
 		return err
@@ -347,7 +347,7 @@ func (s *Store) applySign(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err
 	var out afters
 	defer func() {
 		if err == nil {
-			pending.Store(op, out)
+			op.Outcome = out
 		}
 	}()
 	if !found {
