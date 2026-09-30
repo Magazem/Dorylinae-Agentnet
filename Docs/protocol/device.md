@@ -251,8 +251,17 @@ above, and `check` names the first that failed.
   with no reason and no result (review 40 L1).
 
 The controller's agent reads it with `agentnet wait <session>` and closes it with
-`accept-result` (or requests changes, which re-opens the session; a re-run needs a new
-request, because the runner acts only on arrival).
+`accept-result`. It can also request changes, but a re-run needs a new request, because the
+runner acts only on arrival. The helper therefore answers a new round with `ws.cancel` (no
+reason), and the controller's session closes `cancelled`.
+
+**The session belongs to the runner** (R55-F18, review 55 R55-029). The helper marks the
+session as a [run session](work-session.md#run-sessions) when it auto-accepts the request. On
+the helper, `ws_result`, `request_complete` and `ws_cancel` over IPC are then `bad_state`
+for that session, so the helper's local agent cannot submit or cancel in the runner's place.
+The helper's human can still stop a run by clearing the scope or unlinking, which the runner
+reports as above. "No agent on the desktop is needed" also means that no agent there can
+speak for the runner.
 
 ### Limits
 

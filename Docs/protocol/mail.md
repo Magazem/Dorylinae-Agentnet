@@ -257,8 +257,8 @@ lifetime). A mail of any kind except `ack` and `keys` whose `now − created` ex
 
 - **not stored, not deduped and not applied**: no `mail_seen` row, no inbox row, no `mail.in`;
 - audited as `mail.reject {peer, id, reason: "stale"}` (same rate limit as other rejects);
-- **acked under `unsupported`**, so a late resend stops instead of running for the rest of
-  the sender's 7 days.
+- **acked under `rejected`** ([Ack](#ack); `unsupported` before R55-F18), so a late resend
+  stops instead of running for the rest of the sender's 7 days.
 
 A mail exactly 13 days old is accepted, and deduped on repeat. The consequence for senders is
 described under [`expired`](#states).
@@ -274,6 +274,9 @@ In **one SQLite transaction**:
    - A known application kind (Phase 1+): insert the `mail_inbox` row with the verified
      plaintext kept as proof, plus the kind-specific rows.
    - An unknown kind: nothing is stored beyond `mail_seen`. The ack lists it under `unsupported`.
+   - A known kind whose `Apply` fails with `mail.ErrBadBody`: only the marked `mail_seen` row
+     is kept ([request.md §Invalid bodies](request.md#invalid-bodies)). The ack lists it under
+     `rejected`.
 3. Commit. Audit `mail.in {peer, id, kind}` for every kind except `ack` and `keys`. This is the
    daemon-side per-kind count of owner decision 4.
 4. **After commit**, send the ack.
@@ -288,20 +291,35 @@ An ack is a mail with `kind: "ack"` sent to the original sender. It is sealed to
 sender's newest mailbox key and has a fresh `id`.
 
 ```json
-{"ids": ["m-..."], "unsupported": ["m-..."]}
+{"ids": ["m-..."], "rejected": ["m-..."], "unsupported": ["m-..."]}
 ```
 
-- `ids`: mail accepted and processed, or recognised as duplicates. `unsupported`: accepted
-  and recorded in `mail_seen`, but of a kind this daemon does not understand; also mail
-  refused by the [receive age limit](#receive-age-limit) (not recorded). Each member is
-  optional and holds 1–256 ids when present. At least one must be present. No other members
-  are allowed.
+- `ids`: mail accepted and processed, or recognised as duplicates.
+- `unsupported`: accepted and recorded in `mail_seen`, but of a **kind this daemon does not
+  understand**. Only an unknown kind is acked here, so a sender may read `unsupported` as
+  "the peer does not know this kind", for example to detect an older peer
+  ([work-session.md §Phase 1 requester](work-session.md#early-complete-and-phase-1-workers)).
+- `rejected` (R55-F18, review 55 R55-059): of a kind this daemon understands, but **refused
+  for this mail**. That covers a bad body (`mail.ErrBadBody`, recorded in `mail_seen` so a
+  resend is re-acked the same way; [request.md §Invalid bodies](request.md#invalid-bodies))
+  and mail refused by the [receive age limit](#receive-age-limit) (not recorded). It says
+  nothing about the peer's version.
+- Each member is optional and holds 1–256 ids when present. At least one must be present.
+  No other members are allowed. One id appears in at most one member.
+
+Before R55-F18 a bad body and a stale mail were acked under `unsupported`, so a sender could
+not tell them from an unknown kind. A daemon from before R55-F18 refuses an ack that
+carries `rejected` as `malformed` (step 12). Its outbox row for that mail is not failed: it
+keeps resending until it ends `expired` after 7 days, each resend re-acked `rejected`. This
+is accepted before the first release (OD-F18-1 in
+[69-r55-f18-spec.md](../review/69-r55-f18-spec.md)).
 - The receiver may hold acks for up to 1 s to batch them per peer.
 - Acks are **not** outboxed, not deduped and not acked. A lost ack means the sender resends,
   and the receiver's dedupe re-acks it.
 - On receiving an ack, the sender, for each id that is an outbox row addressed to the ack's
-  `from` and not final, sets `ids` rows to `delivered` and `unsupported` rows to `failed`
-  (error `unsupported_kind`). Ids that are unknown or already final are ignored.
+  `from` and not final, sets `ids` rows to `delivered`, `unsupported` rows to `failed`
+  (error `unsupported_kind`) and `rejected` rows to `failed` (error `rejected`). Ids that are
+  unknown or already final are ignored.
 - If the sender has no mailbox key for the acking peer, the ack cannot be sealed. It is
   dropped and logged (`event=ack_no_mailbox_key`).
 
@@ -321,7 +339,8 @@ sender's newest mailbox key and has a fresh `id`.
 Presence heartbeats reuse this seal and signature with kind `presence`, but as envelope type
 `presence`, not `mail` ([presence.md](presence.md)). From 1.4b, an `Apply` error wrapping
 `mail.ErrBadBody` is recorded in `mail_seen`, audited `mail.reject` reason `bad_body` and
-acked as `unsupported` ([request.md §Invalid bodies](request.md#invalid-bodies)).
+acked under `rejected` ([request.md §Invalid bodies](request.md#invalid-bodies); under
+`unsupported` before R55-F18).
 
 ### Kind `keys`
 
@@ -365,7 +384,7 @@ The ids in `retry` are routing metadata the relay already has, so the reply leak
 queued ──send ok──▶ relayed ──ack──▶ delivered
   ▲  │                 │  │
   │  └──(any state)────┼──┴──▶ expired   (now ≥ created + 7 d)
-  └──queue_full/internal/not connected   failed    (unsupported ack, peer removed, relay bad_envelope/bad_sender)
+  └──queue_full/internal/not connected   failed    (unsupported or rejected ack, peer removed, relay bad_envelope/bad_sender)
 ```
 
 | State | Meaning | Final |

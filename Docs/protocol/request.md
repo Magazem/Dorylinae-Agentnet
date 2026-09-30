@@ -230,8 +230,10 @@ receiver then:
 2. in a new transaction inserts only the `mail_seen` row and commits, so a resend is
    re-acked without being re-evaluated;
 3. audits `mail.reject {peer, id, reason: "bad_body"}`, rate-limited like other rejects;
-4. acks the id under `unsupported`. The sender's outbox row ends `failed`
-   (`unsupported_kind`).
+4. acks the id under `rejected` ([mail.md §Ack](mail.md#ack)). The sender's outbox row ends
+   `failed` (`rejected`). Before R55-F18 the id was acked under `unsupported` and the row
+   ended `failed` (`unsupported_kind`), which a sender could not tell from an unknown kind
+   (review 55 R55-059).
 
 Any other `Apply` error keeps the current behaviour: roll back, no ack, and the sender
 resends. A well-behaved sender never triggers `bad_body`, because it validates with the
@@ -403,7 +405,10 @@ On `request.accept`, `decline`, `defer`, `complete` or `cancelled` from `msg.fro
    `decline_code` with `reason`, or `note` and `result`
    ([Result payload](#result-payload-d14)). **The sender does not check the transition.** The
    recipient is authoritative, and a higher `seq` always wins, so a `complete` that overtakes
-   its `accept` still ends in `completed`.
+   its `accept` still ends in `completed`. Once a work session exists for the request, its
+   hooks run in the same transaction (Phase 2, [work-session.md](work-session.md#early-complete-and-phase-1-workers)).
+   A `complete` is an early complete, or, on a `closed` session, is stored as A's own view of
+   the close. A late `decline` or `cancelled` closes an `open` session (R55-F18).
 5. **Cancel refused.** If the row has `cancel = requested` and, after step 3 or 4, its
    `state` is `accepted`, `declined` or `completed`, set `cancel = refused`. This runs even
    when step 3 ignored the mail, because a refused cancel is answered by re-sending a reply

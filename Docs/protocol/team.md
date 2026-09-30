@@ -64,7 +64,8 @@ introduction to get into another team. This is accepted (OD-P1-2).
 All three are ordinary application mail: outboxed, acked, deduped, subject to the
 14-day receive limit. Bodies are strict: exactly the members listed, no others. A body
 that fails validation is handled as `bad_body` ([request.md §Invalid bodies](request.md#invalid-bodies)):
-recorded in `mail_seen`, audited `mail.reject {reason: "bad_body"}`, acked as `unsupported`.
+recorded in `mail_seen`, audited `mail.reject {reason: "bad_body"}`, acked under `rejected`
+([mail.md §Ack](mail.md#ack); `unsupported` before R55-F18).
 
 ### `team.roster` (owner → each member)
 

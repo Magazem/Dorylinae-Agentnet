@@ -107,7 +107,7 @@ request; what the requester can do after accept is cancel the *session* while it
 | From | Event | To | Who may cause it | Notes |
 |---|---|---|---|---|
 | (none) | `request.accept` applied on A | `open`, `round = 1` | B (accept) | B creates its mirror row in the accept transaction; A creates its row when it applies the accept, or when a `ws.result` for this request arrives first ([Ordering](#ordering)) |
-| `open` | valid `ws.result` for the current `round` | `awaiting_result`, or `quarantined` if the [quarantine rule](#quarantine-24) holds | B | Stored result replaces any earlier one |
+| `open` | valid `ws.result` for the current `round` | `awaiting_result`, or `quarantined` if the [quarantine rule](#quarantine-24) holds | B | Stored result replaces any earlier round's one. B submits **at most one** result per round ([`ws_result`](#ipc), R55-F18); if a modified B sends two, A applies whichever arrives first and ignores the other (`reason: "state"`), and A's request record still holds the result A accepted ([Closing the request](#closing-the-request)) |
 | `awaiting_result` | quarantine rule holds | `quarantined` | (daemon) | Evaluated in the same transaction as the result, so `awaiting_result` is not observable in between |
 | `quarantined` | `release` (human-approved, [approval.md](approval.md)) | `awaiting_result` | A's human | The quarantine rule is not re-evaluated after a release for this round |
 | `awaiting_result` | `accept-result` | `closed`, `outcome = accepted` | A | |
@@ -136,10 +136,16 @@ On `ws.state` from `msg.from` = A:
 1. Strict body ([Kinds](#kinds)); a failure is `mail.ErrBadBody`.
 2. Find the `work_sessions` row `(sid)` with `role = worker` and `peer = msg.from`. None:
    ack, ignore, audit `ws.orphan {session, peer, kind}`.
-3. `seq ≤ row.seq`: ignore (duplicate or out of order).
+3. `seq ≤ row.seq`: ignore (duplicate or out of order). **Except** (R55-F18, review 55
+   R55-114): if `row.cancel = 'requested'` and the echoed `state` is not `open`, set
+   `row.cancel = 'refused'`. A only applies a `ws.cancel` in `open`, so an echo in any other
+   state is A's refusal ([Cancel](#cancel)).
 4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `verification` (if
    present), `state_at`. B does **not**
-   check the transition; A is authoritative and the higher `seq` wins.
+   check the transition; A is authoritative and the higher `seq` wins. The `cancel` mark
+   (R55-F18): new state `closed` or `open` → `cancel` = NULL (the wish is answered, or a new
+   round started); new state `awaiting_result` or `quarantined` while `cancel = 'requested'`
+   → `cancel = 'refused'`.
 5. If the new state is `closed`, B completes its request row ([Closing the
    request](#closing-the-request)).
 
@@ -158,9 +164,30 @@ with:
 - `outcome = cancelled`: no `result`, and `note = "session cancelled"` (fixed text written by
   the daemon, never peer content).
 
+B's stored result is always the one A accepted, because B submits at most one result per
+round (the [`ws_result`](#ipc) rule, R55-F18) and drops its copy whenever a round ends
+without acceptance ([Mirror](#mirror-on-b) step 4).
+
 The `request.complete` mail goes to A through the unchanged Phase 1 path, and A's mirror
 applies it by `seq`. So the Phase 1 request record ends `completed` on both sides, and a
 Phase 1 consumer that only reads requests still sees the final result.
+
+**A stores its own view of the close (R55-F18, review 55 R55-022).** When A applies a
+`request.complete` for a request whose requester session is already `closed`, A does **not**
+store what B sent. A derives the request record's `result` and `note` from its own session:
+
+- `outcome = accepted`: `result` = the D14 part of A's stored accepted result, no `note`.
+  This is the result A's agent or human actually reviewed, even if B sent another one.
+- `outcome = cancelled`: no `result`, `note = "session cancelled"` (the fixed text).
+
+The `state`, `seq` and `state_at` still come from the mail, by `seq` as before. When B's
+`result` or `note` differs from what A stores (compared as canonical JSON), A audits
+`ws.ignored {session, peer, kind: "request.complete", reason: "result_mismatch"}`. The
+message's inbox copy follows the existing rule: it is stored blank only when the
+[quarantine rule](#quarantine-24) holds ([D18](#inbox-copy-d18)). A released and accepted
+result is A's own reviewed copy, so A stores it in the request record even when the rule
+holds. Before R55-F18, A stored B's content. An unmodified B that revised its answer, or any
+modified B, could then put a result that nobody reviewed into A's request record (C21-01).
 
 ### Early complete and Phase 1 workers
 
@@ -178,24 +205,55 @@ trying to deliver content past the quarantine. A's daemon, in the mail transacti
    `ws.state` as usual (a Phase 1 B acks it `unsupported`). In `awaiting_result` or
    `quarantined` (only a misbehaving Phase 2 B can cause this) the session is left to A.
 
+**Late decline or cancelled (R55-F18, review 55 R55-062).** A `request.decline` or
+`request.cancelled` from B with a higher `seq` can move A's mirror out of `accepted` after a
+session exists. Only a modified B sends one: a Phase 2 B has no decline or cancel after
+accept. A's daemon applies it to the request mirror as before and then, in the same
+transaction, treats the session like an early complete step 2: if the session is `open`, A
+closes it with `outcome = cancelled` (a debate session closes through the debate, as for an
+early complete), ends its grants, and sends the `ws.state`. In `awaiting_result` or
+`quarantined` the session is left to A. Grants are usable only while `open`, so none stays
+live. Before R55-F18 the session stayed `open` with live grants while `request show` said
+`declined`.
+
 So a Phase 1 worker still completes a Phase 2 requester's request (with its result when no
 sensitive grant is involved), a session can never stay `open` with live grants after the
-worker considers the work done, and no transition outside the diagram is added.
+worker considers the work done or the request ended, and no transition outside the diagram
+is added.
 
-**Phase 1 requester.** When a `ws.*` mail from B to A ends `failed` with `unsupported_kind`
-([mail.md](mail.md)), A is a Phase 1 daemon. B's daemon then, in one transaction, closes
-its mirror locally (`outcome = cancelled`, audit `ws.close {…, outcome: "cancelled"}`) and
-completes the request through the Phase 1 path: for a failed `ws.result`, with the D14 part
-of that result and its `notes` as the `note`; for a failed `ws.cancel`, with no result and
-`note = "session cancelled"`. Mixed Phase 1/Phase 2 teams therefore keep the Phase 1
-behaviour, without grants or quarantine (a Phase 1 requester never issues grants).
+**Phase 1 requester.** When a `ws.result` or `ws.cancel` from B to A ends `failed` with
+`unsupported_kind` ([mail.md](mail.md#ack)), A is a Phase 1 daemon. Only the ack's
+`unsupported` member means that. A bad body or a mail refused by the receive age limit is
+acked under `rejected` and ends `failed` with `rejected`. That is **not** evidence of a
+Phase 1 peer and never triggers this fallback (R55-F18, review 55 R55-059). Before R55-F18
+a bad body was acked `unsupported`, so a single rejected mail closed every worker session
+B had with a Phase 2 A. B's daemon then, for each of its worker sessions with that peer
+that is not `closed` and is **not a debate**, in one transaction per session, closes its
+mirror locally (`outcome = cancelled`, audit `ws.close {…, outcome: "cancelled"}`) and
+completes the request through the Phase 1 path. For a failed `ws.result`, the request is
+completed with the D14 part of that result and its `notes` as the `note`. For a failed
+`ws.cancel`, it is completed with no result and `note = "session cancelled"`. Debate sessions
+are skipped (R55-060): a Phase 1 peer cannot hold a debate, and a debate closes only
+through the debate ([debate.md](debate.md)).
+
+The trigger is not lost on restart (R55-061). The daemon runs this check after an outbox row
+ends `failed`/`unsupported_kind`. It also runs it once at start, for every peer with a
+not-`closed`, non-debate worker session, after the store is open and before mail is
+received. Shutdown waits for a running check, or cancels it, before the store closes. The
+check is idempotent: it reads the durable outbox row
+(`failed`/`unsupported_kind`, created at or after the session opened), which is kept 30 days
+after it turned final.
+
+Mixed Phase 1/Phase 2 teams therefore keep the Phase 1 behaviour, without grants or
+quarantine (a Phase 1 requester never issues grants).
 
 **`request_complete` while a session exists** (`agentnet complete <id>` from Phase 1, used
 by the snippet and harness): on a request whose session is `open`, it is **a shorthand for
 `ws_result`** with the given `note` as `notes`, the D14 `result`, and `verification: none`
 (a `result` without `status` is not possible, so `complete` without `--status` submits
-`{"status": "n/a"}`). In any other session state it is `bad_state`. It never completes the
-request directly once a session exists.
+`{"status": "n/a"}`). In any other session state it is `bad_state`. The same rules as
+`ws_result` apply: one result per round, and `bad_state` on a [run session](#run-sessions).
+It never completes the request directly once a session exists.
 
 ## Result object (2.6)
 
@@ -352,8 +410,14 @@ disk, not fixed for Phase 3.
 - **B**: the same command sends `ws.cancel {at, session, request, reason?}`. B's row does not
   change until A's `ws.state` arrives. A's daemon applies it automatically when its state
   is `open` (audit `ws.cancel_in {session, peer, result: "cancelled"}`), and otherwise
-  ignores it (`result: "refused"`) and re-sends its `last_state`, so B learns the real
-  state. B's `ws_show` shows `cancel: "requested"` meanwhile, like the request mirror.
+  ignores it (`result: "refused"`) and re-sends its `last_state` (10-minute rule), so B
+  learns the real state. B's `ws_show` shows `cancel: "requested"` meanwhile, like the
+  request mirror. B sets `cancel: "refused"` when a `ws.state` shows a state other than `open`
+  or `closed` while its cancel is requested, whether that `ws.state` is new or an echo of one
+  B already has ([Mirror](#mirror-on-b) steps 3–4; R55-F18, review 55 R55-114). Before
+  R55-F18 `refused` was never set. With `cancel: "refused"`, B may send `--cancel` again (it
+  is not a duplicate). An echo suppressed by the 10-minute rule leaves `requested` until A's
+  next `ws.state`, which is acceptable because B can see the state it has.
 - `reason` is 1–500 code points, content, never audited.
 - A cancel refunds nothing and changes no urgency counts (D12).
 
@@ -375,7 +439,8 @@ a body cannot be moved to another session.
 
 1. Strict body, caps, derived id.
 2. Find the `out` request row `(peer = msg.from, id = request)`. None: ack, ignore, audit
-   `ws.orphan`. The row's mirror state may still be `pending` or `deferred` if the
+   `ws.orphan {session, peer, kind}` (the derived id is already checked, so `session` is
+   known; review 55 R55-167). The row's mirror state may still be `pending` or `deferred` if the
    `request.accept` has not arrived yet ([Ordering](#ordering)); `declined`, `cancelled`
    or `completed`: ignore, audit `ws.ignored`.
 3. Find or create the session row (`open`, `round = 1`, `seq = 0`).
@@ -394,6 +459,35 @@ Mail can overtake mail. A `ws.result` may reach A before the `request.accept`; s
 creates the session. A `ws.state` may reach B for a session B does not know only if B's
 database was lost; it is an orphan. A `request.accept` that arrives after the session row
 exists creates nothing new.
+
+## Run sessions
+
+A **run session** is a worker session that an own-device helper opened by auto-accepting an
+in-scope request ([device.md §Running](device.md#running-in-scope-requests)). Its result
+belongs to the helper's **runner**, which sets `status` from the exit code and
+`verification = none`. The helper's local agent does not own it. On B (the helper), the
+session row is marked `runner = 1` in the receive transaction that auto-accepts the request
+and opens the session ([Persistence](#persistence)). On a marked session (R55-F18, review 55
+R55-029):
+
+- `ws_result`, `request_complete` (the shorthand) and B's `ws_cancel` over IPC are
+  `bad_state` with the message "<sid> is a run session: the helper's runner reports it".
+  The runner's own submissions (result, `"<name>: interrupted"`, and the `ws.cancel` of a
+  dropped or stopped run) do not go through IPC and are unchanged.
+- The refusal is enforced in the session store, not only in the IPC handlers. Every
+  submission names its submitter (agent or runner), and an agent submission on a marked
+  session fails there. So a new IPC path cannot bypass it.
+- When a `ws.state` opens a new round (`open`, `round ≥ 2`, after A requested changes), the
+  helper's daemon sends `ws.cancel` with no reason after commit, because the runner acts only
+  on arrival and a re-run needs a new request (device.md). A then closes the session
+  `cancelled`. Without this the session would stay `open` with no one able to answer.
+- The session view on B carries `"runner": true`.
+
+A requester cannot tell a run session from a normal one and needs no rule for it: A applies
+the first result for a round, and B no longer lets an agent submit one.
+
+Before R55-F18 nothing marked a run session. A prompt-injected agent on the helper could
+submit `status: pass`, `verification: tests_passed` before the runner, and A applied it.
 
 ## Grants in a session
 
@@ -434,6 +528,16 @@ CREATE INDEX work_sessions_state ON work_sessions (state);
 CREATE UNIQUE INDEX work_sessions_request ON work_sessions (role, peer, request_id);
 ```
 
+```sql
+-- migration N (R55-F18; N = the next free version when it merges, 22 on main eadf189)
+ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
+```
+
+`runner` is B only: 1 for a [run session](#run-sessions). Existing rows get 0 and need no
+backfill. A daemon restart, which every upgrade needs, already ends every queued or
+executing run through the runner's own restart path (device.md §Limits), and the
+one-result-per-round rule refuses any later agent result in that round.
+
 Rows are kept indefinitely in Phase 2 (they are the data for the 3.7 experience record).
 `peers remove` does not delete them; a session with a removed peer can no longer change
 (every mail from that key is `unpaired`), and A may still cancel it locally, which ends its
@@ -454,7 +558,7 @@ Every method returns within 2 s and never waits for the relay or a peer.
   "result"?: {<result object>, "output_bytes", "result_bytes"},
   "quarantine"?: {"status", "result_bytes", "output_bytes", "artifacts"},
   "verification"?, "verification_by"?: "worker"|"requester",
-  "changes"?, "cancel"?: "requested"|"refused",
+  "changes"?, "cancel"?: "requested"|"refused", "runner"?: true,
   "grants": [<grant summary>]
 }
 ```
@@ -473,11 +577,15 @@ session before releasing it can then see which sensitive grants caused the quara
 |---|---|---|
 | `ws_list` | `{"state"?, "role"?, "peer"?, "team"?}` | `{"sessions": [<list view>]}`, newest `state_at` first |
 | `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session` |
-| `ws_result` | `{"id", "result", "notes"?}` (B only) | `{"session": <view>, "mail_id"}`. `bad_state` unless B's mirror is `open` (and `cancel` not requested), or the id names a `pending`/`deferred` request of type `question`, which is accepted in the same call ([consult.md §Answering](consult.md#answering)); `bad_request` naming the field; `result_too_large`; `not_worker` |
+| `ws_result` | `{"id", "result", "notes"?}` (B only) | `{"session": <view>, "mail_id"}`. `bad_state` unless B's mirror is `open` (and `cancel` not requested) **and no result was submitted yet for the current round** (message: "a result for round N was already submitted; wait for the requester or cancel"; R55-F18), or the id names a `pending`/`deferred` request of type `question`, which is accepted in the same call ([consult.md §Answering](consult.md#answering)); `bad_state` on a [run session](#run-sessions); `bad_request` naming the field; `result_too_large`; `not_worker` |
 | `ws_accept_result` | `{"id", "human"?: bool}` (A only) | `{"session": <view>, "mail_id"}` or, with `human`, `{"approval": <approval view>}` ([approval.md](approval.md)). `bad_state`, `not_requester` |
 | `ws_request_changes` | `{"id", "changes"}` (A only) | `{"session", "mail_id"}`. `bad_state` unless `awaiting_result` or `quarantined` (from `quarantined`, no approval, per OD-P2-6 (c)); `bad_request`, `not_requester` |
 | `ws_discard` | `{"id"}` (A only) | `{"session", "mail_id"}`. No approval. `bad_state` unless `quarantined`; `not_requester` (OD-P2-6 (c)) |
-| `ws_cancel` | `{"id", "reason"?}` | A: `{"session", "mail_id"}`; B: `{"session", "mail_id", "duplicate"}`. `bad_state` |
+| `ws_cancel` | `{"id", "reason"?}` | A: `{"session", "mail_id"}`; B: `{"session", "mail_id", "duplicate"}`. `bad_state`, and on B `bad_state` for a [run session](#run-sessions) |
+
+`mail_id` is the id of the `ws.state` (A) or `ws.result`/`ws.cancel` (B) mail the call
+submitted. It is never empty when a mail was sent (R55-F18, review 55 R55-115: A-side calls
+returned `""` before). It is absent only for B's duplicate cancel, which sends no mail.
 | `ws_release` | `{"id"}` (A only) | `{"approval": <approval view>}`; the release happens when the approval is confirmed. `bad_state` unless `quarantined` |
 
 New error codes: `unknown_session`, `not_requester`, `not_worker` (exit 1).
@@ -554,7 +662,7 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 | `ws.cancel_in` | A / `daemon` | `{session, peer, result}` |
 | `ws.state` | B / `daemon` | `{session, peer, state, seq, round}` |
 | `ws.close` | A / `daemon` | `{session, peer, outcome, rounds, age_s}` (`age_s` since `opened`: the time-to-result metric) |
-| `ws.ignored`, `ws.orphan` | either / `daemon` | `{session, peer, kind, reason?}` |
+| `ws.ignored`, `ws.orphan` | either / `daemon` | `{session, peer, kind, reason?}`. `session` is always present (R55-167). `ws.ignored` reasons: `state`, `round`, `kind`, `early_complete`, `result_mismatch` (R55-F18) |
 
 `verification` and `outcome` are enums the daemon sets from a closed set; the result's
 `status` and `exit_code` stay out of audit as in D14.
@@ -577,6 +685,11 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
   rule, so a peer cannot make A send unbounded mail.
 - **Version skew.** A Phase 1 daemon acks `ws.*` as `unsupported`, and both directions fall
   back to the Phase 1 request behaviour ([Early complete](#early-complete-and-phase-1-workers)).
+  Only `unsupported` (an unknown kind) triggers the fallback. A `rejected` ack (bad body,
+  receive age) does not ([mail.md §Ack](mail.md#ack), R55-F18). A pre-R55-F18 Phase 2
+  daemon still acks a bad body `unsupported`. A current B cannot tell that ack from a
+  Phase 1 one, so against such a peer the old behaviour remains until it upgrades (OD-F18-1
+  in [69-r55-f18-spec.md](../review/69-r55-f18-spec.md)).
   Grants, quarantine, consult context and helper `run` need both sides on Phase 2 (a Phase 1
   daemon refuses `context`/`run` requests as `bad_body`); this is a documented beta
   limitation (added to `Docs/beta/known-limitations.md` by 2.1a).
