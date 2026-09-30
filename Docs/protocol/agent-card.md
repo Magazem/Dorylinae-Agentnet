@@ -30,11 +30,17 @@ signature did not bind under that name (review 55 R55-019).
 | Field | Type | Notes |
 |-------|------|-------|
 | `version` | integer | Card schema version. `1` |
-| `name` | string | Display name, 1-128 characters, no control characters. Default: the machine hostname |
-| `public_key` | string | Ed25519 public key (RFC 8032), 32 bytes, base64url without padding (43 characters) |
-| `harness` | string | Agent harness in use, 1-128 characters, e.g. `claude-code`, `codex`, `hermes`, `custom` (default) |
+| `name` | string | Display name, text of 1-128 characters (see below). Default: the machine hostname |
+| `public_key` | string | Ed25519 public key (RFC 8032), 32 bytes, strict base64url without padding (43 characters, [Verification](#verification) step 2) |
+| `harness` | string | Agent harness in use, text of 1-128 characters, e.g. `claude-code`, `codex`, `hermes`, `custom` (default) |
 | `skills` | array of skill | Declared skills, possibly empty. Order is preserved and signed |
-| `created` | string | Creation time, RFC 3339 UTC with `Z` and whole seconds, e.g. `2026-01-02T03:04:05Z` |
+| `created` | string | Creation time, RFC 3339 UTC with `Z` and whole seconds, e.g. `2026-01-02T03:04:05Z`: exactly `YYYY-MM-DDThh:mm:ssZ`, a real calendar date, hour 00-23, minute and second 00-59 (no leap second) |
+
+**Text** (every string member except `public_key` and `created`, skill members
+included): a count of Unicode code points within the stated range, with no code
+point of general category Cc (U+0000-U+001F and U+007F-U+009F) and no U+FFFD
+REPLACEMENT CHARACTER. This is what `internal/agentcard` has enforced since
+ticket 0.3, so every existing card satisfies it (review 68b).
 
 Skill object: **exactly** these three members, matched by exact name as above.
 All three are required; `description` may be `""` but must be present (a
@@ -42,9 +48,9 @@ skill without it is refused, review 55 R55-213):
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `id` | string | Stable machine identifier, non-empty |
-| `name` | string | Human name, non-empty |
-| `description` | string | Free text |
+| `id` | string | Stable machine identifier, text of 1-128 characters |
+| `name` | string | Human name, text of 1-128 characters |
+| `description` | string | Free text, text of 0-128 characters |
 
 ## Signed card (envelope)
 
@@ -112,11 +118,15 @@ a signature over another Dorylinae message.
 ## Verification
 
 1. Parse the whole envelope under rules 6-8 of [Canonical
-   serialisation](#canonical-serialisation). A document that breaks one of
-   them is malformed, even when the offending text sits in a top-level
-   member that step 1 then ignores. It must be an object. Take the members
-   named exactly `card` (an object) and `signature` (a string). Ignore any
-   other top-level member.
+   serialisation](#canonical-serialisation), and apply rule 4 to every
+   number in it. A document that breaks one of these rules is malformed,
+   even when the offending text sits in a top-level member that step 1 then
+   ignores. So `"note":1.5` or `"note":1e400` refuses the envelope, and no
+   verifier depends on how its JSON library handles a fraction or an
+   out-of-range float (review 68b). The document is RFC 8259 JSON: a leading
+   byte order mark (U+FEFF) is not whitespace and makes it malformed. It must
+   be an object. Take the members named exactly `card` (an object) and
+   `signature` (a string). Ignore any other top-level member.
 2. Decode `card.public_key` and `signature` as **strict** base64url:
    - only the alphabet `A-Z a-z 0-9 - _`;
    - no padding and no whitespace;
@@ -126,6 +136,12 @@ a signature over another Dorylinae message.
    `public_key` must decode to 32 bytes: 43 characters, the last one of
    `AEIMQUYcgkosw048`. `signature` must decode to 64 bytes: 86 characters,
    the last one of `AQgw` (review 55 R55-154).
+
+   Check the length and the alphabet on the string itself, before decoding.
+   Common "strict" decoders are not strict enough: Go's
+   `base64.RawURLEncoding.Strict()` still skips CR and LF anywhere in the
+   input, so a key or signature with an embedded `\n` or `\r\n` escape would
+   decode to the same bytes (vectors N13 and N14, review 68b).
 3. Canonicalise the `card` object **as parsed generically**, not through a
    typed struct, so a modified or added member of any name invalidates the
    signature.
@@ -135,11 +151,12 @@ a signature over another Dorylinae message.
    members by exact name:
    - `card` has exactly the six members of [Card](#card);
    - `version` is the integer `1`;
-   - `name` and `harness` are strings within their limits;
+   - `name` and `harness` are text (as defined under [Card](#card)) within
+     their limits;
    - `public_key` is the string from step 2;
    - `skills` is an array of objects with exactly the three skill members,
-     each within its limits;
-   - `created` is RFC 3339 UTC with `Z` and whole seconds.
+     each a text within its limits;
+   - `created` has the exact form and ranges given in the Card table.
 6. The verified card is the values read in step 5. An implementation must
    not decode the card again with a parser that folds member names or lets
    the last duplicate win (in Go: no `encoding/json` struct decode of the
@@ -252,7 +269,7 @@ these envelopes is a JSON escape, written as the six ASCII characters.
 the vector. Where the step is 5, the signature is a real signature over the
 canonical form of the card as shown, so step 4 passes. These vectors check
 that the schema step, not the signature, refuses them. `internal/agentcard`
-(`Verify`, and `ParseStrict` for the step-1 vectors), `tools/verifycard` and
+(`Verify`, and `ParseStrict` itself for N6-N10), `tools/verifycard` and
 `tools/verifyvectors` must all refuse every one of them at that step. They
 must also accept P1.
 
@@ -299,17 +316,18 @@ sorting before `public_key`.
 {"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"Description":"x","description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"pFDCBOXUlckLSfSo0kZGTL1jdI-Cqx6ptg5lRY_dZ4s04h8DKxZPEpxn8L0NHDZygwvHEcNXnovN8X3Wouq2Cw"}
 ```
 
-**N6 to N10: fail at 1.** Each is P1 with the `note` member replaced as shown.
-The card and signature are the valid ones from the Test vector, so only the
-strict parse (rules 7 and 8) can refuse them.
+**N6 to N10 and N15: fail at 1.** Each is P1 with the `note` member replaced as
+shown. The card and signature are the valid ones from the Test vector, so only
+step 1 (rules 7 and 8, and rule 4 over the whole envelope) can refuse them.
 
 | Vector | Replacement for `"note":"😀"` | Rule |
 |---|---|---|
 | N6 | `"note":"\ud800"` (lone high) | 7 |
 | N7 | `"note":"\udc00"` (lone low) | 7 |
 | N8 | `"note":"\udc00\ud800"` (low before high) | 7 |
-| N9 | `"note":"\ud800A"` (high, then a non-surrogate escape) | 7 |
+| N9 | `"note":"\ud800\u0041"` (high, then a non-surrogate escape) | 7 |
 | N10 | `"note":1,"note":2` (the same name after unescaping) | 8 |
+| N15 | `"note":1.5` (a fraction in an ignored member) | 4, applied at step 1 |
 
 **N11: fails at 2. `public_key` with non-zero trailing bits.** The key ends in
 `h` instead of `g`. It decodes to the same 32 bytes under a lax decoder, and
@@ -328,6 +346,24 @@ same 64 bytes under a lax decoder.
 {"card":<canonical card of the Test vector>,"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDB"}
 ```
 
-`<canonical card of the Test vector>` in P1 and N12 stands for the canonical
+**N13: fails at 2. `public_key` with an embedded line feed** (the JSON escape
+`\n` after the 22nd character), signed by the seed over the canonical form of
+this card. Go's `RawURLEncoding.Strict()` skips the LF and decodes the same 32
+bytes, and the signature verifies, so a verifier that relies on that decoder
+accepts it (checked against `internal/agentcard.Verify` at `eadf189`, review 68b).
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmW\nfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"roYk-mjPoBVSZUqjc3zC9vHCnr4bccxLkBVVf_i0PnDumzwvysHWbqGCSeULqcNQxqN2D2uDgm5SxfXDXMt7DA"}
+```
+
+**N14: fails at 2. A signature with an embedded CR LF** (the escapes `\r\n`
+after the 43rd character). It is the Test vector signature otherwise, so a
+decoder that skips CR and LF gives the same 64 bytes.
+
+```
+{"card":<canonical card of the Test vector>,"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcX\r\nr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA"}
+```
+
+`<canonical card of the Test vector>` in P1, N12 and N14 stands for the canonical
 card line of [Test vector](#test-vector), inserted verbatim. `tools/verifyvectors/vectors.json` carries
 every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1).
