@@ -2,6 +2,7 @@ package worksession
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
@@ -219,5 +220,34 @@ func TestStaleCompleteNoMismatchAudit(t *testing.T) {
 	}
 	if auditWith(a, "ws.ignored", "result_mismatch") {
 		t.Fatalf("a stale complete was audited as a mismatch: %v", a.audit.entries)
+	}
+}
+
+// Review 78 S1 (owner decision): after a Phase 2 exchange in this session
+// (B's ws.result reviewed, changes requested, round 2 open), a modified B's
+// request.complete{R-evil} closes the session cancelled but its content is
+// not stored: A's record holds "session cancelled" and no result, and the
+// drop is audited early_complete.
+func TestEarlyCompleteAfterRound1StoresAView(t *testing.T) {
+	ctx := context.Background()
+	a, b, reqID, sid := setupAcceptedSession(t)
+	submitAndDeliverResult(t, a, b, reqID, validResult())
+	if _, err := a.ws.RequestChanges(ctx, sid, "please redo"); err != nil {
+		t.Fatal(err)
+	}
+	injectComplete(t, a, reqID, outSeq(t, a, reqID)+1, "", "never reviewed R-evil")
+	if av, err := a.ws.Get(ctx, sid); err != nil || av.State != StateClosed || av.Outcome != OutcomeCancelled {
+		t.Fatalf("A's session = %+v, %v; want closed cancelled", av, err)
+	}
+	arv, err := a.req.Show(ctx, reqID, testB)
+	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "session cancelled" {
+		t.Fatalf("A's record = %+v (result %+v), %v; want no result and note \"session cancelled\"", arv, arv.Result, err)
+	}
+	if !auditWith(a, "ws.ignored", `"reason":"early_complete"`) {
+		t.Fatalf("no early_complete audit: %v", a.audit.entries)
+	}
+	var signed sql.NullString
+	if err := a.db.QueryRow(`SELECT signed FROM mail_inbox WHERE kind = 'request.complete'`).Scan(&signed); err != nil || (signed.Valid && signed.String != "") {
+		t.Fatalf("inbox copy = %v, %v; want blank", signed, err)
 	}
 }

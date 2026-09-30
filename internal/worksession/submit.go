@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
@@ -86,13 +87,13 @@ func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID 
 		"at": wireTime(now), "request": requestID, "result": resultWire(result),
 		"round": row.round, "session": row.id,
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET result = ?, result_round = ?, updated = ? WHERE id = ?`,
-		string(resultCanon), row.round, storeTime(now), row.id); err != nil {
-		return true, "", nil, fmt.Errorf("worksession: store result: %w", err)
-	}
 	sub, err := s.Outbox.SubmitTx(ctx, tx, peer, KindResult, body)
 	if err != nil {
 		return true, "", nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET result = ?, result_round = ?, result_mail = ?, updated = ? WHERE id = ?`,
+		string(resultCanon), row.round, sub.ID, storeTime(now), row.id); err != nil {
+		return true, "", nil, fmt.Errorf("worksession: store result: %w", err)
 	}
 	after = func(ctx context.Context) {
 		if s.Audit != nil {
@@ -104,6 +105,54 @@ func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID 
 		}
 	}
 	return true, sub.ID, after, nil
+}
+
+// CancelUndeliveredRunResult is the runner's answer to its ws.result mail
+// mailID ending failed (other than unsupported_kind, which the Phase 1
+// fallback handles) or expired (review 78 S2): the run session cannot get
+// another result in this round and no agent may cancel it, so the runner
+// sends ws.cancel (ByRunner) to end it. It does nothing unless mailID is the
+// current round's result of a run session that is still open with no cancel
+// requested. It reports whether a cancel was sent.
+func (s *Store) CancelUndeliveredRunResult(ctx context.Context, mailID string) (bool, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM work_sessions WHERE role = ? AND runner = 1 AND result_mail = ? AND state = ? AND cancel IS NULL`,
+		RoleWorker, mailID, StateOpen).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("worksession: find run session: %w", err)
+	}
+	if _, _, _, err := s.SubmitCancel(ctx, id, "", ByRunner); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UndeliveredRunResults lists the ws.result mail ids of open run sessions
+// (no cancel requested) whose result ended failed (other than
+// unsupported_kind) or expired, for the daemon's start-up rescan: a trigger
+// lost to a crash is found again (review 78 S2).
+func (s *Store) UndeliveredRunResults(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT w.result_mail FROM work_sessions w JOIN outbox o ON o.id = w.result_mail
+WHERE w.role = ? AND w.runner = 1 AND w.state = ? AND w.cancel IS NULL
+  AND (o.state = ? OR (o.state = ? AND o.error IS NOT ?))`,
+		RoleWorker, StateOpen, mail.StateExpired, mail.StateFailed, mail.ErrTextUnsupportedKind)
+	if err != nil {
+		return nil, fmt.Errorf("worksession: list undelivered run results: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("worksession: scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // AnswerQuestion is the one-step answer of a consult

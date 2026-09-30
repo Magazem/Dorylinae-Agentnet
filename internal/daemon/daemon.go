@@ -482,14 +482,29 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// st.Close, so no check outlives the store (R55-061, review 69b F6).
 	phase1 := newFallbackRunner(ctx, wsStore.CheckPhase1FallbackForPeer)
 	defer phase1.stop()
-	outbox.OnFinal = func(_, peer, kind, state, errText string) {
-		if state != mail.StateFailed || errText != mail.ErrTextUnsupportedKind {
-			return
-		}
+	cancelUndeliveredRun := func(mailID string) {
+		phase1.run(func(ctx context.Context) {
+			if _, err := wsStore.CancelUndeliveredRunResult(ctx, mailID); err != nil && ctx.Err() == nil && opts.Logger != nil {
+				opts.Logger.Warn("device: cancel run with undelivered result", "error", err)
+			}
+		})
+	}
+	outbox.OnFinal = func(id, peer, kind, state, errText string) {
 		if kind != worksession.KindResult && kind != worksession.KindCancel {
 			return
 		}
-		phase1.start(peer)
+		if state == mail.StateFailed && errText == mail.ErrTextUnsupportedKind {
+			phase1.start(peer)
+			return
+		}
+		// A run session's result that ended failed (rejected) or expired:
+		// the runner cannot resubmit in this round and no agent may cancel,
+		// so the runner cancels it rather than leave it stuck open (review
+		// 78 S2, Docs/protocol/work-session.md §Run sessions). The start-up
+		// rescan below covers a trigger lost to a crash.
+		if kind == worksession.KindResult && (state == mail.StateFailed || state == mail.StateExpired) {
+			cancelUndeliveredRun(id)
+		}
 	}
 	capStore := &capability.Store{DB: st.DB()}
 	// Every grant of a session ends in the same transaction as the session's
@@ -560,6 +575,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	} else {
 		for _, peer := range fbPeers {
 			phase1.start(peer)
+		}
+	}
+	if stuck, err := wsStore.UndeliveredRunResults(ctx); err != nil {
+		if opts.Logger != nil {
+			opts.Logger.Warn("device: undelivered run results rescan", "error", err)
+		}
+	} else {
+		for _, id := range stuck {
+			cancelUndeliveredRun(id)
 		}
 	}
 	if opts.OnDebateReady != nil {

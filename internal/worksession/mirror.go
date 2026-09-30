@@ -185,7 +185,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		// (a new round started, or A discarded/cancelled): B's own bookkeeping
 		// copy is stale, matching the "current round" invariant of the result
 		// column (Docs/protocol/work-session.md §Persistence).
-		set += `, result = NULL, result_round = NULL`
+		set += `, result = NULL, result_round = NULL, result_mail = NULL`
 	}
 	args = append(args, row.id)
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET `+set+` WHERE id = ?`, args...); err != nil {

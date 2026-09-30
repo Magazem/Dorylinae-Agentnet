@@ -30,6 +30,12 @@ func newFallbackRunner(parent context.Context, check func(ctx context.Context, p
 // start runs one check for peer on its own goroutine. After stop it does
 // nothing: the next start-up's rescan covers a trigger lost that way.
 func (f *fallbackRunner) start(peer string) {
+	f.run(func(ctx context.Context) { f.check(ctx, peer) })
+}
+
+// run runs fn on its own tracked goroutine, under the runner's context. After
+// stop it does nothing.
+func (f *fallbackRunner) run(fn func(ctx context.Context)) {
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
@@ -39,7 +45,7 @@ func (f *fallbackRunner) start(peer string) {
 	f.mu.Unlock()
 	go func() {
 		defer f.wg.Done()
-		f.check(f.ctx, peer)
+		fn(f.ctx)
 	}()
 }
 

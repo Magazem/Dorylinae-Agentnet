@@ -531,8 +531,12 @@ CREATE TABLE experience_records (
 	// Run sessions belong to the runner (Docs/protocol/work-session.md §Run
 	// sessions, R55-F18): the helper marks the worker row of an auto-accepted
 	// run, and no agent may submit its result or cancel it. No backfill.
+	// result_mail (B only) is the outbox id of the current round's ws.result,
+	// so a run result that ends failed or expired can be cancelled by the
+	// runner (review 78 S2).
 	{22, "work_sessions_runner", `
-ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1))
+ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
+ALTER TABLE work_sessions ADD COLUMN result_mail TEXT;
 `},
 }
 

@@ -491,7 +491,9 @@ On `request.accept`, `decline`, `defer`, `complete` or `cancelled` from `msg.fro
    its `accept` still ends in `completed`. Once a work session exists for the request, its
    hooks run in the same transaction (Phase 2, [work-session.md](work-session.md#early-complete-and-phase-1-workers)).
    A `complete` is an early complete, or, on a `closed` session, is stored as A's own view of
-   the close. A late `decline` or `cancelled` closes an `open` session (R55-F18).
+   the close. An early complete on an `open` session past round 1 (B already sent a
+   `ws.result` in it) stores A's view of the cancelled close, not B's content (review 78
+   S1). A late `decline` or `cancelled` closes an `open` session (R55-F18).
 5. **Cancel refused.** If the row has `cancel = requested` and, after step 3 or 4, its
    `state` is `accepted`, `declined` or `completed`, set `cancel = refused`. This runs even
    when step 3 ignored the mail, because a refused cancel is answered by re-sending a reply

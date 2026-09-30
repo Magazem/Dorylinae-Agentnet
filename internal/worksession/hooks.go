@@ -68,7 +68,9 @@ func idB(role, self, peer string) string {
 // workers, §Closing the request). note and result are what B sent.
 //
 //   - open: the session closes cancelled (an early complete); B's content is
-//     stored unless the quarantine rule holds (2.4).
+//     stored unless the quarantine rule holds (2.4) or the session is past
+//     round 1 (B proved Phase 2 there, review 78 S1: A stores "session
+//     cancelled").
 //   - awaiting_result or quarantined: a result is under review, so B's
 //     content is never stored (review 69b F1); A's close writes A's view.
 //   - closed: A stores its own view of the close, whatever B sent (R55-022);
@@ -155,7 +157,17 @@ func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID, 
 	}
 	// open, or a closed debate (whose request.complete is the normal end).
 	cc := keep
-	if quarantined {
+	// A session past round 1 has had a ws.result from B applied (only a
+	// result leaves round 1's open state, and only a request for changes
+	// returns to open), so B is Phase 2 here: its early complete is not the
+	// Phase 1 path, and its content was never reviewed. A stores its own view
+	// of the cancelled close instead (review 78 S1, owner decision). A Phase
+	// 1 B never sends ws.result, so it keeps today's behaviour.
+	phase2 := row.state == StateOpen && row.kind != SessionKindDebate && (row.round > 1 || row.seq > 0)
+	switch {
+	case phase2:
+		cc = request.CompleteContent{Override: true, Note: "session cancelled", Withhold: true}
+	case quarantined:
 		cc = drop
 	}
 	var afterClose func(context.Context)
@@ -172,7 +184,7 @@ func (s *Store) EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID, 
 		}
 	}
 	var afterDrop func(context.Context)
-	if quarantined {
+	if quarantined || (phase2 && hadResult) {
 		afterDrop = s.auditEarlyCompleteDropped(row.id, peer)
 	}
 	return cc, chainAfter(afterClose, afterDrop), nil

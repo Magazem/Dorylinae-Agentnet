@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 )
@@ -163,4 +164,36 @@ func TestSessionMailIDs(t *testing.T) {
 	waitA(sid3, "quarantined", 1)
 	a.call("ws_discard", map[string]any{"id": sid3}, &out)
 	wantRow("ws_discard", out.MailID)
+}
+
+// Review 78 S2, daemon level: a run session whose ws.result expired (never
+// delivered) while no trigger ran is cancelled by the runner at start-up,
+// and A closes it. The expired result is seeded in B's database: a real
+// submission would still reach A through the relay's queue.
+func TestRunSessionExpiredResultCancelledAtStart(t *testing.T) {
+	a, b, teamID := newSessionPair(t, nil)
+	_, sid := openSession(t, a, b, teamID, "run expired")
+	a.stop()
+	b.stop()
+	const mailID = "m-0000000000000000000000000000beef"
+	if err := b.exec(`INSERT INTO outbox (id, to_key, kind, created, state, updated) VALUES (?, ?, 'ws.result', '2026-01-01T00:00:00.000Z', 'expired', '2026-01-01T00:00:00.000Z')`, mailID, a.key); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.exec(`UPDATE work_sessions SET runner = 1, result = '{"status":"pass","verification":"none"}', result_round = 1, result_mail = ? WHERE id = ?`, mailID, sid); err != nil {
+		t.Fatal(err)
+	}
+	a.start()
+	b.start()
+	waitRelayConnected(t, a.relay, a.key, b.key)
+	harnessWait(t, "B to send ws.cancel for the stuck run", func() bool {
+		return b.count(`SELECT COUNT(*) FROM outbox WHERE kind = 'ws.cancel'`) == 1
+	})
+	harnessWaitFor(t, "A to close the session cancelled", 30*time.Second, func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid+`' AND state = 'closed' AND outcome = 'cancelled'`) == 1
+	}, func() {
+		var st, ost, oerr string
+		_ = a.query(`SELECT state FROM work_sessions WHERE id = '`+sid+`'`, &st)
+		_ = b.query(`SELECT state, COALESCE(error, '') FROM outbox WHERE kind = 'ws.cancel'`, &ost, &oerr)
+		t.Logf("A session %s; B ws.cancel row %s %q; A log: %s B log: %s", st, ost, oerr, a.logs.String(), b.logs.String())
+	})
 }

@@ -164,3 +164,59 @@ func applyOnly(t *testing.T, n *node, from string, sm sentMail) {
 		t.Fatal(err)
 	}
 }
+
+// Review 78 S2: a run session whose ws.result ended failed (rejected) or
+// expired is not stuck: the start-up rescan lists it, and the runner cancels
+// it. A non-run session, or one already cancelling, is left alone.
+func TestUndeliveredRunResultCancelled(t *testing.T) {
+	for _, final := range []string{"rejected", "expired"} {
+		t.Run(final, func(t *testing.T) {
+			ctx := context.Background()
+			_, b, reqID, sid := setupAcceptedSession(t)
+			markRunner(t, b, reqID)
+			ok, mailID, err := b.ws.SubmitResult(ctx, testA, reqID, validResult(), ByRunner)
+			if !ok || err != nil {
+				t.Fatal(err)
+			}
+			b.ob.last(t, KindResult)
+			if final == "rejected" {
+				b.ob.OnAck(&mail.Opened{Msg: mail.Msg{From: testA, Kind: "ack", Body: map[string]any{mail.AckRejected: []any{mailID}}}})
+			} else if _, err := b.db.Exec(`UPDATE outbox SET state = 'expired' WHERE id = ?`, mailID); err != nil {
+				t.Fatal(err)
+			}
+			ids, err := b.ws.UndeliveredRunResults(ctx)
+			if err != nil || len(ids) != 1 || ids[0] != mailID {
+				t.Fatalf("rescan = %v, %v; want [%s]", ids, err, mailID)
+			}
+			sent, err := b.ws.CancelUndeliveredRunResult(ctx, mailID)
+			if err != nil || !sent {
+				t.Fatalf("cancel = %v, %v; want sent", sent, err)
+			}
+			b.ob.last(t, KindCancel)
+			if v, err := b.ws.Get(ctx, sid); err != nil || v.Cancel != "requested" {
+				t.Fatalf("view = %+v, %v; want cancel requested", v, err)
+			}
+			// Once cancelling, nothing more.
+			if sent, err := b.ws.CancelUndeliveredRunResult(ctx, mailID); err != nil || sent {
+				t.Fatalf("second cancel = %v, %v; want none", sent, err)
+			}
+			if ids, err := b.ws.UndeliveredRunResults(ctx); err != nil || len(ids) != 0 {
+				t.Fatalf("rescan after cancel = %v, %v; want none", ids, err)
+			}
+		})
+	}
+}
+
+// A non-run session's failed result is left to its agent.
+func TestUndeliveredResultNotRunSession(t *testing.T) {
+	ctx := context.Background()
+	_, b, reqID, _ := setupAcceptedSession(t)
+	_, mailID, err := b.ws.SubmitResult(ctx, testA, reqID, validResult(), ByAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.ob.OnAck(&mail.Opened{Msg: mail.Msg{From: testA, Kind: "ack", Body: map[string]any{mail.AckRejected: []any{mailID}}}})
+	if sent, err := b.ws.CancelUndeliveredRunResult(ctx, mailID); err != nil || sent {
+		t.Fatalf("cancel on a work session = %v, %v; want none", sent, err)
+	}
+}
