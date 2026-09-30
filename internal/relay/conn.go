@@ -370,15 +370,20 @@ func (c *conn) dieLocked() bool {
 	}
 }
 
-// evict marks c dead and uncharges it (relay-hosted.md "Evict H"), then
-// closes it 1013 in its own goroutine, never on the path of the connection
-// that caused the eviction. A frame c finishes reading afterwards is
-// discarded. It reports false if c was already dead.
-func (c *conn) evict(reason string) bool {
+// evict marks c dead and uncharges it (relay-hosted.md "Evict H"), runs
+// logHit (if not nil), then closes it 1013 in its own goroutine, never on
+// the path of the connection that caused the eviction. logHit runs before
+// the close starts, so the limit line is written before the peer can see
+// the close. A frame c finishes reading afterwards is discarded. It reports
+// false, and runs nothing, if c was already dead.
+func (c *conn) evict(reason string, logHit func()) bool {
 	c.bmu.Lock()
 	ok := c.dieLocked()
 	c.bmu.Unlock()
 	if ok {
+		if logHit != nil {
+			logHit()
+		}
 		go c.closeBounded(websocket.StatusTryAgainLater, reason)
 	}
 	return ok
