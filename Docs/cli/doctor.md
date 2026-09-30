@@ -69,6 +69,14 @@ clock     ok   within 2 minutes of the relay
 
 A `warn` or `fail` row carries a `(fix: ...)` suffix with a one-command or one-sentence fix.
 
+With the daemon up but not connected, the `relay` row is `warn` with detail
+`not connected: <last_error>`, the daemon's content-free `last_error` of
+[status.md](status.md) (R55-F9). doctor applies `displayLine(…, 256)` to it again
+([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings)),
+in the human output and in `--json` `detail` alike. No relay-chosen text reaches a doctor row.
+The probe path (daemon down) never shows the probe's error text: it reports `cannot reach the
+relay`.
+
 ## `--json` output
 
 ```json

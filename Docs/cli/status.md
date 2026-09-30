@@ -93,7 +93,16 @@ Ticket 4.4c adds `relay`, present whenever a relay is configured (`--relay` or
 
 `since` is when `connected` last changed (RFC 3339 UTC). `last_error` is the most recent
 connection error's message (content-free: a dial or handshake failure, never an envelope
-payload or a peer identity), empty before any failure. `auth` is always `"v2"`: the relay
+payload or a peer identity), empty before any failure. It is not cleared by a later successful
+connection. Since R55-F9 it never carries relay-chosen text
+([envelope.md §Relay-supplied text](../protocol/envelope.md#relay-supplied-text-daemon)):
+an `error` frame in place of `challenge` or `ready` is reported as `relay: <code>`. The code
+is one of envelope.md's error codes, or `relay_error` for anything else, and the relay's
+message is dropped. A close by the relay is reported as `closed by relay (status N)`. Any
+other error text is one line, with no control, escape, bidi or zero-width characters, and at
+most 256 bytes (`displayLine`, [approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings)).
+Human `status` prints it after `(last error: `; it applies `displayLine(…, 256)` again before
+printing. `auth` is always `"v2"`: the relay
 auth version this build of `agentnetd` speaks, not necessarily what any one connection
 negotiated (a loopback relay may still be answered with v1). `relay` is absent, not `null`,
 when no relay is configured. `agentnet doctor` (`Docs/cli/doctor.md`) reports this same

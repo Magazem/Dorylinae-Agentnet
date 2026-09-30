@@ -384,6 +384,27 @@ kept in memory, rebuilt by one scan at start-up and adjusted on add, ack and swe
 | `pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `bad_pairing` | Pairing failures, see [pairing.md](pairing.md#errors) (`peer_offline` / `peer_busy` are also used there) |
 | `account_required`, `account_suspended`, `account_revoked`, `already_bound`, `bind_expired`, `bind_denied` | 4.2a, relays with accounts only: see [accounts.md](accounts.md). `account_suspended` and `account_revoked` are followed by close 1008 |
 
+**The daemon's reading (R55-F9).** The relay is untrusted, so the daemon never takes an
+`error` frame's strings as they arrive. `internal/relayclient` converts every `error`
+frame exactly once, in one function, and every consumer (the handshake, `OnError` → outbox,
+pairing and sessions) receives only the converted form:
+
+- **`code`** is kept only if it is exactly one of the codes in the table above. Anything else
+  (unknown, empty, or with any other byte) becomes the fixed code `relay_error`. A newer relay
+  code therefore reaches an older daemon as `relay_error`; the outbox treats it as it treats
+  any code it does not list (the row stays `relayed`).
+- **`message`** becomes `displayLine(message, 200)`, the shared one-line rule of
+  [approval.md §Sanitising](approval.md#sanitising-one-character-rule-two-renderings):
+  every `hidden(r)` rune is removed (the ones that render as space become one space), runs of
+  spaces collapse, at most 2 combining marks stay on one base, the result is trimmed and cut
+  to 200 bytes on a rune boundary (a cut adds `…`). It can therefore hold no control
+  character, no escape sequence, no line break and no bidi control. The daemon reads at most
+  the first 4 KiB of a longer message, so a 1 MiB message costs no more than a short one.
+- **`ref`** is kept only if it is a valid envelope `id` (1–128 characters from
+  `[A-Za-z0-9._:-]`); otherwise it is empty, so the frame refers to nothing.
+
+The relay's own `message` is advisory text, never a basis for a decision.
+
 ## Logging rule
 
 The relay logs connection and routing events with abbreviated keys (first 8
@@ -398,8 +419,12 @@ repeats in between).
 ## Client behaviour (daemon)
 
 `internal/relayclient` holds one persistent connection. On any failure it
-reconnects with exponential backoff (500 ms doubling to 30 s, with jitter); the
-backoff resets once a connection has authenticated. `relay_full` or `rate_limited`
+reconnects with exponential backoff (500 ms doubling to 30 s, with jitter). The
+backoff resets only after a connection **stayed up for at least 30 s after `ready`**
+(R55-F9, review 55 C04-02). A connection that fails earlier is a failure like any
+other, even though it authenticated: the delay keeps doubling. Otherwise a relay that sends
+`ready` and closes at once would drive a reconnect about twice a second, each with a TLS
+handshake, a signature, an outbox re-send and a presence send. `relay_full` or `rate_limited`
 in place of `ready` is such a failure (the connection never became ready), so it is
 retried with the growing backoff. The mail outbox treats `rate_limited` and
 `relay_full` naming one of its rows like `queue_full`: back to queued, resent after
@@ -411,3 +436,37 @@ For every envelope received the client calls `OnEnvelope` (unless it has already
 handed up the same `(from, id)` and the type is not `mail`, see the queue section) and
 then sends the `ack`.
 `queued` frames are delivered to `OnQueued`, not `OnControl`.
+
+An envelope whose `to` is not the client's own key (R55-F9, review 55 C04-03) is not handed
+up and does not enter the seen-set. It is still acked, so the relay does not redeliver it,
+and it is logged at Debug only (`event=relay_misrouted`, `type`, `id`). Every consumer binds
+the recipient inside its crypto anyway (mail `msg.to`, Noise sessions), so this is defence
+in depth for a future type that would not.
+
+### Relay-supplied text (daemon)
+
+Every string the relay chooses is bounded and made display-safe before the daemon stores,
+logs, audits or serves it over IPC. Parse once in `internal/relayclient`; consumers never
+re-read the raw frame.
+
+| Relay text | Rule |
+|------------|------|
+| `error` `code`, `message`, `ref` | [The daemon's reading](#error-frame-relay---daemon) above |
+| `ready.min_client` | Kept only if it is exactly `MAJOR.MINOR.PATCH` (4.4a, above) |
+| `ready.features` | Only compared against known feature names; never logged or shown |
+| `ready.account` (4.2c, not yet read) | `state` kept only if it is `unbound`, `bound` or `suspended`; `display` goes through `displayLine` and is cut to 128 bytes before it is stored or shown (review 55 C04-04) |
+| The `op` of an unexpected control frame | Never echoed: the handshake error is `unexpected frame from relay` |
+| WebSocket close reason | Never kept: a close is reported as `closed by relay (status N)` |
+| HTTP headers in a failed upgrade | Covered by the `last_error` bound below |
+
+**`last_error`** (`State().LastError`, served as `status.relay.last_error`) is content-free
+([../cli/status.md](../cli/status.md)):
+
+- For an `error` frame in place of `challenge` or `ready`: `relay: <code>`, with the
+  converted code only, never the message.
+- For any other connection error: its text rendered with `displayLine` and cut to 256
+  bytes on a rune boundary (a cut adds `…`).
+
+The `relay_disconnect` log line carries this same string as `error`. So one relay
+connection writes at most a few hundred bytes to the daemon log, not up to 1 MiB (review 55
+T5-01). How often such lines may appear is ticket R55-F14's rule.

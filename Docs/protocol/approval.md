@@ -381,6 +381,19 @@ residual of OD-R55F5-6. Letters of right-to-left scripts are kept too (they are 
 they can visually reorder the digits and punctuation next to them inside the quotes, but
 cannot hide or add a character.
 
+**One-line rendering, `displayLine(s, max)`** (R55-F9; not an approval rendering), for
+untrusted diagnostic text that ends up on one terminal line: the relay's `error` message and
+the daemon's relay `last_error` ([envelope.md §Relay-supplied text](envelope.md#relay-supplied-text-daemon)).
+It is steps 1–3 of `displayName` (hidden runes that render as space become one space, the other
+hidden runes are removed, spaces collapse, text is trimmed, at most 2 combining marks per base).
+Then the text is cut to at most `max` bytes on a rune boundary, and `…` is appended when
+anything was cut. Digit runs and fingerprint-shaped text are **not** blanked (steps 4–5):
+this text is diagnostic, and addresses such as `127.0.0.1:8787` must stay readable. It sits
+on one line after a fixed prefix (`agentnet: pairing failed:`, `last error:`), so it cannot
+pose as a separate line. An empty result stays empty. It is `displaytext.Line` in code; the
+CLI applies it again at every print site listed there (defence in depth: an older daemon may
+serve raw text).
+
 **The fingerprint** is `fp(key)` of [pairing.md](pairing.md#fingerprints), computed by the
 daemon from the key the action binds to. It is never taken from an IPC parameter or a card.
 It is shown **in full: 20 characters (100 bits) in the grouped form of `agentnet identity`**,

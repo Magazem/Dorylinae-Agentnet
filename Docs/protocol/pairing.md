@@ -490,7 +490,9 @@ because only the first 20 characters (100 of 256 bits) are used.
   lookup-taken.
 - Daemon audit (`audit_events`): `pair.start` (actor `cli`; `{id, role, version}`),
   `pair.complete` (actor `daemon`; `{id, role, peer, trust}`), `pair.fail` (actor `daemon`;
-  `{id, role, code, reason}`), and `pair.attempt_fail` (new; actor `daemon`;
+  `{id, role, code, reason}`; for a relay error these are the converted `code` and `message`
+  of [envelope.md](envelope.md#error-frame-relay---daemon): a known code or `relay_error`,
+  and a one-line message of at most 200 bytes, R55-F9), and `pair.attempt_fail` (new; actor `daemon`;
   `{id, peer, code}`) for each failed issuer attempt. **The code, lookup, secret, K,
   tags, cards and announcements are never logged or audited.**
 

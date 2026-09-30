@@ -231,7 +231,9 @@ Params: `{"ping_id": "<id>"}`. Result: the ping status.
 A ping status is `{"ping_id", "peer": {"public_key", "name"}, "state":
 "pending|complete|failed", "rtt_ms"?, "handshake", "error"?}`, described in
 [../cli/ping.md](../cli/ping.md). A ping with no pong fails after 10 s
-(`timeout`); a relay refusal fails it with the relay's code (for example `queue_full`). Since ticket 0.7 an offline peer is not a refusal: the relay queues the handshake message and the ping times out unless the peer returns within 10 s.
+(`timeout`); a relay refusal fails it with the relay's code (for example `queue_full`), as
+converted by `relayclient` (a known code or `relay_error`, message through `displayLine(…, 200)`:
+[envelope.md](envelope.md#error-frame-relay---daemon)). Since ticket 0.7 an offline peer is not a refusal: the relay queues the handshake message and the ping times out unless the peer returns within 10 s.
 
 Ping setup error codes: `unknown_peer`, `ambiguous_peer` (several peers share
 the name), `no_relay`, `relay_unavailable`, `unknown_ping`, `too_many_pings`;

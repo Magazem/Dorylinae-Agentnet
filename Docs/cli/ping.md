@@ -50,7 +50,12 @@ pong from @bob: rtt 3.2 ms (encrypted)
 ```
 
 Pending: `Ping ping-… to @bob is still in flight.` plus the `--status` command.
-Failures go to stderr.
+Failures go to stderr as `agentnet: ping to <peer> failed: <message> (<code>)`. When the
+relay refused the ping, `<code>` is the relay's code as the daemon read it: one of
+[envelope.md](../protocol/envelope.md#error-frame-relay---daemon)'s codes, or `relay_error`.
+`<message>` is the relay's message after `displayLine(…, 200)`: one line, at most 200 bytes, no
+control, escape, bidi or zero-width characters (R55-F9). The CLI applies `displayLine` again
+to both before printing; `--json` carries the daemon's values.
 
 ## `--json` output
 
@@ -71,7 +76,7 @@ Failures go to stderr.
 | `state` | `pending`, `complete` or `failed` |
 | `rtt_ms` | Complete only: time from sending the encrypted ping to receiving the pong, in milliseconds (excludes the handshake) |
 | `handshake` | `true` if a new session was set up for this ping |
-| `error` | Failed only: `{"code","message"}`; codes `timeout`, `handshake_failed`, `send_failed`, or a relay refusal such as `queue_full` |
+| `error` | Failed only: `{"code","message"}`; codes `timeout`, `handshake_failed`, `send_failed`, or a relay refusal such as `queue_full` (a relay code outside envelope.md's table is `relay_error`; the message is bounded and sanitised as above) |
 
 Requests that cannot be made print `{"ok":false,"error":{"code","message"}}`
 with code `unknown_peer`, `ambiguous_peer`, `no_relay`, `relay_unavailable`,

@@ -77,7 +77,13 @@ Paired with my-laptop (custom)
   trust:       code
 ```
 
-Failures print `agentnet: pairing failed: <message> (<code>)` on stderr.
+Failures print `agentnet: pairing failed: <message> (<code>)` on stderr. Both come from the
+daemon already bounded (code at most 64 bytes, message at most 200). A relay's code is one of
+[envelope.md](../protocol/envelope.md#error-frame-relay---daemon)'s codes or `relay_error`,
+and a relay's message has gone through `displayLine(…, 200)` (R55-F9). The CLI applies
+`displayLine` to both again before printing, so neither can hold a line break, an escape
+sequence or a bidi control. It cannot draw a fake `Paired with …` line either. The
+`pair.fail` audit row stores the same converted `code` and `reason`.
 
 ## `--json` output
 
@@ -100,7 +106,7 @@ Failures print `agentnet: pairing failed: <message> (<code>)` on stderr.
 | `state` | `pending`, `complete` or `failed` |
 | `code`, `expires` | Issuer only, while `pending` and once the relay issued the code (absent if the relay has not answered yet; poll again). Dropped when the pairing ends |
 | `peer` | On `complete`: `{"public_key","name","harness","skills","paired_at","trust","fingerprint"}`. A v2 pairing is `trust` `code`; a `--v1` pairing is `relay`. Compare `fingerprint` with the other machine and run `agentnet peers verify` |
-| `error` | On `failed`: `{"code","message"}`. Codes: the relay's (`pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `peer_offline`, `peer_busy`, `bad_pairing`) or `bad_card`, `bad_mbox`, `bad_confirm`, `confirm_timeout`, `relay_v1`, `code_used`, `store_error`, `timeout`, `expired` |
+| `error` | On `failed`: `{"code","message"}`. Codes: the relay's (`pair_invalid`, `pair_rate_limited`, `pair_limit`, `pair_lookup_taken`, `pair_v1_disabled`, `peer_offline`, `peer_busy`, `bad_pairing`, or `relay_error` for a code outside envelope.md's table) or `bad_card`, `bad_mbox`, `bad_confirm`, `confirm_timeout`, `relay_v1`, `code_used`, `store_error`, `timeout`, `expired` |
 
 A request that fails before anything is sent prints
 `{"ok":false,"error":{"code","message"}}` with exit 1. Codes: `no_relay`,
