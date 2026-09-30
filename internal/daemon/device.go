@@ -93,6 +93,21 @@ func deviceHierarchyError(err error) error {
 	}
 }
 
+// parseWireTimeStrict parses a wire time (Docs/protocol/device.md §Kinds):
+// RFC 3339 UTC with Z and whole seconds, which must round-trip exactly, so
+// an offset such as +00:00, a fraction or a lower-case z is refused (review
+// 55 R55-152) and a kept offer stores the exact string.
+func parseWireTimeStrict(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if t.UTC().Format(time.RFC3339) != s {
+		return time.Time{}, fmt.Errorf("%q is not a wire time (YYYY-MM-DDThh:mm:ssZ)", s)
+	}
+	return t, nil
+}
+
 // offerBody is the JSON of a device.link body, also what a kept offer stores.
 type offerBody struct {
 	At         string `json:"at"`
@@ -103,7 +118,7 @@ type offerBody struct {
 }
 
 func (o offerBody) offer() (device.Offer, error) {
-	at, err := time.Parse(time.RFC3339, o.At)
+	at, err := parseWireTimeStrict(o.At)
 	if err != nil {
 		return device.Offer{}, err
 	}
@@ -234,7 +249,7 @@ func deviceUnlinkKind(ds *device.Store, onUnlinked func(peer string)) mail.Kind 
 			if !ok {
 				return badMailBody("at is required")
 			}
-			atTime, err := time.Parse(time.RFC3339, at)
+			atTime, err := parseWireTimeStrict(at)
 			if err != nil {
 				return badMailBody("at is not a timestamp")
 			}

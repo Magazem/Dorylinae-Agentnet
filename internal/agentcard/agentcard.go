@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -81,9 +82,8 @@ func (c Card) validate() error {
 	if err := checkText("harness", c.Harness, true); err != nil {
 		return err
 	}
-	pub, err := b64.DecodeString(c.PublicKey)
-	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return errors.New("agentcard: public_key must be 32 bytes, base64url without padding")
+	if _, err := decodeStrict(c.PublicKey, ed25519.PublicKeySize); err != nil {
+		return errors.New("agentcard: public_key must be 32 bytes, strict base64url without padding")
 	}
 	if c.Skills == nil {
 		return errors.New("agentcard: skills is required")
@@ -165,13 +165,118 @@ func Sign(priv ed25519.PrivateKey, c Card) (Signed, error) {
 	return Signed{Card: c, Signature: b64.EncodeToString(sig)}, nil
 }
 
-// Verify checks a signed-card envelope (JSON). Members other than "card" and
-// "signature" are ignored. The signature is checked over the card as parsed
-// generically, so any changed or added field fails; the schema is checked
-// after the signature.
+// b64Alphabet is the base64url alphabet, in value order.
+const b64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// decodeStrict decodes s as strict base64url of exactly n bytes
+// (agent-card.md Verification step 2). The length, the alphabet and the
+// unused low bits of the last character are checked on the string before
+// decoding, because base64.RawURLEncoding.Strict() still skips CR and LF.
+func decodeStrict(s string, n int) ([]byte, error) {
+	if want := (n*8 + 5) / 6; len(s) != want {
+		return nil, fmt.Errorf("want %d characters, got %d", want, len(s))
+	}
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(b64Alphabet, s[i]) < 0 {
+			return nil, fmt.Errorf("character %d is not base64url", i)
+		}
+	}
+	unused := len(s)*6 - n*8
+	if strings.IndexByte(b64Alphabet, s[len(s)-1])&(1<<unused-1) != 0 {
+		return nil, errors.New("non-zero trailing bits")
+	}
+	b, err := b64.DecodeString(s)
+	if err != nil || len(b) != n {
+		return nil, errors.New("not strict base64url")
+	}
+	return b, nil
+}
+
+// cardMembers are the exact member names of a v1 card.
+var cardMembers = []string{"version", "name", "public_key", "harness", "skills", "created"}
+
+// cardFromGeneric reads the card from the generic object the signature
+// covered, by exact member name with exact member counts (agent-card.md
+// Verification steps 5 and 6). It never decodes into a struct with
+// encoding/json, which folds names and keeps the last duplicate (review 55
+// R55-019). The caller still runs validate for the text and time rules.
+func cardFromGeneric(card map[string]any) (Card, error) {
+	if len(card) != len(cardMembers) {
+		return Card{}, fmt.Errorf("card has %d members, want exactly %d", len(card), len(cardMembers))
+	}
+	for _, n := range cardMembers {
+		if _, ok := card[n]; !ok {
+			return Card{}, fmt.Errorf("card has no member %q", n)
+		}
+	}
+	if v, ok := card["version"].(json.Number); !ok || v.String() != "1" {
+		return Card{}, errors.New("version must be the integer 1")
+	}
+	c := Card{Version: Version}
+	var err error
+	for _, f := range []struct {
+		name string
+		dst  *string
+	}{{"name", &c.Name}, {"public_key", &c.PublicKey}, {"harness", &c.Harness}, {"created", &c.Created}} {
+		if *f.dst, err = stringMember(card, f.name); err != nil {
+			return Card{}, err
+		}
+	}
+	skills, ok := card["skills"].([]any)
+	if !ok {
+		return Card{}, errors.New("skills must be an array")
+	}
+	c.Skills = make([]Skill, 0, len(skills))
+	for i, el := range skills {
+		sk, ok := el.(map[string]any)
+		if !ok {
+			return Card{}, fmt.Errorf("skills[%d] must be an object", i)
+		}
+		if len(sk) != 3 {
+			return Card{}, fmt.Errorf("skills[%d] has %d members, want exactly 3", i, len(sk))
+		}
+		var s Skill
+		for _, f := range []struct {
+			name string
+			dst  *string
+		}{{"id", &s.ID}, {"name", &s.Name}, {"description", &s.Description}} {
+			if *f.dst, err = stringMember(sk, f.name); err != nil {
+				return Card{}, fmt.Errorf("skills[%d]: %w", i, err)
+			}
+		}
+		c.Skills = append(c.Skills, s)
+	}
+	return c, nil
+}
+
+func stringMember(m map[string]any, name string) (string, error) {
+	v, ok := m[name]
+	if !ok {
+		return "", fmt.Errorf("member %q is missing", name)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("member %q must be a string", name)
+	}
+	return s, nil
+}
+
+// Verify checks a signed-card envelope (JSON) as agent-card.md §Verification
+// specifies. The whole envelope is read under the strict parse, and every
+// number in it must be a canonical integer, in ignored members too. Members
+// other than "card" and "signature" are ignored. The key and the signature
+// are strict base64url. The signature is checked over the card as parsed
+// generically, so any changed or added member fails. The schema is checked
+// after the signature, on the same generic object and by exact member name:
+// exactly six card members and three per skill. The returned card holds the
+// values read there; the card is never decoded a second time.
 func Verify(data []byte) (*Signed, error) {
 	doc, err := ParseStrict(data)
 	if err != nil {
+		return nil, fmt.Errorf("agentcard: %w", err)
+	}
+	// Rule 4 over the whole envelope (review 68b F2); the bytes are discarded.
+	if _, err := CanonicalValue(doc); err != nil {
 		return nil, fmt.Errorf("agentcard: %w", err)
 	}
 	top, ok := doc.(map[string]any)
@@ -187,13 +292,13 @@ func Verify(data []byte) (*Signed, error) {
 		return nil, errors.New("agentcard: missing signature")
 	}
 	pubStr, _ := card["public_key"].(string)
-	pub, err := b64.DecodeString(pubStr)
-	if err != nil || len(pub) != ed25519.PublicKeySize {
-		return nil, errors.New("agentcard: card.public_key must be 32 bytes, base64url without padding")
+	pub, err := decodeStrict(pubStr, ed25519.PublicKeySize)
+	if err != nil {
+		return nil, errors.New("agentcard: card.public_key must be 32 bytes, strict base64url without padding")
 	}
-	sig, err := b64.DecodeString(sigStr)
-	if err != nil || len(sig) != ed25519.SignatureSize {
-		return nil, errors.New("agentcard: signature must be 64 bytes, base64url without padding")
+	sig, err := decodeStrict(sigStr, ed25519.SignatureSize)
+	if err != nil {
+		return nil, errors.New("agentcard: signature must be 64 bytes, strict base64url without padding")
 	}
 	canon, err := canonicalBytes(card)
 	if err != nil {
@@ -202,14 +307,68 @@ func Verify(data []byte) (*Signed, error) {
 	if !ed25519.Verify(pub, signingInput(canon), sig) {
 		return nil, errors.New("agentcard: signature does not verify")
 	}
-	var c Card
-	dec := json.NewDecoder(bytes.NewReader(canon))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&c); err != nil {
+	c, err := cardFromGeneric(card)
+	if err != nil {
 		return nil, fmt.Errorf("agentcard: card does not match schema: %w", err)
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
 	return &Signed{Card: c, Signature: sigStr}, nil
+}
+
+// StoredForm returns the stored and forwarded form of a card envelope: the
+// canonical form of exactly {"card", "signature"}, with every other top-level
+// member dropped (agent-card.md "Stored and forwarded form", review 55
+// R55-073). It does not verify; callers verify the envelope first.
+func StoredForm(data []byte) ([]byte, error) {
+	doc, err := ParseStrict(data)
+	if err != nil {
+		return nil, fmt.Errorf("agentcard: %w", err)
+	}
+	return storedPair(doc)
+}
+
+func storedPair(doc any) ([]byte, error) {
+	top, ok := doc.(map[string]any)
+	if !ok {
+		return nil, errors.New("agentcard: envelope must be a JSON object")
+	}
+	card, cok := top["card"]
+	sig, sok := top["signature"]
+	if !cok || !sok {
+		return nil, errors.New("agentcard: missing card or signature")
+	}
+	b, err := CanonicalValue(map[string]any{"card": card, "signature": sig})
+	if err != nil {
+		return nil, fmt.Errorf("agentcard: %w", err)
+	}
+	return b, nil
+}
+
+// RescueStored re-reads a card stored before R55-F23 (review 68 OD-3). It
+// parses raw with the legacy parse (no surrogate rule, and numbers outside
+// the card are not checked), keeps exactly {card, signature}, canonicalises
+// that pair and verifies the result under the current rules. It fails unless
+// the card verifies and its public_key equals wantKey. On success it returns
+// the canonical stored form; the caller rewrites the row when it differs. So a
+// v1 row whose relay added a member holding a lone surrogate escape or a
+// fraction is rescued rather than reported (review 68b F3).
+func RescueStored(raw []byte, wantKey string) ([]byte, error) {
+	doc, err := parseLegacy(raw)
+	if err != nil {
+		return nil, fmt.Errorf("agentcard: %w", err)
+	}
+	canon, err := storedPair(doc)
+	if err != nil {
+		return nil, err
+	}
+	sc, err := Verify(canon)
+	if err != nil {
+		return nil, err
+	}
+	if sc.Card.PublicKey != wantKey {
+		return nil, errors.New("agentcard: stored card is for another key")
+	}
+	return canon, nil
 }

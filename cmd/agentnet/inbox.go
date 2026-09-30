@@ -313,7 +313,7 @@ func runComplete(args []string, stdout, stderr io.Writer) int {
 			result.Output = out
 		}
 		for _, spec := range artifacts {
-			a, err := parseArtifactFlag(spec)
+			a, err := artifactParam(spec)
 			if err != nil {
 				return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 			}

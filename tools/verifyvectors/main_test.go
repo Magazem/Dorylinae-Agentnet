@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,56 @@ func TestDetectsDecisionMismatch(t *testing.T) {
 	out.Reset()
 	if n := run(&out, bad); n == 0 || !strings.Contains(out.String(), "FAIL decision hash") {
 		t.Fatalf("decision mismatch not detected (%d failures):\n%s", n, out.String())
+	}
+}
+
+// Review 68 A5: the agent-card cases run, and a case whose stated step is
+// changed (N1 from 5 to 4) is reported as that case's failure.
+func TestDetectsAgentCardMismatch(t *testing.T) {
+	var out bytes.Buffer
+	if n := run(&out, vectorsJSON); n != 0 || !strings.Contains(out.String(), "PASS agent_card P1 verifies") ||
+		!strings.Contains(out.String(), "PASS agent_card N1 fails at step 5") ||
+		!strings.Contains(out.String(), "PASS agent_card N14 fails at step 2") ||
+		!strings.Contains(out.String(), "PASS agent_card N15 fails at step 1") {
+		t.Fatalf("agent card checks did not run:\n%s", out.String())
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(vectorsJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	cases := doc["agent_card"].(map[string]any)["cases"].([]any)
+	n1 := cases[1].(map[string]any)
+	if n1["name"] != "N1" {
+		t.Fatalf("case 1 is %v", n1["name"])
+	}
+	n1["fails_at"] = 4
+	bad, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if n := run(&out, bad); n != 1 || !strings.Contains(out.String(), "FAIL agent_card N1 fails at step 4") {
+		t.Fatalf("agent card mismatch not detected (%d failures):\n%s", n, out.String())
+	}
+}
+
+// The strict parse applies to every vector document: a lone surrogate
+// escape is refused, an escaped backslash before "u" is not an escape.
+func TestPairedSurrogates(t *testing.T) {
+	bs := string(rune(0x5C))
+	for in, ok := range map[string]bool{
+		`{"a":"` + bs + `ud800"}`:                false,
+		`{"a":"` + bs + `udc00"}`:                false,
+		`{"a":"` + bs + `ud800` + bs + `u0041"}`: false,
+		`{"` + bs + `uD800":1}`:                  false,
+		`{"a":"` + bs + bs + `ud800"}`:           true,
+		`{"a":"` + bs + `ud83d` + bs + `ude00"}`: true,
+		`{"a":"` + bs + `u0041` + bs + `u00e9"}`: true,
+		`{"a":"x"}`:                              true,
+	} {
+		if _, err := canonical([]byte(in)); (err == nil) != ok {
+			t.Errorf("canonical(%s): err %v, want ok=%v", in, err, ok)
+		}
 	}
 }
 

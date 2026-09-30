@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
@@ -88,12 +89,21 @@ func registerMail(srv *ipc.Server, ob *mail.Outbox, ps *peers.Store) {
 		}
 		var body any
 		if len(p.Body) > 0 {
-			if err := json.Unmarshal(p.Body, &body); err != nil {
+			// The body is read with the strict parse and its numbers must be
+			// canonical integers (Docs/protocol/ipc.md mail_submit, review 55
+			// R55-086): a duplicate, a lone surrogate escape, a fraction or a
+			// value of 2^53 or more is refused, never rounded or replaced.
+			v, err := agentcard.ParseStrict(p.Body)
+			if err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "body: " + err.Error()}
+			}
+			if _, ok := v.(map[string]any); !ok {
 				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "body must be a JSON object"}
 			}
-			if _, ok := body.(map[string]any); !ok {
-				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "body must be a JSON object"}
+			if _, err := agentcard.CanonicalValue(v); err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "body: " + err.Error()}
 			}
+			body = v
 		}
 		peer, err := resolvePeer(ctx, ps, p.To)
 		if err != nil {

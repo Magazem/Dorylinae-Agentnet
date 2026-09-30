@@ -2,9 +2,9 @@
 
 Checks this machine's AgentNet setup: the CLI/daemon versions, the config directory's
 ownership, where the identity key lives, whether the per-user service is installed and
-running, whether the local IPC socket is reachable, the relay connection, git and the local
-clock. Never needs `agentnetd` to be healthy to run: checks that do not need the daemon
-(`config`, `keychain`, `git`, `relay`, `clock`) still run with it stopped.
+running, whether the local IPC socket is reachable, the relay connection, git, the local
+clock and the stored peer cards. Never needs `agentnetd` to be healthy to run: checks that do not need the daemon
+(`config`, `keychain`, `git`, `relay`, `clock`, `peers`) still run with it stopped.
 
 ```
 agentnet doctor [--json]
@@ -35,6 +35,7 @@ agentnet doctor [--json]
 | `account` | Not implemented yet: always `skip`. Added by ticket 4.2c (bound/unbound/suspended, quota group, quota state) | — |
 | `git` | Git is at least 2.32 (D23); older is a `warn`, not a `fail` (`git.read` grants are refused, but `fs` grants and everything else still works) | no |
 | `clock` | The local clock is within 2 minutes of the relay's (estimated from the challenge's `expires`) | no (probes directly) |
+| `peers` | Every stored peer Agent Card still verifies under the current card rules (review 68 OD-3). The daemon keeps a card that does not at start and logs it; this row names it by public key as `warn`, with the fix: re-pair, `agentnet peers remove <key>`, or `agentnet team remove <team> <key>`. No database yet: `skip` | no (reads the database read-only) |
 
 `relay` and `clock` never authenticate to the relay with the identity key: the relay keeps
 one connection per key and replaces the older one, so a doctor login would kick the running
@@ -65,6 +66,7 @@ relay     ok   connected, auth v2
 account   skip account support is added by a later ticket (4.2c)
 git       ok   git 2.32 or newer
 clock     ok   within 2 minutes of the relay
+peers     ok   every stored peer card verifies
 ```
 
 A `warn` or `fail` row carries a `(fix: ...)` suffix with a one-command or one-sentence fix.
