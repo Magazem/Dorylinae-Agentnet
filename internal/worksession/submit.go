@@ -15,8 +15,9 @@ import (
 // part of request.complete when the session later closes (Docs/protocol/work-session.md
 // §Closing the request). ok reports whether a session exists at all; when
 // !ok the caller (e.g. request_complete's shorthand) should fall back to its
-// own normal path.
-func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result *Result) (ok bool, mailID string, err error) {
+// own normal path. by names the submitter: on a run session only ByRunner is
+// allowed (Docs/protocol/work-session.md §Run sessions).
+func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result *Result, by Submitter) (ok bool, mailID string, err error) {
 	if err := ValidateResult(result); err != nil {
 		return true, "", err
 	}
@@ -26,7 +27,7 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	ok, mailID, after, err := s.submitResultTx(ctx, tx, peer, requestID, result)
+	ok, mailID, after, err := s.submitResultTx(ctx, tx, peer, requestID, result, by)
 	if !ok || err != nil {
 		return ok, "", err
 	}
@@ -42,7 +43,7 @@ func (s *Store) SubmitResult(ctx context.Context, peer, requestID string, result
 // commits nor wakes the outbox). after audits ws.result and must be called
 // once, after the caller's commit: the audit log shares the daemon's one
 // SQLite connection, which tx holds.
-func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID string, result *Result) (ok bool, mailID string, after func(context.Context), err error) {
+func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID string, result *Result, by Submitter) (ok bool, mailID string, after func(context.Context), err error) {
 	row, err := findRowTx(ctx, tx, RoleWorker, peer, requestID)
 	if errors.Is(err, ErrUnknownSession) {
 		return false, "", nil, nil
@@ -55,8 +56,18 @@ func (s *Store) submitResultTx(ctx context.Context, tx *sql.Tx, peer, requestID 
 		// daemon completes a debate request itself when the mirror closes.
 		return true, "", nil, debateBadState(row, "debates have no result")
 	}
+	if row.runner != 0 && by != ByRunner {
+		return true, "", nil, errRunnerSession(row)
+	}
 	if row.state != StateOpen || (row.cancel.Valid && row.cancel.String == "requested") {
 		return true, "", nil, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is %s", row.id, row.state)}
+	}
+	// One result per round (R55-F18, review 55 R55-022): B cannot know
+	// whether A applied an earlier one, so a revised answer goes through
+	// cancel or A's request for changes. The mirror clears result on a new
+	// round, which allows the next one.
+	if row.result.Valid && row.resultRound.Valid && row.resultRound.Int64 == int64(row.round) {
+		return true, "", nil, &BadStateError{State: row.state, Msg: fmt.Sprintf("a result for round %d was already submitted; wait for the requester or cancel", row.round)}
 	}
 
 	now := s.now()
@@ -116,7 +127,7 @@ func (s *Store) AnswerQuestion(ctx context.Context, requestID, from string, resu
 	if err != nil {
 		return "", "", err
 	}
-	ok, mailID, afterResult, err := s.submitResultTx(ctx, tx, peer, requestID, result)
+	ok, mailID, afterResult, err := s.submitResultTx(ctx, tx, peer, requestID, result, ByAgent)
 	if err != nil {
 		return "", "", err
 	}
@@ -152,6 +163,7 @@ func (s *Store) CompleteShorthand(ctx context.Context, peer, requestID, note str
 		Status: status, Summary: summary, ExitCode: exitCode, Output: output, Artifacts: artifacts,
 		Verification: VerificationNone, Notes: note,
 	}
-	ok, _, err = s.SubmitResult(ctx, peer, requestID, ws)
+	// An agent's request_complete: refused on a run session like ws_result.
+	ok, _, err = s.SubmitResult(ctx, peer, requestID, ws, ByAgent)
 	return ok, err
 }

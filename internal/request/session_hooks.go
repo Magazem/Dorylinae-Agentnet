@@ -23,17 +23,51 @@ type SessionOpener interface {
 	OpenSession(ctx context.Context, tx *sql.Tx, role, peer, requestID, teamID string, now time.Time) error
 }
 
+// CompleteContent is what SessionEarlyComplete decides about the content of
+// a request.complete from B (Docs/protocol/work-session.md §Closing the
+// request, §Early complete and Phase 1 workers, R55-F18).
+type CompleteContent struct {
+	// Override: store Note and Result below instead of B's note and result.
+	// Empty Note and nil Result store no content at all.
+	Override bool
+	Note     string
+	Result   *Result
+	// Withhold: store the mail's inbox copy blank (#inbox-copy-d18).
+	Withhold bool
+	// AfterApplied, if set, runs once after commit, and only when the mirror
+	// applied the mail (its seq advanced the row): the result_mismatch audit,
+	// which a stale request.complete must not write (review 69b F2).
+	AfterApplied func(context.Context)
+}
+
 // SessionEarlyComplete is called by applyComplete inside the mail apply
 // transaction, for a request.complete mail applied while a session might
 // exist for it (Docs/protocol/work-session.md §Early complete and Phase 1
-// workers). keepContent is false only when the quarantine rule holds for the
-// session: then the caller must store no result and no note. If the session
-// is (still) open, the hook closes it (outcome cancelled). The returned
+// workers). note and result are what B sent. If the session is (still)
+// open, the hook closes it (outcome cancelled). If it is closed, A's own
+// view of the close overrides B's content; while a result is under review,
+// or when the quarantine rule holds, B's content is not stored. The returned
 // after func, if non-nil, is called once by the caller after its transaction
 // commits (it may append audit rows: ws.close for the caused close, and
 // ws.ignored {reason: "early_complete"} when content was dropped).
 type SessionEarlyComplete interface {
-	EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID string, hadResult bool) (keepContent bool, after func(context.Context), err error)
+	EarlyComplete(ctx context.Context, tx *sql.Tx, peer, requestID, note string, result *Result) (content CompleteContent, after func(context.Context), err error)
+}
+
+// SessionEnder is called by the sender mirror inside the mail transaction
+// when a late request.decline or request.cancelled from B is applied
+// (Docs/protocol/work-session.md §Early complete, "Late decline or
+// cancelled", R55-062): an open requester session closes cancelled, like an
+// early complete. The after func, if non-nil, runs once after commit.
+type SessionEnder interface {
+	SessionEndedTx(ctx context.Context, tx *sql.Tx, peer, requestID string) (after func(context.Context), err error)
+}
+
+// RunMarker marks the worker session of an auto-accepted run request as a
+// run session, in the receive transaction that accepted it
+// (Docs/protocol/work-session.md §Run sessions, R55-029).
+type RunMarker interface {
+	MarkRunnerTx(ctx context.Context, tx *sql.Tx, peer, requestID string) error
 }
 
 // SessionCompleter is request_complete's redirect when a session exists for
@@ -67,6 +101,31 @@ type SessionHooks interface {
 	SessionOpener
 	SessionEarlyComplete
 	SessionCompleter
+	SessionEnder
+	RunMarker
+}
+
+// SetOutContentTx replaces the note and result of the out request record
+// (peer, id) inside tx, if and only if it is completed, touching no state or
+// seq. A's session close writes its own view of the close with it
+// (Docs/protocol/work-session.md §Closing the request, review 69b F1).
+func (s *Store) SetOutContentTx(ctx context.Context, tx *sql.Tx, peer, id, note string, result *Result) error {
+	var noteArg, resultArg any
+	if note != "" {
+		noteArg = note
+	}
+	if result != nil {
+		canon, err := CanonicalResult(result)
+		if err != nil {
+			return err
+		}
+		resultArg = string(canon)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET note = ?, result = ? WHERE direction = 'out' AND peer = ? AND id = ? AND state = ?`,
+		noteArg, resultArg, peer, id, StateCompleted); err != nil {
+		return fmt.Errorf("request: set out content: %w", err)
+	}
+	return nil
 }
 
 // CompleteInTx is the tx-scoped counterpart to Complete: it applies

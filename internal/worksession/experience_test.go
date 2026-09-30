@@ -121,7 +121,7 @@ func TestExperienceRecord_DroppedEarlyCompleteNeverIncluded(t *testing.T) {
 	a, b, reqID, sid := setupAcceptedSession(t)
 	r := validResult()
 	r.Summary = "MARKER-EARLY-COMPLETE"
-	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r); !ok || err != nil {
+	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, r, ByAgent); !ok || err != nil {
 		t.Fatalf("SubmitResult: %v %v", ok, err)
 	}
 	// A ws.result has not been delivered: A's session is still open. An early
@@ -134,7 +134,7 @@ func TestExperienceRecord_DroppedEarlyCompleteNeverIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := a.ws.EarlyComplete(context.Background(), tx, testB, reqID, true); err != nil {
+	if _, _, err := a.ws.EarlyComplete(context.Background(), tx, testB, reqID, "note", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -184,7 +184,7 @@ func TestExperienceRecord_RolledBackCloseLeavesNoRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := a.ws.closeSessionTx(context.Background(), tx, r, OutcomeAccepted, "", "", "", a.clock); err != nil {
+	if _, _, _, err := a.ws.closeSessionTx(context.Background(), tx, r, OutcomeAccepted, "", "", "", a.clock); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Rollback(); err != nil {
@@ -192,5 +192,33 @@ func TestExperienceRecord_RolledBackCloseLeavesNoRecord(t *testing.T) {
 	}
 	if _, ok := recordFor(t, a, sid, RoleRequester); ok {
 		t.Fatal("experience record survived a rolled-back close")
+	}
+}
+
+// R55-168: rounds_rejected is round - 1 on every accepted close, even when
+// the changes text is not known (empty changes, round 3).
+func TestExperienceRoundsRejectedWithoutChanges(t *testing.T) {
+	ctx := context.Background()
+	a, _, _, sid := setupAcceptedSession(t)
+	r, err := findByID(ctx, a.db, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.round = 3
+	r.changes.Valid = false
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, _, err := a.ws.writeExperienceTx(ctx, tx, r, OutcomeAccepted, "", "", "", a.clock); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	record, ok := recordFor(t, a, sid, RoleRequester)
+	if !ok || !strings.Contains(record, `"rounds_rejected":2`) {
+		t.Fatalf("record = %s; want rounds_rejected 2", record)
 	}
 }

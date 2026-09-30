@@ -240,8 +240,10 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, q := range []string{
-			// Back to schema 17: undo migrations 21 (experience_records), 20 (decisions)
-			// and 19 (debates, which alters work_sessions).
+			// Back to schema 17: undo migrations 22 (work_sessions.runner),
+			// 21 (experience_records), 20 (decisions) and 19 (debates, which
+			// alters work_sessions).
+			`ALTER TABLE work_sessions DROP COLUMN runner`,
 			`DROP TABLE experience_records`,
 			`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
 			`ALTER TABLE work_sessions DROP COLUMN kind`,

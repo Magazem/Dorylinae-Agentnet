@@ -17,9 +17,13 @@ type noSessions struct{}
 func (noSessions) OpenSession(context.Context, *sql.Tx, string, string, string, string, time.Time) error {
 	return nil
 }
-func (noSessions) EarlyComplete(context.Context, *sql.Tx, string, string, bool) (bool, func(context.Context), error) {
-	return true, nil, nil
+func (noSessions) EarlyComplete(context.Context, *sql.Tx, string, string, string, *request.Result) (request.CompleteContent, func(context.Context), error) {
+	return request.CompleteContent{}, nil, nil
 }
+func (noSessions) SessionEndedTx(context.Context, *sql.Tx, string, string) (func(context.Context), error) {
+	return nil, nil
+}
+func (noSessions) MarkRunnerTx(context.Context, *sql.Tx, string, string) error { return nil }
 func (noSessions) CompleteShorthand(context.Context, string, string, string, *request.Result) (bool, error) {
 	return false, nil
 }

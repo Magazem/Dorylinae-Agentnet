@@ -41,6 +41,24 @@ type BadStateError struct {
 
 func (e *BadStateError) Error() string { return e.Msg }
 
+// Submitter names who submits a worker-side result or cancel
+// (Docs/protocol/work-session.md §Run sessions): an agent (over IPC) or the
+// own-device helper's runner. On a run session only the runner may submit.
+type Submitter int
+
+const (
+	// ByAgent is every submission except the runner's own.
+	ByAgent Submitter = iota
+	// ByRunner is the own-device helper's runner (internal/daemon/device_run.go).
+	ByRunner
+)
+
+// errRunnerSession is an agent's submission on a run session: bad_state
+// (Docs/protocol/work-session.md §Run sessions, R55-029).
+func errRunnerSession(r storedRow) error {
+	return &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is a run session: the helper's runner reports it", r.id)}
+}
+
 // Sentinel errors, mapped by the caller to their IPC codes.
 var (
 	ErrUnknownSession = errors.New("worksession: unknown session")

@@ -13,7 +13,9 @@ import (
 )
 
 // Ticket 1.4b: an Apply error wrapping ErrBadBody is recorded in mail_seen only,
-// audited bad_body without content, acked as unsupported, and stays deduped.
+// audited bad_body without content, acked as rejected (R55-F18: never
+// unsupported, which would trigger the sender's Phase 1 fallback), and stays
+// deduped. Every ack has exactly one member, rejected, with one id (review 69b F3).
 func TestBadBodyPath(t *testing.T) {
 	f := newRecvFixture(t)
 	rec := &detailRec{}
@@ -53,8 +55,8 @@ func TestBadBodyPath(t *testing.T) {
 		t.Fatalf("acks = %d, want 3", len(acks))
 	}
 	for _, a := range acks {
-		if _, has := a["ids"]; has || !reflect.DeepEqual(idsOf(t, a, "unsupported"), []string{testID}) {
-			t.Fatalf("ack body = %v, want unsupported only", a)
+		if len(a) != 1 || !reflect.DeepEqual(idsOf(t, a, AckRejected), []string{testID}) {
+			t.Fatalf("ack body = %v, want rejected only", a)
 		}
 	}
 	want := map[string]string{"action": ActionReject, "peer": f.sender.key, "id": testID, "reason": "bad_body"}
@@ -107,7 +109,7 @@ func TestBadBodyRowRecordedInBetween(t *testing.T) {
 		name, at, member string
 		wantErr          bool
 	}{
-		{"marked", "2026-01-01T00:00:00.000Z" + badBodyMark, "unsupported", true},
+		{"marked", "2026-01-01T00:00:00.000Z" + badBodyMark, AckRejected, true},
 		{"accepted", "2026-01-01T00:00:00.000Z", "ids", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,7 +154,7 @@ func (l *lockedRec) Append(ctx context.Context, actor, action string, detail any
 	return l.detailRec.Append(ctx, actor, action, detail)
 }
 
-// Parallel resends of one bad body: one marked row, one audit, all acked unsupported.
+// Parallel resends of one bad body: one marked row, one audit, all acked rejected.
 func TestBadBodyParallelResends(t *testing.T) {
 	f := newRecvFixture(t)
 	rec := &lockedRec{}
@@ -190,8 +192,8 @@ func TestBadBodyParallelResends(t *testing.T) {
 		t.Fatalf("acks = %d, want %d", len(acks), n)
 	}
 	for _, a := range acks {
-		if !reflect.DeepEqual(idsOf(t, a, "unsupported"), []string{testID}) {
-			t.Fatalf("ack body = %v, want unsupported", a)
+		if len(a) != 1 || !reflect.DeepEqual(idsOf(t, a, AckRejected), []string{testID}) {
+			t.Fatalf("ack body = %v, want rejected only", a)
 		}
 	}
 }

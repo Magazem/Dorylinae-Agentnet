@@ -375,7 +375,7 @@ func (r *helperRunner) cancel(ctx context.Context, j runJob) {
 	if err != nil || v.State != worksession.StateOpen {
 		return
 	}
-	if _, _, _, err := r.ws.SubmitCancel(ctx, j.Session, ""); err != nil && r.logger != nil {
+	if _, _, _, err := r.ws.SubmitCancel(ctx, j.Session, "", worksession.ByRunner); err != nil && r.logger != nil {
 		r.logger.Warn("device: cancel dropped run", "session", j.Session, "error", err)
 	}
 }
@@ -439,7 +439,15 @@ func (r *helperRunner) recoverAfterRestart(ctx context.Context) error {
 		r.cancel(ctx, *running)
 	case running != nil:
 		res := &worksession.Result{Status: "fail", Summary: running.Command + ": interrupted", Verification: worksession.VerificationNone}
-		if _, _, err := r.ws.SubmitResult(ctx, running.Peer, running.Request, res); err != nil && r.logger != nil {
+		_, _, err := r.ws.SubmitResult(ctx, running.Peer, running.Request, res, worksession.ByRunner)
+		var bse *worksession.BadStateError
+		switch {
+		case err == nil || r.logger == nil:
+		case errors.As(err, &bse):
+			// The crash came after the real result was submitted (one
+			// result per round, R55-F18): the real result stands.
+			r.logger.Info("device: interrupted run already reported", "session", running.Session, "error", err)
+		default:
 			r.logger.Warn("device: report interrupted run", "session", running.Session, "error", err)
 		}
 	}
@@ -532,7 +540,7 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	}
 	result := runResult(cmd, res)
 	for {
-		_, _, err := r.ws.SubmitResult(ctx, j.Peer, j.Request, result)
+		_, _, err := r.ws.SubmitResult(ctx, j.Peer, j.Request, result, worksession.ByRunner)
 		var tl *worksession.TooLargeResultError
 		if errors.As(err, &tl) && result.Output != "" {
 			result.Output = trimFront(result.Output)

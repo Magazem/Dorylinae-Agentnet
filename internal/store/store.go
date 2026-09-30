@@ -528,6 +528,12 @@ CREATE TABLE experience_records (
     PRIMARY KEY (session, role)
 );
 `},
+	// Run sessions belong to the runner (Docs/protocol/work-session.md §Run
+	// sessions, R55-F18): the helper marks the worker row of an auto-accepted
+	// run, and no agent may submit its result or cancel it. No backfill.
+	{22, "work_sessions_runner", `
+ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1))
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

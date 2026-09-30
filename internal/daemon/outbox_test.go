@@ -225,6 +225,39 @@ func TestOutboxUnsupportedKindFails(t *testing.T) {
 	}
 }
 
+// R55-F18: an ack member rejected (a bad body or a stale mail of a known kind)
+// fails the row with error "rejected", never "unsupported_kind", so the Phase 1
+// fallback (daemon.go OnFinal) does not fire for it.
+func TestOutboxRejectedAckFails(t *testing.T) {
+	ctx := context.Background()
+	clk := &testClock{t: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
+	a, b := newMNode(t, clk), newMNode(t, clk)
+	pair(t, a, b)
+	ob := withOutbox(t, a, clk)
+
+	res, err := ob.Submit(ctx, b.key, "note", map[string]any{"text": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.waitSent(t, 1)
+	waitFor(t, "relayed", func() bool { s, _, _ := rowState(t, a, res.ID); return s == "relayed" })
+	pubA, ok := b.dir.MailboxPub(a.key)
+	if !ok {
+		t.Fatal("b has no mailbox key for a")
+	}
+	sl, err := mail.Seal(mail.SealInput{Priv: b.priv, To: a.key, MailboxPub: pubA, Kind: "ack",
+		Body: map[string]any{mail.AckRejected: []string{res.ID}}, Created: clk.now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.rcv.Handle(ctx, toEnvelope(b, a.key, sl)); err != nil {
+		t.Fatal(err)
+	}
+	if s, e, left := rowState(t, a, res.ID); s != "failed" || e != mail.ErrTextRejected || left {
+		t.Fatalf("state %s %q plaintext %v; want failed/rejected", s, e, left)
+	}
+}
+
 // TestOutboxCountsSplitFinalStates checks Counts after a mix of expired,
 // delivered, failed and still-pending mail, and that the JSON keeps the
 // original queued/relayed/expired keys next to the new ones.
@@ -423,7 +456,7 @@ func TestOutboxAckFromOtherPeerIgnored(t *testing.T) {
 	if !ok {
 		t.Fatal("c has no mailbox key for a")
 	}
-	for _, member := range []string{"ids", "unsupported"} {
+	for _, member := range []string{"ids", "unsupported", "rejected"} {
 		sl, err := mail.Seal(mail.SealInput{Priv: c.priv, To: a.key, MailboxPub: pubA, Kind: "ack",
 			Body: map[string]any{member: []string{res.ID}}, Created: clk.now()})
 		if err != nil {

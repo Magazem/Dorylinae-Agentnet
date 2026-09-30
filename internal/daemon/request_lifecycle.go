@@ -234,7 +234,10 @@ func lifecycleError(err error) error {
 	var fe *request.FieldError
 	var bse *request.BadStateError
 	var tl *request.TooLargeCompleteError
+	var wbse *worksession.BadStateError // request_complete's session shorthand (a run session, R55-029)
 	switch {
+	case errors.As(err, &wbse):
+		return &ipc.Error{Code: CodeBadState, Message: wbse.Msg}
 	case errors.Is(err, debate.ErrQuarantineActive):
 		return &ipc.Error{Code: CodeQuarantineActive, Message: err.Error()}
 	case errors.Is(err, request.ErrUnknownRequest):

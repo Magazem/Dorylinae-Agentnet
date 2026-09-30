@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -83,6 +84,10 @@ type Store struct {
 	// refuses those transitions on a debate session.
 	Debate DebateHooks
 
+	// Log receives content-free errors of the background Phase 1 fallback
+	// sweep (session, peer, error). nil discards them.
+	Log *slog.Logger
+
 	Now func() time.Time
 }
 
@@ -105,7 +110,7 @@ func (s *Store) now() time.Time {
 // work_sessions, in scanRow's order.
 const workSessionColumns = `id, role, peer, request_id, team_id, state, outcome, seq, round,
 	result, result_round, verification, changes, cancel, released, last_state, last_state_sent,
-	opened, state_at, closed, updated, kind`
+	opened, state_at, closed, updated, kind, runner`
 
 // storedRow is one work_sessions row.
 type storedRow struct {
@@ -126,6 +131,7 @@ type storedRow struct {
 	closed                            sql.NullString
 	updated                           string
 	kind                              string
+	runner                            int // 1: a run session, owned by the helper's runner (B only)
 }
 
 type scanner interface{ Scan(dest ...any) error }
@@ -134,7 +140,7 @@ func scanRow(sc scanner) (storedRow, error) {
 	var r storedRow
 	err := sc.Scan(&r.id, &r.role, &r.peer, &r.requestID, &r.teamID, &r.state, &r.outcome, &r.seq, &r.round,
 		&r.result, &r.resultRound, &r.verification, &r.changes, &r.cancel, &r.released, &r.lastState, &r.lastStateSent,
-		&r.opened, &r.stateAt, &r.closed, &r.updated, &r.kind)
+		&r.opened, &r.stateAt, &r.closed, &r.updated, &r.kind, &r.runner)
 	return r, err
 }
 
@@ -190,16 +196,21 @@ type View struct {
 	Changes      string
 	Cancel       string
 	Released     bool
-	Opened       time.Time
-	StateAt      time.Time
-	Closed       time.Time
-	Updated      time.Time
+	// MailID is set only on the View an A-side transition returns
+	// (AcceptResult, RequestChanges, Discard, Cancel): the id of the ws.state
+	// it submitted (R55-115). Empty when no mail was sent (a debate cancel).
+	MailID  string
+	Runner  bool // a run session (Docs/protocol/work-session.md §Run sessions), B only
+	Opened  time.Time
+	StateAt time.Time
+	Closed  time.Time
+	Updated time.Time
 }
 
 func toView(r storedRow) (View, error) {
 	v := View{
 		ID: r.id, Kind: r.kind, Role: r.role, Peer: r.peer, RequestID: r.requestID, TeamID: r.teamID,
-		State: r.state, Seq: r.seq, Round: r.round, Released: r.released != 0,
+		State: r.state, Seq: r.seq, Round: r.round, Released: r.released != 0, Runner: r.runner != 0,
 		Opened: parseWireTime(r.opened), StateAt: parseWireTime(r.stateAt), Updated: parseStoreTime(r.updated),
 	}
 	if r.outcome.Valid {

@@ -101,9 +101,13 @@ func (s *Store) writeExperienceTx(ctx context.Context, tx *sql.Tx, row storedRow
 	}
 	switch outcome {
 	case OutcomeAccepted:
+		// Every round before the accepted one was rejected, whether or not
+		// its changes text is known here (R55-168, experience.md).
+		if row.round > 1 {
+			in.RoundsRejected = row.round - 1
+		}
 		if row.round > 1 && row.changes.Valid && row.changes.String != "" {
 			in.Changes, in.LastChanges = row.changes.String, row.changes.String
-			in.RoundsRejected = row.round - 1
 		}
 		if row.result.Valid && row.result.String != "" && row.resultRound.Valid && int(row.resultRound.Int64) == row.round {
 			if stored, derr := decodeStoredResult(row.result.String); derr == nil {
