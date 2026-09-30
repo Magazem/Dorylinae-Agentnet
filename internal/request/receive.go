@@ -251,6 +251,13 @@ INSERT INTO requests (
 			if err != nil {
 				return err
 			}
+			// The helper's runner owns this session's result
+			// (Docs/protocol/work-session.md §Run sessions, R55-029).
+			if s.Sessions != nil {
+				if err := s.Sessions.MarkRunnerTx(ctx, tx, op.Msg.From, req.ID); err != nil {
+					return err
+				}
+			}
 			out.autoAccepted, out.acceptAfter = true, acceptAfter
 		}
 	}

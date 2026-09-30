@@ -89,7 +89,7 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		// (#inbox-copy-d18 (2)); keeping its plaintext would let B park
 		// content in A's database past the peer-wide clause (review 35 H2).
 		op.Withhold = true
-		op.Outcome = &resultOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
+		op.Outcome = &resultOutcome{orphan: true, sessionID: sid, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if terr != nil {
@@ -160,7 +160,7 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 	}
 	now := s.now()
 	seq := row.seq + 1
-	if _, err := s.sendState(ctx, tx, row, seq, newState, "", "", "", now); err != nil {
+	if _, _, err := s.sendState(ctx, tx, row, seq, newState, "", "", "", now); err != nil {
 		return err
 	}
 	resultCanon, err := CanonicalResult(result)
@@ -216,7 +216,7 @@ func (s *Store) afterResult(ctx context.Context, op *mail.Opened) {
 	}
 	switch {
 	case out.orphan:
-		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"peer": out.peer, "kind": KindResult})
+		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"session": out.sessionID, "peer": out.peer, "kind": KindResult})
 	case out.ignored != "":
 		_ = s.Audit.Append(ctx, "daemon", "ws.ignored", map[string]any{
 			"session": out.sessionID, "peer": out.peer, "kind": KindResult, "reason": out.ignored,

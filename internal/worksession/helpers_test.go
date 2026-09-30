@@ -306,7 +306,7 @@ func validResult() *Result {
 // the ws.result to A, returning A's session view.
 func submitAndDeliverResult(t *testing.T, a, b *node, reqID string, result *Result) View {
 	t.Helper()
-	ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, result)
+	ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, result, ByAgent)
 	if !ok || err != nil {
 		t.Fatalf("SubmitResult: ok=%v err=%v", ok, err)
 	}

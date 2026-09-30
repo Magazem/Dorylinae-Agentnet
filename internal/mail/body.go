@@ -37,17 +37,25 @@ func checkIDList(name string, v any) error {
 	return nil
 }
 
-// checkAckBody: only ids and unsupported, at least one present.
+// checkAckBody: only ids, unsupported and rejected, at least one present, and
+// no id in two members (Docs/protocol/mail.md §Ack).
 func checkAckBody(body map[string]any) error {
 	if len(body) == 0 {
-		return errors.New("ack needs ids or unsupported")
+		return errors.New("ack needs ids, unsupported or rejected")
 	}
+	member := map[string]string{} // id -> the member that listed it
 	for k, v := range body {
-		if k != "ids" && k != "unsupported" {
+		if k != AckIDs && k != AckUnsupported && k != AckRejected {
 			return fmt.Errorf("ack has unknown member %q", k)
 		}
 		if err := checkIDList(k, v); err != nil {
 			return err
+		}
+		for _, id := range stringList(v) {
+			if m, ok := member[id]; ok && m != k {
+				return errors.New("ack lists an id in two members")
+			}
+			member[id] = k
 		}
 	}
 	return nil

@@ -26,6 +26,7 @@ type stateOutcome struct {
 	state       string
 	seq, round  int
 	newRound    bool // state open with a changes text (a change request)
+	autoCancel  bool // a run session's new round: ws.cancel sent in this transaction
 	// auditComplete appends the request.complete audit row of a close,
 	// after commit (request.Store.CompleteInTx).
 	auditComplete func(context.Context)
@@ -120,7 +121,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 
 	row, err := findRowTx(ctx, tx, RoleWorker, op.Msg.From, reqID)
 	if errors.Is(err, ErrUnknownSession) {
-		op.Outcome = &stateOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
+		op.Outcome = &stateOutcome{orphan: true, sessionID: sid, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if err != nil {
@@ -134,6 +135,16 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return nil
 	}
 	if seq <= row.seq {
+		// A's echo of the state B already has (same seq) in awaiting_result
+		// or quarantined answers B's pending cancel: A refused it (R55-114).
+		// An older seq is a reordered mail and marks nothing (review 69b F4).
+		if seq == row.seq && row.cancel.Valid && row.cancel.String == "requested" &&
+			(state == StateAwaitingResult || state == StateQuarantined) {
+			if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cancel = 'refused', updated = ? WHERE id = ?`,
+				storeTime(s.now()), row.id); err != nil {
+				return fmt.Errorf("worksession: mark cancel refused: %w", err)
+			}
+		}
 		op.Outcome = &stateOutcome{duplicate: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
@@ -147,11 +158,15 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	}
 
 	now := s.now()
-	// Review 27 L6: any new state from A clears B's own cancel = requested
-	// mark, whether A applied the cancel (state becomes closed) or refused it
-	// (state is unchanged but this is still a fresh ws.state, so B's wish is
-	// answered either way).
-	set := `state = ?, seq = ?, round = ?, state_at = ?, updated = ?, cancel = NULL`
+	// B's cancel mark (R55-114, Docs/protocol/work-session.md §Mirror step 4):
+	// closed or open answers the wish (applied, or a new round started), so
+	// it is cleared; awaiting_result or quarantined while requested means A
+	// refused it, and B may send again.
+	cancelSet := `cancel = NULL`
+	if state == StateAwaitingResult || state == StateQuarantined {
+		cancelSet = `cancel = CASE WHEN cancel = 'requested' THEN 'refused' ELSE cancel END`
+	}
+	set := `state = ?, seq = ?, round = ?, state_at = ?, updated = ?, ` + cancelSet
 	args := []any{state, seq, round, wireTime(at), storeTime(now)}
 	set += `, outcome = ?`
 	args = append(args, nullIfEmpty(outcome))
@@ -170,11 +185,23 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		// (a new round started, or A discarded/cancelled): B's own bookkeeping
 		// copy is stale, matching the "current round" invariant of the result
 		// column (Docs/protocol/work-session.md §Persistence).
-		set += `, result = NULL, result_round = NULL`
+		set += `, result = NULL, result_round = NULL, result_mail = NULL`
 	}
 	args = append(args, row.id)
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET `+set+` WHERE id = ?`, args...); err != nil {
 		return fmt.Errorf("worksession: apply mirror state: %w", err)
+	}
+
+	// A new round on a run session (Docs/protocol/work-session.md §Run
+	// sessions, OD-F18-6): the runner acts only on arrival and no agent may
+	// answer, so the helper cancels at once, in this transaction, so a crash
+	// cannot lose it (review 69b F5).
+	autoCancel := false
+	if state == StateOpen && round >= 2 && row.runner != 0 {
+		if _, err := s.submitCancelTx(ctx, tx, row, "", now); err != nil {
+			return err
+		}
+		autoCancel = true
 	}
 
 	// The holder learns of a close from this ws.state and ends its own
@@ -239,7 +266,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		}
 	}
 
-	op.Outcome = &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete, expBytes: expBytes, expTruncated: expTruncated}
+	op.Outcome = &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", autoCancel: autoCancel, auditComplete: auditComplete, expBytes: expBytes, expTruncated: expTruncated}
 	return nil
 }
 
@@ -266,7 +293,7 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	if out.orphan {
-		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"peer": out.peer, "kind": KindState})
+		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"session": out.sessionID, "peer": out.peer, "kind": KindState})
 		return
 	}
 	if out.duplicate {
@@ -285,4 +312,7 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	_ = s.Audit.Append(ctx, "daemon", "ws.state", map[string]any{
 		"session": out.sessionID, "peer": out.peer, "state": out.state, "seq": out.seq, "round": out.round,
 	})
+	if out.autoCancel {
+		_ = s.Audit.Append(ctx, "daemon", "ws.cancel", map[string]any{"session": out.sessionID, "peer": out.peer, "role": RoleWorker})
+	}
 }

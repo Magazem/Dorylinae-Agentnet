@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 )
@@ -14,8 +15,10 @@ import (
 // does not change state until A's ws.state arrives (applyState clears the
 // column on any new state, review 27 L6); this call never changes state
 // itself. duplicate is true, and no new mail is sent, when the row already
-// had cancel = requested.
-func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View, mailID string, duplicate bool, err error) {
+// had cancel = requested (a refused mark lets B send again). by names the
+// submitter: on a run session only ByRunner is allowed
+// (Docs/protocol/work-session.md §Run sessions).
+func (s *Store) SubmitCancel(ctx context.Context, id, reason string, by Submitter) (view View, mailID string, duplicate bool, err error) {
 	if reason != "" {
 		if err := checkCodePoints("reason", reason, 1, 500, ""); err != nil {
 			return View{}, "", false, err
@@ -34,23 +37,17 @@ func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View,
 	if r.role != RoleWorker {
 		return View{}, "", false, ErrNotWorker
 	}
+	if r.runner != 0 && by != ByRunner {
+		return View{}, "", false, errRunnerSession(r)
+	}
 	if r.state == StateClosed {
 		return View{}, "", false, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
 	now := s.now()
 	duplicate = r.cancel.Valid && r.cancel.String == "requested"
 	if !duplicate {
-		body := map[string]any{"at": wireTime(now), "request": r.requestID, "session": id}
-		if reason != "" {
-			body["reason"] = reason
-		}
-		sub, err := s.Outbox.SubmitTx(ctx, tx, r.peer, KindCancel, body)
-		if err != nil {
+		if mailID, err = s.submitCancelTx(ctx, tx, r, reason, now); err != nil {
 			return View{}, "", false, err
-		}
-		mailID = sub.ID
-		if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cancel = 'requested', updated = ? WHERE id = ?`, storeTime(now), id); err != nil {
-			return View{}, "", false, fmt.Errorf("worksession: mark cancel requested: %w", err)
 		}
 	}
 	var afterDebate func(context.Context)
@@ -85,6 +82,25 @@ func (s *Store) SubmitCancel(ctx context.Context, id, reason string) (view View,
 		return View{}, "", false, err
 	}
 	return v, mailID, duplicate, nil
+}
+
+// submitCancelTx sends B's ws.cancel for row and marks it cancel =
+// requested, inside tx. Shared by SubmitCancel and the run-session auto-cancel
+// in the ws.state mail transaction (Docs/protocol/work-session.md §Run
+// sessions, review 69b F5).
+func (s *Store) submitCancelTx(ctx context.Context, tx *sql.Tx, r storedRow, reason string, now time.Time) (mailID string, err error) {
+	body := map[string]any{"at": wireTime(now), "request": r.requestID, "session": r.id}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	sub, err := s.Outbox.SubmitTx(ctx, tx, r.peer, KindCancel, body)
+	if err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET cancel = 'requested', updated = ? WHERE id = ?`, storeTime(now), r.id); err != nil {
+		return "", fmt.Errorf("worksession: mark cancel requested: %w", err)
+	}
+	return sub.ID, nil
 }
 
 // ws.cancel: B -> A (Docs/protocol/work-session.md §Cancel, "B"). Applied
@@ -166,7 +182,7 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		}
 	}
 	if errors.Is(err, ErrUnknownSession) {
-		op.Outcome = &cancelOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
+		op.Outcome = &cancelOutcome{orphan: true, sessionID: sid, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if row.state != StateOpen {
@@ -188,7 +204,7 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		op.Outcome = &cancelOutcome{result: result, sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: true, debateAfter: after}
 		return nil
 	}
-	expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", "", RoleWorker, s.now())
+	expBytes, expTruncated, _, err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", "", RoleWorker, s.now())
 	if err != nil {
 		return err
 	}
@@ -213,7 +229,7 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 		return
 	}
 	if out.orphan {
-		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"peer": out.peer, "kind": KindCancel})
+		_ = s.Audit.Append(ctx, "daemon", "ws.orphan", map[string]any{"session": out.sessionID, "peer": out.peer, "kind": KindCancel})
 		return
 	}
 	_ = s.Audit.Append(ctx, "daemon", "ws.cancel_in", map[string]any{"session": out.sessionID, "peer": out.peer, "result": out.result})

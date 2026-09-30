@@ -346,13 +346,16 @@ func TestAckBodyStep12(t *testing.T) {
 	s, r, o := fixture(t)
 	good := "m-fedcba9876543210fedcba9876543210"
 	for name, body := range map[string]any{
-		"empty":       map[string]any{},
-		"unknown":     map[string]any{"ids": []string{good}, "x": 1},
-		"bad id":      map[string]any{"ids": []string{"m-nothex"}},
-		"empty list":  map[string]any{"ids": []string{}},
-		"not a list":  map[string]any{"ids": good},
-		"too many":    map[string]any{"ids": manyIDs(257)},
-		"bad unsupp.": map[string]any{"unsupported": []string{"x"}},
+		"empty":           map[string]any{},
+		"unknown":         map[string]any{"ids": []string{good}, "x": 1},
+		"bad id":          map[string]any{"ids": []string{"m-nothex"}},
+		"empty list":      map[string]any{"ids": []string{}},
+		"not a list":      map[string]any{"ids": good},
+		"too many":        map[string]any{"ids": manyIDs(257)},
+		"bad unsupp.":     map[string]any{"unsupported": []string{"x"}},
+		"bad rejected":    map[string]any{"rejected": []string{"x"}},
+		"two members":     map[string]any{"ids": []string{good}, "rejected": []string{good}},
+		"ids and unsupp.": map[string]any{"ids": []string{good}, "unsupported": []string{good}},
 	} {
 		sl := sealTo(t, s, r, "", "ack", body, vectorNow)
 		_, err := o.Open(env(s, r, sl))
@@ -364,6 +367,8 @@ func TestAckBodyStep12(t *testing.T) {
 		map[string]any{"ids": []string{good}},
 		map[string]any{"unsupported": []string{good}},
 		map[string]any{"ids": manyIDs(256), "unsupported": []string{good}},
+		map[string]any{"rejected": []string{good}},
+		map[string]any{"ids": []string{good, good}}, // a repeat in one member is not two members
 	} {
 		sl := sealTo(t, s, r, "", "ack", body, vectorNow)
 		if _, err := o.Open(env(s, r, sl)); err != nil {

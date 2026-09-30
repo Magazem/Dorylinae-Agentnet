@@ -337,7 +337,7 @@ func TestCancelAfterAccept(t *testing.T) {
 	})
 	t.Run("B cancels", func(t *testing.T) {
 		a, b, _, sid := openPositions(t, 2)
-		if _, _, _, err := b.ws.SubmitCancel(ctx, sid, "no time"); err != nil {
+		if _, _, _, err := b.ws.SubmitCancel(ctx, sid, "no time", worksession.ByAgent); err != nil {
 			t.Fatal(err)
 		}
 		pass(t, b, a, worksession.KindCancel)
@@ -369,7 +369,7 @@ func TestDebateSessionRefusesWorkTransitions(t *testing.T) {
 			t.Errorf("%s: %v, want bad_state", name, err)
 		}
 	}
-	_, _, err := b.ws.SubmitResult(ctx, keyA, reqID, res)
+	_, _, err := b.ws.SubmitResult(ctx, keyA, reqID, res, worksession.ByAgent)
 	wantBS("ws_result", err)
 	_, err = a.ws.AcceptResult(ctx, sid)
 	wantBS("ws_accept_result", err)

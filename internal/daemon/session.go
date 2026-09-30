@@ -81,6 +81,7 @@ type SessionView struct {
 	VerificationBy string                 `json:"verification_by,omitempty"`
 	Changes        string                 `json:"changes,omitempty"`
 	Cancel         string                 `json:"cancel,omitempty"`
+	Runner         bool                   `json:"runner,omitempty"`
 	Grants         []any                  `json:"grants"`
 }
 
@@ -176,7 +177,7 @@ func sessionView(ctx context.Context, ps *peers.Store, ts *team.Store, rs *reque
 		Request: SessionRequestRef{ID: v.RequestID, Type: typ, Title: title},
 		State:   v.State, Outcome: v.Outcome, Round: v.Round, Seq: v.Seq,
 		Opened: timeOrEmpty(v.Opened), StateAt: timeOrEmpty(v.StateAt),
-		Cancel: v.Cancel,
+		Cancel: v.Cancel, Runner: v.Runner,
 		Grants: []any{},
 	}
 	if rs != nil {
@@ -355,7 +356,8 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if v.Role != worksession.RoleWorker {
 			return nil, sessionError(worksession.ErrNotWorker)
 		}
-		_, mailID, err := ws.SubmitResult(ctx, v.Peer, v.RequestID, result)
+		// An agent's result: refused on a run session (R55-029).
+		_, mailID, err := ws.SubmitResult(ctx, v.Peer, v.RequestID, result, worksession.ByAgent)
 		if err != nil {
 			return nil, sessionError(err)
 		}
@@ -390,7 +392,7 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 			if err != nil {
 				return nil, sessionError(err)
 			}
-			return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false)}, nil
+			return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false), MailID: nv.MailID}, nil
 		}
 		if as == nil {
 			return nil, &ipc.Error{Code: CodeNotAvailable, Message: "human approval is not available"}
@@ -471,7 +473,7 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if err != nil {
 			return nil, sessionError(err)
 		}
-		return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false)}, nil
+		return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false), MailID: nv.MailID}, nil
 	})
 
 	srv.Handle("ws_discard", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -494,7 +496,7 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if err != nil {
 			return nil, sessionError(err)
 		}
-		return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false)}, nil
+		return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false), MailID: nv.MailID}, nil
 	})
 
 	srv.Handle("ws_cancel", func(ctx context.Context, params json.RawMessage) (any, error) {
@@ -515,9 +517,9 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 			if err != nil {
 				return nil, sessionError(err)
 			}
-			return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false)}, nil
+			return SessionResult{Session: sessionView(ctx, ps, ts, rs, nv, false), MailID: nv.MailID}, nil
 		}
-		nv, mailID, dup, err := ws.SubmitCancel(ctx, sid, p.Reason)
+		nv, mailID, dup, err := ws.SubmitCancel(ctx, sid, p.Reason, worksession.ByAgent)
 		if err != nil {
 			return nil, sessionError(err)
 		}

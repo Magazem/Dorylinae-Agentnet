@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // A-side transitions (Docs/protocol/work-session.md §Transitions
@@ -18,9 +20,10 @@ import (
 // sendState builds and sends one ws.state mail inside tx, and stores it as
 // last_state (Docs/protocol/work-session.md, "For each transition, in one
 // transaction on A: update the row ..., store the ws.state mail as
-// last_state, and Outbox.SubmitTx it to B").
-func (s *Store) sendState(ctx context.Context, tx *sql.Tx, row storedRow, seq int, state, outcome, verification, changes string, now time.Time) (map[string]any, error) {
-	body := map[string]any{
+// last_state, and Outbox.SubmitTx it to B"). mailID is the submitted mail's
+// id (R55-115).
+func (s *Store) sendState(ctx context.Context, tx *sql.Tx, row storedRow, seq int, state, outcome, verification, changes string, now time.Time) (body map[string]any, mailID string, err error) {
+	body = map[string]any{
 		"at": wireTime(now), "request": row.requestID, "round": row.round, "seq": seq, "session": row.id, "state": state,
 	}
 	if outcome != "" {
@@ -34,40 +37,89 @@ func (s *Store) sendState(ctx context.Context, tx *sql.Tx, row storedRow, seq in
 	}
 	lastState, err := jsonObject(map[string]any{"kind": KindState, "body": body})
 	if err != nil {
-		return nil, fmt.Errorf("worksession: encode last_state: %w", err)
+		return nil, "", fmt.Errorf("worksession: encode last_state: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET last_state = ?, last_state_sent = ? WHERE id = ?`,
 		lastState, storeTime(now), row.id); err != nil {
-		return nil, fmt.Errorf("worksession: store last_state: %w", err)
+		return nil, "", fmt.Errorf("worksession: store last_state: %w", err)
 	}
-	if _, err := s.Outbox.SubmitTx(ctx, tx, row.peer, KindState, body); err != nil {
-		return nil, err
+	sub, err := s.Outbox.SubmitTx(ctx, tx, row.peer, KindState, body)
+	if err != nil {
+		return nil, "", err
 	}
-	return body, nil
+	return body, sub.ID, nil
 }
 
 // closeSessionTx closes row (state=closed) inside tx and sends the closing
 // ws.state. It does not touch the result column: callers that must delete a
 // stored result (Discard, RequestChanges from quarantined) do so themselves.
 // If RevokeGrants is set, every grant of this session ends in the same
-// transaction (Docs/protocol/grant.md §Session end).
-func (s *Store) closeSessionTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome, verification, verificationBy, cancelledBy string, now time.Time) (expBytes int, expTruncated bool, err error) {
+// transaction (Docs/protocol/grant.md §Session end). On the requester, a
+// request record B already completed gets A's own view of the close
+// (Docs/protocol/work-session.md §Closing the request, review 69b F1).
+// mailID is the closing ws.state's id.
+func (s *Store) closeSessionTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome, verification, verificationBy, cancelledBy string, now time.Time) (expBytes int, expTruncated bool, mailID string, err error) {
 	seq := row.seq + 1
-	if _, err := s.sendState(ctx, tx, row, seq, StateClosed, outcome, verification, "", now); err != nil {
-		return 0, false, err
+	_, mailID, err = s.sendState(ctx, tx, row, seq, StateClosed, outcome, verification, "", now)
+	if err != nil {
+		return 0, false, "", err
 	}
 	if _, err := tx.ExecContext(ctx, `
 UPDATE work_sessions SET state = ?, outcome = ?, seq = ?, verification = ?, state_at = ?, closed = ?, updated = ?
 WHERE id = ?`,
 		StateClosed, outcome, seq, nullIfEmpty(verification), wireTime(now), wireTime(now), storeTime(now), row.id); err != nil {
-		return 0, false, fmt.Errorf("worksession: close row: %w", err)
+		return 0, false, "", fmt.Errorf("worksession: close row: %w", err)
 	}
 	if s.RevokeGrants != nil {
 		if err := s.RevokeGrants(ctx, tx, row.id, now); err != nil {
-			return 0, false, err
+			return 0, false, "", err
 		}
 	}
-	return s.writeExperienceTx(ctx, tx, row, outcome, verification, verificationBy, cancelledBy, now)
+	if row.role == RoleRequester {
+		if err := s.writeRequesterViewTx(ctx, tx, row, outcome); err != nil {
+			return 0, false, "", err
+		}
+	}
+	expBytes, expTruncated, err = s.writeExperienceTx(ctx, tx, row, outcome, verification, verificationBy, cancelledBy, now)
+	return expBytes, expTruncated, mailID, err
+}
+
+// requesterView is what A stores in its out request record for a closed
+// session (Docs/protocol/work-session.md §Closing the request, R55-022):
+// the D14 part of the accepted result and no note, or no result and the
+// fixed note "session cancelled". row is the session as it was accepted
+// (its result column holds the accepted result).
+func (s *Store) requesterView(row storedRow, outcome string) (note string, res *request.Result, err error) {
+	if outcome != OutcomeAccepted {
+		return "session cancelled", nil, nil
+	}
+	if !row.result.Valid || row.result.String == "" {
+		// Should not happen after accept: store no content at all.
+		if s.Log != nil {
+			s.Log.Warn("worksession: accepted session has no stored result", "session", row.id)
+		}
+		return "", nil, nil
+	}
+	stored, err := decodeStoredResult(row.result.String)
+	if err != nil {
+		return "", nil, fmt.Errorf("worksession: decode stored result: %w", err)
+	}
+	return "", &request.Result{Status: stored.Status, Summary: stored.Summary, ExitCode: stored.ExitCode, Output: stored.Output, Artifacts: stored.Artifacts}, nil
+}
+
+// writeRequesterViewTx writes A's view of a close into its out request record
+// when B's request.complete already completed it (review 69b F1): whichever
+// arrives second, B's complete or A's close, the record ends with what A
+// accepted. A record in any other state is left alone.
+func (s *Store) writeRequesterViewTx(ctx context.Context, tx *sql.Tx, row storedRow, outcome string) error {
+	if s.Requests == nil || row.kind == SessionKindDebate {
+		return nil
+	}
+	note, res, err := s.requesterView(row, outcome)
+	if err != nil {
+		return err
+	}
+	return s.Requests.SetOutContentTx(ctx, tx, row.peer, row.requestID, note, res)
 }
 
 func nullIfEmpty(s string) any {
@@ -106,7 +158,7 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 	if r.verification.Valid {
 		verification = r.verification.String
 	}
-	expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, verification, verificationActor(verification), "", now)
+	expBytes, expTruncated, mailID, err := s.closeSessionTx(ctx, tx, r, OutcomeAccepted, verification, verificationActor(verification), "", now)
 	if err != nil {
 		return View{}, err
 	}
@@ -119,11 +171,22 @@ func (s *Store) AcceptResult(ctx context.Context, id string) (View, error) {
 	}
 	s.auditClose(ctx, r, OutcomeAccepted, now)
 	s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
+	return s.viewWithMail(ctx, id, mailID)
+}
+
+// viewWithMail reads session id's view after an A-side transition and sets
+// its MailID to the ws.state the transition submitted (R55-115).
+func (s *Store) viewWithMail(ctx context.Context, id, mailID string) (View, error) {
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
 	}
-	return toView(newRow)
+	v, err := toView(newRow)
+	if err != nil {
+		return View{}, err
+	}
+	v.MailID = mailID
+	return v, nil
 }
 
 // RequestChanges runs ws_request_changes (A only,
@@ -163,7 +226,8 @@ func (s *Store) RequestChanges(ctx context.Context, id, changes string) (View, e
 	// result that entered quarantined was already stored blank at receipt.
 	sendRow := r
 	sendRow.round = newRound
-	if _, err := s.sendState(ctx, tx, sendRow, seq, StateOpen, "", "", changes, now); err != nil {
+	_, mailID, err := s.sendState(ctx, tx, sendRow, seq, StateOpen, "", "", changes, now)
+	if err != nil {
 		return View{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -184,11 +248,7 @@ WHERE id = ?`,
 		}
 		_ = s.Audit.Append(ctx, "cli", "ws.request_changes", detail)
 	}
-	newRow, err := findByID(ctx, s.DB, id)
-	if err != nil {
-		return View{}, err
-	}
-	return toView(newRow)
+	return s.viewWithMail(ctx, id, mailID)
 }
 
 // Discard runs ws_discard (A only, Docs/protocol/work-session.md §Discard,
@@ -220,7 +280,8 @@ func (s *Store) Discard(ctx context.Context, id string) (View, error) {
 	// OD-P2-6 (c): the quarantined result is deleted unseen below. Its
 	// mail_inbox copy needed no separate blanking (#inbox-copy-d18 (1)): a
 	// result that entered quarantined was already stored blank at receipt.
-	if _, err := s.sendState(ctx, tx, r, seq, StateClosed, OutcomeCancelled, "", "", now); err != nil {
+	_, mailID, err := s.sendState(ctx, tx, r, seq, StateClosed, OutcomeCancelled, "", "", now)
+	if err != nil {
 		return View{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -233,6 +294,10 @@ WHERE id = ?`,
 		if err := s.RevokeGrants(ctx, tx, id, now); err != nil {
 			return View{}, err
 		}
+	}
+	// A's view of the close into a record B already completed (review 69b F1).
+	if err := s.writeRequesterViewTx(ctx, tx, r, OutcomeCancelled); err != nil {
+		return View{}, err
 	}
 	// The quarantined result was already deleted from row above; writing the
 	// experience record from r (read before the delete) never reads
@@ -250,11 +315,7 @@ WHERE id = ?`,
 	}
 	s.auditClose(ctx, r, OutcomeCancelled, now)
 	s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
-	newRow, err := findByID(ctx, s.DB, id)
-	if err != nil {
-		return View{}, err
-	}
-	return toView(newRow)
+	return s.viewWithMail(ctx, id, mailID)
 }
 
 // Cancel runs ws_cancel for A (Docs/protocol/work-session.md §Cancel): open
@@ -287,6 +348,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 	var afterDebate func(context.Context)
 	var expBytes int
 	var expTruncated bool
+	var mailID string
 	if r.kind == SessionKindDebate {
 		// Docs/protocol/debate.md §Cancel and abandon: close cancelled, no
 		// Decision; B learns it from debate.close, never from ws.state.
@@ -298,7 +360,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 			return View{}, err
 		}
 		afterDebate = fn
-	} else if expBytes, expTruncated, err = s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", "", RoleRequester, now); err != nil {
+	} else if expBytes, expTruncated, mailID, err = s.closeSessionTx(ctx, tx, r, OutcomeCancelled, "", "", RoleRequester, now); err != nil {
 		return View{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -314,11 +376,7 @@ func (s *Store) Cancel(ctx context.Context, id, reason string) (View, error) {
 		s.auditClose(ctx, r, OutcomeCancelled, now)
 		s.auditExperience(ctx, r.id, r.role, expBytes, expTruncated)
 	}
-	newRow, err := findByID(ctx, s.DB, id)
-	if err != nil {
-		return View{}, err
-	}
-	return toView(newRow)
+	return s.viewWithMail(ctx, id, mailID)
 }
 
 // ReleaseInTx performs the quarantined -> awaiting_result transition
@@ -342,7 +400,7 @@ func (s *Store) ReleaseInTx(ctx context.Context, tx *sql.Tx, id string, now time
 		return "", 0, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
 	seq := r.seq + 1
-	if _, err := s.sendState(ctx, tx, r, seq, StateAwaitingResult, "", "", "", now); err != nil {
+	if _, _, err := s.sendState(ctx, tx, r, seq, StateAwaitingResult, "", "", "", now); err != nil {
 		return "", 0, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE work_sessions SET state = ?, seq = ?, released = 1, state_at = ?, updated = ? WHERE id = ?`,
@@ -404,7 +462,7 @@ func (s *Store) AcceptResultInTx(ctx context.Context, tx *sql.Tx, id string, now
 	if r.state != StateAwaitingResult {
 		return "", 0, time.Time{}, 0, false, &BadStateError{State: r.state, Msg: fmt.Sprintf("%s is %s", id, r.state)}
 	}
-	expBytes, expTruncated, err = s.closeSessionTx(ctx, tx, r, OutcomeAccepted, VerificationHumanAccepted, RoleRequester, "", now)
+	expBytes, expTruncated, _, err = s.closeSessionTx(ctx, tx, r, OutcomeAccepted, VerificationHumanAccepted, RoleRequester, "", now)
 	if err != nil {
 		return "", 0, time.Time{}, 0, false, err
 	}

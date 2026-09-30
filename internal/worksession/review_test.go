@@ -55,7 +55,7 @@ func TestReview27_Phase1FallbackWithRealAuditDoesNotDeadlock(t *testing.T) {
 	_, b, reqID, _ := setupAcceptedSession(t)
 	b.ws.Audit = audit.New(b.db)
 	b.req.Audit = audit.New(b.db)
-	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, validResult()); !ok || err != nil {
+	if ok, _, err := b.ws.SubmitResult(context.Background(), testA, reqID, validResult(), ByAgent); !ok || err != nil {
 		t.Fatalf("SubmitResult: %v %v", ok, err)
 	}
 	if _, err := b.db.Exec(`UPDATE outbox SET state = 'failed', error = 'unsupported_kind' WHERE kind = ?`, KindResult); err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
@@ -34,7 +35,8 @@ func (s *Store) CheckPhase1Fallback(ctx context.Context, peer, requestID string)
 	if err != nil {
 		return err
 	}
-	if row.state == StateClosed {
+	// A debate session is never swept (R55-060): it ends through the debate.
+	if row.state == StateClosed || row.kind == SessionKindDebate {
 		return nil
 	}
 	unsupported, err := peerIsUnsupported(ctx, s.DB, peer, storeTime(parseWireTime(row.opened)))
@@ -56,7 +58,7 @@ func (s *Store) CheckPhase1Fallback(ctx context.Context, peer, requestID string)
 	if err != nil {
 		return err
 	}
-	if row.state == StateClosed {
+	if row.state == StateClosed || row.kind == SessionKindDebate {
 		return nil
 	}
 	now := s.now()
@@ -112,12 +114,15 @@ UPDATE work_sessions SET state = ?, outcome = ?, closed = ?, state_at = ?, updat
 // row back to its session (see CheckPhase1Fallback), so the daemon's trigger
 // (an outbox row to peer, kind ws.result/ws.cancel, ending
 // failed/unsupported_kind) is scoped to the peer, not one session; this
-// checks each of that peer's open sessions in turn. Errors are logged by the
-// caller's context cancellation only: this is a best-effort background sweep.
+// checks each of that peer's open work sessions in turn; debate sessions are
+// skipped (R55-060). It is a best-effort background sweep: an error is
+// logged, content-free, once per call, and the sweep moves on (a
+// cancelled ctx ends it quietly).
 func (s *Store) CheckPhase1FallbackForPeer(ctx context.Context, peer string) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM work_sessions WHERE role = ? AND peer = ? AND state != ?`,
-		RoleWorker, peer, StateClosed)
+	rows, err := s.DB.QueryContext(ctx, `SELECT request_id FROM work_sessions WHERE role = ? AND peer = ? AND state != ? AND kind != ?`,
+		RoleWorker, peer, StateClosed, SessionKindDebate)
 	if err != nil {
+		s.logPhase1Error(ctx, "", peer, err)
 		return
 	}
 	var ids []string
@@ -127,13 +132,55 @@ func (s *Store) CheckPhase1FallbackForPeer(ctx context.Context, peer string) {
 			ids = append(ids, id)
 		}
 	}
+	err = rows.Err()
 	_ = rows.Close()
+	if err != nil {
+		s.logPhase1Error(ctx, "", peer, err)
+		return
+	}
+	var firstErr error
+	var firstSID string
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = s.CheckPhase1Fallback(ctx, peer, id)
+		if err := s.CheckPhase1Fallback(ctx, peer, id); err != nil && firstErr == nil {
+			firstErr, firstSID = err, DeriveID(peer, s.Self, id)
+		}
 	}
+	if firstErr != nil {
+		s.logPhase1Error(ctx, firstSID, peer, firstErr)
+	}
+}
+
+// logPhase1Error logs a fallback sweep error: ids and the error only, never
+// content. Nothing is logged once ctx is cancelled (daemon shutdown).
+func (s *Store) logPhase1Error(ctx context.Context, sid, peer string, err error) {
+	if s.Log == nil || ctx.Err() != nil {
+		return
+	}
+	s.Log.Warn("worksession: phase 1 fallback check failed", "session", sid, "peer", peer, "error", err)
+}
+
+// PeersWithOpenWorkerSessions lists the peers this daemon has a not-yet-closed
+// worker-role work session with (debates excluded), for the start-up rescan of
+// the Phase 1 fallback (R55-061): a trigger lost to a crash is found again.
+func (s *Store) PeersWithOpenWorkerSessions(ctx context.Context) ([]string, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT DISTINCT peer FROM work_sessions WHERE role = ? AND state != ? AND kind != ? ORDER BY peer`,
+		RoleWorker, StateClosed, SessionKindDebate)
+	if err != nil {
+		return nil, fmt.Errorf("worksession: list peers: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("worksession: scan peer: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // findRow resolves the worker-role row for (peer, requestID) through the
@@ -157,8 +204,8 @@ func findRow(ctx context.Context, db *sql.DB, peer, requestID string) (storedRow
 func peerIsUnsupported(ctx context.Context, db *sql.DB, peer, since string) (bool, error) {
 	var one int
 	err := db.QueryRowContext(ctx, `
-SELECT 1 FROM outbox WHERE to_key = ? AND kind IN (?, ?) AND state = 'failed' AND error = 'unsupported_kind' AND created >= ? LIMIT 1`,
-		peer, KindResult, KindCancel, since).Scan(&one)
+SELECT 1 FROM outbox WHERE to_key = ? AND kind IN (?, ?) AND state = ? AND error = ? AND created >= ? LIMIT 1`,
+		peer, KindResult, KindCancel, mail.StateFailed, mail.ErrTextUnsupportedKind, since).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

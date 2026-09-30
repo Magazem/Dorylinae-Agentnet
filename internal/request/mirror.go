@@ -37,8 +37,8 @@ type mirrorOutcome struct {
 	hasResult     bool
 	resultStatus  string
 	until         time.Time
-	// sessionAfter is EarlyComplete's after-commit callback (audits ws.close /
-	// ws.ignored), run once after this transaction commits.
+	// sessionAfter is the session hooks' after-commit callback (audits
+	// ws.close / ws.ignored), run once after this transaction commits.
 	sessionAfter func(context.Context)
 }
 
@@ -213,29 +213,27 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 	if err := CheckCompleteSize(canon); err != nil {
 		return badBody("%s", err.Error())
 	}
-	var sessionAfter func(context.Context)
-	keep := true
+	var sessionAfter, appliedAfter func(context.Context)
 	if s.Sessions != nil {
-		// Docs/protocol/work-session.md §Early complete and Phase 1 workers:
-		// this request.complete may be arriving while A's session for it is
-		// still open (or, rarely, mid-round). keepContent is false only when
-		// the quarantine rule holds; dropping note/result here (before they
-		// are stored) means they are never stored or visible.
-		var after func(context.Context)
-		var kerr error
-		keep, after, kerr = s.Sessions.EarlyComplete(ctx, tx, op.Msg.From, reqID, result != nil || note != "")
+		// Docs/protocol/work-session.md §Early complete and Phase 1 workers,
+		// §Closing the request: this request.complete may be arriving while
+		// A's session for it is still open (or mid-round), or after A closed
+		// it. Replacing note/result here (before they are stored) means B's
+		// dropped content is never stored or visible, and a closed session's
+		// record holds what A accepted (R55-022).
+		cc, after, kerr := s.Sessions.EarlyComplete(ctx, tx, op.Msg.From, reqID, note, result)
 		if kerr != nil {
 			return fmt.Errorf("request: early complete: %w", kerr)
 		}
-		if !keep {
-			note, result = "", nil
+		if cc.Override {
+			note, result = cc.Note, cc.Result
 		}
-		sessionAfter = after
-	}
-	// Docs/protocol/work-session.md #inbox-copy-d18: a dropped result/note
-	// leaves no plaintext copy in mail_inbox either.
-	if !keep {
-		op.Withhold = true
+		// Docs/protocol/work-session.md #inbox-copy-d18: a dropped
+		// result/note leaves no plaintext copy in mail_inbox either.
+		if cc.Withhold {
+			op.Withhold = true
+		}
+		sessionAfter, appliedAfter = after, cc.AfterApplied
 	}
 	var noteArg, resultArg any
 	var resultBytes, outputBytes, artifacts int
@@ -257,8 +255,28 @@ func (s *Store) applyComplete(ctx context.Context, tx *sql.Tx, op *mail.Opened) 
 	if result != nil {
 		ra.status = result.Status
 	}
-	return s.applyMirror(ctx, tx, op, KindComplete, reqID, StateCompleted, seq, at,
-		`note = ?, result = ?`, []any{noteArg, resultArg}, ra, time.Time{}, sessionAfter)
+	if err := s.applyMirror(ctx, tx, op, KindComplete, reqID, StateCompleted, seq, at,
+		`note = ?, result = ?`, []any{noteArg, resultArg}, ra, time.Time{}, sessionAfter); err != nil {
+		return err
+	}
+	if out, ok := op.Outcome.(*mirrorOutcome); ok && out.applied && appliedAfter != nil {
+		out.sessionAfter = chainAfter(out.sessionAfter, appliedAfter)
+	}
+	return nil
+}
+
+// chainAfter runs a, then b; either may be nil.
+func chainAfter(a, b func(context.Context)) func(context.Context) {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return func(ctx context.Context) {
+		a(ctx)
+		b(ctx)
+	}
 }
 
 func (s *Store) applyCancelled(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
@@ -320,6 +338,16 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 			if err := s.Debates.EndedTx(ctx, tx, "out", row.peer, row.id, s.now()); err != nil {
 				return err
 			}
+		}
+		// A late decline or cancelled (only a modified B sends one after
+		// accept) closes an open session like an early complete, in this
+		// transaction, so no grant stays live (R55-062).
+		if (newState == StateDeclined || newState == StateCancelled) && s.Sessions != nil {
+			after, err := s.Sessions.SessionEndedTx(ctx, tx, row.peer, row.id)
+			if err != nil {
+				return fmt.Errorf("request: end session: %w", err)
+			}
+			out.sessionAfter = chainAfter(out.sessionAfter, after)
 		}
 		if ra != nil {
 			out.hasResult, out.resultBytes, out.outputBytes, out.artifacts = ra.hasResult, ra.resultBytes, ra.outputBytes, ra.artifacts

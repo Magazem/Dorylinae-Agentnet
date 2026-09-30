@@ -239,7 +239,7 @@ func TestUnknownKindAckedUnsupported(t *testing.T) {
 		t.Fatalf("acks = %d, want 2", len(acks))
 	}
 	for _, a := range acks {
-		if _, has := a["ids"]; has || !reflect.DeepEqual(idsOf(t, a, "unsupported"), []string{testID}) {
+		if len(a) != 1 || !reflect.DeepEqual(idsOf(t, a, AckUnsupported), []string{testID}) {
 			t.Fatalf("ack body = %v, want unsupported only", a)
 		}
 	}
@@ -331,7 +331,7 @@ func (d *detailRec) Append(_ context.Context, _, action string, detail any) erro
 }
 
 // D10: mail older than ReceiveMaxAge is not stored, deduped or applied; it is
-// audited as stale and acked as unsupported.
+// audited as stale and acked as rejected (R55-F18), alone.
 func TestReceiveMaxAge(t *testing.T) {
 	if ReceiveMaxAge != 14*24*time.Hour {
 		t.Fatal("ReceiveMaxAge must be 14 days")
@@ -378,11 +378,11 @@ func TestReceiveMaxAge(t *testing.T) {
 	}
 
 	acks := f.ackBodies()
-	if len(acks) != 3 { // 13 d twice (ids), 15 d once (unsupported)
+	if len(acks) != 3 { // 13 d twice (ids), 15 d once (rejected)
 		t.Fatalf("acks = %v", acks)
 	}
-	if got := idsOf(t, acks[2], "unsupported"); !reflect.DeepEqual(got, []string{"m-00000000000000000000000000000015"}) {
-		t.Errorf("stale ack unsupported = %v", got)
+	if got := idsOf(t, acks[2], AckRejected); len(acks[2]) != 1 || !reflect.DeepEqual(got, []string{"m-00000000000000000000000000000015"}) {
+		t.Errorf("stale ack = %v, want rejected only", acks[2])
 	}
 }
 

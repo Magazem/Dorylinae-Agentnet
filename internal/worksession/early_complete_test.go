@@ -65,9 +65,10 @@ func TestEarlyComplete_AwaitingResultLeftUnchanged(t *testing.T) {
 		t.Fatalf("session changed by an early complete while awaiting_result: before=%+v after=%+v", before, after)
 	}
 	// The request mirror still applies Phase 1's rule (completed, by seq),
-	// with the content kept since the quarantine rule cannot hold yet.
+	// but B's content is not stored while a result is under review (R55-F18,
+	// review 69b F1): A's close writes A's view.
 	arv, err := a.req.Show(context.Background(), reqID, testB)
-	if err != nil || arv.State != "completed" {
+	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "" {
 		t.Fatalf("A's request = %+v, %v", arv, err)
 	}
 }

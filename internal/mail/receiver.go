@@ -102,14 +102,16 @@ var ErrNoKindHandler = errors.New("mail: no handler for kind keys")
 // ErrBadBody is wrapped by an Apply error when the verified body is invalid for
 // its kind. The receiver rolls back, records only the mail_seen row (marked, so
 // a resend is not re-evaluated), audits mail.reject bad_body without any body
-// content, and acks the id as unsupported. Docs/protocol/request.md §Invalid bodies.
+// content, and acks the id as rejected: never unsupported, which means an
+// unknown kind and triggers the sender's Phase 1 fallback. Docs/protocol/request.md
+// §Invalid bodies, Docs/protocol/mail.md §Ack.
 var ErrBadBody = errors.New("mail: bad body")
 
 // ReasonBadBody is the audit reason for ErrBadBody.
 const ReasonBadBody = "bad_body"
 
 // badBodyMark is appended to mail_seen.received_at of a bad-body row, so a
-// resend is re-acked as unsupported without calling Apply and without a
+// resend is re-acked as rejected without calling Apply and without a
 // migration. Prune's string comparison still orders such rows by time.
 const badBodyMark = "!bad_body"
 
@@ -151,13 +153,13 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	}
 
 	// Older than the sender's outbox lifetime (14 d): the sender has already
-	// given up on it, so do not store, dedupe or apply it. Ack it as unsupported
-	// so a late resend stops.
+	// given up on it, so do not store, dedupe or apply it. Ack it as rejected
+	// so a late resend stops (Docs/protocol/mail.md §Receive age limit).
 	if kind != "keys" && r.now().Sub(op.Msg.Created) > ReceiveMaxAge {
 		if r.Opener.Audit != nil {
 			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonStale)
 		}
-		r.ack(ctx, op.Msg.From, op.Msg.ID, true)
+		r.ack(ctx, op.Msg.From, op.Msg.ID, AckRejected)
 		return reject(11, ReasonStale, nil)
 	}
 
@@ -170,7 +172,7 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		if res == seenBad && r.Opener.Audit != nil {
 			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonBadBody)
 		}
-		r.ack(ctx, op.Msg.From, op.Msg.ID, true)
+		r.ack(ctx, op.Msg.From, op.Msg.ID, AckRejected)
 		return reject(11, ReasonBadBody, nil)
 	}
 	dup := res == seenDup
@@ -184,7 +186,11 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		k.After(ctx, op)
 	}
 	// After commit (or for a duplicate, after rollback): ack.
-	r.ack(ctx, op.Msg.From, op.Msg.ID, !known)
+	member := AckIDs
+	if !known {
+		member = AckUnsupported
+	}
+	r.ack(ctx, op.Msg.From, op.Msg.ID, member)
 	return nil
 }
 
@@ -373,17 +379,25 @@ func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at stri
 	return seenBad, nil
 }
 
-// ack seals and sends one ack directly (not outboxed). Failures are logged:
-// the sender resends and dedupe re-acks.
-func (r *Receiver) ack(ctx context.Context, peer, id string, unsupported bool) {
+// Ack members (Docs/protocol/mail.md §Ack): ids for a mail stored or applied,
+// unsupported for an unknown kind only, rejected for a known kind refused (a
+// bad body or a stale mail).
+const (
+	AckIDs         = "ids"
+	AckUnsupported = "unsupported"
+	AckRejected    = "rejected"
+)
+
+// ack seals and sends one ack, for one id under one member, directly (not
+// outboxed). A rejected ack is always sent alone: a pre-F18 sender refuses a
+// whole ack with an unknown member, so any future batching must keep it
+// separate (review 69b F3). Failures are logged: the sender resends and
+// dedupe re-acks.
+func (r *Receiver) ack(ctx context.Context, peer, id, member string) {
 	pub, ok := r.Peers.MailboxPub(peer)
 	if !ok {
 		r.log().Warn("mail: cannot ack, no mailbox key for peer", "event", "ack_no_mailbox_key", "id", id)
 		return
-	}
-	member := "ids"
-	if unsupported {
-		member = "unsupported"
 	}
 	priv, err := r.Priv()
 	if err != nil {

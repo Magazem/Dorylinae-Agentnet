@@ -218,7 +218,13 @@ trying to deliver content past the quarantine. A's daemon, in the mail transacti
    "early_complete"}`), and the message's inbox copy is stored blank ([D18](#inbox-copy-d18));
 2. if the session is `open`, closes it, `outcome = cancelled` (the diagram's `Open →
    Closed: cancel` edge, caused by B), ending its grants as for every close, and sends the
-   `ws.state` as usual (a Phase 1 B acks it `unsupported`). In `awaiting_result` or
+   `ws.state` as usual (a Phase 1 B acks it `unsupported`). If the session is past round 1
+   (A applied a `ws.result` from B in it, so B is Phase 2 here), B's `result` and `note`
+   are **not stored**: the record gets A's view of the cancelled close (no `result`,
+   `note = "session cancelled"`), the inbox copy is stored blank, and the drop is audited
+   `ws.ignored {…, reason: "early_complete"}` when B sent content (review 78 S1, owner
+   decision). Only a round-1 session that never applied a `ws.result` keeps the Phase 1
+   behaviour: a Phase 1 B never sends one. In `awaiting_result` or
    `quarantined` (only a misbehaving Phase 2 B can cause this) the session is left to A.
    In that case, B's `result` and `note` are **not stored** in the request record
    (R55-F18, review 69b F1), whether or not the quarantine rule holds. A result is under
@@ -511,6 +517,14 @@ R55-029):
   applied `ws.state` sends at most one `ws.cancel`, and a duplicate or echo sends none, so
   the number of `ws.cancel` mails is bounded by A's own `ws.state` mails.
 - The session view on B carries `"runner": true`.
+- If the runner's `ws.result` ends `failed` (other than `unsupported_kind`, which the
+  [Phase 1 requester](#early-complete-and-phase-1-workers) rule handles) or `expired`, the
+  runner cannot send another result in that round, and no agent may cancel. So the helper's
+  daemon sends `ws.cancel` (no reason) for the session, once, when that outbox row turns
+  final, if the session is still `open` with no cancel requested (review 78 S2). B's row
+  records the current round's `ws.result` outbox id (`result_mail`) to find the session.
+  A start-up rescan covers a trigger lost to a crash. An `expired` result may still have
+  reached A: A then refuses the cancel (it is `awaiting_result`) and decides on the result.
 
 A requester cannot tell a run session from a normal one and needs no rule for it: A applies
 the first result for a round, and B no longer lets an agent submit one.
@@ -560,7 +574,11 @@ CREATE UNIQUE INDEX work_sessions_request ON work_sessions (role, peer, request_
 ```sql
 -- migration N (R55-F18; N = the next free version when it merges, 22 on main eadf189)
 ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
+ALTER TABLE work_sessions ADD COLUMN result_mail TEXT;  -- B only (review 78 S2)
 ```
+
+`result_mail` is B only: the outbox id of the current round's `ws.result`, cleared with
+`result` ([Run sessions](#run-sessions)).
 
 `runner` is B only: 1 for a [run session](#run-sessions). Existing rows get 0 and are not
 backfilled: the run queue forgets finished jobs, so the helper cannot tell which old sessions
@@ -694,7 +712,7 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 | `ws.accept_result` | A / `cli` | `{session, peer, round, verification}` |
 | `ws.request_changes` | A / `cli` | `{session, peer, round, from?}` (`from: "quarantined"` when it left `quarantined` without a release, OD-P2-6 (c)) |
 | `ws.discard` | A / `cli` | `{session, peer, round}` (no content; OD-P2-6 (c)) |
-| `ws.cancel` | either / `cli` | `{session, peer, role}` |
+| `ws.cancel` | either / `cli`, `daemon` | `{session, peer, role}`. Actor `daemon` for the helper's automatic cancel of a [run session](#run-sessions) (review 78 S3) |
 | `ws.cancel_in` | A / `daemon` | `{session, peer, result}` |
 | `ws.state` | B / `daemon` | `{session, peer, state, seq, round}` |
 | `ws.close` | A / `daemon` | `{session, peer, outcome, rounds, age_s}` (`age_s` since `opened`: the time-to-result metric) |

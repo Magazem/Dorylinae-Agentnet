@@ -112,7 +112,7 @@ func TestExperienceRecord_DebateCancelledByInitiator(t *testing.T) {
 func TestExperienceRecord_DebateAbandonedByRespondent(t *testing.T) {
 	ctx := context.Background()
 	_, b, _, sid := openPositions(t, 2)
-	if _, _, _, err := b.ws.SubmitCancel(ctx, sid, "no time"); err != nil {
+	if _, _, _, err := b.ws.SubmitCancel(ctx, sid, "no time", worksession.ByAgent); err != nil {
 		t.Fatal(err)
 	}
 	record, ok := debateRecordFor(t, b, sid, RoleRespondent)

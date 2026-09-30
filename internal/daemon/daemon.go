@@ -476,7 +476,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
-	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore, Quarantine: opts.Quarantine}
+	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore, Quarantine: opts.Quarantine, Log: opts.Logger}
 	// Wiring Sessions makes every request_complete on an accepted request
 	// redirect into the session shorthand (Docs/protocol/work-session.md,
 	// "request_complete while a session exists"), and newMailReceiver
@@ -488,16 +488,37 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// "Phase 1 requester"; 2.1a review, "For 2.1b" item 2): once an outbox
 	// row addressed to a session's peer, carrying ws.result or ws.cancel,
 	// ends failed/unsupported_kind, check every open worker-role session with
-	// that peer. finish() (internal/mail/outbox.go) calls this outside any
-	// transaction, off the outbox's own goroutine.
-	outbox.OnFinal = func(_, peer, kind, state, errText string) {
-		if state != mail.StateFailed || errText != "unsupported_kind" {
-			return
-		}
+	// that peer. A rejected ack (a bad body or a stale mail) is a known kind
+	// the peer refused and never triggers it (R55-059). finish()
+	// (internal/mail/outbox.go) calls this outside any transaction, off the
+	// outbox's own goroutine. The checks run on a tracked runner: this defer
+	// runs after the relay and outbox (the triggers) have stopped and before
+	// st.Close, so no check outlives the store (R55-061, review 69b F6).
+	phase1 := newFallbackRunner(ctx, wsStore.CheckPhase1FallbackForPeer)
+	defer phase1.stop()
+	cancelUndeliveredRun := func(mailID string) {
+		phase1.run(func(ctx context.Context) {
+			if _, err := wsStore.CancelUndeliveredRunResult(ctx, mailID); err != nil && ctx.Err() == nil && opts.Logger != nil {
+				opts.Logger.Warn("device: cancel run with undelivered result", "error", err)
+			}
+		})
+	}
+	outbox.OnFinal = func(id, peer, kind, state, errText string) {
 		if kind != worksession.KindResult && kind != worksession.KindCancel {
 			return
 		}
-		go wsStore.CheckPhase1FallbackForPeer(context.WithoutCancel(ctx), peer)
+		if state == mail.StateFailed && errText == mail.ErrTextUnsupportedKind {
+			phase1.start(peer)
+			return
+		}
+		// A run session's result that ended failed (rejected) or expired:
+		// the runner cannot resubmit in this round and no agent may cancel,
+		// so the runner cancels it rather than leave it stuck open (review
+		// 78 S2, Docs/protocol/work-session.md §Run sessions). The start-up
+		// rescan below covers a trigger lost to a crash.
+		if kind == worksession.KindResult && (state == mail.StateFailed || state == mail.StateExpired) {
+			cancelUndeliveredRun(id)
+		}
 	}
 	capStore := &capability.Store{DB: st.DB()}
 	// Every grant of a session ends in the same transaction as the session's
@@ -558,6 +579,27 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates
 	wsStore.Debate = debates
+	// Start-up rescan of the Phase 1 fallback (R55-061): a trigger lost to a
+	// crash (the row turned failed/unsupported_kind, the check never ran) is
+	// found again. wsStore is fully wired here; start-up does not wait.
+	if fbPeers, err := wsStore.PeersWithOpenWorkerSessions(ctx); err != nil {
+		if opts.Logger != nil {
+			opts.Logger.Warn("worksession: phase 1 fallback rescan", "error", err)
+		}
+	} else {
+		for _, peer := range fbPeers {
+			phase1.start(peer)
+		}
+	}
+	if stuck, err := wsStore.UndeliveredRunResults(ctx); err != nil {
+		if opts.Logger != nil {
+			opts.Logger.Warn("device: undelivered run results rescan", "error", err)
+		}
+	} else {
+		for _, id := range stuck {
+			cancelUndeliveredRun(id)
+		}
+	}
 	if opts.OnDebateReady != nil {
 		opts.OnDebateReady(debates)
 	}

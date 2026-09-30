@@ -490,15 +490,27 @@ func backoff(n int) time.Duration {
 	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64())) //nolint:gosec // jitter needs no crypto randomness
 }
 
-// OnAck applies a verified ack mail: delivered for ids, failed for unsupported.
-// Ids that are unknown, addressed to another peer or already final are ignored.
+// Error texts of a row failed by an ack (Docs/protocol/mail.md §Ack). Only
+// ErrTextUnsupportedKind means the peer does not know the kind (the Phase 1
+// fallback's trigger); ErrTextRejected is a known kind the peer refused.
+const (
+	ErrTextUnsupportedKind = "unsupported_kind"
+	ErrTextRejected        = "rejected"
+)
+
+// OnAck applies a verified ack mail: delivered for ids, failed for unsupported
+// and rejected. Ids that are unknown, addressed to another peer or already
+// final are ignored.
 func (o *Outbox) OnAck(op *Opened) {
 	ctx := context.Background()
-	for _, id := range stringList(op.Msg.Body["ids"]) {
+	for _, id := range stringList(op.Msg.Body[AckIDs]) {
 		o.finish(ctx, id, op.Msg.From, StateDelivered, "")
 	}
-	for _, id := range stringList(op.Msg.Body["unsupported"]) {
-		o.finish(ctx, id, op.Msg.From, StateFailed, "unsupported_kind")
+	for _, id := range stringList(op.Msg.Body[AckUnsupported]) {
+		o.finish(ctx, id, op.Msg.From, StateFailed, ErrTextUnsupportedKind)
+	}
+	for _, id := range stringList(op.Msg.Body[AckRejected]) {
+		o.finish(ctx, id, op.Msg.From, StateFailed, ErrTextRejected)
 	}
 }
 
