@@ -300,6 +300,8 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D48 | 2026-09-30 (review 55 D8): **`peers verify` (R55-082) and owner-side `team invite` (R55-084) both need human approval in the approval window** (trust changes). Ticket F24. |
 | D49 | 2026-09-30 (review 55 D10): **rejects of frames from unpaired keys are not audited**; they go to a counted, rate-limited log line only. The audit log stays append-only (no pruning). The macOS launchd plist passes `--log-file` (rotated like Windows). Ticket F14. |
 | D50 | 2026-09-30 (review 55 D12): **retention = per-peer cap on stored incoming open requests (clear refusal when full) + blank `mail_inbox.signed` after apply + a user `agentnet prune --older-than` command for finished items.** No automatic deletion of content. Ticket F13. |
+| D51 | 2026-09-30 (review 55 D14, R55-175 only): **peer-chosen URLs in Slack/Discord webhook text are made non-clickable** (U+200B after the scheme's ':'), Slack unfurl off, Discord embeds suppressed; generic JSON webhooks unchanged. Ticket F19. Other D14 items still open. |
+| D52 | 2026-09-30: **R55-F9 spec approved** (Docs/review/67-r55-f9-spec.md + review 67b): OD-R55F9-1..9 as recommended (a); **OD-R55F9-10 = (b)**: `ping`/`pair` print only daemon-owned text per known code and a fixed "the relay refused the request" for `relay_error`; the sanitised relay message goes only to the `pair.fail` audit `reason` and the Debug log. |
 
 Still open (not urgent): `Docs/` vs `docs/` casing. OD-P4-20 outside security review timing is
 settled (before public launch, D41). Accounts and code signing are settled by D36; hosting by
