@@ -28,15 +28,17 @@ type received struct {
 
 // readQuiet reads envelopes on c in the background and returns, closing c,
 // once the relay has handed key its whole backlog (not draining, nothing
-// buffered) and no frame has arrived for quiet. Control frames are ignored.
-// A timed-out read closes a coder/websocket connection, so it ends c.
-func readQuiet(t *testing.T, s *relay.Server, c *websocket.Conn, key string, quiet time.Duration) received {
+// buffered) and c has read every frame the relay wrote to it, the ready
+// frame that authed read included. No quiet window: it waits for the count,
+// with a deadline, however loaded the machine. Control frames are not
+// returned.
+func readQuiet(t *testing.T, s *relay.Server, c *websocket.Conn, key string) received {
 	t.Helper()
 	c.SetReadLimit(2 << 20)
 	var mu sync.Mutex
 	var got received
-	var last atomic.Int64
-	last.Store(time.Now().UnixNano())
+	var read atomic.Int64
+	read.Store(1) // the ready frame
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -45,7 +47,7 @@ func readQuiet(t *testing.T, s *relay.Server, c *websocket.Conn, key string, qui
 			if err != nil {
 				return
 			}
-			last.Store(time.Now().UnixNano())
+			read.Add(1)
 			h, err := envelope.ParseHeader(raw)
 			if err != nil {
 				continue // a control frame
@@ -58,7 +60,7 @@ func readQuiet(t *testing.T, s *relay.Server, c *websocket.Conn, key string, qui
 		}
 	}()
 	deadline := time.Now().Add(wait)
-	for s.Connected(key) && (s.Draining(key) || s.Buffered(key) > 0 || time.Since(time.Unix(0, last.Load())) < quiet) {
+	for s.Connected(key) && (s.Draining(key) || s.Buffered(key) > 0 || read.Load() < s.Written(key)) {
 		if time.Now().After(deadline) {
 			t.Fatalf("backlog of %s never settled", key[:8])
 		}
@@ -104,7 +106,7 @@ func TestQueueRedeliveryBudgetPerKey(t *testing.T) {
 	downloaded := 0
 	for minute := range 2 {
 		for i := range 20 { // the per-key reconnect limit
-			got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key, 100*time.Millisecond)
+			got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key)
 			if minute == 0 && i == 0 && got.frames != n {
 				t.Fatalf("first connection got %d frames, want all %d (first delivery is not budgeted)", got.frames, n)
 			}
@@ -125,7 +127,7 @@ func TestQueueRedeliveryBudgetPerKey(t *testing.T) {
 	// An hour later the budget has refilled: redeliveries resume.
 	e.clock.Advance(time.Hour)
 	before := e.s.RedeliveredBytes()
-	got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key, 100*time.Millisecond)
+	got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key)
 	if got.frames < 2 || e.s.RedeliveredBytes() <= before {
 		t.Fatalf("after the refill: %d frames, redelivered %d -> %d; want redeliveries again", got.frames, before, e.s.RedeliveredBytes())
 	}
@@ -181,22 +183,22 @@ func TestQueueRedeliveryBudgetPerPrefix(t *testing.T) {
 		queueFor(t, e, cs, snd, r.key, fmt.Sprintf("r%d", i), n)
 	}
 	for i, r := range rcvs { // first deliveries, never acked
-		if got := readQuiet(t, e.s, e.authed(r, fmt.Sprintf("10.2.0.%d", i+1)), r.key, 50*time.Millisecond); got.frames != n {
+		if got := readQuiet(t, e.s, e.authed(r, fmt.Sprintf("10.2.0.%d", i+1)), r.key); got.frames != n {
 			t.Fatalf("first connection of recipient %d got %d frames, want %d", i, got.frames, n)
 		}
 	}
-	if got := readQuiet(t, e.s, e.authed(other, "10.3.0.1"), other.key, 50*time.Millisecond); got.frames != n {
+	if got := readQuiet(t, e.s, e.authed(other, "10.3.0.1"), other.key); got.frames != n {
 		t.Fatalf("first connection of the other recipient got %d frames", got.frames)
 	}
 
 	redelivered := 0
 	for i, r := range rcvs {
-		redelivered += readQuiet(t, e.s, e.authed(r, fmt.Sprintf("10.2.0.%d", i+1)), r.key, 100*time.Millisecond).bytes
+		redelivered += readQuiet(t, e.s, e.authed(r, fmt.Sprintf("10.2.0.%d", i+1)), r.key).bytes
 	}
 	if bound := prefixBudget + frameLen(snd, rcvs[0]); redelivered > bound {
 		t.Fatalf("the prefix's keys got %d bytes redelivered together, want at most %d", redelivered, bound)
 	}
-	if got := readQuiet(t, e.s, e.authed(other, "10.3.0.1"), other.key, 100*time.Millisecond); got.frames != n {
+	if got := readQuiet(t, e.s, e.authed(other, "10.3.0.1"), other.key); got.frames != n {
 		t.Fatalf("a recipient in another prefix got %d of its %d redeliveries", got.frames, n)
 	}
 	e.logged("queue_redeliver_prefix", "10.2.0.0")
@@ -224,7 +226,7 @@ func TestQueueHonestReconnectNothingSkipped(t *testing.T) {
 	_ = c.CloseNow() // 5 in flight
 	waitConnected(t, e.s, rcv.key, false)
 
-	got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key, 100*time.Millisecond)
+	got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key)
 	if want := "q-3 q-4 q-5 q-6 q-7"; strings.Join(got.ids, " ") != want {
 		t.Fatalf("after the reconnect got %v, want %s", got.ids, want)
 	}
@@ -240,7 +242,7 @@ func TestQueueSkipNewMailThenRetry(t *testing.T) {
 	snd, rcv := newPeer(t), newPeer(t)
 	cs := e.authed(snd, "10.1.0.1")
 	queueFor(t, e, cs, snd, rcv.key, "q", 4)
-	if got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key, 50*time.Millisecond); got.frames != 4 {
+	if got := readQuiet(t, e.s, e.authed(rcv, "10.2.0.1"), rcv.key); got.frames != 4 {
 		t.Fatalf("first connection got %d frames", got.frames)
 	}
 
@@ -300,16 +302,16 @@ func TestQueueRedeliveryFairOrderInPrefix(t *testing.T) {
 	}
 	ip := func(i int) string { return fmt.Sprintf("10.2.0.%d", i+1) }
 	for i, p := range append(attackers, v) { // first deliveries, never acked
-		if got := readQuiet(t, e.s, e.authed(p, ip(i)), p.key, 50*time.Millisecond); got.frames != n {
+		if got := readQuiet(t, e.s, e.authed(p, ip(i)), p.key); got.frames != n {
 			t.Fatalf("first connection %d got %d frames", i, got.frames)
 		}
 	}
 	// A1 spends the prefix's burst; A2 is refused and waits, then closes:
 	// a closed connection leaves the list.
-	if got := readQuiet(t, e.s, e.authed(attackers[0], ip(0)), attackers[0].key, 100*time.Millisecond); got.frames != n {
+	if got := readQuiet(t, e.s, e.authed(attackers[0], ip(0)), attackers[0].key); got.frames != n {
 		t.Fatalf("A1 got %d redeliveries, want its %d", got.frames, n)
 	}
-	if got := readQuiet(t, e.s, e.authed(attackers[1], ip(1)), attackers[1].key, 50*time.Millisecond); got.frames != 0 {
+	if got := readQuiet(t, e.s, e.authed(attackers[1], ip(1)), attackers[1].key); got.frames != 0 {
 		t.Fatalf("A2 got %d redeliveries past the prefix budget", got.frames)
 	}
 
@@ -350,7 +352,7 @@ func TestQueueRedeliveryFairOrderInPrefix(t *testing.T) {
 	for elapsed := step; elapsed <= 3*time.Hour; elapsed += step {
 		e.clock.Advance(step)
 		for i, a := range attackers {
-			got := readQuiet(t, e.s, e.authed(a, ip(i)), a.key, 20*time.Millisecond)
+			got := readQuiet(t, e.s, e.authed(a, ip(i)), a.key)
 			if doneAt < 0 {
 				attackerBytes += got.bytes
 			}

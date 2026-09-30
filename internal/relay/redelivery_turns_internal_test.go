@@ -67,6 +67,9 @@ func TestRedeliverSlowReaderDoesNotHoldTurn(t *testing.T) {
 	clock.Advance(time.Hour)
 	s.retrySkipped() // A is served and blocks on its full buffer
 	for range 3 {
+		// A tick is a minute apart in the relay: let V's retry of the last
+		// one finish (A's never does) before the next.
+		waitUntilIdle(t, cv)
 		clock.Advance(time.Hour)
 		s.retrySkipped()
 	}
@@ -80,9 +83,28 @@ func TestRedeliverSlowReaderDoesNotHoldTurn(t *testing.T) {
 	cancel() // ends A's blocked retry before the server closes
 }
 
+// waitUntilIdle waits, with a deadline, until c is not draining.
+func waitUntilIdle(t *testing.T, c *conn) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c.mu.Lock()
+		draining := c.draining
+		c.mu.Unlock()
+		if !draining {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still draining", c.key[:8])
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // M-1 and L-3, the wait list itself: every waiter whose row the prefix can
 // still pay is served in the same tick, in order; a served connection its
-// prefix runs short for goes back to the head; a newcomer goes to the tail;
+// prefix runs short for goes back to its place (here the head); a newcomer
+// goes to the tail;
 // a turn older than redeliverTurn ends, and that connection then waits at
 // the tail.
 func TestRedeliverTurnsHeadSliceAndSeveralPerTick(t *testing.T) {
@@ -189,5 +211,95 @@ func TestRedeliverReadsOnlyWhatBudgetPays(t *testing.T) {
 	t.Logf("20 reconnects: read %d bytes of old frames, redelivered %d", readBytes, sent)
 	if sent == 0 || readBytes > sent {
 		t.Fatalf("read %d bytes of old frames for %d redelivered: reads not bounded by the budget", readBytes, sent)
+	}
+}
+
+// Review 74b L-a (the reviewer's probe, inverted): connections served in the
+// same tick take their read budget before they read, so together they read
+// no more old frames than the prefix pays for and they send.
+func TestRedeliverServedTogetherReadOnlyWhatIsPaid(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	s := testServer(t, noBufferLimits(Options{Now: clock.Now, QueueRedeliverPerKey: -1, QueueRedeliverPerPrefix: 1 << 20}))
+	const prefix = "10.9.0.0"
+	const k = 16
+	var keys []string
+	for range k {
+		key := testKey(t)
+		keys = append(keys, key)
+		queueRows(t, s.q, key, "tiny", 1, 100)
+		queueRows(t, s.q, key, "big", 40, 16<<10)
+		if n := drainAll(s, keyConn(t, s, key, prefix)); n != 41 {
+			t.Fatalf("first delivery %d", n)
+		}
+	}
+	s.lim.mu.Lock()
+	s.lim.redeliverPrefix.take(prefix, clock.Now(), 1<<20)
+	s.lim.mu.Unlock()
+	for _, key := range keys { // all reconnect, all are refused and wait in order
+		if n := drainAll(s, keyConn(t, s, key, prefix)); n != 0 {
+			t.Fatalf("redelivered %d with the budget spent", n)
+		}
+	}
+	var mu sync.Mutex
+	var readBytes int64
+	s.q.mu.Lock()
+	s.q.readHook = func(_ string, rows []queued) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, r := range rows {
+			readBytes += int64(len(r.frame))
+		}
+	}
+	s.q.mu.Unlock()
+	sentBefore := s.redeliveredBytes.Load()
+	clock.Advance(time.Hour) // 1 MiB of prefix budget; every waiter's tiny row fits
+	s.retrySkipped()
+	s.drainWG.Wait()
+	sent := s.redeliveredBytes.Load() - sentBefore
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("one tick, %d served: read %d bytes of old frames, redelivered %d", k, readBytes, sent)
+	if sent == 0 || readBytes > sent || sent > 1<<20 {
+		t.Fatalf("read %d bytes of old frames and redelivered %d, for a 1 MiB prefix budget", readBytes, sent)
+	}
+}
+
+// Review 74b L-b (the reviewer's probe, inverted): a connection that joined
+// the wait list behind V stays behind V when both are served in one tick
+// and the prefix runs short for V first.
+func TestRedeliverBackToPlaceKeepsOrder(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	l := newLimits(Options{QueueRedeliverPerKey: -1, QueueRedeliverPerPrefix: 3600}, clock.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	v, a, n := newConn(nil, "v", 4, "p"), newConn(nil, "a", 4, "p"), newConn(nil, "n", 4, "p")
+	order := func() string {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		var out string
+		for _, x := range l.redeliverWait["p"] {
+			out += x.key
+		}
+		return out
+	}
+	l.mu.Lock()
+	l.redeliverPrefix.take("p", clock.Now(), 3600)
+	l.mu.Unlock()
+	for _, x := range []*conn{v, a} {
+		if got := l.redeliverAllowed(x, 1000); got != limitRedeliverPrefix {
+			t.Fatal(got)
+		}
+		x.skipSize = 1000
+	}
+	clock.Advance(time.Hour)
+	if picked := l.nextServed(func(x *conn) int64 { return x.skipSize }, func(*conn) bool { return true }); len(picked) != 2 {
+		t.Fatalf("picked %d", len(picked))
+	}
+	if got := l.redeliverAllowed(n, 10); got != limitRedeliverPrefix { // a newcomer while both are served
+		t.Fatal(got)
+	}
+	_ = l.redeliverAllowed(v, 3000) // v paid, then short
+	_ = l.redeliverAllowed(v, 3000)
+	_ = l.redeliverAllowed(a, 3000) // a short after v
+	if got := order(); got != "van" {
+		t.Fatalf("wait list %q after both ran short; want van (v joined first, n last)", got)
 	}
 }

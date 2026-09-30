@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -37,9 +38,13 @@ type conn struct {
 	// rows in [skipFrom, skipTo] wait for the retry; skipSize is the first
 	// skipped row's length (0: nothing skipped).
 	skipFrom, skipTo, skipSize int64
-	// waiting marks c as on its prefix's redelivery wait list, and
-	// waitClosed as closed, never to join it again; guarded by limits.mu.
+	// waiting marks c as on its prefix's redelivery wait list, waitClosed
+	// as closed, never to join it again, and waitTicket is its place in the
+	// list (review 74b L-b); guarded by limits.mu.
 	waiting, waitClosed bool
+	waitTicket          uint64
+	// sent counts the frames the write loop has written (tests read it).
+	sent atomic.Int64
 
 	// ephMu makes the half-full check and the send of an ephemeral frame one
 	// step. Without it, senders racing past the check could fill the buffer
@@ -471,6 +476,9 @@ func (c *conn) writeLoop(ctx context.Context, stop context.CancelFunc) {
 			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
 			err := c.ws.Write(wctx, websocket.MessageText, frame)
 			cancel()
+			if err == nil {
+				c.sent.Add(1)
+			}
 			c.written(frame)
 			if err != nil {
 				return

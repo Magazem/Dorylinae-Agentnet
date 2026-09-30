@@ -554,9 +554,11 @@ Each drain step reads the connection's rows oldest first from its cursor, as tod
    from the record header, not the blob) and checks the buckets and rule 6. A skip therefore
    costs an index lookup, not a 1 MiB read, also on the **first** batch of every new
    connection: a key that reconnects 20 times a minute with its budget spent makes the relay
-   read no frame of its old rows. When the first row is paid, the batch reads the rows'
-   lengths first and then only the frames the buckets can still pay for (review 74 M-2), so
-   a tiny first row cannot make the relay read a whole 1 MiB batch it will not send.
+   read no frame of its old rows. When the first row is paid, the batch **takes** from both
+   buckets what they still hold (at most one batch), reads the rows' lengths first and then
+   only the frames that budget pays for, and gives back what it did not send (review 74 M-2,
+   74b L-a). A tiny first row cannot make the relay read a whole 1 MiB batch it will not
+   send, and connections served in the same tick cannot each read by the same tokens.
 5. **Retry.** Once a minute (the sweep tick) the relay serves the waiting connections of each
    prefix in the order they started waiting (rule 6). A connection whose key's and prefix's
    buckets now hold its first skipped row's size drains the range `[skipFrom, skipTo]` again
@@ -576,10 +578,13 @@ Each drain step reads the connection's rows oldest first from its cursor, as tod
    bucket can still pay after those served before it in the tick (review 74 L-3). A
    connection whose own **key** bucket cannot pay keeps its place and the next one is
    served. A served connection that the **prefix** bucket cannot pay part way through its
-   range goes back to the **head** of the list: the prefix ran short, not it (review 74
-   M-1). A turn lasts at most one sweep tick (`redeliverTurn`, 1 min): a connection still
-   served then, typically one that reads slowly, loses its turn, and its next redelivery
-   joins the tail. A slow reader therefore holds no one up for longer than a tick, and a
+   range goes back to **its place** in the list, ahead of every connection that joined
+   after it: the prefix ran short, not it (review 74 M-1). Each connection gets a join ticket
+   when it starts waiting and keeps it while it is served, so connections served in the same
+   tick come back in their old order (review 74b L-b). A turn lasts one sweep tick
+   (`redeliverTurn`, 1 min, stamped with the time the tick began, before its sweep): a
+   connection still served then, typically one that reads slowly, loses its turn, and its
+   next redelivery joins the tail with a new ticket. A slow reader therefore holds no one up for longer than a tick, and a
    key's wait is
    therefore bounded by what the connections ahead of it may redeliver: at most
    `--queue-max-total` ÷ the prefix rate (8 h with the 4.1p unit's 1 GiB and 128 MiB/h;

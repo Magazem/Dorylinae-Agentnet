@@ -432,8 +432,9 @@ func (s *Server) sweepLoop(every time.Duration) {
 		case <-s.stopSweep:
 			return
 		case <-t.C:
+			tick := s.now() // before the sweep, which may take up to 30 s
 			_, _ = s.Sweep()
-			s.retrySkipped()
+			s.retrySkippedAt(tick)
 		}
 	}
 }
@@ -1135,9 +1136,10 @@ func (s *Server) queueFailed(c *conn, op string, err error) {
 // redeliverStep sends one batch of c's rows in (after, upto], all delivered
 // before, under the redelivery budget (relay-hosted.md §2 "Redelivery policy
 // for unacked rows"). The decision for the first row reads only its seq and
-// length (review 66b M1); each row is charged before it is handed over. At the
-// first row the budget refuses, the rest of the range is recorded as skipped
-// on c and the step ends there. It returns the position reached (upto after a
+// length (review 66b M1); every row is paid before it is handed over, the
+// rest of the batch from bytes reserved before the read, whose unused part
+// is given back. At the first row the budget refuses, the rest of the range
+// is recorded as skipped on c and the step ends there. It returns the position reached (upto after a
 // skip or when the range is done), how many rows it sent, and false in ok
 // when c is gone or the queue failed.
 func (s *Server) redeliverStep(c *conn, after, upto int64, reserved *int64) (next int64, sent int, ok bool) {
@@ -1153,25 +1155,33 @@ func (s *Server) redeliverStep(c *conn, after, upto int64, reserved *int64) (nex
 		s.skipRedelivery(c, seq, upto, size, limit)
 		return upto, 0, true
 	}
-	// Read only what the budget can pay: the probed row (paid) and what the
-	// buckets hold after it (review 74 M-2).
-	rows, err := s.q.nextRange(c.key, after, upto, drainBatch, size+s.lim.redeliverAvail(c, drainBatchBytes-size))
+	// Read only what the budget pays: the probed row (paid) and what the
+	// buckets hold after it, taken now and given back below if not sent
+	// (review 74 M-2, 74b L-a).
+	paid := size + s.lim.redeliverReserve(c, drainBatchBytes-size)
+	rows, err := s.q.nextRange(c.key, after, upto, drainBatch, paid)
 	if err != nil {
+		s.lim.redeliverRefund(c, paid)
 		s.queueFailed(c, "next", err)
 		return after, 0, false
 	}
 	next = upto // acked since the probe if there are no rows
 	for i, r := range rows {
 		n := int64(len(r.frame))
-		if i > 0 || r.seq != seq { // the probe paid for the row it saw
-			if limit := s.lim.redeliverAllowed(c, n); limit != "" {
-				s.skipRedelivery(c, r.seq, upto, n, limit)
-				rows, next = rows[:i], upto
-				break
-			}
+		if n <= paid {
+			paid -= n
+			next = r.seq
+			continue
+		}
+		// The rows changed since the probe (an ack): charge this one alone.
+		if limit := s.lim.redeliverAllowed(c, n); limit != "" {
+			s.skipRedelivery(c, r.seq, upto, n, limit)
+			rows, next = rows[:i], upto
+			break
 		}
 		next = r.seq
 	}
+	s.lim.redeliverRefund(c, paid)
 	if !s.sendBatch(c, rows, reserved) {
 		return after, 0, false
 	}
@@ -1208,12 +1218,16 @@ func (s *Server) skipRedelivery(c *conn, from, to, size int64, limit string) {
 }
 
 // retrySkipped serves the redeliveries skipped for want of budget, once per
-// sweep tick (rule 5): in each prefix the first waiting connection whose
-// buckets now hold its first skipped row, and every connection skipped by
+// sweep tick (rule 5): in each prefix the waiting connections, in order,
+// whose first skipped rows the buckets now pay (nextServed), and every
+// connection skipped by
 // its key bucket alone whose buckets now hold it. Each drains its skipped
 // range again under the same rules, then goes on with its normal drain. A
 // connection that is draining keeps its place until a later tick.
-func (s *Server) retrySkipped() {
+func (s *Server) retrySkipped() { s.retrySkippedAt(s.now()) }
+
+// retrySkippedAt is retrySkipped for the sweep tick that began at tick.
+func (s *Server) retrySkippedAt(tick time.Time) {
 	skipped := func(c *conn) int64 {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -1228,7 +1242,7 @@ func (s *Server) retrySkipped() {
 		c.draining = true
 		return true
 	}
-	for _, c := range s.lim.nextServed(skipped, start) {
+	for _, c := range s.lim.nextServedAt(tick, skipped, start) {
 		s.startRetry(c)
 	}
 	s.mu.Lock()

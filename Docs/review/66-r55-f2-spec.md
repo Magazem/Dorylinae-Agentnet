@@ -580,8 +580,8 @@ Fixes after security review 74 ([74-r55-f2-security.md](74-r55-f2-security.md)):
 - **M-1: turns are bounded.** A prefix may have several served connections at once. A
   served connection's turn ends after `redeliverTurn` (1 min, one sweep tick); a slow reader
   loses its turn and its next redelivery joins the tail. A served connection that the
-  **prefix** bucket cannot pay part way through goes back to the **head** of the list, not
-  the tail. Test: `TestRedeliverSlowReaderDoesNotHoldTurn` (the reviewer's probe, inverted).
+  **prefix** bucket cannot pay part way through goes back to its place in the list (by
+  join ticket since 74b L-b), not the tail. Test: `TestRedeliverSlowReaderDoesNotHoldTurn` (the reviewer's probe, inverted).
 - **L-3: several connections per tick.** `nextServed` serves, in list order, every waiter
   whose first skipped row the prefix bucket can still pay after those picked before it in
   the tick. Test: `TestRedeliverTurnsHeadSliceAndSeveralPerTick` (it covers M-1's
@@ -594,3 +594,20 @@ Fixes after security review 74 ([74-r55-f2-security.md](74-r55-f2-security.md)):
   (`envelope.MaxFrameBytes`); `-h` says so. The `Options` fields accept any value (tests).
 - **L-2:** the `busy_timeout` restore after the non-waiting checkpoint uses its own context;
   on error the connection is discarded (`driver.ErrBadConn` through `Conn.Raw`).
+
+Fixes after re-review 74b ([74b-r55-f2-rereview.md](74b-r55-f2-rereview.md)):
+
+- **L-a: the read budget is taken, then refunded.** `redeliverReserve` takes from both
+  buckets what they hold (at most one batch) before the read; `redeliverStep` pays each row
+  from it and `redeliverRefund` gives back the rest. Connections served in the same tick
+  can no longer each size a read by the same tokens. Test:
+  `TestRedeliverServedTogetherReadOnlyWhatIsPaid` (reviewer's probe, inverted: 16 served in
+  one tick read exactly the 1 032 492 bytes they redeliver, within the 1 MiB budget).
+- **L-b: join tickets.** A connection gets a ticket when it joins a wait list and keeps it
+  while served; coming back after its prefix ran short, it is re-inserted by ticket, not at
+  index 0. Test: `TestRedeliverBackToPlaceKeepsOrder`.
+- **Info: turns are stamped with the tick's start** (taken before its sweep), so a turn
+  lasts one tick however long the sweep took.
+- **Test hardening:** `readQuiet` (the external redelivery tests) no longer waits for a quiet
+  window; it waits, with a deadline, until the client has read every frame the relay wrote
+  to that connection (a per-connection write counter, `Server.Written` in tests).
