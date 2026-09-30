@@ -145,7 +145,7 @@ Doing it by hand instead: the script is short, and every step can be run line by
 | `GOMEMLIMIT` | `400MiB` | Review 52 M2. Above the relay's ≈ 255 MiB (below), well inside a 1 GB VM |
 | `--queue-max-total` | `1GiB` | See below |
 | `--queue-min-free-disk` | `512MiB` | See below |
-| `--queue-redeliver-per-key` | `32MiB` | R55-F2: queued bytes sent **again** to a key that did not ack them, per hour (burst the same). First deliveries are not counted. Equals the default |
+| `--queue-redeliver-per-key` | `32MiB` | R55-F2: queued bytes sent **again** to a key that did not ack them, per hour (burst the same). First deliveries are not counted. Equals the default; the relay refuses less than 1 MiB (one frame) |
 | `--queue-redeliver-per-prefix` | `128MiB` | R55-F2: the same for all keys of one /24 together; one attacking prefix gets ≈ 0.3 Mbit/s of re-sends. Equals the default |
 | `LimitNOFILE` | `8192` | 2000 + 256 connections exceed the usual 1024 |
 | `--accounts` | not passed (off) | D40: the owner's own team only |

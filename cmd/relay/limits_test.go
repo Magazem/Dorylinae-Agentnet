@@ -112,6 +112,9 @@ func TestRedeliverFlags(t *testing.T) {
 		{[]string{"--queue-redeliver-per-key", "0"}, "--queue-redeliver-per-key must be positive"},
 		{[]string{"--queue-redeliver-per-prefix", "0"}, "--queue-redeliver-per-prefix must be positive"},
 		{[]string{"--queue-redeliver-per-key", "lots"}, "not a byte size"},
+		// Review 74 L-1: a bucket smaller than a frame never pays for a large one.
+		{[]string{"--queue-redeliver-per-key", "64KiB"}, "--queue-redeliver-per-key must be at least 1MiB (one frame), got 64KiB"},
+		{[]string{"--queue-redeliver-per-prefix", "1048575"}, "--queue-redeliver-per-prefix must be at least 1MiB"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(context.Background(), tc.args, &out, &errb); code != 2 || !strings.Contains(errb.String(), tc.msg) {

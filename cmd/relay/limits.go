@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 )
 
@@ -68,9 +69,9 @@ func (l *limitFlags) register(fs *flag.FlagSet) {
 	l.minFreeDisk = 1 << 30
 	fs.Var(&l.minFreeDisk, "queue-min-free-disk", "free disk under the queue file below which new envelopes get internal (\"relay storage low\"), e.g. 1GiB")
 	l.redeliverPerKey = 32 << 20
-	fs.Var(&l.redeliverPerKey, "queue-redeliver-per-key", "bytes of queued envelopes sent again to one recipient key that did not ack them, per hour (e.g. 32MiB); past it the redelivery waits for the budget to refill. First deliveries are not counted")
+	fs.Var(&l.redeliverPerKey, "queue-redeliver-per-key", "bytes of queued envelopes sent again to one recipient key that did not ack them, per hour (e.g. 32MiB, at least 1MiB: one frame); past it the redelivery waits for the budget to refill. First deliveries are not counted")
 	l.redeliverPerPrefix = 128 << 20
-	fs.Var(&l.redeliverPerPrefix, "queue-redeliver-per-prefix", "bytes of queued envelopes sent again to all recipients on one client prefix together, per hour (e.g. 128MiB); past it the redelivery waits its turn")
+	fs.Var(&l.redeliverPerPrefix, "queue-redeliver-per-prefix", "bytes of queued envelopes sent again to all recipients on one client prefix together, per hour (e.g. 128MiB, at least 1MiB: one frame); past it the redelivery waits its turn")
 	fs.StringVar(&l.clientIPHeader, "client-ip-header", "", "with --behind-proxy (required there): the header carrying the client IP, e.g. Fly-Client-IP or X-Forwarded-For (its last entry); honoured only from a --trusted-proxy peer")
 	fs.Func("trusted-proxy", "CIDR or IP of the proxy in front of this relay (repeatable; required with --client-ip-header); --client-ip-header from any other peer is ignored", func(v string) error {
 		p, err := parseProxy(v)
@@ -123,6 +124,16 @@ func (l *limitFlags) validate(behindProxy bool) error {
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)
+		}
+	}
+	// A bucket smaller than a frame could never pay for a large one, which
+	// would then wait until it expires (review 74 L-1).
+	for _, f := range []struct {
+		name string
+		v    byteSize
+	}{{"--queue-redeliver-per-key", l.redeliverPerKey}, {"--queue-redeliver-per-prefix", l.redeliverPerPrefix}} {
+		if f.v < envelope.MaxFrameBytes {
+			return fmt.Errorf("%s must be at least 1MiB (one frame), got %s", f.name, f.v.String())
 		}
 	}
 	if l.frameReadTimeout <= 0 {

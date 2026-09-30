@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -427,18 +428,46 @@ func (q *queue) probe(to string, after, upto int64) (seq, size int64, found bool
 const queueProbeQuery = `SELECT seq, LENGTH(frame) FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT 1`
 
 // nextRange returns up to limit unexpired rows of to in (after, upto], oldest
-// first, stopping early once they hold maxBytes (always at least one): rows
-// delivered before, for a redelivery. H is not changed.
+// first, whose frames together hold at most maxBytes, and always the first
+// one: rows delivered before, for a redelivery (H is not changed). It reads
+// the rows' lengths first and then only the frames that fit, so a small first
+// row cannot make it read a whole batch the budget will not pay for (review
+// 74 M-2).
 func (q *queue) nextRange(to string, after, upto int64, limit int, maxBytes int64) ([]queued, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
 	defer cancel()
+	lens, err := q.db.QueryContext(ctx, queueRangeLengthsQuery, to, after, upto, q.cutoff(), limit)
+	if err != nil {
+		return nil, err
+	}
+	n, last, total := 0, int64(0), int64(0)
+	for lens.Next() {
+		var seq, size int64
+		if err := lens.Scan(&seq, &size); err != nil {
+			_ = lens.Close()
+			return nil, err
+		}
+		if n > 0 && total+size > maxBytes {
+			break
+		}
+		n, last, total = n+1, seq, total+size
+	}
+	err = lens.Err()
+	_ = lens.Close()
+	if err != nil || n == 0 {
+		return nil, err
+	}
 	rows, err := readRows(ctx, q.db, `SELECT seq, frame FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT ?`,
-		maxBytes, to, after, upto, q.cutoff(), limit)
+		max(total, 1), to, after, last, q.cutoff(), n)
 	if err == nil && q.readHook != nil {
 		q.readHook(to, rows)
 	}
 	return rows, err
 }
+
+// queueRangeLengthsQuery is nextRange's first query. It reads no frame and is
+// answered through queue_by_recipient (a test checks its plan).
+const queueRangeLengthsQuery = `SELECT seq, LENGTH(frame) FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT ?`
 
 // delivered reports the delivered high-water mark of to (0 for none).
 func (q *queue) delivered(to string) (int64, error) {
@@ -653,7 +682,7 @@ func (q *queue) truncateWAL() (bool, error) {
 	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
 		return false, err
 	}
-	defer func() { _, _ = conn.ExecContext(ctx, `PRAGMA busy_timeout = `+strconv.Itoa(busyTimeoutMS)) }()
+	defer restoreBusyTimeout(conn)
 	var busy, logFrames, checkpointed int64
 	err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed)
 	switch {
@@ -663,6 +692,18 @@ func (q *queue) truncateWAL() (bool, error) {
 		return false, err
 	}
 	return busy == 0, nil
+}
+
+// restoreBusyTimeout sets conn's busy timeout back to the DSN's, with a
+// context of its own (the checkpoint's may have ended). If that fails, the
+// connection is discarded, so the pool opens a new one with the DSN's
+// pragmas instead of keeping one that never waits (review 74 L-2).
+func restoreBusyTimeout(conn *sql.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = `+strconv.Itoa(busyTimeoutMS)); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
 }
 
 // isBusy reports whether err is SQLite's SQLITE_BUSY or SQLITE_LOCKED.

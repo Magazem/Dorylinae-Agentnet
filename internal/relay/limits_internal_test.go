@@ -84,7 +84,7 @@ func TestQueueCapChecksUseIndexes(t *testing.T) {
 	if _, err := q.db.Exec(`ANALYZE`); err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range append(queueCapQueries, `DELETE FROM queue WHERE to_key = ? AND from_key = ? AND id = ?`, queueProbeQuery) {
+	for _, query := range append(queueCapQueries, `DELETE FROM queue WHERE to_key = ? AND from_key = ? AND id = ?`, queueProbeQuery, queueRangeLengthsQuery) {
 		args := make([]any, strings.Count(query, "?"))
 		for i := range args {
 			args[i] = "x"

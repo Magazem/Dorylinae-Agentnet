@@ -554,7 +554,9 @@ Each drain step reads the connection's rows oldest first from its cursor, as tod
    from the record header, not the blob) and checks the buckets and rule 6. A skip therefore
    costs an index lookup, not a 1 MiB read, also on the **first** batch of every new
    connection: a key that reconnects 20 times a minute with its budget spent makes the relay
-   read no frame of its old rows.
+   read no frame of its old rows. When the first row is paid, the batch reads the rows'
+   lengths first and then only the frames the buckets can still pay for (review 74 M-2), so
+   a tiny first row cannot make the relay read a whole 1 MiB batch it will not send.
 5. **Retry.** Once a minute (the sweep tick) the relay serves the waiting connections of each
    prefix in the order they started waiting (rule 6). A connection whose key's and prefix's
    buckets now hold its first skipped row's size drains the range `[skipFrom, skipTo]` again
@@ -570,8 +572,15 @@ Each drain step reads the connection's rows oldest first from its cursor, as tod
    (in memory, one entry per connection, removed when the connection closes). While the list
    is not empty, a redelivery on any connection of that prefix that is not being served from
    the list is skipped and that connection joins the tail; refills go to the list in order.
-   A connection whose own **key** bucket cannot pay keeps its place and the next one is
-   served. A served connection that is skipped again re-joins at the tail. A key's wait is
+   Each tick serves, in order, every waiting connection whose first skipped row the prefix
+   bucket can still pay after those served before it in the tick (review 74 L-3). A
+   connection whose own **key** bucket cannot pay keeps its place and the next one is
+   served. A served connection that the **prefix** bucket cannot pay part way through its
+   range goes back to the **head** of the list: the prefix ran short, not it (review 74
+   M-1). A turn lasts at most one sweep tick (`redeliverTurn`, 1 min): a connection still
+   served then, typically one that reads slowly, loses its turn, and its next redelivery
+   joins the tail. A slow reader therefore holds no one up for longer than a tick, and a
+   key's wait is
    therefore bounded by what the connections ahead of it may redeliver: at most
    `--queue-max-total` ÷ the prefix rate (8 h with the 4.1p unit's 1 GiB and 128 MiB/h;
    32 h at the 4 GiB default), well inside the 7-day TTL.
@@ -625,7 +634,9 @@ relay, the daemon **acks** a frame it cannot parse when its routing fields are v
   So the relay runs it as `PRAGMA busy_timeout = 0`, `PRAGMA wal_checkpoint(TRUNCATE)`,
   `PRAGMA busy_timeout = 5000` on its connection, under the queue lock. A busy result is not
   an error: the checkpoint is skipped (the limit above still applies at the next WAL reset)
-  and tried again after the next large sweep.
+  and tried again after the next large sweep. The `busy_timeout` restore runs with a
+  context of its own; if it fails, the connection is discarded so that the pool opens a new
+  one with the DSN's pragmas (review 74 L-2).
 - `add` starts its 10 s deadline after it takes the queue lock (today: before), so an add
   that waited behind a batch still has its full time.
 - The free-disk floor (`--queue-min-free-disk`) is checked on `add` only; after this change
@@ -640,7 +651,9 @@ relay, the daemon **acks** a frame it cannot parse when its routing fields are v
     --queue-redeliver-per-prefix 128MiB \
 ```
 
-Both are per hour with a burst of the same size. The sweep batch (32 rows), the tick budget
+Both are per hour with a burst of the same size, and each must be at least 1 MiB (one frame):
+a smaller bucket could never pay for a large row, which would then wait until it expires
+(review 74 L-1). The sweep batch (32 rows), the tick budget
 (30 s) and the WAL limit (64 MiB) are constants, not flags (OD-R55F2-7, -8). With the unit's
 `--queue-max-total 1GiB`, the worst expiry is 32 batches (≈ 11 s of work spread over one tick
 with the lock released between batches), and the WAL is back under 64 MiB after it. The

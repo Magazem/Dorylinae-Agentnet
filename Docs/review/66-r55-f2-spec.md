@@ -574,3 +574,23 @@ Found while coding (R55-F2-Opus, 2026-09-30); envelope.md and relay-hosted.md ar
 - **Timings of test 2** (NVMe, Windows 11, `ZZ_MB`): 256 MiB swept in 2.2–3.1 s, 1 GiB in
   9.7 s (33 batches), 2 GiB in 17.8 s (65 batches). The longest batch was 0.30–0.52 s, a
   concurrent add waited ≤ 0.6 s, and the WAL was 0 bytes afterwards (truncated).
+
+Fixes after security review 74 ([74-r55-f2-security.md](74-r55-f2-security.md)):
+
+- **M-1: turns are bounded.** A prefix may have several served connections at once. A
+  served connection's turn ends after `redeliverTurn` (1 min, one sweep tick); a slow reader
+  loses its turn and its next redelivery joins the tail. A served connection that the
+  **prefix** bucket cannot pay part way through goes back to the **head** of the list, not
+  the tail. Test: `TestRedeliverSlowReaderDoesNotHoldTurn` (the reviewer's probe, inverted).
+- **L-3: several connections per tick.** `nextServed` serves, in list order, every waiter
+  whose first skipped row the prefix bucket can still pay after those picked before it in
+  the tick. Test: `TestRedeliverTurnsHeadSliceAndSeveralPerTick` (it covers M-1's
+  head/tail/slice rules too).
+- **M-2: reads bounded by the budget.** After the probed row is paid, `nextRange` reads the
+  range's lengths first and fetches only the frames that fit the buckets' remaining tokens
+  (at most `drainBatchBytes`). Test: `TestRedeliverReadsOnlyWhatBudgetPays` (reviewer's
+  probe, inverted: 20 reconnects read exactly the 18 384 bytes they redeliver).
+- **L-1:** `cmd/relay` refuses `--queue-redeliver-per-key` / `-per-prefix` below 1 MiB
+  (`envelope.MaxFrameBytes`); `-h` says so. The `Options` fields accept any value (tests).
+- **L-2:** the `busy_timeout` restore after the non-waiting checkpoint uses its own context;
+  on error the connection is discarded (`driver.ErrBadConn` through `Conn.Raw`).

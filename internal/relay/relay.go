@@ -1153,7 +1153,9 @@ func (s *Server) redeliverStep(c *conn, after, upto int64, reserved *int64) (nex
 		s.skipRedelivery(c, seq, upto, size, limit)
 		return upto, 0, true
 	}
-	rows, err := s.q.nextRange(c.key, after, upto, drainBatch, drainBatchBytes)
+	// Read only what the budget can pay: the probed row (paid) and what the
+	// buckets hold after it (review 74 M-2).
+	rows, err := s.q.nextRange(c.key, after, upto, drainBatch, size+s.lim.redeliverAvail(c, drainBatchBytes-size))
 	if err != nil {
 		s.queueFailed(c, "next", err)
 		return after, 0, false
