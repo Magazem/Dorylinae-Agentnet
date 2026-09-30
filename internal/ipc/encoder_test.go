@@ -16,7 +16,7 @@ import (
 // which would turn each '<' into a six-byte escape (review 55 T6a-01).
 func TestServeConnKeepsHTMLUnescaped(t *testing.T) {
 	s := NewServer()
-	s.Handle("x", func(ctx context.Context, params json.RawMessage) (any, error) {
+	s.Handle("x", func(_ context.Context, _ json.RawMessage) (any, error) {
 		return map[string]string{"text": strings.Repeat("<>&", 1000)}, nil
 	})
 	a, b := net.Pipe()

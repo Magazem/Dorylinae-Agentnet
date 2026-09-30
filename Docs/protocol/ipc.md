@@ -375,7 +375,9 @@ For a cancelled `in` view, `reason` is the sender's cancel reason.
 ([request.md §Result payload](request.md#result-payload-d14)), on both sides. It is the stored
 canonical result plus the derived `output_bytes` (0 without `output`). `request_show` and the
 lifecycle methods return it in full; `request_list` and `inbox_list` **omit `output`** and
-keep `output_bytes`, so list results stay small.
+keep `output_bytes`, so list results stay small. They also **omit `brief`** (up to 16 KiB a
+row, with no paging; review 55 R55-023): in a list view `brief` is the empty string, and
+`request_show` returns both `brief` and `output`.
 
 | Method | Params | Result |
 |---|---|---|
