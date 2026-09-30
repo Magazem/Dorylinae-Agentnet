@@ -1,0 +1,106 @@
+package relay
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+)
+
+// Review 74 (security review of R55-F2), finding M-2: a tiny first old row
+// passes the probe on every reconnect, and nextRange then reads a whole
+// batch (~1 MiB) of old frames of which only a few bytes are sent.
+func TestZZSec74ProbeBypassReadAmplification(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	s := testServer(t, noBufferLimits(Options{Now: clock, QueueRedeliverPerKey: 64 << 10, QueueRedeliverPerPrefix: -1}))
+	key := testKey(t)
+	queueRows(t, s.q, key, "tiny", 1, 100)
+	queueRows(t, s.q, key, "big", 63, 16<<10)
+	if n := drainAll(s, keyConn(t, s, key, "10.2.0.0")); n != 64 {
+		t.Fatalf("first delivery %d", n)
+	}
+	var readBytes int64
+	s.q.mu.Lock()
+	s.q.readHook = func(_ string, rows []queued) {
+		for _, r := range rows {
+			readBytes += int64(len(r.frame))
+		}
+	}
+	s.q.mu.Unlock()
+	// Spend the burst once.
+	drainAll(s, keyConn(t, s, key, "10.2.0.0"))
+	readBytes = 0
+	sentBefore := s.redeliveredBytes.Load()
+	const reconnects = 20
+	for range reconnects {
+		mu.Lock()
+		now = now.Add(3 * time.Second) // 20 reconnects a minute; refill 64 KiB/h ~ 55 B / 3 s
+		mu.Unlock()
+		// A connection is refused once its only redelivery was skipped;
+		// the tiny row needs 100 B, so wait until the bucket holds it.
+		mu.Lock()
+		now = now.Add(5 * time.Second)
+		mu.Unlock()
+		drainAll(s, keyConn(t, s, key, "10.2.0.0"))
+	}
+	sent := s.redeliveredBytes.Load() - sentBefore
+	t.Logf("%d reconnects: read %d KiB of old frames from the DB, redelivered %d bytes", reconnects, readBytes>>10, sent)
+	if readBytes < 10*sent {
+		t.Fatalf("no read amplification: read %d, sent %d", readBytes, sent)
+	}
+}
+
+// Review 74, finding M-1: the connection a retry serves keeps its prefix's
+// turn for as long as its range takes to hand over. A recipient that stops
+// reading (in production: reads one frame just inside writeTimeout) holds
+// the turn while spending almost no budget, and nobody else in its prefix
+// can redeliver meanwhile, however full the buckets are.
+func TestZZSec74ServedTurnHeldBySlowReader(t *testing.T) {
+	var mu sync.Mutex
+	now := time.Now()
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }
+	s := testServer(t, noBufferLimits(Options{Now: clock, QueueRedeliverPerKey: -1, QueueRedeliverPerPrefix: 64 << 10}))
+	const prefix = "10.2.0.0"
+	a, v := testKey(t), testKey(t)
+	queueRows(t, s.q, a, "a", 60, 100)
+	queueRows(t, s.q, v, "v", 5, 100)
+	if n := drainAll(s, keyConn(t, s, a, prefix)); n != 60 {
+		t.Fatalf("a first delivery %d", n)
+	}
+	if n := drainAll(s, keyConn(t, s, v, prefix)); n != 5 {
+		t.Fatalf("v first delivery %d", n)
+	}
+	s.lim.redeliverPrefix.take(prefix, clock(), 64<<10) // the prefix budget is spent
+
+	// A reconnects with a tiny buffer and never reads; it is skipped first.
+	ca := newConn(nil, a, 4, prefix)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ca.led, ca.maxBytes, ca.ctx = s.led, s.lim.connBuffer, ctx
+	s.mu.Lock()
+	s.conns[a] = ca
+	s.mu.Unlock()
+	s.drainStep(ca, false)
+	// V reconnects (an honest drop) and waits behind A.
+	cv := keyConn(t, s, v, prefix)
+	if n := drainAll(s, cv); n != 0 {
+		t.Fatalf("v got %d before its turn", n)
+	}
+	advance(time.Hour)
+	s.retrySkipped() // A is served and blocks on its full buffer
+	for range 6 {
+		advance(time.Hour) // the prefix bucket is full again every tick
+		s.retrySkipped()
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := len(cv.out); got != 0 {
+		t.Fatalf("v was served (%d frames): no finding", got)
+	}
+	cv.mu.Lock()
+	skip := cv.skipSize
+	cv.mu.Unlock()
+	t.Logf("after 7 refills of the prefix bucket, V still waits (skipSize %d), A holds the turn with %d frames in its buffer", skip, len(ca.out))
+}
