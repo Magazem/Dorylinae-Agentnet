@@ -53,6 +53,9 @@ func TestAuditedRejectOncePerEnvelope(t *testing.T) {
 	forged := signedAnnouncement(t, s.priv, pub, created, notAfter, nil)
 	forged["signature"] = b64u.EncodeToString(make([]byte, 64))
 	expired := signedAnnouncement(t, s.priv, pub, "2025-12-01T00:00:00Z", "2025-12-15T00:00:00Z", nil)
+	future := signedAnnouncement(t, s.priv, pub, "2026-03-01T00:00:00Z", "2026-03-10T00:00:00Z", nil)
+	longLived := signedAnnouncement(t, s.priv, pub, "2025-12-31T00:00:00Z", "2026-03-01T00:00:00Z", nil)
+	other := newParty(t, 0x80, 0x90)
 	v2 := baseMsg(s, r, vectorID)
 	v2["v"] = json.Number("2")
 	odd := "not-a-mail-id"
@@ -71,13 +74,20 @@ func TestAuditedRejectOncePerEnvelope(t *testing.T) {
 		{"step 12 ack", env(s, r, sealTo(t, s, r, "", "ack", map[string]any{"x": 1}, vectorNow)), ReasonMalformed, 1, true},
 		{"step 12 forged announcement", env(s, r, sealTo(t, s, r, "", "keys", map[string]any{"announcement": forged}, vectorNow)), ReasonBadKeys, 1, true},
 		{"step 12 expired announcement", env(s, r, sealTo(t, s, r, "", "keys", map[string]any{"announcement": expired}, vectorNow)), ReasonBadKeys, 0, false},
+		{"step 12 announcement created in the future", env(s, r, sealTo(t, s, r, "", "keys", map[string]any{"announcement": future}, vectorNow)), ReasonBadKeys, 1, true},
+		{"step 12 announcement lifetime over 30 days", env(s, r, sealTo(t, s, r, "", "keys", map[string]any{"announcement": longLived}, vectorNow)), ReasonBadKeys, 1, true},
+		{"step 5", env(s, r, resealPlain(t, []byte("nope"), s.key, r, vectorID)), ReasonMalformed, 0, false},
+		{"step 6", env(s, r, sealForged(t, s.key, r, other.priv, r.key, vectorNow)), ReasonSenderMismatch, 0, false},
 		{"step 7", env(s, r, sealBadSig(t, s, third.priv, r)), ReasonBadSignature, 0, false},
 		{"stale", env(s, r, sealTo(t, s, r, "", "request", nil, vectorNow.Add(-MaxAge-1))), ReasonStale, 0, false},
 	}
 	for _, c := range cases {
 		_, _, o := fixture(t)
 		rec := &syncDetailRec{}
-		o.Audit = NewRejectAudit(rec, slog.New(slog.DiscardHandler))
+		ra := NewRejectAudit(rec, slog.New(slog.DiscardHandler))
+		counted := map[string]int{}
+		ra.CountLogged = func(reason string) { counted[reason]++ }
+		o.Audit = ra
 		for range 50 {
 			if _, err := o.Open(c.env); ReasonOf(err) != c.reason {
 				t.Fatalf("%s: err = %v, want %s", c.name, err, c.reason)
@@ -88,6 +98,10 @@ func TestAuditedRejectOncePerEnvelope(t *testing.T) {
 			t.Fatalf("%s: %d rows, want %d: %v", c.name, len(ev), c.rows, ev)
 		}
 		if c.rows == 0 {
+			// Logged only, and counted for the reject summary.
+			if counted[c.reason] != 50 {
+				t.Fatalf("%s: counted %v, want 50 %s", c.name, counted, c.reason)
+			}
 			continue
 		}
 		want := map[string]string{"action": ActionReject, "peer": s.key, "reason": c.reason}
@@ -110,7 +124,7 @@ func TestRejectAuditCountLogged(t *testing.T) {
 	a.Report("p", vectorID, reject(4, ReasonDecrypt, nil))
 	a.Report("p", vectorID, reject(7, ReasonBadSignature, nil))
 	a.Report("p", vectorID, reject(11, ReasonStale, nil))
-	a.Report("p", vectorID, reject(12, ReasonBadKeys, fmt.Errorf("%w: %w", errBadAnnouncement, ErrAnnouncementExpired)))
+	a.Report("p", vectorID, reject(12, ReasonBadKeys, fmt.Errorf("%w: %w", errBadAnnouncement, fmt.Errorf("%w: %w", ErrAnnouncementExpired, errAnnouncementPast))))
 	a.Report("p", vectorID, reject(8, ReasonWrongRecipient, nil))
 	a.Report("p", vectorID, reject(11, ReasonBadBody, nil))
 	a.Report("p", vectorID, reject(11, reasonLimit, nil))

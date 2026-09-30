@@ -74,7 +74,7 @@ func (a *RejectAudit) Flush() { a.lines.Flush() }
 
 // auditable reports whether a relay alone could not have caused re: a check
 // of content the peer signed (steps 8, 9, 10, 12), except a keys announcement
-// that has only expired (a replay causes it), and bad_body or limit.
+// that has only expired (not_after <= now; a replay causes it), and bad_body or limit.
 func auditable(re *RejectError) bool {
 	if re.Reason == ReasonBadBody || re.Reason == reasonLimit {
 		return true
@@ -82,7 +82,7 @@ func auditable(re *RejectError) bool {
 	if re.Step < 8 || re.Step > 12 || re.Step == 11 {
 		return false
 	}
-	return re.Step != 12 || !errors.Is(re.Err, ErrAnnouncementExpired)
+	return re.Step != 12 || !errors.Is(re.Err, errAnnouncementPast)
 }
 
 // Report handles one rejection. err is the *RejectError of the reject; any

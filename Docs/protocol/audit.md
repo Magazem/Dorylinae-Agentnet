@@ -315,7 +315,7 @@ envelope it carried, is **logged** under the daemon's
 | Mail reject, steps 1–7 (`unpaired`, `malformed` at 2 or 5, `key_miss`, `decrypt`, `sender_mismatch`, `bad_signature`) | `mail.reject`, 30/min | log only |
 | Mail reject `stale` (step 11, receive age limit) | `mail.reject`, 30/min | log only (a relay replays old mail) |
 | Mail reject step 12 `bad_keys` for an expired announcement only | `mail.reject`, 30/min | log only (a relay replays a genuine `keys` mail after `not_after`) |
-| Mail reject, steps 8, 9, 10, 12 (other cases), and `bad_body` | `mail.reject`, 30/min | `mail.reject`, once per `(peer, id)` per run, 30/min, `id` only when valid ([mail.md](mail.md#receiving-verification-order)) |
+| Mail reject, steps 8, 9, 10, 12 (other cases), `bad_body`, and `limit` (a refused application mail, R55-F13) | `mail.reject`, 30/min | `mail.reject`, once per `(peer, id)` per run, 30/min, `id` only when valid ([mail.md](mail.md#receiving-verification-order)) |
 | Every session reject | `session.reject`, 30/min | log only ([session.md](session.md#rejection)) |
 | `mail.in` of a kind this daemon does not register | `kind` as sent | `kind: "unknown"` |
 
