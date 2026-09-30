@@ -31,17 +31,15 @@ Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Hi
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
-**Wave R55-M live state (2026-09-30 ~16:30, after a usage-limit pause).** MERGED: F11 (#24), F12 (#26), Dependabot #14/#15/#16. Specs approved + on main: F9, F2, F18, F23, F13, F14 (D52–D55, D57, D58).
+**Wave R55-M live state (2026-09-30 ~19:30).** MERGED: F11 (#24), F12 (#26), F19 (#27), F23 (#28), F9 (#29), Dependabot #14/#15/#16. Specs approved + on main: F9, F2, F18, F23, F13, F14 (D52–D55, D57, D58).
 | Ticket | Slot | Worktree | State |
 |---|---|---|---|
-| F19 | R55-F19-Sonnet `01a0f1a3-e405…` | r55-f19 | review 73 fixed (c662a0e), rebased; gate running → PR |
-| F23 | R55-F23-Opus `01a0f1fa-e8f4…` | r55-f23 | review 76 approve + L1 fixed, rebased; gate running → PR |
-| F9 | R55-F9-Opus `01a0f1ee-0048…` | r55-f9 | review 75 approve; fixing F9S-1/2 |
-| F2 | R55-F2-Opus `01a0f1fa-e612…` | r55-f2 | review 74 changes needed; fixing M-1, M-2, L-1..3 |
-| F17 | R55-F17-Opus `01a0f292-d04a…` | r55-f17 | coding |
-| F24 | R55-F24-Sonnet `01a0f292-d098…` | r55-f24 | coding (needs Opus security review) |
-| F18 | R55-F18-Opus `01a0f31a-6b76…` (task `01a0f31a-9d7e…`) | r55-f18 | coding (migration 22) |
-Next: F13 code after F18 merges (+ card limits after F23); F14 code after F9 and F2 merge. F15 deferred. Backlog noted: F12 review 70 L1 (only the first receive error per id is logged; R55-058 "mark bad after N failures" not done); F23 review 76 I2 (struct decodes after verification → F31/F34 sweep), I3 (F10 must rescue stored cards).
+| F2 | R55-F2rebase-Lite `01a0f354-35be…` | r55-f2 | gated; rebased on F9 → test helper clash (fakeRelay redeclared) being fixed; then push + PR |
+| F18 | R55-F18-Opus `01a0f31a-6b76…` | r55-f18 | draft PR #30 green; review 78 PASS; fixing S1 (D59), S2, S3; then merge |
+| F24 | coder idle `01a0f292-d098…`; sec review R55-F24sec-Opus `01a0f33e-9304…` | r55-f24 | code b4c7b26 (migration 23 + PLACEHOLDER 22: replace with the real F18 migration 22 when rebasing after F18 merges); review 79 running |
+| F17 | R55-F17-Opus `01a0f292-d04a…` | r55-f17 | fixing review 77 (3 M: IPC slot lockout, panic leaves lock, pair_redeem KDF slots) |
+Watch: TestConsultContextCapsIPC (internal/daemon) failed once in a local gate under load; TestPresenceAgentActiveEdge failed once on macOS CI (PR #28, "daemon not connected to the relay" at pair_redeem) and passed on rerun — possible startup race in the test.
+Daemon migrations: F18 = 22, F24 = 23, F13 = 24 (renumber at merge if the order changes). Next: F13 code after F18 merges (+ card limits after F23); F14 code after F9 and F2 merge. F15 deferred. Backlog noted: F12 review 70 L1 (only the first receive error per id is logged; R55-058 "mark bad after N failures" not done); F23 review 76 I2 (struct decodes after verification → F31/F34 sweep), I3 (F10 must rescue stored cards).
 Migrations: F18 = 22 (daemon), F23 maybe 23, F13 later. Next: F17 after F11 merges (ipc.go); F24 (D48) when a slot frees; F18 code after F12 merges; F14 code after F9 merges. F15 deferred (D46). Helper: `$TEMP/gate.sh <worktree>` runs the full gate → `$TEMP/gate-<worktree>.txt` (local daemon/device ACL failures are expected: TestHelper*, TestPhase2*, TestDeviceScopeSummary, TestAuditInventoryDevices, TestCheckProgramOwnerWindows, TestOwnerWalkJunction, TestCheckTarget, TestValidateScopeResolvesArgv0).
 
 **How to run it (lessons from this wave, all binding):**
@@ -305,6 +303,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D56 | 2026-09-30 (review 73 M1): **in Slack text, also break bare domains and emails** (U+200B after '.' between letters/digits and after '@'), since Slack auto-links them; Discord unchanged. Extends D51. |
 | D57 | 2026-09-30: **R55-F13 spec approved** (Docs/review/71-r55-f13-spec.md + review 71b): OD-F13-1..18 as recommended (OD-4 = (c): old mail_inbox copies blanked only by `prune --yes`; OD-12 = (a) 64 live + 512 total) **except OD-F13-8 = (b): `prune --yes` needs human approval in the approval window** (an agent can't delete history alone). Code order F12 → F18 → F13; card limits after F23. |
 | D58 | 2026-09-30: **R55-F14 spec approved** (Docs/review/72-r55-f14-spec.md + review 72b), **superseding D49's narrower wording**: OD-F14-1 (b) every relay-causable reject stays out of the audit (forged from, replays, stale, expired keys, all session rejects); audited mail rejects deduped per (peer, id); OD-2 (a) trailing-count limiter; OD-3 (e) macOS --log-file + launchd stdout renamed to .1 at start when > 1 MiB; OD-4..6 (a); OD-7 (b) one daily `relay.reject_summary` audit row of counts, excluding unpaired. F14 must also add `limit` to audited reject reasons (71b F10). Code after F9 and F2. |
+| D59 | 2026-09-30 (review 78 S1): **close the Phase 1 early-complete gap once B has shown it is Phase 2 in the session**: A ignores (and audits) B's request.complete content once the session is past round 1 or A ever received a ws.result from B in it. Phase 1 peers unaffected. Ticket F18. |
 | D53 | 2026-09-30: **R55-F2 spec approved** (Docs/review/66-r55-f2-spec.md + review 66b): OD-R55F2-1..8 (a), **OD-9 (c)** (no relay-wide redelivery ceiling now; add with accounts or IPv6), OD-10 (a) (per-prefix wait list). Takes migration R3; the Phase 4 plan's R3–R6 become R4–R7. |
 | D54 | 2026-09-30: **R55-F18 spec approved** (Docs/review/69-r55-f18-spec.md + review 69b): OD-F18-1..9 all (a). New ack member `rejected` (sent alone); migration 22 `work_sessions.runner` (also undo it in internal/audit/chain_test.go rewind, not only store_test.go). Code after F12. |
 | D55 | 2026-09-30: **R55-F23 spec approved** (Docs/review/68-r55-f23-spec.md + review 68b): OD-1..6 all (a). Vectors P1, N1–N15. |
