@@ -494,7 +494,10 @@ because only the first 20 characters (100 of 256 bits) are used.
   `pair.complete` (actor `daemon`; `{id, role, peer, trust}`), `pair.fail` (actor `daemon`;
   `{id, role, code, reason}`; for a relay error these are the converted `code` and `message`
   of [envelope.md](envelope.md#error-frame-relay---daemon): a known code or `relay_error`,
-  and a one-line message of at most 200 bytes, R55-F9). Every failure, relay-caused or
+  and a one-line message of at most 200 bytes, R55-F9). The audit `reason` is the only place
+  the relay's message is kept: the failure's `message` in the status and `pair_status` is
+  daemon-owned text for the code, `the relay refused the request` for `relay_error`
+  (OD-R55F9-10 = b). Every failure, relay-caused or
   not, passes one choke point before it is stored in the status, served by `pair_status` or
   audited: `code` through `displayLine(…, 64)` and `reason`/`message` through
   `displayLine(…, 200)`. This also covers the `bad_card`/`bad_mbox` reasons, which embed

@@ -328,7 +328,9 @@ func (m *Manager) HandleError(ef envelope.ErrorFrame) {
 	if sid, ok := m.dialing[r.peer]; ok {
 		m.dropLocked(sid)
 	}
-	m.failPeerLocked(r.peer, ef.Code, ef.Message)
+	// ef is relayclient's converted frame. Its message is relay text and is
+	// never shown: the ping carries daemon text for the code (OD-R55F9-10).
+	m.failPeerLocked(r.peer, ef.Code, envelope.ErrorText(ef.Code))
 }
 
 // Ping sends an encrypted ping to peer and waits up to Config.Wait for the pong.

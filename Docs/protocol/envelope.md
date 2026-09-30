@@ -435,7 +435,12 @@ pairing and sessions) receives only the converted form:
 - **`ref`** is kept only if it is a valid envelope `id` (1–128 characters from
   `[A-Za-z0-9._:-]`); otherwise it is empty, so the frame refers to nothing.
 
-The relay's own `message` is advisory text, never a basis for a decision.
+The relay's own `message` is advisory text, never a basis for a decision, and it is never
+shown to the user (OD-R55F9-10 = b). `agentnet ping` and `agentnet pair` show daemon-owned
+text for the code instead: a fixed sentence per code in the table above, and `the relay
+refused the request` for `relay_error`. The converted message is kept only in the daemon's
+Debug log (`event=relay_error_frame`, a per-frame line under R55-F14's rate limit) and, for a
+pairing, in the `pair.fail` audit row's `reason` ([pairing.md](pairing.md)).
 
 ## Logging rule
 
@@ -526,7 +531,7 @@ re-read the raw frame.
 
 | Relay text | Rule |
 |------------|------|
-| `error` `code`, `message`, `ref` | [The daemon's reading](#error-frame-relay---daemon) above |
+| `error` `code`, `message`, `ref` | [The daemon's reading](#error-frame-relay---daemon) above. The message is never shown: `ping` and `pair` print daemon text per code (`the relay refused the request` for `relay_error`); the message goes only to the `pair.fail` audit `reason` and the Debug log (OD-R55F9-10 = b) |
 | `ready.min_client` | Kept only if it is exactly `MAJOR.MINOR.PATCH` (4.4a, above) |
 | `ready.features` | Only compared against known feature names; never logged or shown |
 | `ready.account` (4.2c, not yet read) | `state` kept only if it is `unbound`, `bound` or `suspended`; `display` goes through `displayLine` and is cut to 128 bytes before it is stored or shown (review 55 C04-04) |

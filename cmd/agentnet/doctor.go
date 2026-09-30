@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -355,7 +356,7 @@ func checkRelay(url string, daemonUp bool, res daemon.StatusResult, probed *prob
 		if !res.Relay.Connected {
 			detail := "not connected"
 			if res.Relay.LastError != "" {
-				detail += ": " + res.Relay.LastError
+				detail += ": " + displaytext.Line(res.Relay.LastError, maxLastError)
 			}
 			return doctorCheck{ID: "relay", State: doctorWarn, Detail: detail,
 				Fix: "check network access to the relay; agentnetd retries automatically"}

@@ -96,7 +96,7 @@ Exit codes: 0 ok (including pending), 1 error or ping failed, 2 usage,
 		if !*asJSON {
 			msg := "ping failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("ping to %s failed: %s (%s)", peerLabel(res.Peer), res.Error.Message, res.Error.Code)
+				msg = fmt.Sprintf("ping to %s failed: %s", peerLabel(res.Peer), failureText(res.Error.Code, res.Error.Message))
 			}
 			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}

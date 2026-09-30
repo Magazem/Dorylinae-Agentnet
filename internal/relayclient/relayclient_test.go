@@ -149,12 +149,11 @@ func TestKeystoreSigner(t *testing.T) {
 // TestDuplicateDeliveriesAreAckedButHandedUpOnce plays a relay that redelivers
 // an envelope (as it does after a reconnect mid-flush).
 func TestDuplicateDeliveriesAreAckedButHandedUpOnce(t *testing.T) {
-	_, priv := newKey(t)
+	pub, priv := newKey(t)
 	senderPub, senderPriv := newKey(t)
 	from := envelope.KeyString(senderPub)
 	_ = senderPriv
-	recvPub, _ := newKey(t)
-	to := envelope.KeyString(recvPub)
+	to := envelope.KeyString(pub) // the client itself: dispatch drops envelopes for other keys
 	mk := func(id string) []byte {
 		raw, err := envelope.Envelope{From: from, To: to, Type: "ping", ID: id, TS: time.Now().UTC().Format(time.RFC3339Nano)}.Marshal()
 		if err != nil {

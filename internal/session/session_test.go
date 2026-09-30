@@ -274,6 +274,26 @@ func TestRelayErrorFailsPing(t *testing.T) {
 	}
 }
 
+// R55-F9 test 5 (OD-R55F9-10): a relay refusal of the session.init fails the
+// ping with the (converted) relay code and the daemon's own text for it; the
+// relay's message, escape sequences and all, is never shown.
+func TestRelayRefusalShowsDaemonText(t *testing.T) {
+	const hostile = "\x1b]8;;https://evil.example/\x07upgrade\x1b]8;;\x07\x1b[2K\rrelay: connected"
+	for _, code := range []string{envelope.CodeQueueFull, envelope.CodeRelayError} {
+		r, a, b := pair(t)
+		r.mu.Lock()
+		r.tamper = func(e *envelope.Envelope) bool {
+			go a.m.HandleError(envelope.ErrorFrame{Code: code, Message: hostile, Ref: e.ID})
+			return false
+		}
+		r.mu.Unlock()
+		st := mustPing(t, a, b)
+		if st.State != StateFailed || st.Error == nil || st.Error.Code != code || st.Error.Message != envelope.ErrorText(code) {
+			t.Fatalf("code %s: status = %+v, error %+v", code, st, st.Error)
+		}
+	}
+}
+
 func TestDataHandlerAndSendData(t *testing.T) {
 	_, a, b := pair(t)
 	if err := a.m.SendData(context.Background(), b.key, []byte(`{"type":"x.test"}`)); !errors.Is(err, ErrNoSession) {

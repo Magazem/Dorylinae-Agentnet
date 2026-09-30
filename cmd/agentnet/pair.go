@@ -11,11 +11,24 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 )
+
+// failureText renders a ping or pair failure as "<message> (<code>)" for the
+// terminal (Docs/cli/ping.md, pair.md; R55-F9). For a relay code the message
+// is envelope.ErrorText, never the relay's words, even from an older daemon
+// that passes them through (OD-R55F9-10); both strings go through
+// displaytext.Line again, so neither can break the line.
+func failureText(code, message string) string {
+	if code == envelope.CodeRelayError || envelope.KnownErrorCode(code) {
+		message = envelope.ErrorText(code)
+	}
+	return displaytext.Line(message, 200) + " (" + displaytext.Line(code, 64) + ")"
+}
 
 // pairTimeout bounds the whole pair call (acceptance: under 2 s). The daemon
 // answers within one second and hands back a pairing ID to poll otherwise.
@@ -120,7 +133,7 @@ Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 		if !*asJSON {
 			msg := "pairing failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("pairing failed: %s (%s)", res.Error.Message, res.Error.Code)
+				msg = "pairing failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
 			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}
