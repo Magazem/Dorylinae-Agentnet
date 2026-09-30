@@ -20,9 +20,9 @@ import (
 // "Frames it cannot parse"): acceptance tests 12 and 13 of
 // Docs/review/66-r55-f2-spec.md.
 
-// fakeRelay authenticates any client, sends it frames on its first
+// badFrameRelay authenticates any client, sends it frames on its first
 // connection, closes that connection if closeAfter, and reports every ack.
-func fakeRelay(t *testing.T, frames [][]byte, closeAfter bool) (url string, acks <-chan envelope.Control) {
+func badFrameRelay(t *testing.T, frames [][]byte, closeAfter bool) (url string, acks <-chan envelope.Control) {
 	t.Helper()
 	ch := make(chan envelope.Control, 1024)
 	var mu sync.Mutex
@@ -79,9 +79,8 @@ func header(from, to, typ, id string) string {
 // its own (from, id), not handed up and not put in the seen-set; an
 // ephemeral one is not acked; one whose from is invalid is not acked.
 func TestUnparseableFrameIsAcked(t *testing.T) {
-	_, priv := newKey(t)
+	rPub, priv := newKey(t) // the client's own key: F9 drops envelopes addressed to another key
 	sPub, _ := newKey(t)
-	rPub, _ := newKey(t)
 	from, to := envelope.KeyString(sPub), envelope.KeyString(rPub)
 	good, err := envelope.Envelope{From: from, To: to, Team: "t", Type: "ping", ID: "bad-1", TS: "2026-01-02T03:04:05Z", Payload: []byte("x")}.Marshal()
 	if err != nil {
@@ -94,7 +93,7 @@ func TestUnparseableFrameIsAcked(t *testing.T) {
 		[]byte(header(from, to, "ping", "bad-3") + `,"team":5,"payload":1}`),
 		good, // the same (from, id) as the first: handed up, it never entered the seen-set
 	}
-	url, acks := fakeRelay(t, frames, false)
+	url, acks := badFrameRelay(t, frames, false)
 	var mu sync.Mutex
 	var got []envelope.Envelope
 	c, err := relayclient.New(relayclient.Config{URL: url, Signer: relayclient.NewKeySigner(priv), OnEnvelope: func(e envelope.Envelope) {
@@ -142,7 +141,7 @@ func TestUnparseableFramesLoggedOnce(t *testing.T) {
 	for i := range 100 {
 		frames = append(frames, []byte(header(from, to, "ping", "bad-"+string(rune('a'+i%26))+string(rune('a'+i/26)))+`,"payload":1}`))
 	}
-	url, acks := fakeRelay(t, frames, true)
+	url, acks := badFrameRelay(t, frames, true)
 	_, logs := runClient(t, relayclient.Config{URL: url, Signer: relayclient.NewKeySigner(priv)})
 	eventually(t, "100 acks", func() bool { return len(acks) == 100 })
 	eventually(t, "the log line", func() bool { return strings.Contains(logs.String(), "event=relay_bad_frame") })
@@ -186,7 +185,7 @@ func TestUnparseableFrameAckMatchesRelayDecoding(t *testing.T) {
 		}
 		want[h.ID] = h.From
 	}
-	url, acks := fakeRelay(t, frames, false)
+	url, acks := badFrameRelay(t, frames, false)
 	runClient(t, relayclient.Config{URL: url, Signer: relayclient.NewKeySigner(priv)})
 	for range corpus {
 		select {
