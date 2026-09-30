@@ -142,14 +142,18 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		}
 	}
 
+	// A dissolved roster is recognised by its state, not by self's presence:
+	// the final roster may leave out a member whose stored card no longer
+	// verifies on the owner's side (review 76 L1), and that member still
+	// learns the team was dissolved.
 	var localState string
 	switch {
-	case selfIn && wireState == StateActive:
-		localState = StateActive
-	case !selfIn:
-		localState = StateRemoved
-	default:
+	case wireState == StateDissolved:
 		localState = StateDissolved
+	case selfIn:
+		localState = StateActive
+	default:
+		localState = StateRemoved
 	}
 
 	ts := stamp(now)

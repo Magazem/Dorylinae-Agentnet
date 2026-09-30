@@ -252,3 +252,75 @@ func TestBadStoredCardDoesNotBlockDelete(t *testing.T) {
 		t.Fatalf("member refused the dissolved roster: %v", err)
 	}
 }
+
+// Review 76 L1: the member left out of the final roster is still sent it and
+// applies it as dissolved, not removed (team.md Apply step 4: a dissolved
+// roster is recognised by its state, not by self's presence).
+func TestOmittedMemberAppliesDissolved(t *testing.T) {
+	ctx := context.Background()
+	owner, good, bad := newTestNode(t, "owner"), newTestNode(t, "good"), newTestNode(t, "bad")
+	tm := ownedTeam(t, owner, good, bad)
+	first := &multiOutbox{}
+	owner.ts.Outbox = first
+	if err := owner.ts.Broadcast(ctx, tm.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(t, owner, bad, "team.roster", cloneBody(t, first.body(t, bad.key))); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := bad.ts.Get(ctx, tm.ID); err != nil || g.State != team.StateActive {
+		t.Fatalf("setup: state %q, %v", g.State, err)
+	}
+	if _, err := owner.db.Exec(`UPDATE peers SET card = ? WHERE public_key = ?`, foldedCard(t, bad, good.key), bad.key); err != nil {
+		t.Fatal(err)
+	}
+	out := &multiOutbox{}
+	owner.ts.Outbox = out
+	nt, err := owner.ts.Delete(ctx, tm.ID, owner.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owner.ts.Broadcast(ctx, nt.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	body := out.body(t, bad.key) // the omitted member is still a recipient
+	if keys := memberKeys(t, body); contains(keys, bad.key) {
+		t.Fatalf("the final roster lists the member with the bad card: %v", keys)
+	}
+	if err := deliver(t, owner, bad, "team.roster", cloneBody(t, body)); err != nil {
+		t.Fatalf("omitted member refused the dissolved roster: %v", err)
+	}
+	if g, err := bad.ts.Get(ctx, tm.ID); err != nil || g.State != team.StateDissolved {
+		t.Fatalf("omitted member state %q, %v; want dissolved", g.State, err)
+	}
+}
+
+// A roster with state active that leaves self out still means removed.
+func TestActiveRosterWithoutSelfIsRemoved(t *testing.T) {
+	ctx := context.Background()
+	owner, good, gone := newTestNode(t, "owner"), newTestNode(t, "good"), newTestNode(t, "gone")
+	tm := ownedTeam(t, owner, good, gone)
+	first := &multiOutbox{}
+	owner.ts.Outbox = first
+	if err := owner.ts.Broadcast(ctx, tm.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(t, owner, gone, "team.roster", cloneBody(t, first.body(t, gone.key))); err != nil {
+		t.Fatal(err)
+	}
+	nt, err := owner.ts.RemoveMember(ctx, tm.ID, gone.key, owner.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &multiOutbox{}
+	owner.ts.Outbox = out
+	if err := owner.ts.Broadcast(ctx, nt.ID, []string{gone.key}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deliver(t, owner, gone, "team.roster", cloneBody(t, out.body(t, gone.key))); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := gone.ts.Get(ctx, tm.ID); err != nil || g.State != team.StateRemoved {
+		t.Fatalf("removed member state %q, %v; want removed", g.State, err)
+	}
+}
