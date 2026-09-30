@@ -57,6 +57,10 @@ type NotifyTestResult struct {
 	Webhook string `json:"webhook"` // "queued" or "none"
 }
 
+// unknownPeerName is the notification's peer name when the peer is not in the
+// peer list (R55-075).
+const unknownPeerName = "unknown peer"
+
 // teamNamer is the part of team.Store the webhook payload needs.
 type teamNamer interface {
 	Get(ctx context.Context, id string) (team.Team, error)
@@ -71,7 +75,9 @@ func notifyAdapter(t *notify.Trigger, ps *peers.Store, ts teamNamer) request.Not
 		return nil
 	}
 	return func(ctx context.Context, event string, info request.NotifyInfo) {
-		name := info.Peer
+		// A peer that cannot be looked up is "unknown peer", never its public
+		// key (notify.md §Privacy: no public keys leave the daemon).
+		name := unknownPeerName
 		fp := ""
 		if ps != nil {
 			if p, err := ps.List(ctx); err == nil {
@@ -111,7 +117,7 @@ func debateNotifyAdapter(t *notify.Trigger, ps *peers.Store, rs *request.Store) 
 		return nil
 	}
 	return func(ctx context.Context, event, sid, peer, requestID string) {
-		name, fp := peer, ""
+		name, fp := unknownPeerName, ""
 		if ps != nil {
 			if list, err := ps.List(ctx); err == nil {
 				for _, p := range list {

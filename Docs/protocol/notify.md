@@ -22,6 +22,7 @@ crosses the relay.
 | `session.result` | The requester's daemon applies a `ws.result` for the current round without quarantine, so it waits for accept-result or request-changes ([work-session.md §Notifications](work-session.md#notifications), D25). Not sent for a quarantined result (`session.quarantined` covers it) nor after a release. Content-free: the peer name and the request title | on |
 | `session.changes` | The worker's daemon applies a `ws.state` that starts a new round with a `changes` text (D25). Content-free: the peer name and the request title, never the changes text | on |
 | `device.linked` | An own-device link becomes `active` on this device ([device.md §Link flow](device.md#link-flow), D22). Content-free: the peer name and its role only. **Desktop only**: never sent to the webhook, because it is news about this person's own devices | on |
+| `debate.constraint`, `debate.agreed`, `debate.escalated`, `debate.broken` | A debate reaches that point ([debate.md §Notifications](debate.md)). Content-free: the peer name and the request title, never the topic, entries or constraint text. In the webhook payload they carry `request.session` and an empty `request.type` and `request.state` | on |
 
 A mirror update that is ignored (`seq` not higher) fires nothing. The trigger runs in the mail
 kind's `After` hook ([mail.md](mail.md), `internal/mail.Kind.After`). It enqueues work and
@@ -36,7 +37,9 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
 "notify.events":  {"request.received": true, "request.accepted": true, "request.declined": true,
                    "request.deferred": false, "request.completed": false, "request.cancelled": true,
                    "session.quarantined": true, "session.result": true,
-                   "session.changes": true, "device.linked": true}
+                   "session.changes": true, "device.linked": true,
+                   "debate.constraint": true, "debate.agreed": true,
+                   "debate.escalated": true, "debate.broken": true}
 "notify.desktop": {"enabled": true}
 "notify.webhook": {"url": "https://...", "format": "generic", "title": false}
 ```
@@ -47,7 +50,8 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
 ## Text and sanitising
 
 Peer-supplied strings (the request `title`, the peer's card `name`, and the team name) are
-**untrusted**. Before they are used in any notification or payload, `notify.Clean(s, max)`:
+**untrusted**. A peer that is not in the peer list is named `unknown peer`; its public key is
+never used as a name. Before they are used in any notification or payload, `notify.Clean(s, max)`:
 
 1. replaces every control character (U+0000–U+001F, U+007F–U+009F), the bidi controls
    (U+200E, U+200F, U+202A–U+202E, U+2066–U+2069) and U+2028/U+2029 with a space;
@@ -149,6 +153,7 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
 ```
 
 - `id`: `w-` + 32 hex, unique per delivery (the replay id). `ts`: when the event was created.
+- `request.session` (the session id) is present on the session and debate events.
 - `request.title` is present **only** with `title: true`. Never included: the brief, artifacts,
   requested grant, reasons, notes, public keys, deadline and `urgency_declared`.
 - `request.result_status` (`pass`, `fail`, `partial` or `n/a`) is present only on
@@ -167,6 +172,15 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
   In `content`, each of `` \ * _ ~ ` | > # - [ ] ( ) < @ `` is backslash-escaped, so that
   a masked link `[click](https://evil)`, a heading or a spoiler in peer text renders as
   typed. Discord requires `content`. Signing and headers are identical for all formats.
+- **Bare URLs.** Slack and Discord turn a bare `https://…` in text into a live link. In
+  `slack` `text` and `discord` `content`, every `://` is written `:` + U+200B (zero-width
+  space) + `//`, so a peer name or title such as `https://evil.example` shows as text and
+  is not clickable. In `slack` `text` **only**, U+200B is also inserted after each `.` that
+  sits between two letters or digits and after each `@`, because Slack also links bare
+  domains (`evil.example/login`) and email addresses; the text stays readable. Discord only
+  links URLs with a scheme, so it needs no more. The `slack` object also carries
+  `"unfurl_links": false` and `"unfurl_media": false`, and the `discord` object `"flags": 4`
+  (suppress embeds). The generic `text` is unchanged.
 
 ### Signature
 
@@ -201,11 +215,16 @@ verify. The signature is for custom receivers.
 - Queue table `webhook_queue` (migration 13; 12 is `requests_result`, D14). Enqueue in the trigger, and a worker sends.
 - `POST` with a 10 s timeout. **Redirects are not followed.** A 3xx is a permanent failure.
   Proxy from the environment (`http.ProxyFromEnvironment`). TLS verification is always on.
+  Connections are not kept alive: each attempt closes its connection, so no idle socket
+  outlives it.
+- A row older than 24 h is not sent: it becomes `failed` (`error = "expired"`) before the POST.
 - `2xx` → `sent`. `408`, `429`, `5xx` or a network error → retry. Other `4xx` → `failed`.
 - Retry delays: 10 s, 1 min, 5 min, 30 min, 2 h, 6 h (×U(0.9, 1.1)). After the 7th attempt, or
   when older than 24 h, → `failed`. Honour `Retry-After` (seconds) if it is longer, capped at 6 h.
-- A `failed` delivery is audited `notify.fail {channel: "webhook", event, id, status?}`. It
-  never holds the URL or the body.
+- A `failed` delivery is audited `notify.fail {channel: "webhook", event, id, status?, error}`. `error` is
+  a daemon-owned code (`expired`, `redirect`, `http_status`, `bad_webhook`, `bad_body`,
+  `no_secret`, `blocked_address`, `timeout` or `network`), never a transport error string,
+  which can carry the host or IP. The row never holds the URL or the body.
 - Rows are deleted 7 days after `sent` or `failed`. At most 1000 non-final rows. When full,
   the oldest pending row is dropped (`failed`, `error = "overflow"`).
 - `agentnet notify --test` enqueues one `test` event (`request` omitted, `text` =
@@ -228,8 +247,13 @@ CREATE TABLE webhook_queue (
 CREATE INDEX webhook_queue_due ON webhook_queue (state, next_attempt);
 ```
 
-`body` holds only the payload above, which never holds the brief. The URL is re-read from
-settings on each attempt, so changing it redirects pending deliveries. Removing the webhook
+`body` holds only the `generic` payload above, which never holds the brief. The URL, the
+`format` and `title` are re-read from settings on each attempt, and the body is rendered
+then: changing the URL redirects pending deliveries, `--webhook-title off` strips the title
+and result status from them, and `--format` reshapes them. (Turning the title on does not
+add a title to a row queued without one.) Rows queued before this rendering existed hold
+their final body and are sent as stored, with the format and title they were queued with,
+until they expire (at most 24 h). Removing the webhook
 marks every pending row `failed` (`error = "removed"`).
 
 ## Privacy summary

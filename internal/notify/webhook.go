@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -120,14 +121,13 @@ func (w *Webhook) enqueue(ctx context.Context, cfg WebhookConfig, ev Event) erro
 		return err
 	}
 	p := buildPayload(id, ev, cfg.Title)
+	p.Queued = 1
 	body, err := marshalPayload(p)
 	if err != nil {
 		return err
 	}
-	body, err = applyFormat(cfg.Format, body, p.Text)
-	if err != nil {
-		return err
-	}
+	// The queue holds the generic body; title and format are applied per
+	// attempt from the current settings (R55-074).
 	return w.Queue.Enqueue(ctx, id, ev.Kind, body, w.now())
 }
 
@@ -172,6 +172,11 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 	if err != nil || !ok {
 		return // removed; --webhook off already failed pending rows.
 	}
+	if now.Sub(row.Created) > queueMaxAge {
+		// Too old: give up before the POST, not only after a failure (R55-076).
+		w.finish(ctx, row, 0, "expired", now, false)
+		return
+	}
 	if err := ValidateWebhookURL(cfg.URL); err != nil {
 		w.finish(ctx, row, 0, "bad_webhook", now, false)
 		return
@@ -187,9 +192,14 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 		return
 	}
 
+	body, err := renderBody([]byte(row.Body), cfg)
+	if err != nil {
+		w.finish(ctx, row, 0, "bad_body", now, false)
+		return
+	}
 	ts := now.Unix()
-	sig := Sign(secret, row.ID, ts, []byte(row.Body))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, strings.NewReader(row.Body))
+	sig := Sign(secret, row.ID, ts, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		w.finish(ctx, row, 0, "bad_webhook", now, false)
 		return
@@ -253,20 +263,38 @@ func (w *Webhook) finish(ctx context.Context, row queueRow, status int, errStr s
 	if err := w.Queue.MarkFailed(ctx, row.ID, status, errStr, now); err != nil {
 		w.log().Warn("notify: mark webhook failed", "error", err)
 	}
-	w.reportFail(ctx, row.Event, row.ID, status)
+	w.reportFail(ctx, row.Event, row.ID, status, errStr)
 }
 
 // reportFail audits a permanent webhook failure. It never holds the URL or
-// the body (Docs/protocol/notify.md §Delivery).
-func (w *Webhook) reportFail(ctx context.Context, event, id string, status int) {
+// the body (Docs/protocol/notify.md §Delivery). error is one of a fixed set of
+// daemon-owned codes (auditErrorCode), never a transport error string.
+func (w *Webhook) reportFail(ctx context.Context, event, id string, status int, errStr string) {
 	if w.Audit == nil {
 		return
 	}
-	detail := map[string]any{"channel": "webhook", "event": event, "id": id}
+	detail := map[string]any{"channel": "webhook", "event": event, "id": id, "error": auditErrorCode(errStr)}
 	if status > 0 {
 		detail["status"] = status
 	}
 	_ = w.Audit.Append(ctx, "daemon", "notify.fail", detail)
+}
+
+// auditErrorCode maps a queue error string to a daemon-owned audit code.
+// Transport errors can carry the webhook host or IP, so they are only
+// classified, never copied.
+func auditErrorCode(errStr string) string {
+	switch {
+	case errStr == "expired", errStr == "redirect", errStr == "bad_webhook",
+		errStr == "bad_body", errStr == "no_secret", errStr == ErrBlockedAddress.Error():
+		return errStr
+	case strings.HasPrefix(errStr, "http_"):
+		return "http_status"
+	case strings.Contains(errStr, "timeout"), strings.Contains(errStr, "deadline exceeded"):
+		return "timeout"
+	default:
+		return "network"
+	}
 }
 
 // transportError renders a client.Do error for the queue's error column

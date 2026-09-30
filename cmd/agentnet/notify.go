@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 )
 
 // notifyTestTimeout bounds `agentnet notify --test`: it waits for a real
@@ -31,7 +32,16 @@ type notifyTestBody struct {
 	daemon.NotifyTestResult
 }
 
-var knownNotifyEvents = []string{"request.received", "request.accepted", "request.declined", "request.deferred", "request.completed", "request.cancelled", "session.quarantined", "session.result", "session.changes", "device.linked"}
+// knownNotifyEvents is derived from the daemon's event table so the two cannot
+// drift (R55-120).
+var knownNotifyEvents = func() []string {
+	out := make([]string, 0, len(notify.DefaultEvents))
+	for ev := range notify.DefaultEvents {
+		out = append(out, ev)
+	}
+	sort.Strings(out)
+	return out
+}()
 
 const notifyUsage = `Configures desktop notifications and the outgoing webhook.
 
@@ -45,8 +55,10 @@ Usage:
   agentnet notify --test [--json]
 
 The events are request.received, request.accepted, request.declined,
-request.cancelled (on by default), request.deferred and request.completed
-(off by default).
+request.cancelled, session.quarantined, session.result, session.changes,
+device.linked and debate.constraint, debate.agreed, debate.escalated,
+debate.broken (all on by default), request.deferred and request.completed
+(off by default). device.linked is desktop only.
 
 The webhook URL must be https:// (http:// only to localhost). When a webhook
 is first set, or on --rotate-secret, the signing secret is printed once

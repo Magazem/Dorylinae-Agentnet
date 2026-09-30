@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // maxPayloadBytes is the payload size cap (Docs/protocol/notify.md §Payload).
@@ -26,6 +27,11 @@ type payload struct {
 	Peer    *payloadPeer    `json:"peer,omitempty"`
 	Team    *payloadTeam    `json:"team,omitempty"`
 	Text    string          `json:"text"`
+	// Queued marks a generic body stored in the webhook queue, to be rendered
+	// at send time. Rows queued before per-attempt rendering (R55-074) are
+	// already in their final format and lack it; they are sent as stored.
+	// renderBody clears it, so it is never sent.
+	Queued int `json:"queued,omitempty"`
 }
 
 type payloadRequest struct {
@@ -108,6 +114,35 @@ func marshalPayload(p payload) ([]byte, error) {
 	return body, nil
 }
 
+// renderBody turns a queued generic body into the bytes to send under the
+// current webhook settings: with title off it drops request.title and
+// result_status and the ": <title>" and " (<status>)" text suffixes, then the
+// format is applied. It runs on every attempt, so changing --webhook-title or
+// --format also changes deliveries that are already queued (R55-074).
+func renderBody(stored []byte, cfg WebhookConfig) ([]byte, error) {
+	var p payload
+	if err := json.Unmarshal(stored, &p); err != nil {
+		return nil, fmt.Errorf("notify: decode queued webhook body: %w", err)
+	}
+	if p.Queued == 0 {
+		return stored, nil // legacy row: already rendered, escaping it again would double-escape
+	}
+	p.Queued = 0
+	if !cfg.Title && p.Request != nil {
+		p.Text = strings.TrimSuffix(p.Text, ": "+p.Request.Title)
+		if p.Request.ResultStatus != "" {
+			p.Text = strings.TrimSuffix(p.Text, " ("+p.Request.ResultStatus+")")
+		}
+		p.Request.Title = ""
+		p.Request.ResultStatus = ""
+	}
+	body, err := marshalPayload(p)
+	if err != nil {
+		return nil, err
+	}
+	return applyFormat(cfg.Format, body, p.Text)
+}
+
 // applyFormat adapts the generic body bytes to the slack or discord shape
 // (Docs/protocol/notify.md §Payload). generic is returned unchanged.
 func applyFormat(format string, body []byte, text string) ([]byte, error) {
@@ -115,11 +150,16 @@ func applyFormat(format string, body []byte, text string) ([]byte, error) {
 	case "", FormatGeneric:
 		return body, nil
 	case FormatSlack:
-		return addFields(body, map[string]any{"text": slackEscape(text)})
+		return addFields(body, map[string]any{
+			"text":         breakSlackLinks(slackEscape(text)),
+			"unfurl_links": false,
+			"unfurl_media": false,
+		})
 	case FormatDiscord:
 		return addFields(body, map[string]any{
-			"content":          discordEscape(text),
+			"content":          breakURLs(discordEscape(text)),
 			"allowed_mentions": map[string]any{"parse": []string{}},
+			"flags":            discordSuppressEmbeds,
 		})
 	default:
 		return nil, fmt.Errorf("notify: unknown webhook format %q", format)
@@ -138,6 +178,44 @@ func addFields(generic []byte, extra map[string]any) ([]byte, error) {
 	}
 	return json.Marshal(m)
 }
+
+// discordSuppressEmbeds is Discord's SUPPRESS_EMBEDS message flag.
+const discordSuppressEmbeds = 4
+
+// zeroWidthSpace is U+200B, written as an escape so it stays visible in source.
+const zeroWidthSpace = "\u200b"
+
+// breakURLs inserts a zero-width space after the colon of every "://", so a
+// peer name or title such as "https://evil.example" is not turned into a live
+// link (or an unfurled preview) by Slack or Discord (R55-175). The text stays
+// readable.
+func breakURLs(s string) string {
+	return strings.ReplaceAll(s, "://", ":"+zeroWidthSpace+"//")
+}
+
+// breakSlackLinks is breakURLs plus, for Slack only, a U+200B after every "."
+// between two letters or digits and after every "@", so that Slack does not
+// link a bare domain ("evil.example/login") or an email address either. The
+// text stays readable. Discord only links URLs with a scheme, so it does not
+// need this.
+func breakSlackLinks(s string) string {
+	s = breakURLs(s)
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i, r := range rs {
+		b.WriteRune(r)
+		switch {
+		case r == '@':
+			b.WriteString(zeroWidthSpace)
+		case r == '.' && i > 0 && i+1 < len(rs) && isLetterOrDigit(rs[i-1]) && isLetterOrDigit(rs[i+1]):
+			b.WriteString(zeroWidthSpace)
+		}
+	}
+	return b.String()
+}
+
+func isLetterOrDigit(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // slackEscape applies Slack's required text escaping so that a peer-supplied
 // "<!channel>" or "<https://evil|click>" renders as inert text instead of a
