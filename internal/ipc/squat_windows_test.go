@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -32,19 +33,23 @@ func asOtherUser(t *testing.T) {
 // daemon's Listen fail as "held by another user", not "already running", and
 // the client sends it nothing.
 func TestPipeSquatRefused(t *testing.T) {
-	ep := `\\.\pipe\dorylinae-test-squat-` + strings.ReplaceAll(t.Name(), "/", "-")
+	// A fresh name per run: a previous run's squatter instance may still be
+	// closing, which fails this create with access denied.
+	ep := fmt.Sprintf(`\\.\pipe\dorylinae-test-squat-%s-%d`, strings.ReplaceAll(t.Name(), "/", "-"), time.Now().UnixNano())
 	sq, err := winio.ListenPipe(ep, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;WD)"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = sq.Close() }()
 	got := make(chan string, 4)
+	accepted := make(chan struct{}, 4)
 	go func() {
 		for {
 			c, err := sq.Accept()
 			if err != nil {
 				return
 			}
+			accepted <- struct{}{}
 			line, _ := bufio.NewReader(c).ReadString('\n')
 			got <- line
 			_, _ = c.Write([]byte(`{"id":"1","ok":true,"result":{"pid":4242}}` + "\n"))
@@ -52,6 +57,22 @@ func TestPipeSquatRefused(t *testing.T) {
 		}
 	}()
 	asOtherUser(t)
+	// go-winio v0.6.2 drops a client that closes before Accept picks it up
+	// (ConnectNamedPipe reports ERROR_NO_DATA and the listener loops), so the
+	// squatter could miss the refused connections. Hold each owner check,
+	// with the client's end open, until the squatter has accepted it: then
+	// the squatter reads everything the client sends. The first currentUser
+	// call is Listen's own, before any pipe is opened.
+	other, calls := currentUser, 0
+	currentUser = func() (*windows.SID, error) {
+		if calls++; calls > 1 {
+			select {
+			case <-accepted:
+			case <-time.After(3 * time.Second):
+			}
+		}
+		return other()
+	}
 
 	_, err = Listen(ep)
 	if !errors.Is(err, ErrForeignOwner) || errors.Is(err, ErrAlreadyRunning) {
