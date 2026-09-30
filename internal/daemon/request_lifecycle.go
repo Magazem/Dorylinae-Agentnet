@@ -455,8 +455,10 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		var p struct {
 			State, Team, Peer string
 		}
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+			}
 		}
 		f := request.ListFilter{State: p.State}
 		if p.Team != "" {
@@ -480,6 +482,10 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		results := make([]RequestView, len(views))
 		for i, v := range views {
 			results[i] = ViewResult(ctx, ps, ts, ws, v, false)
+			// List views omit the brief (up to 16 KiB a row, no paging) as
+			// they omit output, so a long list stays under the 1 MiB IPC
+			// line; request_show carries it.
+			results[i].Brief = ""
 		}
 		return RequestListResult{Requests: results}, nil
 	})
@@ -489,8 +495,10 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 			Team string
 			All  bool
 		}
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+		if len(params) > 0 {
+			if err := json.Unmarshal(params, &p); err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+			}
 		}
 		f := request.InboxFilter{All: p.All}
 		if p.Team != "" {
@@ -507,6 +515,10 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		results := make([]RequestView, len(views))
 		for i, v := range views {
 			results[i] = ViewResult(ctx, ps, ts, ws, v, false)
+			// List views omit the brief (up to 16 KiB a row, no paging) as
+			// they omit output, so a long list stays under the 1 MiB IPC
+			// line; request_show carries it.
+			results[i].Brief = ""
 		}
 		return RequestListResult{Requests: results}, nil
 	})

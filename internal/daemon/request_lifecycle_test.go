@@ -5,6 +5,7 @@ package daemon_test
 // (D14)): the lifecycle IPC and mail kinds through two real daemons.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
@@ -276,5 +277,51 @@ func TestInboxListIPC(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("inbox_list --all does not show the deferred request %s", normalID)
+	}
+}
+
+// TestInboxListManyMaxBriefs: 64 pending requests with maximal (16 KiB)
+// briefs from one peer must still list. List views omit the brief, so the
+// inbox_list and request_list responses stay under the 1 MiB IPC line
+// (review 55 C19-01); request_show still carries the brief.
+func TestInboxListManyMaxBriefs(t *testing.T) {
+	r := newHarnessRelay(t)
+	a, b := newHarnessNode(t, "alice", r), newHarnessNode(t, "bob", r)
+	a.start()
+	b.start()
+	waitRelayConnected(t, r, a.key, b.key)
+	harnessPair(t, a, b)
+	teamID := harnessSharedTeam(t, a, b, "x")
+
+	const n = 64
+	brief := strings.Repeat("a", 16384)
+	var firstID string
+	for i := 0; i < n; i++ {
+		var sub daemon.RequestSubmitResult
+		a.call("request_submit", daemon.RequestSubmitParams{
+			To: b.key, Type: "task", Team: teamID, Title: "t", Brief: brief,
+		}, &sub)
+		if i == 0 {
+			firstID = sub.ID
+		}
+	}
+	harnessWait(t, "B to see all pending requests", func() bool {
+		return b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND state = 'pending'`) == n
+	})
+
+	var inbox daemon.RequestListResult
+	b.call("inbox_list", map[string]any{}, &inbox)
+	if len(inbox.Requests) != n {
+		t.Fatalf("inbox_list = %d requests, want %d", len(inbox.Requests), n)
+	}
+	var out daemon.RequestListResult
+	a.call("request_list", nil, &out)
+	if len(out.Requests) != n {
+		t.Fatalf("request_list = %d requests, want %d", len(out.Requests), n)
+	}
+	var show daemon.RequestShowResult
+	b.call("request_show", map[string]any{"id": firstID}, &show)
+	if show.Request.Brief != brief {
+		t.Errorf("request_show brief = %d bytes, want %d", len(show.Request.Brief), len(brief))
 	}
 }
