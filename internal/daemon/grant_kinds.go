@@ -3,12 +3,11 @@ package daemon
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -26,8 +25,6 @@ type grantOutcome struct {
 	sensitive bool
 	session   string
 }
-
-var pendingGrant sync.Map // map[*mail.Opened]*grantOutcome
 
 // grantKind returns the receiver Kind for "grant" (Docs/protocol/grant.md
 // §Kinds, holder apply).
@@ -48,7 +45,9 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 				return badMailBody("token must be an object")
 			}
 			sigStr, _ := tokMap["sig"].(string)
-			raw, err := json.Marshal(tokenGen)
+			// Canonical form, not json.Marshal: its HTML escaping of & < >
+			// could push a valid token over MaxTokenBytes (review 55 R55-065).
+			raw, err := agentcard.CanonicalValue(tokenGen)
 			if err != nil {
 				return badMailBody("token: %s", err.Error())
 			}
@@ -71,7 +70,7 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			})
 			if verr != nil {
 				if capability.ReasonOf(verr) == capability.ReasonUnknownSession {
-					pendingGrant.Store(op, &grantOutcome{kind: "orphan", grant: capability.GrantIDOf(verr), peer: op.Msg.From})
+					op.Outcome = &grantOutcome{kind: "orphan", grant: capability.GrantIDOf(verr), peer: op.Msg.From}
 					return nil
 				}
 				return fmt.Errorf("grant: %s: %w", capability.ReasonOf(verr), mail.ErrBadBody)
@@ -85,7 +84,7 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 				if existing.Token == string(wire) {
 					return nil // duplicate id, identical token: nothing
 				}
-				pendingGrant.Store(op, &grantOutcome{kind: "conflict", grant: g.ID, peer: op.Msg.From})
+				op.Outcome = &grantOutcome{kind: "conflict", grant: g.ID, peer: op.Msg.From}
 				return nil
 			}
 			if !errors.Is(err, capability.ErrUnknownGrant) {
@@ -99,15 +98,14 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			if err := capStore.InsertHeldTx(ctx, tx, rec); err != nil {
 				return err
 			}
-			pendingGrant.Store(op, &grantOutcome{kind: "in", grant: g.ID, peer: op.Msg.From, action: g.Action, sensitive: g.Sensitive, session: g.Session})
+			op.Outcome = &grantOutcome{kind: "in", grant: g.ID, peer: op.Msg.From, action: g.Action, sensitive: g.Sensitive, session: g.Session}
 			return nil
 		},
 		After: func(ctx context.Context, op *mail.Opened) {
-			v, ok := pendingGrant.LoadAndDelete(op)
+			out, ok := op.Outcome.(*grantOutcome)
 			if !ok || log == nil {
 				return
 			}
-			out := v.(*grantOutcome)
 			switch out.kind {
 			case "orphan":
 				_ = log.Append(ctx, audit.ActorDaemon, "grant.orphan", map[string]any{"grant": out.grant, "peer": out.peer})
@@ -127,8 +125,6 @@ type grantRevokeOutcome struct {
 	grant   string
 	peer    string
 }
-
-var pendingGrantRevoke sync.Map // map[*mail.Opened]*grantRevokeOutcome
 
 // grantRevokeKind returns the receiver Kind for "grant.revoke"
 // (Docs/protocol/grant.md §Kinds, holder apply). Review 24 M8: applied only
@@ -173,16 +169,15 @@ func grantRevokeKind(capStore *capability.Store, log *audit.Log) mail.Kind {
 				return err
 			}
 			if changed {
-				pendingGrantRevoke.Store(op, &grantRevokeOutcome{applied: true, grant: gid, peer: op.Msg.From})
+				op.Outcome = &grantRevokeOutcome{applied: true, grant: gid, peer: op.Msg.From}
 			}
 			return nil
 		},
 		After: func(ctx context.Context, op *mail.Opened) {
-			v, ok := pendingGrantRevoke.LoadAndDelete(op)
+			out, ok := op.Outcome.(*grantRevokeOutcome)
 			if !ok || log == nil {
 				return
 			}
-			out := v.(*grantRevokeOutcome)
 			if out.applied {
 				_ = log.Append(ctx, audit.ActorDaemon, "grant.revoked_in", map[string]any{"grant": out.grant, "peer": out.peer})
 			}

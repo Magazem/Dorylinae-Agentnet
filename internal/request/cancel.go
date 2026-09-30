@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -199,8 +198,6 @@ type cancelOutcome struct {
 	seq                  int
 }
 
-var pendingCancel sync.Map // map[*mail.Opened]*cancelOutcome
-
 // CancelKind is the receiver Kind for "request.cancel", applied on the
 // original recipient of the request (Docs/protocol/request.md §Cancel
 // (OD-P1-11) "Recipient").
@@ -256,7 +253,7 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		if row.state == StateCancelled {
 			out.result = "duplicate"
 		}
-		pendingCancel.Store(op, out)
+		op.Outcome = out
 		return nil
 	}
 	seq := row.stateSeq + 1
@@ -285,7 +282,7 @@ WHERE direction = 'in' AND peer = ? AND id = ?`,
 	}
 	out.result = "cancelled"
 	out.seq = seq
-	pendingCancel.Store(op, out)
+	op.Outcome = out
 	return nil
 }
 
@@ -302,7 +299,7 @@ func (s *Store) applyEarlyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opene
 	out := &cancelOutcome{requestID: reqID, peer: op.Msg.From}
 	if count >= maxTombstones {
 		out.result = "tombstone_limit"
-		pendingCancel.Store(op, out)
+		op.Outcome = out
 		return nil
 	}
 	var reasonArg any
@@ -319,7 +316,7 @@ func (s *Store) applyEarlyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opene
 	}
 	out.result = "early"
 	out.seq = 1
-	pendingCancel.Store(op, out)
+	op.Outcome = out
 	return nil
 }
 
@@ -327,11 +324,10 @@ func (s *Store) applyEarlyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opene
 // or duplicate cancel (Docs/protocol/request.md §Cancel (OD-P1-11), final
 // paragraph "Ordering, resend and inbox").
 func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingCancel.LoadAndDelete(op)
+	out, ok := op.Outcome.(*cancelOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*cancelOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}

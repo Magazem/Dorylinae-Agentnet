@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -105,9 +104,8 @@ func badBody(format string, a ...any) error {
 	return fmt.Errorf("request: "+format+": %w", append(a, mail.ErrBadBody)...)
 }
 
-// applyOutcome is stashed between Apply and After, keyed by the *mail.Opened
-// pointer (unique and stable across one Handle call), mirroring
-// internal/team's pendingRoster.
+// applyOutcome is passed from Apply to After in op.Outcome, so it is dropped
+// with op when the transaction fails (review 55 R55-017).
 type applyOutcome struct {
 	newRow          bool
 	autoDecline     bool
@@ -128,8 +126,6 @@ type applyOutcome struct {
 	acceptAfter     func(context.Context) // audits the daemon's request.accept
 	helperAfter     func(context.Context) // the helper's after-commit step
 }
-
-var pendingApply sync.Map // map[*mail.Opened]*applyOutcome
 
 // Kind returns the receiver handler for kind "request".
 func (s *Store) Kind() mail.Kind {
@@ -178,7 +174,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	switch {
 	case err == nil:
 		out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, conflict: existingHash != hash}
-		pendingApply.Store(op, out)
+		op.Outcome = out
 		return nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("request: read existing row: %w", err)
@@ -191,7 +187,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	}
 	if tombstoned {
 		out := &applyOutcome{requestID: req.ID, peer: op.Msg.From, teamID: req.Team, typ: req.Type, urgency: req.Urgency, newRow: true, cancelled: true}
-		pendingApply.Store(op, out)
+		op.Outcome = out
 		return nil
 	}
 	if now.Sub(req.Created) > maxAge {
@@ -211,7 +207,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 			return err
 		}
 		out.newRow, out.autoDecline, out.code = true, true, code
-		pendingApply.Store(op, out)
+		op.Outcome = out
 		return nil
 	}
 
@@ -258,7 +254,7 @@ INSERT INTO requests (
 			out.autoAccepted, out.acceptAfter = true, acceptAfter
 		}
 	}
-	pendingApply.Store(op, out)
+	op.Outcome = out
 	return nil
 }
 
@@ -409,11 +405,10 @@ INSERT INTO requests (
 // after audits the outcome, once, after a successful commit
 // (Docs/protocol/request.md §Receiving, final paragraph).
 func (s *Store) after(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingApply.LoadAndDelete(op)
+	out, ok := op.Outcome.(*applyOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*applyOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
