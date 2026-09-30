@@ -386,6 +386,9 @@ The daemon does not trust the relay's clock or `expires`.
 
 An attempt that is still waiting when the code TTL ends is failed too. Finished pairings
 stay queryable for one hour. At most 16 pairings may be pending at once, as in v1.
+The daemon starts a pairing's derivation only once its `pair_new` or `pair_redeem` was
+sent to the relay, and runs at most **4** derivations at once (4 × 64 MiB); a derivation
+still waiting for its turn when its pairing ends is dropped (review 55, R55-031).
 
 ### Failure codes (daemon)
 

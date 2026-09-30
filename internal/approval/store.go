@@ -578,6 +578,13 @@ func (s *Store) expireNow(id string) {
 	kind, subject := s.kindSubject(ctx, id)
 	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
 	if err != nil {
+		// The approval is already out of memory, so it can no longer be
+		// confirmed; release what its creator holds anyway (review 55,
+		// R55-146). The row stays pending until ExpireStale on the next start.
+		if s.notifier != nil {
+			s.notifier.Remove(ctx, id)
+		}
+		runOnReject(ctx, entry.action.OnReject)
 		return
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -971,6 +978,23 @@ func (s *Store) List(ctx context.Context) ([]View, error) {
 	if err != nil {
 		return nil, err
 	}
+	out, err := s.listPendingRows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// windowState takes s.mu. It runs only after the cursor is closed: the
+	// store has one SQLite connection, and Create/confirm hold s.mu while
+	// they query it, so taking s.mu with the cursor open deadlocks the
+	// daemon (review 55, R55-030).
+	for i := range out {
+		out[i].Window = s.windowState(out[i].ID)
+	}
+	return out, nil
+}
+
+// listPendingRows reads every pending row, oldest first, and closes the
+// cursor before returning. It must not take s.mu.
+func (s *Store) listPendingRows(ctx context.Context) ([]View, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, summary, created, expires, state, attempts FROM approvals WHERE state = 'pending' ORDER BY created`)
 	if err != nil {
 		return nil, fmt.Errorf("approval: list: %w", err)
@@ -987,8 +1011,10 @@ func (s *Store) List(ctx context.Context) ([]View, error) {
 		if v.AttemptsLeft < 0 {
 			v.AttemptsLeft = 0
 		}
-		v.Window = s.windowState(v.ID)
 		out = append(out, v)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("approval: list: %w", err)
+	}
+	return out, nil
 }

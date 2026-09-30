@@ -52,7 +52,11 @@ only if the current user owns it.
 Newline-delimited JSON (one JSON object per line, UTF-8). The client sends one
 request line and reads one response line; a connection may carry several
 request/response pairs in sequence. Lines are limited to 1 MiB. The server
-closes connections that stay idle for more than 30 s.
+closes connections that stay idle for more than 30 s. It serves at most **64**
+connections at once; further clients wait until one ends. An `accept` error other than
+the listener closing (for example too many open files) is retried after a delay of
+5 ms doubling up to 1 s, not fatal. A handler that panics answers `internal`
+(review 55, R55-083, R55-143).
 
 **Phase 3 draft (ticket 3.1b, review 43 M7):** the server encodes results with
 HTML escaping **off** (`json.Encoder.SetEscapeHTML(false)`). With the default

@@ -27,6 +27,14 @@ const (
 const (
 	maxLine     = 1 << 20
 	idleTimeout = 30 * time.Second
+	// maxConns bounds the connections served at once; further clients wait
+	// in the listener's backlog until one ends (review 55, R55-083).
+	maxConns = 64
+	// Accept errors other than a closed listener (EMFILE, a transient pipe
+	// error) are retried after a delay that doubles from acceptBackoffFirst up
+	// to acceptBackoffCap, instead of stopping the daemon (review 55, R55-083).
+	acceptBackoffFirst = 5 * time.Millisecond
+	acceptBackoffCap   = time.Second
 )
 
 // Request is a client call.
@@ -90,8 +98,9 @@ func (s *Server) Methods() []string {
 	return out
 }
 
-// Serve accepts connections until ctx is cancelled or the listener fails.
-// It closes ln and waits for in-flight connections before returning.
+// Serve accepts connections until ctx is cancelled or ln is closed; other
+// Accept errors are retried. It serves at most maxConns connections at once,
+// closes ln and waits for in-flight connections before returning.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	var wg sync.WaitGroup
 	conns := map[net.Conn]struct{}{}
@@ -114,15 +123,30 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		cmu.Unlock()
 	}()
 
+	slots := make(chan struct{}, maxConns)
+	var retry time.Duration
 	for {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			wg.Wait()
+			return nil
+		}
 		c, err := ln.Accept()
 		if err != nil {
-			wg.Wait()
+			<-slots
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				wg.Wait()
 				return nil
 			}
-			return fmt.Errorf("ipc accept: %w", err)
+			retry = min(max(2*retry, acceptBackoffFirst), acceptBackoffCap)
+			select {
+			case <-time.After(retry):
+			case <-ctx.Done():
+			}
+			continue
 		}
+		retry = 0
 		cmu.Lock()
 		if closing {
 			// Accepted just as shutdown began: the closer above already
@@ -130,6 +154,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			// timeout and hold wg.Wait.
 			cmu.Unlock()
 			_ = c.Close()
+			<-slots
 			continue
 		}
 		conns[c] = struct{}{}
@@ -137,6 +162,7 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			defer func() { <-slots }()
 			s.serveConn(ctx, c)
 			cmu.Lock()
 			delete(conns, c)
@@ -187,7 +213,7 @@ func (s *Server) dispatch(ctx context.Context, line []byte) Response {
 	if s.Activity != nil {
 		s.Activity()
 	}
-	res, err := h(ctx, req.Params)
+	res, err := callHandler(ctx, h, req.Params)
 	if err != nil {
 		var ie *Error
 		if errors.As(err, &ie) {
@@ -200,6 +226,21 @@ func (s *Server) dispatch(ctx context.Context, line []byte) Response {
 		return Response{ID: req.ID, Error: &Error{Code: CodeInternal, Message: "internal error"}}
 	}
 	return Response{ID: req.ID, OK: true, Result: raw}
+}
+
+// errHandlerPanic replaces a handler's panic.
+var errHandlerPanic = errors.New("ipc: handler panicked")
+
+// callHandler runs h, turning a panic into an error so one faulty handler
+// answers "internal error" instead of stopping the daemon (review 55,
+// R55-143).
+func callHandler(ctx context.Context, h HandlerFunc, params json.RawMessage) (res any, err error) {
+	defer func() {
+		if recover() != nil {
+			res, err = nil, errHandlerPanic
+		}
+	}()
+	return h(ctx, params)
 }
 
 // marshalResult encodes a handler's result with HTML escaping off (review 43

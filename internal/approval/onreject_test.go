@@ -136,3 +136,26 @@ func TestOnRejectRunsOnLockout(t *testing.T) {
 		t.Fatalf("OnReject ran %d times, want %d", got, MaxWrongPerDay)
 	}
 }
+
+// An expiry timer whose DB update fails still releases what the approval's
+// creator holds: the approval is already out of memory and can never be
+// confirmed (review 55, R55-146).
+func TestOnRejectRunsWhenExpiryUpdateFails(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	s, _, _ := newTestStore(t, clock(&now))
+	var calls int32
+	v, err := s.Create(ctx, KindGrant, "g-1", "s", Action{OnReject: func(context.Context) { atomic.AddInt32(&calls, 1) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.db.Close() // every later query fails
+	s.expireNow(v.ID)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("OnReject ran %d times, want 1", got)
+	}
+	s.expireNow(v.ID) // already out of memory: nothing more runs
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("OnReject ran %d times after a second expiry, want 1", got)
+	}
+}

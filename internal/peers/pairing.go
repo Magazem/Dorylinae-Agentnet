@@ -69,6 +69,7 @@ const (
 	defaultConfirm   = 60 * time.Second
 	keepFinished     = time.Hour
 	maxPending       = 16
+	maxDerivations   = 4 // Argon2id derivations running at once (64 MiB each)
 	maxAttempts      = 3
 	maxLookupRetries = 3
 	maxReasonLen     = 200
@@ -160,6 +161,11 @@ type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*session
 	closed   bool
+
+	// kdfSlots bounds the Argon2id derivations running at once: a session
+	// that ends frees its pending slot at once, but a started derivation
+	// cannot be stopped (review 55, R55-031).
+	kdfSlots chan struct{}
 }
 
 // kderiv is one Argon2id derivation running in the background.
@@ -228,7 +234,7 @@ func NewManager(cfg Config) *Manager {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	m := &Manager{cfg: cfg, log: cfg.Logger, sessions: map[string]*session{}}
+	m := &Manager{cfg: cfg, log: cfg.Logger, sessions: map[string]*session{}, kdfSlots: make(chan struct{}, maxDerivations)}
 	if m.log == nil {
 		m.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -378,25 +384,54 @@ func (m *Manager) ownMaterial() ([]byte, error) {
 	return canon, nil
 }
 
-// startKDF derives K in the background for the session's current lookup and
-// secret. The secret bytes are copied and the copy wiped once Argon2id is done.
-func (m *Manager) startKDFLocked(s *session) *kderiv {
+// deriveKFunc is deriveK; tests replace it to observe concurrency.
+var deriveKFunc = deriveK
+
+// kdfStart starts deriving K for the session's current lookup and secret.
+type kdfStart func()
+
+// prepareKDFLocked sets s.kd to a new derivation for the session's current
+// lookup and secret, and returns the function that starts it. Caller holds
+// m.mu. The caller starts it only once the relay accepted the pair_new or
+// pair_redeem frame, so a pairing that fails at once derives nothing
+// (review 55, R55-031); until then kd.ready stays open, and every waiter
+// also waits on s.done. The secret bytes are copied and the copy wiped once
+// Argon2id is done or skipped.
+func (m *Manager) prepareKDFLocked(s *session) kdfStart {
 	kd := &kderiv{ready: make(chan struct{})}
 	s.kd = kd
 	lookup, secret := s.lookup, append([]byte(nil), s.secret...)
-	go func() {
-		k := deriveK(lookup, secret)
-		clear(secret)
+	live := func() bool {
 		m.mu.Lock()
-		if s.st.State == StatePending && s.kd == kd {
-			kd.k = k
-		} else {
-			clear(k)
-		}
-		m.mu.Unlock()
-		close(kd.ready)
-	}()
-	return kd
+		defer m.mu.Unlock()
+		return s.st.State == StatePending && s.kd == kd
+	}
+	return func() {
+		go func() {
+			defer close(kd.ready)
+			defer clear(secret)
+			// At most maxDerivations run at once; a derivation still queued
+			// when its pairing ends or gets a new code is dropped.
+			select {
+			case m.kdfSlots <- struct{}{}:
+			case <-s.done:
+				return
+			}
+			if !live() {
+				<-m.kdfSlots
+				return
+			}
+			k := deriveKFunc(lookup, secret)
+			<-m.kdfSlots
+			m.mu.Lock()
+			if s.st.State == StatePending && s.kd == kd {
+				kd.k = k
+			} else {
+				clear(k)
+			}
+			m.mu.Unlock()
+		}()
+	}
 }
 
 // newSession registers a pending session. Caller holds no lock.
@@ -457,7 +492,7 @@ func (m *Manager) beginIssuer(ctx context.Context, tag Tag) (*session, error) {
 		return nil, err
 	}
 	m.mu.Lock()
-	m.startKDFLocked(s)
+	startKDF := m.prepareKDFLocked(s)
 	lookup := s.lookup
 	m.mu.Unlock()
 	m.audit(ctx, audit.ActorCLI, ActionPairStart, map[string]any{"id": s.st.ID, "role": RoleIssuer, "version": 2})
@@ -465,6 +500,7 @@ func (m *Manager) beginIssuer(ctx context.Context, tag Tag) (*session, error) {
 	if err := m.sendControl(ctx, req); err != nil {
 		return nil, m.failSend(s, err)
 	}
+	startKDF()
 	return s, nil
 }
 
@@ -494,13 +530,14 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string, tag Tag) (*ses
 		return s, nil
 	}
 	m.mu.Lock()
-	m.startKDFLocked(s)
+	startKDF := m.prepareKDFLocked(s)
 	lookup := s.lookup
 	m.mu.Unlock()
 	req := envelope.Control{Op: envelope.OpPairRedeem, Lookup: lookup, Card: m.cfg.Card, Mbox: mbox, Ref: s.st.ID}
 	if err := m.sendControl(ctx, req); err != nil {
 		return nil, m.failSend(s, err)
 	}
+	startKDF()
 	return s, nil
 }
 
@@ -597,7 +634,7 @@ func (m *Manager) reissue(s *session) {
 		clear(old.k)
 		old.k = nil
 	}
-	m.startKDFLocked(s)
+	startKDF := m.prepareKDFLocked(s)
 	lookup, mbox := s.lookup, s.ownMbox
 	m.armLocked(s, m.cfg.RelayWait, FailTimeout, "no reply from the relay")
 	m.mu.Unlock()
@@ -606,7 +643,9 @@ func (m *Manager) reissue(s *session) {
 	req := envelope.Control{Op: envelope.OpPairNew, Lookup: lookup, Card: m.cfg.Card, Mbox: mbox, Ref: s.st.ID}
 	if err := m.sendControl(ctx, req); err != nil {
 		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: failUnavailable, Message: "could not reach the relay"})
+		return
 	}
+	startKDF()
 }
 
 func (m *Manager) onCode(ctl envelope.Control) {
