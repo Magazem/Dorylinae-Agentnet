@@ -354,6 +354,7 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
 - **Test flakiness patterns:** never read async state/audit once; poll with a deadline. Tests
   that write files use `internal/testutil.TempDir(t)` (Windows AV holds deleted files).
 - **CLI:** base64url keys can start with `-`; `parseInterspersed` handles it (don't regress).
+- **GitHub hygiene (owner, 2026-09-30):** delete the remote branch after its PR merges (`git push origin --delete <branch>`), and check `gh pr list` for Dependabot PRs at every session start (rebase with `@dependabot rebase`, merge when CI is green). 11 stale branches were cleaned up on 2026-09-30.
 - **Workers:**
   - Paused after "could not process queued message after 3 delivery attempts": use
     `team_interrupt_agent` to resume from the files in its worktree; don't respawn.
