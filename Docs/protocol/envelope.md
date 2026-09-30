@@ -40,7 +40,7 @@ base64url without padding (43 characters), the same form as `public_key` in the
 | `type` | string | Message type, 1-64 characters from `[a-z0-9._-]`, e.g. `ping` |
 | `id` | string | Sender-chosen identifier, 1-128 characters from `[A-Za-z0-9._:-]`. Unique per sender; used to correlate error frames |
 | `ts` | string | Sender's clock, RFC 3339. The relay checks that it parses, not that it is fresh |
-| `payload` | string | Opaque bytes, standard base64 (RFC 4648, with padding). May be `""` |
+| `payload` | string | Opaque bytes, standard base64 (RFC 4648, with padding). May be `""`. From R55-F2 the relay requires it: present, a JSON string **without escape sequences**, whose content is valid standard base64; otherwise `bad_envelope` (see below) |
 
 ### Envelope types
 
@@ -61,10 +61,31 @@ The character sets keep `team`, `type` and `id` safe to log. They are metadata,
 not content: do not put secrets in them.
 
 **Payload is opaque to the relay.** The relay parses only the routing fields,
-never decodes `payload`, never logs it, and forwards the frame it received
+never interprets `payload`, never logs it, and forwards the frame it received
 **byte for byte**: it does not re-encode, reorder or add fields. Unknown extra
 fields are forwarded untouched. From ticket 0.6 the payload is ciphertext
 (see [session.md](session.md)).
+
+**Payload shape check (R55-F2, R55-010).** The relay does check that `payload` is
+well-formed base64, because an envelope the recipient cannot parse is never acked and
+would otherwise sit in the recipient's offline queue for the whole TTL. The check:
+
+- runs on every envelope, ephemeral ones included, at step 1 of [Forwarding](#forwarding);
+- finds `payload` with the same JSON decoding as the routing fields
+  (`envelope.ParseHeader`: Go's `encoding/json`, so a repeated key counts once, the last
+  one wins, and key names match case-insensitively), so it judges the value the recipient's
+  parser will see;
+- accepts only a JSON string token with no `\` escape inside it, whose content is valid
+  standard base64 with padding, `=` only in the last four characters (`""` is valid);
+  a missing field, `null`, a number, an object or an array is refused;
+- reads the token in place and keeps no decoded copy (constant memory per frame); its CPU
+  is bounded by the bytes already charged at step 0.
+
+`envelope.Marshal` always writes the payload as a padded base64 string, and base64's
+alphabet needs no JSON escapes, so no honest daemon is refused. The rule is stricter than
+the daemon's own parser (which also takes a missing or `null` payload, and escapes), so
+every envelope the relay accepts, the recipient can parse. Nothing is decoded for
+meaning: the relay still never looks inside the ciphertext.
 
 Maximum frame size is 1 MiB (`1048576` bytes). A larger frame closes the
 connection (WebSocket close code 1009).
@@ -234,7 +255,10 @@ After `ready`, the daemon sends envelope frames. For each one the relay:
 0. From R55-F1, charges the frame's bytes to the sender's and its prefix's byte rates
    before parsing it ([relay-hosted.md §2](relay-hosted.md#bytes-charged-at-read-r55-035)).
    Over either: `error` frame `rate_limited` with an empty `ref`, dropped unparsed.
-1. Parses the routing fields. Invalid: `error` frame `bad_envelope`, frame dropped.
+1. Parses the routing fields and, from R55-F2, checks the
+   [payload shape](#envelope). Invalid: `error` frame `bad_envelope` (`ref` = the id if
+   the routing fields parsed, otherwise empty), frame dropped: it is never queued or
+   forwarded.
 2. Checks `from` equals the authenticated key. Otherwise: `error` frame `bad_sender`, dropped.
 3. From ticket 4.0b, charges a non-ephemeral envelope to the sender's and its network
    prefix's send rates ([relay-hosted.md §2](relay-hosted.md#2-abuse-limits-ticket-40b));
@@ -296,7 +320,12 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   envelopes (every directly forwarded envelope is acked too) are ignored.
 - **Exactly once.** The relay delivers at least once: an envelope whose ack is
   lost, or that was sent but not acked when the connection dropped, is sent
-  again on the next connection. The daemon (`internal/relayclient`) keeps the
+  again on the next connection. From R55-F2 such a **redelivery** is charged to the
+  recipient key's and its network prefix's redelivery budgets; past them it is
+  skipped for now (newer envelopes are still delivered) and sent again when the budget
+  has refilled, on the same connection or the next one
+  ([relay-hosted.md §2](relay-hosted.md#offline-queue-delivery-and-expiry-r55-f2)).
+  A first delivery is never held back. The daemon (`internal/relayclient`) keeps the
   last 8192 `(from, id)` pairs it handed up and drops repeats, still acking
   them. Together that is exactly-once delivery to the daemon's handlers within
   that window. **Exception (ticket 1.0d):** envelopes of type `mail` bypass this
@@ -310,7 +339,9 @@ Introduced by ticket 0.7. It replaces the earlier behaviour of answering
   never saw acknowledged.
 - **Expiry.** An envelope older than the TTL (default 7 days, `Options.QueueTTL`)
   is never delivered, and a sweep (every minute by default) deletes it. The TTL
-  counts from the time the relay queued it.
+  counts from the time the relay queued it. From R55-F2 the sweep deletes in small
+  batches, so a large expiry never stalls the queue
+  ([relay-hosted.md §2](relay-hosted.md#expiry-sweep-in-bounded-batches-r55-011)).
 - **Limits.** One recipient may have at most 1000 envelopes and 32 MiB
   waiting (`Options.QueueMaxEnvelopes`, `Options.QueueMaxBytes`). From ticket 4.0b
   also: one sender may have at most 300 envelopes / 8 MiB waiting for one recipient,
@@ -373,7 +404,7 @@ kept in memory, rebuilt by one scan at start-up and adjusted on add, ack and swe
 | Code | Meaning |
 |------|---------|
 | `auth_failed` | Authentication rejected; connection is closed |
-| `bad_envelope` | Frame is not a valid envelope (bad JSON, missing or malformed field) |
+| `bad_envelope` | Frame is not a valid envelope (bad JSON, missing or malformed field; from R55-F2 also a `payload` that is not a JSON string of standard base64) |
 | `bad_sender` | `from` does not match the authenticated key |
 | `queue_full` | A queue cap refused the envelope (the recipient's, this sender's for the recipient or overall, or the relay-wide total); envelope dropped |
 | `internal` | The relay could not store the envelope (message `relay storage low` when the disk is nearly full); dropped |
@@ -443,6 +474,34 @@ fails immediately with `ErrNotConnected`; nothing is buffered on the daemon side
 For every envelope received the client calls `OnEnvelope` (unless it has already
 handed up the same `(from, id)` and the type is not `mail`, see the queue section) and
 then sends the `ack`.
+
+**Frames it cannot parse (R55-F2, R55-010).** A frame that fails `envelope.Parse` is
+not handed up, but the client still acks it, so that it cannot hold a slot in the
+relay's queue until the TTL (rows queued by a relay older than the payload check, or
+any future parse difference). The ack is sent only when all of these hold:
+
+1. The frame is not a control frame.
+2. `envelope.ParseHeader`'s JSON decoding of the frame (the one the relay used at
+   ingress, [Forwarding](#forwarding) step 1) gives a `from` that is a valid key and an
+   `id` that is valid. The client must use **that function's decoding**, never a
+   second parser, a first-wins rule or a hand-written scan. The relay checked at
+   ingress that this `from` is the key that sent the frame; the ack
+   `{"op":"ack","from":<from>,"ref":<id>}` therefore names only the sender's own
+   envelope. A parser that read a different `from` (for example the first of two
+   `from` keys, where the relay took the last) would let a stranger make the victim
+   ack, and so delete, a queued envelope of one of its peers whose id it has guessed.
+3. Its `type` is not ephemeral (presence is never queued, so there is nothing to ack).
+
+Such a frame is not added to the seen-set (it was never handed up), and it is logged
+as one Warn line per minute with a count, not one line per frame. A frame whose routing
+fields do not parse is dropped without an ack and counted in the same line; an updated
+relay never delivers one. The relay deletes only rows addressed to the key that
+authenticated the connection, so a `to` that is not the daemon's own key needs no check
+here: the ack then deletes nothing.
+
+Consequence for later protocol changes: a daemon acks, and so discards, an envelope in a
+format it cannot parse. A change to the envelope format must therefore be negotiated (a
+`ready` feature or a new protocol version), never sent to daemons that do not announce it.
 `queued` frames are delivered to `OnQueued`, not `OnControl`.
 
 An envelope whose `to` is not the client's own key (R55-F9, review 55 C04-03) is not handed

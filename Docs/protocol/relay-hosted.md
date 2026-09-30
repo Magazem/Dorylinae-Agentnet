@@ -12,6 +12,14 @@ choice. It is a proposal until the owner approves it after its adversarial revie
 decisions are [OD-R55F1-1…9](#open-decisions-r55-f1) at the end of this document. Summary and
 acceptance tests: [../review/56-r55-f1-spec.md](../review/56-r55-f1-spec.md).
 
+**Pending change (R55-F2, 2026-09-30):** [§2 Offline queue delivery and expiry](#offline-queue-delivery-and-expiry-r55-f2)
+adds a **redelivery budget** per key and per prefix (R55-009), refuses envelopes whose payload
+is not base64 (R55-010, see [envelope.md](envelope.md#forwarding)) and makes the expiry sweep
+work in **bounded batches** with a **bounded WAL** (R55-011). It is a proposal until the owner
+approves it after its adversarial review; open decisions are
+[OD-R55F2-1…8](#open-decisions-r55-f2) at the end of this document. Summary, plan and
+acceptance tests: [../review/66-r55-f2-spec.md](../review/66-r55-f2-spec.md).
+
 This document changes the relay of [envelope.md](envelope.md) so that it can run on a public
 address for invited beta teams. It covers two things:
 
@@ -161,6 +169,7 @@ The source is the client IP, grouped to a /24 (IPv4) or /48 (IPv6) prefix ("pref
 | Non-ephemeral envelopes sent, all keys of a prefix together (review 50 M1) | 600 / min | `rate_limited` |
 | Bytes sent, all keys of a prefix together (review 50 M1) | 64 MiB / min | `rate_limited` |
 | Share of each memory budget held by one prefix (R55-F1) | 1/8 of the budget, see [below](#memory-budgets-and-fairness-r55-f1) | the prefix's own largest holder is evicted, or the frame takes today's fallback |
+| Queued bytes **redelivered** to all keys of a prefix together (R55-F2) | 128 MiB / hour, burst 128 MiB (`--queue-redeliver-per-prefix`) | the redelivery is skipped for now; see [below](#offline-queue-delivery-and-expiry-r55-f2) |
 
 ### Per authenticated key
 
@@ -174,6 +183,8 @@ The source is the client IP, grouped to a /24 (IPv4) or /48 (IPv6) prefix ("pref
 | Control frames (`ack` excluded) | 60 / min | `rate_limited`; 3 windows in a row → close 1008 |
 | Reconnects | 20 / min | `error` `rate_limited` right after `auth`, close 1013 (the key is only known after the upgrade, so this cannot be an HTTP 429; review 50 L2) |
 | Frames waiting in the connection's outbound buffer (review 50 M2) | 4 MiB (in addition to the existing 64 frames) | the envelope takes the queue path (`directBusy`), as for a full buffer today |
+| Queued bytes **redelivered** to the key: rows it was sent before and has not acked (R55-F2) | 32 MiB / hour, burst 32 MiB (`--queue-redeliver-per-key`) | the redelivery is skipped for now and retried when the budget refills; new rows are still delivered. See [below](#offline-queue-delivery-and-expiry-r55-f2) |
+| Envelope whose `payload` is not a JSON string of standard base64 (R55-F2) | — | `error` `bad_envelope`, dropped (never queued) |
 
 **Memory bound (review 50 M2).** Today a connection's outbound buffer holds up to 64 frames
 of up to 1 MiB each (`internal/relay/relay.go:27`, `envelope.MaxFrameBytes`), so a reader that
@@ -468,6 +479,150 @@ What to do on self-hosted relays without accounts is **OD-P4-21**.
 adds the index `queue_by_sender (from_key, enqueued)`; the per-sender and relay-wide totals are
 kept in memory, rebuilt by one scan at open and adjusted on add, ack and sweep.
 
+### Offline queue delivery and expiry (R55-F2)
+
+Review 55 found three ways a stranger abuses the queue on a relay without accounts. The caps
+above bound what is **stored**; nothing bounded what is **sent back out**, what is stored
+**forever-unackable**, or how much work **one expiry** does:
+
+- **R55-009** (T10-02; treated as High, D47): a row stays queued until it is acked, and every
+  new connection of its recipient re-sends the whole queue from the start. A key that never
+  acks turns one upload into up to 20 downloads a minute (the reconnect limit) for 7 days.
+  One /24 with 12 recipient keys × 32 MiB makes the relay send ≈ 7.5 GiB a minute, and every
+  re-send is a SQLite read on the relay's single database connection.
+- **R55-010** (T6a-02): the relay queues an envelope whose `payload` is not base64. The
+  recipient cannot parse it, so it never acks it, and it fills the victim's queue for the
+  whole TTL instead of until the next connect.
+- **R55-011** (C02-02): the sweep deletes every expired row in one statement, under the queue
+  lock, on the single connection. 1 GiB expiring together (≈ 16 prefixes filling the queue in
+  one minute, 7 days earlier) stalls all queue work for 11–14 s and leaves a 1 GiB WAL; at
+  2 GiB (reachable at the 4 GiB default) the statement times out, rolls back and repeats
+  every minute (livelock, `queue_full` for everyone).
+
+#### First delivery and redelivery (R55-009)
+
+A queued row is **delivered** when a drain hands it to a connection of its recipient (to the
+connection's outbound buffer). It stays queued until acked or expired, as before. Sending it
+again to the same key, on a later connection, is a **redelivery**.
+
+- **First delivery is not budgeted.** Its bytes were charged once, when the sender uploaded
+  them, to the sender's and its prefix's byte rates ([Per authenticated key](#per-authenticated-key)).
+  So first deliveries cost the relay no more egress than it took in, like direct forwarding.
+  A daemon that comes online to a full 32 MiB backlog gets it at once, as today.
+- **Redelivery is charged to the recipient**, by frame length, to two token buckets: its key
+  (`--queue-redeliver-per-key`, default **32 MiB per hour, burst 32 MiB**) and the prefix of
+  the connection it is delivered on (`--queue-redeliver-per-prefix`, default **128 MiB per
+  hour, burst 128 MiB**). Both are charged or neither (as the send rates). The charge is
+  taken before the frame is handed to the buffer; a frame handed over whose connection then
+  drops is still counted.
+- **Which rows are redeliveries.** Drains deliver a key's rows in `seq` order and a new row
+  always gets a larger `seq`, so the rows a key has been sent are exactly those with
+  `seq ≤ H(key)`, its **delivered high-water mark**. The relay keeps H persistently in a
+  small table `queue_delivered (to_key PRIMARY KEY, seq)` (relay migration **R3**), raised by
+  one upsert per drained batch that contains a first delivery (redeliveries write nothing). It
+  survives a restart, so a restart does not turn redeliveries into free first deliveries. The
+  sweep deletes marks of keys that have no queued rows left.
+- **An honest daemon rarely pays.** It acks as it receives, so after a dropped connection it
+  is redelivered only what was in flight: at most its outbound buffer (4 MiB), one drain batch
+  (≈ 2 MiB) and what was in transit. The key's 32 MiB burst covers several such reconnects
+  in a row.
+
+#### Redelivery policy for unacked rows
+
+Each drain step reads the connection's rows oldest first from its cursor, as today:
+
+1. A row with `seq > H` is a first delivery: it is sent, and H is raised after the batch.
+2. A row with `seq ≤ H` is sent only if both buckets hold its bytes (they are taken).
+3. Otherwise it is **skipped**: not sent now, left in the queue. The connection records
+   `skipFrom` (that row's `seq`), `skipTo` (H at that moment) and the row's size, and jumps its
+   cursor to `skipTo`. It goes on with the first deliveries after `skipTo`, so **new mail is
+   still delivered**, and the skipped rows' frames are never read again on this connection
+   until the retry. A key over budget costs no database reads of its old rows.
+4. **Retry.** Once a minute (the sweep tick) the relay looks at every connection with a
+   skipped range. If the key's and prefix's buckets now hold the first skipped row's size, it
+   drains the range `[skipFrom, skipTo]` again under the rules above (rows acked meanwhile are
+   gone; rows skipped again keep a new, narrower range). During the retry the connection is
+   draining, so direct sends to it take the queue path, as for any backlog.
+5. A key's next connection starts from cursor 0 as today, and its rows `≤ H` are
+   redeliveries charged as above.
+
+Retried rows reach the daemon after newer ones. That is already possible today (a
+redelivery after a reconnect follows the frames the daemon received before the drop), and
+the layers above do not rely on it: mail dedupes and re-acks, the relay client's seen-set
+drops repeats, and `session.*` frames have their own replay protection
+([session.md](session.md)).
+
+Limit names logged: `queue_redeliver_key` (`peer=`), `queue_redeliver_prefix` (`prefix=`),
+once a minute per subject as for every limit. Metrics (§5): `relay_queue_redelivered_bytes_total`
+and `relay_queue_redeliveries_skipped_total`, no per-key labels.
+
+#### Envelopes the recipient cannot parse (R55-010)
+
+The relay refuses, with `bad_envelope`, an envelope whose `payload` is not a JSON string of
+standard base64 ([envelope.md §Envelope](envelope.md#envelope), step 1 of
+[§Forwarding](envelope.md#forwarding)). Such a frame is never queued or forwarded. The
+check reads the payload in place and keeps no decoded copy; its CPU is bounded by the bytes
+charged at read (R55-035). As defence in depth, and for rows already queued by an older
+relay, the daemon **acks** a frame it cannot parse when its routing fields are valid
+([envelope.md §Client behaviour](envelope.md#client-behaviour-daemon)).
+
+#### Expiry sweep in bounded batches (R55-011)
+
+- The sweep deletes expired rows **oldest first in batches of at most 32 rows** (at most
+  32 MiB of frames) through the `queue_by_age` index. Each batch is its own transaction and
+  takes the queue lock only for that batch; the lock is released between batches, so `add`,
+  `ack` and drains run in between. The totals are adjusted after the batch commits.
+- A batch that fails rolls back only itself. The batches before it stay deleted, and the next
+  tick carries on, so a large expiry cannot livelock at any `--queue-max-total`. A 32 MiB
+  batch takes about 0.35 s with `secure_delete=ON` on the NVMe disk measured in
+  `verify/C02-02.md` (≈ 95 MiB/s).
+- One tick works for at most 30 s and then stops until the next tick, so a relay that was
+  down for days catches up over a few minutes without holding the connection for long.
+- **WAL bound.** The relay database is opened with `journal_size_limit` = **64 MiB**, and a
+  tick that deleted more than 64 MiB ends with `PRAGMA wal_checkpoint(TRUNCATE)`. The WAL then
+  stays near one batch (≈ 2 × 32 MiB with `secure_delete`) while a sweep runs and returns to at
+  most 64 MiB after it. A backup (`VACUUM INTO`) running at the same time holds a read
+  snapshot, so the WAL can grow while it runs; the next large sweep truncates it.
+- `add` starts its 10 s deadline after it takes the queue lock (today: before), so an add
+  that waited behind a batch still has its full time.
+- The free-disk floor (`--queue-min-free-disk`) is checked on `add` only; after this change
+  a sweep needs about one batch of WAL headroom, not the size of the expiry.
+
+#### Flags for the early private relay (4.1p), R55-F2
+
+`deploy/early/agentnet-relay.service` adds, explicitly (they equal the defaults):
+
+```
+    --queue-redeliver-per-key 32MiB \
+    --queue-redeliver-per-prefix 128MiB \
+```
+
+Both are per hour with a burst of the same size. The sweep batch (32 rows), the tick budget
+(30 s) and the WAL limit (64 MiB) are constants, not flags (OD-R55F2-7, -8). With the unit's
+`--queue-max-total 1GiB`, the worst expiry is 32 batches (≈ 11 s of work spread over one tick
+with the lock released between batches), and the WAL is back under 64 MiB after it. The
+runbook's disk budget (`Docs/ops/early-relay-deploy.md`) no longer needs room for a WAL as
+large as the queue.
+
+#### Attacks from review 55, after R55-F2
+
+Rough costs at the 4.1p flags. "Prefix" is a /24 or a /48.
+
+| Attack | Today | After R55-F2 |
+|---|---|---|
+| **R55-009 / T10-02**, redelivery amplification | 1 prefix, 12 keys × 32 MiB queued (384 MiB, uploaded once), 20 reconnects / min / key without acks: ≈ 7.5 GiB / min egress for 7 days, plus a full-queue SQLite read per reconnect | First delivery: 384 MiB once (what it uploaded). Then at most 128 MiB burst + 128 MiB / hour per recipient prefix (≈ 0.3 Mbit/s). 16 prefixes: ≈ 2 GiB / hour (≈ 5 Mbit/s). Reconnecting gains nothing, and once the budget is spent no old row is read from the database again |
+| **R55-010 / T6a-02**, unparseable junk fills a victim's queue | 4 keys, 1000 junk rows: the victim gets `queue_full` for 7 days and re-downloads the junk at every connect | The junk is refused at the door (`bad_envelope`). Parseable junk is acked and deleted at the victim's next connect (O-015, as accepted); rows already queued by an older relay are acked by updated daemons |
+| **R55-011 / C02-02**, one-statement sweep | ≈ 16 prefixes fill 1 GiB in one minute: 7 days later an 11–14 s stall and a 1 GiB WAL; at 2 GiB a rollback livelock | Batches of ≤ 32 MiB: the lock is held ≈ 0.35 s at a time, the WAL is ≤ 64 MiB after the tick, and no size of expiry can livelock |
+
+**Residuals** (added to [What the limits do not stop](#what-the-limits-do-not-stop)):
+
+- The prefix redelivery budget is shared. An attacker in the same /24 as an honest recipient
+  (a shared NAT) can spend it; the honest recipient's unacked rows then wait for the retry or
+  its next connection. New rows still arrive. Delay, not loss.
+- Many prefixes scale the budget linearly (N × 128 MiB / hour).
+- First deliveries are not budgeted: a prefix can make the relay send what it uploaded, as it
+  can already with direct forwarding.
+
 ### Pairing (review 08b L1 and L5)
 
 - **L1:** `Options.DisablePairingV1` becomes `Options.AllowPairingV1` (zero value = **off**).
@@ -511,6 +666,11 @@ together: `--behind-proxy` without `--client-ip-header` is a usage error.
 - (R55-F1) An attacker that pays ≈ 40 Mbit/s each way, sustained, from many prefixes can
   hold the outbound budget with sinks that read fast enough not to be evicted, and so delay
   direct mail while it pays (OD-R55F1-9).
+- (R55-F2) An attacker behind the same /24 as an honest recipient can spend that prefix's
+  redelivery budget; the recipient's unacked rows then wait for the retry or its next
+  connection (new rows still arrive). Many prefixes scale the redelivery budget linearly, and
+  first deliveries are not budgeted (they cost the attacker the same upload). See
+  [Residuals](#attacks-from-review-55-after-r55-f2).
 - A bound account can spend its own team's quota (its teammates' problem, visible in the
   per-team counters).
 
@@ -521,7 +681,11 @@ together: `--behind-proxy` without `--client-ip-header` is a usage error.
 The hosted relay keeps everything in one SQLite file (`--db PATH`, replacing `--queue-db`,
 which stays as an alias): the existing `queue` table plus the account, invite, quota,
 telemetry and feedback tables of the other Phase 4 documents. WAL mode, `synchronous=FULL`
-(as today), `secure_delete=ON`.
+(as today), `secure_delete=ON`, and from R55-F2 `journal_size_limit` = 64 MiB (the WAL is
+truncated back to it after checkpoints; a large sweep ends with a `TRUNCATE` checkpoint,
+[§2](#expiry-sweep-in-bounded-batches-r55-011)). R3 (R55-F2) adds the table
+`queue_delivered (to_key TEXT PRIMARY KEY, seq INTEGER NOT NULL)`, the delivered high-water
+mark per recipient ([§2](#first-delivery-and-redelivery-r55-009)).
 
 **Relay migrations.** The relay database gets its own `relay_migrations` table and numbering,
 **R1…**, independent of the daemon's 1…21 (22 is the next daemon number). R1 adopts the
@@ -683,6 +847,12 @@ therefore sends a Phase 4 control frame (`bind_*`, `unbind`, `invite_redeem`,
   flood to non-reading recipients never raises the outbound budget and honest mail between
   reading peers is forwarded directly; past a full budget the heaviest prefix's holder is
   evicted, not the newcomer; the outbound charge equals the heap the frames pin.
+- R55-F2 (full list in [66-r55-f2-spec.md](../review/66-r55-f2-spec.md#4-acceptance-tests)):
+  a key that never acks is redelivered at most its budget (and its prefix at most the prefix
+  budget) however often it reconnects, while new rows still reach it; an honest reconnect
+  gets its unacked rows at once; skipped rows are retried when the budget refills; a
+  non-base64 payload gets `bad_envelope` and is not queued; a 1 GiB expiry is deleted in
+  batches of ≤ 32 rows with the lock released between them and leaves a WAL ≤ 64 MiB.
 - A restore followed by `--replay-journal` keeps an unbind and an invite redemption made after
   the backup.
 - Each limit table row has a test that triggers it and checks the error code and that other
@@ -781,3 +951,78 @@ Each has a recommendation; the owner decides after the adversarial review.
   **Recommended: (b).** (a) turns the fix against the honest daemons that receive the most;
   (c) makes holding the budget affordable again. The drain reservation counts towards what
   H holds but its own age never does, whichever option is chosen.
+
+## Open decisions (R55-F2)
+
+Each has a recommendation; the owner decides after the adversarial review.
+
+- **OD-R55F2-1: what the new budget counts (R55-009).**
+  (a) **Redeliveries only**, per recipient key and per recipient prefix; first deliveries are
+  already paid for by the sender's upload.
+  (b) **Every** byte delivered from the queue, first deliveries too. Simpler to explain, but an
+  honest daemon coming online to a 32 MiB backlog, or an office prefix receiving many, is
+  slowed although the relay's egress there equals its ingress.
+  (c) No byte budget: a hold-back rule (a row is not re-sent to the same key within N minutes,
+  nor more than K times). Needs per-row state written on every redelivery, and N × K has to
+  be tuned against honest flapping links.
+  **Recommended: (a).** It removes the amplification exactly and leaves honest first
+  deliveries untouched.
+- **OD-R55F2-2: what happens to a redelivery over budget.**
+  (a) **Skip** it, go on with first deliveries (new mail), retry the skipped range once a
+  minute when the buckets have refilled.
+  (b) Pause the whole drain until the buckets refill. New mail to that key waits too, and an
+  attacker in a shared /24 then delays all queued mail of its neighbours.
+  (c) Close the connection 1013. The key reconnects (20 / min) and starts again.
+  **Recommended: (a).**
+- **OD-R55F2-3: budget sizes.**
+  (a) Per key 32 MiB / hour (burst 32 MiB), per prefix 128 MiB / hour (burst 128 MiB).
+  (b) 8 MiB / 32 MiB per hour: cheaper to attack, but an honest daemon that reconnects a few
+  times while a 32 MiB backlog drains can hit it.
+  (c) 128 MiB / 512 MiB per hour: generous for large offices, ≈ 1.2 Mbit/s per attacking
+  prefix.
+  **Recommended: (a).** It covers several honest reconnects mid-drain (≈ 6 MiB each) and keeps
+  one attacking prefix at ≈ 0.3 Mbit/s.
+- **OD-R55F2-4: where the "already delivered" state lives.**
+  (a) A persistent high-water mark per recipient key, table `queue_delivered` (migration R3);
+  one upsert per drained batch with a first delivery; pruned by the sweep.
+  (b) A `delivered` column on each queue row plus an index `(to_key, delivered, seq)`. The
+  column is after the frame blob, so without the index every check walks the blob's overflow
+  pages; the index build reads the whole table once at migration.
+  (c) In memory only. A relay restart makes every queued row a free first delivery again, and
+  the map needs its own size bound.
+  **Recommended: (a).** It relies on drains delivering in `seq` order, which the ordering
+  rule of envelope.md already requires; a test pins it.
+- **OD-R55F2-5: the relay's payload rule (R55-010).**
+  (a) `payload` must be present and a JSON string without escape sequences whose content is
+  standard base64 with padding (`""` allowed); checked for **every** envelope, presence
+  included; checked in place, no decoded copy kept.
+  (b) As (a), but also accept a missing or `null` payload, as the daemon's parser does today.
+  (c) No relay change; only the daemon acks what it cannot parse (OD-R55F2-6).
+  **Recommended: (a).** Every daemon builds envelopes with `envelope.Marshal`, which always
+  writes a padded base64 string and never escapes it, so nothing honest is refused; and the
+  relay's rule is stricter than the daemon's, so whatever the relay accepts the daemon can
+  parse.
+- **OD-R55F2-6: the daemon acks frames it cannot parse.**
+  (a) Ack when `envelope.ParseHeader`'s decoding of the frame (the relay's own) yields a valid
+  `from` and `id` and a non-ephemeral `type`; do not hand the frame up and do not add it to
+  the seen-set; log one Warn per minute with a count.
+  (b) Do not ack; rely on the relay refusing such frames. Rows queued before the relay is
+  updated, and any other parse failure, keep the victim's queue full until the TTL.
+  (c) As (a), and also show the count in `agentnet doctor`.
+  **Recommended: (a).** The ack must name the `(from, id)` the relay checked at ingress, or
+  it could delete someone else's row: see envelope.md §Client behaviour.
+- **OD-R55F2-7: sweep batch.**
+  (a) At most 32 rows per transaction (≤ 32 MiB, ≈ 0.35 s), lock released between batches, at
+  most 30 s per tick.
+  (b) Batches bounded by bytes (e.g. 8 MiB, with a running sum in the query): a steadier lock
+  time with 1 MiB frames, many more transactions with small frames.
+  (c) 256 rows per batch: fewer transactions, but the lock is held up to ≈ 2.7 s at a time.
+  **Recommended: (a).**
+- **OD-R55F2-8: WAL bound.**
+  (a) `journal_size_limit` 64 MiB, plus `wal_checkpoint(TRUNCATE)` after a tick that deleted
+  more than 64 MiB.
+  (b) `journal_size_limit` only: the file shrinks only when the next checkpoint resets the
+  WAL, which it does on the next write, so it can stay large while the relay is idle.
+  (c) `wal_checkpoint(TRUNCATE)` after every tick that deleted anything: a checkpoint (and
+  an fsync) every minute on a busy relay.
+  **Recommended: (a).**
