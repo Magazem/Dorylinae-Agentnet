@@ -142,14 +142,18 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		}
 	}
 
+	// A dissolved roster is recognised by its state, not by self's presence:
+	// the final roster may leave out a member whose stored card no longer
+	// verifies on the owner's side (review 76 L1), and that member still
+	// learns the team was dissolved.
 	var localState string
 	switch {
-	case selfIn && wireState == StateActive:
-		localState = StateActive
-	case !selfIn:
-		localState = StateRemoved
-	default:
+	case wireState == StateDissolved:
 		localState = StateDissolved
+	case selfIn:
+		localState = StateActive
+	default:
+		localState = StateRemoved
 	}
 
 	ts := stamp(now)
@@ -342,7 +346,19 @@ func parseRosterMember(raw any, now time.Time) (parsedMember, error) {
 	if _, err := parseWireTime(added); err != nil {
 		return parsedMember{}, badBody("roster member.added: " + err.Error())
 	}
-	cardRaw, err := agentcard.CanonicalValue(entry["card"])
+	// Keep exactly {card, signature}: other members of the card envelope are
+	// dropped before storing or forwarding (agent-card.md "Stored and
+	// forwarded form", review 55 R55-073).
+	env, ok := entry["card"].(map[string]any)
+	if !ok {
+		return parsedMember{}, badBody("roster member.card must be an object")
+	}
+	card, cok := env["card"]
+	sig, sok := env["signature"]
+	if !cok || !sok {
+		return parsedMember{}, badBody("roster member.card: missing card or signature")
+	}
+	cardRaw, err := agentcard.CanonicalValue(map[string]any{"card": card, "signature": sig})
 	if err != nil {
 		return parsedMember{}, badBody("roster member.card: " + err.Error())
 	}

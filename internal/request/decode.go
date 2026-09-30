@@ -135,6 +135,11 @@ func decodeString(body map[string]any, field string, optional bool) (string, err
 	if !ok {
 		return "", fieldErr(field, "must be a string")
 	}
+	// A present optional member is checked, never read as absent (review 55
+	// R55-072): request.md makes it 1+ units when present.
+	if optional && s == "" {
+		return "", fieldErr(field, "must not be empty when present")
+	}
 	return s, nil
 }
 
@@ -190,6 +195,9 @@ func decodeArtifactsAt(base string, raw any) ([]Artifact, error) {
 			s, ok := v.(string)
 			if !ok {
 				return nil, fieldErr(artifactField(base, i, k), "must be a string")
+			}
+			if s == "" {
+				return nil, fieldErr(artifactField(base, i, k), "must not be empty when present")
 			}
 			setArtifactField(&a, k, s)
 		}
@@ -302,6 +310,9 @@ func decodeGrant(raw any) (*RequestedGrant, error) {
 		note, ok := raw.(string)
 		if !ok {
 			return nil, fieldErr("requested_grant.note", "must be a string")
+		}
+		if note == "" {
+			return nil, fieldErr("requested_grant.note", "must not be empty when present")
 		}
 		g.Note = note
 	}

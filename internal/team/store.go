@@ -608,7 +608,15 @@ func (s *Store) rosterBody(ctx context.Context, q querier, t Team, members []Mem
 	}
 	out := make([]any, 0, len(list))
 	for _, m := range list {
-		entry, err := s.memberEntry(ctx, q, m, selfMbox)
+		entry, err := s.memberEntry(ctx, q, t, m, selfMbox)
+		if errors.Is(err, errStoredCard) && t.State == StateDissolved && m.Key != s.Self {
+			// A dissolved roster may list 0-32 members (team.md), so a member
+			// whose stored card no longer verifies is left out rather than
+			// blocking team delete (review 68 OD-3).
+			s.log().Warn("team: member card no longer verifies, left out of the final roster",
+				"event", "team_error", "team", t.ID, "peer", m.Key)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -630,7 +638,7 @@ func (s *Store) rosterBody(ctx context.Context, q querier, t Team, members []Mem
 	}, nil
 }
 
-func (s *Store) memberEntry(ctx context.Context, q querier, m Member, selfMbox []byte) (map[string]any, error) {
+func (s *Store) memberEntry(ctx context.Context, q querier, t Team, m Member, selfMbox []byte) (map[string]any, error) {
 	var cardRaw, mboxRaw []byte
 	var err error
 	if m.Key == s.Self {
@@ -655,9 +663,14 @@ func (s *Store) memberEntry(ctx context.Context, q querier, m Member, selfMbox [
 			}
 		}
 	}
-	card, err := agentcard.ParseStrict(cardRaw)
+	card, err := forwardCard(cardRaw, m.Key)
 	if err != nil {
-		return nil, fmt.Errorf("team: card for %s: %w", m.Key, err)
+		// Review 68 OD-3: never send a roster that members would refuse
+		// (bad_body). The remedy never needs this entry: team remove and
+		// peers remove build rosters without the member, and team delete
+		// leaves it out of the final roster (rosterBody).
+		return nil, fmt.Errorf("%w: member %s (%w); remove it with `agentnet team remove %s %s` or re-pair",
+			errStoredCard, m.Key, err, t.ID, m.Key)
 	}
 	var mbox any
 	if mboxRaw != nil {
@@ -671,6 +684,28 @@ func (s *Store) memberEntry(ctx context.Context, q querier, m Member, selfMbox [
 		"key":     m.Key,
 		"mailbox": mbox,
 	}, nil
+}
+
+// errStoredCard marks a member whose stored Agent Card no longer verifies.
+var errStoredCard = errors.New("team: stored Agent Card no longer verifies")
+
+// forwardCard returns the generic {card, signature} of a stored card for a
+// roster entry. The card must verify and be the card of key; any other
+// top-level member of the stored envelope is dropped (agent-card.md "Stored
+// and forwarded form", review 55 R55-073).
+func forwardCard(stored []byte, key string) (any, error) {
+	canon, err := agentcard.StoredForm(stored)
+	if err != nil {
+		return nil, err
+	}
+	sc, err := agentcard.Verify(canon)
+	if err != nil {
+		return nil, err
+	}
+	if sc.Card.PublicKey != key {
+		return nil, errors.New("card is for another key")
+	}
+	return agentcard.ParseStrict(canon)
 }
 
 // RecordInvite writes (or replaces) the team_invites row for lookup (owner

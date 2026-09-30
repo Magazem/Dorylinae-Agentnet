@@ -319,6 +319,20 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	peerStore := peers.NewStore(st.DB())
 	peerStore.SetAudit(log)
+	// Review 68 OD-3: re-verify and canonicalise stored peer cards. A card
+	// that no longer verifies is kept and reported (agentnet doctor); only a
+	// database error stops the start.
+	badCards, err := peerStore.MigrateCards(ctx)
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	for _, b := range badCards {
+		if opts.Logger != nil {
+			opts.Logger.Warn("peer has a card that no longer verifies; re-pair or remove it",
+				"event", "peer_card_invalid", "fingerprint", b.Fingerprint, "error", b.Reason)
+		}
+	}
 	idPub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		_ = ln.Close()

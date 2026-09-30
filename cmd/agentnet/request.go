@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // requestBody is the machine-readable output of `request --json` (submit).
@@ -149,7 +150,7 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 		Urgency: *urgency, UrgencyReason: *urgencyReason, Deadline: *deadline, IdempotencyKey: *idemKey,
 	}
 	for _, spec := range artifacts {
-		a, err := parseArtifactFlag(spec)
+		a, err := artifactParam(spec)
 		if err != nil {
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 		}
@@ -231,33 +232,13 @@ func readBriefFile(path string) (string, error) {
 	return string(b), nil
 }
 
-func parseArtifactFlag(spec string) (daemon.ArtifactParam, error) {
-	trimmed := strings.TrimSpace(spec)
-	if strings.HasPrefix(trimmed, "{") {
-		var a daemon.ArtifactParam
-		if err := json.Unmarshal([]byte(trimmed), &a); err != nil {
-			return daemon.ArtifactParam{}, fmt.Errorf("--artifact: invalid JSON: %w", err)
-		}
-		return a, nil
+// artifactParam parses one --artifact value with request.ParseArtifactSpec,
+// the strict parser of Docs/cli/request.md (review 55 R55-119), for request,
+// inbox complete and session alike. An error is a usage error (exit 2).
+func artifactParam(spec string) (daemon.ArtifactParam, error) {
+	a, err := request.ParseArtifactSpec(spec)
+	if err != nil {
+		return daemon.ArtifactParam{}, fmt.Errorf("--artifact: %s", strings.TrimPrefix(err.Error(), "artifact spec: "))
 	}
-	var a daemon.ArtifactParam
-	for _, tok := range strings.Fields(trimmed) {
-		key, val, ok := strings.Cut(tok, "=")
-		if !ok {
-			return daemon.ArtifactParam{}, fmt.Errorf("--artifact: %q is not key=value", tok)
-		}
-		switch key {
-		case "url":
-			a.URL = val
-		case "branch":
-			a.Branch = val
-		case "commit":
-			a.Commit = val
-		case "path":
-			a.Path = val
-		default:
-			return daemon.ArtifactParam{}, fmt.Errorf("--artifact: unknown key %q", key)
-		}
-	}
-	return a, nil
+	return daemon.ArtifactParam{URL: a.URL, Branch: a.Branch, Commit: a.Commit, Path: a.Path}, nil
 }

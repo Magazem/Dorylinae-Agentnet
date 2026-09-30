@@ -24,8 +24,10 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
@@ -181,7 +183,38 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 		checkAccount(),
 		checkGit(),
 		checkClock(relayURL, probed, now),
+		checkPeers(ctx, p),
 	}
+}
+
+// checkPeers reports peers rows whose stored Agent Card no longer verifies
+// (review 68 OD-3). The daemon keeps such rows at start and logs them; this
+// check reads the database read-only, so it runs with the daemon stopped too.
+// It names peers by public key, never by name.
+func checkPeers(ctx context.Context, p paths.Paths) doctorCheck {
+	db, err := store.OpenReadOnly(p.DB)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return doctorCheck{ID: "peers", State: doctorSkip, Detail: "no database yet"}
+		}
+		return doctorCheck{ID: "peers", State: doctorWarn, Detail: "could not read the peers table",
+			Fix: "run agentnet doctor again once agentnetd has started"}
+	}
+	defer func() { _ = db.Close() }()
+	bad, err := peers.CheckStoredCards(ctx, db)
+	if err != nil {
+		return doctorCheck{ID: "peers", State: doctorWarn, Detail: "could not read the peers table",
+			Fix: "run agentnet doctor again once agentnetd has started"}
+	}
+	if len(bad) == 0 {
+		return doctorCheck{ID: "peers", State: doctorOK, Detail: "every stored peer card verifies"}
+	}
+	msgs := make([]string, 0, len(bad))
+	for _, b := range bad {
+		msgs = append(msgs, "peer "+b.PublicKey+" has a card that no longer verifies")
+	}
+	return doctorCheck{ID: "peers", State: doctorWarn, Detail: strings.Join(msgs, "; "),
+		Fix: "re-pair, or run agentnet peers remove <key> (or agentnet team remove <team> <key>)"}
 }
 
 // queryStatus calls the daemon's "status" IPC method with the socket check's

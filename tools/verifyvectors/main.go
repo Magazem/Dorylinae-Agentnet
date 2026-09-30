@@ -2,9 +2,12 @@
 // capability-grant, audit-chain, debate-commitment and Decision test vectors
 // published in Docs/protocol/pairing.md, Docs/protocol/mail.md,
 // Docs/protocol/grant.md, Docs/protocol/audit.md, Docs/protocol/debate.md and
-// Docs/protocol/decision.md (with the Decision's negative checks), and relay
-// auth v2 of Docs/protocol/envelope.md, and compares them with
-// the values in vectors.json (transcribed from those docs).
+// Docs/protocol/decision.md (with the Decision's negative checks), relay
+// auth v2 of Docs/protocol/envelope.md, and the Agent Card vectors P1 and
+// N1-N15 of Docs/protocol/agent-card.md (each refused at its stated
+// Verification step, card.go), and compares them with the values in
+// vectors.json (transcribed from those docs). Every JSON document is read
+// under the strict parse of agent-card.md (rules 6-8).
 //
 // It is deliberately self-contained: it uses only the Go standard library and
 // golang.org/x/crypto, and imports no internal/ package and nothing from
@@ -108,23 +111,16 @@ type vectors struct {
 	} `json:"debate"`
 	Decision  decisionVectors  `json:"decision"`
 	RelayAuth relayAuthVectors `json:"relay_auth"`
+	AgentCard agentCardVectors `json:"agent_card"`
 }
 
 // --- canonical JSON (agent-card.md §Canonical serialisation) ---
 
 // canonical parses in as generic JSON and re-serialises it canonically.
 func canonical(in []byte) ([]byte, error) {
-	if !utf8.Valid(in) {
-		return nil, errors.New("invalid UTF-8")
-	}
-	dec := json.NewDecoder(bytes.NewReader(in))
-	dec.UseNumber()
-	v, err := parseValue(dec)
+	v, err := parseDoc(in)
 	if err != nil {
 		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("trailing data")
 	}
 	var out bytes.Buffer
 	if err := writeValue(&out, v); err != nil {
@@ -136,6 +132,71 @@ func canonical(in []byte) ([]byte, error) {
 type member struct {
 	key string
 	val any
+}
+
+// parseDoc reads one whole document under the strict parse of agent-card.md
+// (rules 6-8): valid UTF-8, surrogate escapes only as high+low pairs (checked
+// on the raw bytes, since the decoder turns a lone one into U+FFFD), no
+// duplicate keys, and no trailing data.
+func parseDoc(in []byte) (any, error) {
+	if !utf8.Valid(in) {
+		return nil, errors.New("invalid UTF-8")
+	}
+	if err := pairedSurrogates(in); err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(in))
+	dec.UseNumber()
+	v, err := parseValue(dec)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("trailing data")
+	}
+	return v, nil
+}
+
+// pairedSurrogates applies rule 7 to raw JSON text: an escape whose code unit
+// is a surrogate must be a high one directly followed by the escape of a low
+// one. Outside strings nothing is an escape, and an escaped backslash is
+// skipped as a whole.
+func pairedSurrogates(in []byte) error {
+	unit := func(at int) int { // the code unit of the escape at in[at], or -1
+		if at+6 > len(in) || in[at] != '\\' || in[at+1] != 'u' {
+			return -1
+		}
+		n, err := strconv.ParseUint(string(in[at+2:at+6]), 16, 16)
+		if err != nil {
+			return -1
+		}
+		return int(n)
+	}
+	inStr := false
+	for i := 0; i < len(in); i++ {
+		if !inStr {
+			inStr = in[i] == '"'
+			continue
+		}
+		switch in[i] {
+		case '"':
+			inStr = false
+		case '\\':
+			u := unit(i)
+			switch {
+			case u >= 0xDC00 && u <= 0xDFFF:
+				return fmt.Errorf("unpaired low surrogate escape at offset %d", i)
+			case u >= 0xD800 && u <= 0xDBFF:
+				if lo := unit(i + 6); lo < 0xDC00 || lo > 0xDFFF {
+					return fmt.Errorf("unpaired high surrogate escape at offset %d", i)
+				}
+				i += 11
+			default:
+				i++ // skip the escaped character (for \u, the hex digits are plain text)
+			}
+		}
+	}
+	return nil
 }
 
 // parseValue reads one value; objects become []member so duplicates are detectable.
@@ -281,9 +342,7 @@ func writeString(b *bytes.Buffer, s string) {
 // member2 returns canonical({name1: obj[name1], name2: obj[name2]}) from an envelope
 // such as {"card":…,"signature":…}, dropping other top-level members (pairing.md).
 func member2(envelope []byte, n1, n2 string) (inner1, sig, canon []byte, err error) {
-	dec := json.NewDecoder(bytes.NewReader(envelope))
-	dec.UseNumber()
-	v, err := parseValue(dec)
+	v, err := parseDoc(envelope)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -429,6 +488,7 @@ func run(w io.Writer, raw []byte) int {
 	debateCommitment(c, &v)
 	decisionVector(c, &v)
 	relayAuth(c, &v)
+	agentCard(c, &v)
 	return c.fail
 }
 

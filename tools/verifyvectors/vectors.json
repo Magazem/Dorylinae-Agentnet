@@ -109,5 +109,89 @@
    }
   ],
   "auth_frame": "{\"op\":\"auth\",\"v\":2,\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"signature\":\"VD-DbBEUg3A3UOgbG-wGq9W2ILO_SPA4GaYHCgrWqp7CTh0jqNjzR2g-9oQJws_VKTzNHFF_nYZot79-g9LODw\"}"
+ },
+ "agent_card": {
+  "cases": [
+   {
+    "name": "P1",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":\"😀\",\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 0
+   },
+   {
+    "name": "N1",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"public_Key\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"1A0as9bc-SW4UX42sgra2_j58MeJY4-rLEhxIaaEYX-jP67CHE5t55hBrBZvonaGm4e2BMDlalqMkRk-UVzDDw\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N2",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_Key\":\"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"Dq2T4Svz3zF-ain_uxsjdDCc90onZdFDUC-y3O7iTYaGIgyV6AaRQZu2sX6VcUo__TiPenhx6m4mqJnfXAKjAA\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N3",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"harneſſ\":\"spoofed\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"wVEo49U_Ha--ze4SpQVxyzX3DYQz_rwpvQzJKR_8POMA5DtT51IJ7XIeZDrWxJEIDbdfU0GARkPiaqyyFYCaBA\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N4",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"dQi9jlppLavLq5FuPaThp3rW2rtuiEboQ58nTCGy6ShpXZo_8EznS-1ffYcsQWvHWhpTuKkQL_ipIn-GSovbCg\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N5",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"Description\":\"x\",\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"pFDCBOXUlckLSfSo0kZGTL1jdI-Cqx6ptg5lRY_dZ4s04h8DKxZPEpxn8L0NHDZygwvHEcNXnovN8X3Wouq2Cw\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N6",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":\"\\ud800\",\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   },
+   {
+    "name": "N7",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":\"\\udc00\",\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   },
+   {
+    "name": "N8",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":\"\\udc00\\ud800\",\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   },
+   {
+    "name": "N9",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":\"\\ud800\\u0041\",\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   },
+   {
+    "name": "N10",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":1,\"note\":2,\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   },
+   {
+    "name": "N11",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbh\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"EXtkmE-d0-8pMsBH2sNOqKQsJTk23NYYv3CWJPiNuZ_fHuICp1Ba2Az2JWuFwIctj-jq8PIVkF5PL5gRtWKtDw\"}",
+    "fails_at": 2
+   },
+   {
+    "name": "N12",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDB\"}",
+    "fails_at": 2
+   },
+   {
+    "name": "N13",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmW\\nfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"roYk-mjPoBVSZUqjc3zC9vHCnr4bccxLkBVVf_i0PnDumzwvysHWbqGCSeULqcNQxqN2D2uDgm5SxfXDXMt7DA\"}",
+    "fails_at": 2
+   },
+   {
+    "name": "N14",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcX\\r\\nr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 2
+   },
+   {
+    "name": "N15",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"note\":1.5,\"signature\":\"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA\"}",
+    "fails_at": 1
+   }
+  ]
  }
 }

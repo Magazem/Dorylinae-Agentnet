@@ -691,11 +691,17 @@ func (m *Manager) onPeerV1(s *session, ctl envelope.Control) {
 	if err == nil && sc.Card.PublicKey != ctl.PublicKey {
 		err = errors.New("agent card key does not match the key the relay authenticated")
 	}
+	var card []byte
+	if err == nil {
+		// Store the canonical {card, signature}, not the relay's bytes, which
+		// may carry extra top-level members (agent-card.md, review 55 R55-073).
+		card, err = canonicalPart(ctl.Card, "card")
+	}
 	if err != nil {
 		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailBadCard, Message: truncate("rejected the peer's Agent Card: " + err.Error())})
 		return
 	}
-	peer, fail := m.store(sc, ctl.Card, TrustRelay, nil)
+	peer, fail := m.store(sc, card, TrustRelay, nil)
 	m.finish(s.st.ID, choose(fail == nil, StateComplete, StateFailed), peer, fail)
 }
 

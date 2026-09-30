@@ -139,8 +139,10 @@ teams a member belongs to.
 1. Upsert `teams` (`name`, `epoch`, `updated`; `state` below).
 2. Replace the team's `team_members` rows with `members`.
 3. For each member other than self: upsert it as an [introduced peer](#introduced-peers).
-4. Own membership state: `active` if self ∈ `members` and `team.state = active`;
-   `removed` if self ∉ `members`; `dissolved` if `team.state = dissolved`.
+4. Own membership state: `dissolved` if `team.state = dissolved`, whether or not self is in
+   `members`; otherwise `active` if self ∈ `members` and `removed` if self ∉ `members`. A
+   final roster can leave self out: the owner leaves out of it a member whose stored card no
+   longer verifies ([§Operations](#operations), Delete; review 76 L1).
 5. [Garbage-collect](#introduced-peers) introduced peers that no longer share an active team.
 
 **After commit:** audit `team.roster_apply {team, epoch, added: [keys], removed: [keys], state}`;
@@ -187,7 +189,7 @@ audit `team.leave_ignored {team, peer}`.
 | Remove member | owner | `epoch += 1`, member dropped, roster sent to remaining members **and** the removed one | `team_remove` |
 | Rename | owner | `epoch += 1`, new name, roster sent to all | `team_rename` |
 | Leave | member (not owner) | Local state `left` at once: stop presence to members who share no other active team (send `offline` first, [presence.md](presence.md#visibility)), GC introduced peers, then submit `team.leave` | `team_leave` |
-| Delete | owner | `state = dissolved`, `epoch += 1`, roster (with the final member list) sent to all members; locally `dissolved`, GC | `team_delete` |
+| Delete | owner | `state = dissolved`, `epoch += 1`, roster (with the final member list) sent to all members; locally `dissolved`, GC. A member whose stored Agent Card no longer verifies (agent-card.md, review 68 OD-3) is left out of the final list but still sent the roster, and applies it as `dissolved` (Apply step 4) | `team_delete` |
 
 Plain `agentnet pair <invite code>` also works (it is a pairing code): it pairs but does not
 join, because no `team_pending_joins` row is written and no `team.join` is sent.
