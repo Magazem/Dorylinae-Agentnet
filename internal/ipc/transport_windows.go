@@ -45,7 +45,7 @@ func Listen(endpoint string) (net.Listener, error) {
 	sd := "O:" + sid.String() + "D:P(A;;GA;;;" + sid.String() + ")"
 	ln, err := winio.ListenPipe(endpoint, &winio.PipeConfig{SecurityDescriptor: sd})
 	if err == nil {
-		return ln, nil
+		return pipeListener{ln}, nil
 	}
 	// An existing pipe name fails the exclusive first-instance create with
 	// access denied, not a name collision. Ask the pipe who owns it.
@@ -63,6 +63,39 @@ func Listen(endpoint string) (net.Listener, error) {
 		// Busy or gone between the two calls. The daemon holds LockInstance
 		// before it listens, so this is not known to be our own daemon.
 		return nil, fmt.Errorf("listen on %s: pipe is in use but did not answer, owner unknown: %w", endpoint, derr)
+	}
+}
+
+// closeRetry is how long pipeListener.Close waits before it asks again.
+const closeRetry = 50 * time.Millisecond
+
+// pipeListener repeats Close until go-winio's listener has stopped. In
+// go-winio v0.6.2 a close request that races a pending ConnectNamedPipe can be
+// consumed without stopping the listener: when the aborted connect reports
+// ERROR_NO_DATA (a client came and went) the listener loops back to wait for a
+// client and Accept never returns; ERROR_OPERATION_ABORTED is handed to Accept
+// and Close waits forever. Either way Serve, and so the daemon, would not stop
+// (CI flake of TestSecondListenerRefused). A second close request reaches the
+// listener wherever it waits. Fixed upstream in microsoft/go-winio#388, not
+// yet released.
+type pipeListener struct{ net.Listener }
+
+func (l pipeListener) Close() error {
+	done := make(chan struct{})
+	go func() {
+		_ = l.Listener.Close()
+		close(done)
+	}()
+	t := time.NewTicker(closeRetry)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return nil
+		case <-t.C:
+			// Returns once the listener has stopped, like the first call.
+			go func() { _ = l.Listener.Close() }()
+		}
 	}
 }
 
