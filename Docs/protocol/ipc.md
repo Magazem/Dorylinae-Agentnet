@@ -478,9 +478,9 @@ Pairing records `pair.start`, `pair.complete` and `pair.fail`; details are in
 fingerprint) and `peers remove` records `peer.remove`, all with `actor = "cli"`
 and detail `{"peer": "<public key>", "name", "fingerprint", "trust"?}`.
 
-Sessions record `session.open` and `session.reject` (tampered, replayed,
-reordered, unpaired or malformed session envelopes); details are in
-[session.md](session.md#rejection).
+Sessions record `session.open`. Rejected session envelopes (tampered, replayed,
+reordered, unpaired or malformed) are logged, not audited, since R55-F14; logs from
+before R55-F14 hold `session.reject` rows. See [session.md](session.md#rejection).
 
 Phase 1 events are listed in [team.md](team.md#audit), [presence.md](presence.md#audit),
 [request.md](request.md#audit-and-metrics) and [notify.md](notify.md#audit).

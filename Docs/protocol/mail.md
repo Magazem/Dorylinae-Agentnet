@@ -226,10 +226,33 @@ sender's row would end `expired` although the mail was delivered. This is a `rel
 change, made in 1.0d.
 
 For each envelope with `type = mail` handed up by `relayclient`, the daemon runs these steps
-in order. The first failure rejects the envelope. Nothing is stored, no ack is sent, and the
-audit event is `mail.reject {peer, id, reason}`. That event is rate-limited like
-`session.reject`: at most 30 per minute, with the rest counted in the log as
-`event=mail_reject_suppressed`.
+in order. The first failure rejects the envelope. Nothing is stored and no ack is sent.
+
+**Which rejects are audited (R55-F14, D49; review 55 R55-015).** The relay can send any frame
+with any `from`, including the key of a paired peer, and it can replay any envelope it has
+carried. So a reject is audited only if a relay alone could not have caused it:
+
+- **Audited** as `mail.reject {peer, id?, reason}`: steps 8, 9, 10 and 12, and `bad_body`
+  ([Dedupe and inbox](#dedupe-and-inbox)). From step 8 on, `msg` carries the peer's
+  verified signature. These are the only rejects that name the peer as a fact.
+- **Logged only**, never audited: steps 1 to 7 (the `from` is only the relay's claim;
+  `unpaired` is D49), and `stale` (step 11 and the
+  [receive age limit](#receive-age-limit)), because the relay has a copy of every mail it
+  carried and can replay old ones after `mail_seen` has forgotten them.
+- **Once per envelope.** A `(peer, id)` that has already been audited as rejected during this
+  run is not audited again. The daemon keeps a bounded in-memory set of the last 4096 such
+  pairs. A relay replaying one genuine rejected envelope therefore adds one row, not one row
+  per replay. `bad_body` already works this way through `mail_seen`
+  ([Dedupe and inbox](#dedupe-and-inbox)).
+- **Rate limit.** At most 30 audited rejects per minute. The rest are counted in the log as
+  `event=mail_reject_suppressed`.
+- **`id` only when valid.** `id` is in the detail only if it matches the `id` format of
+  [Message](#message) (`ValidID`); otherwise the detail is `{peer, reason}`.
+
+Every reject, audited or not, goes to one log line per minute (`event=mail_reject`, with
+`reason`, `step` and `peer` of the first reject in the minute and `suppressed_before`, the
+number of rejects not logged since the previous line; never the `id`). This is the
+daemon's [relay-driven log rule](envelope.md#relay-driven-log-lines-daemon).
 
 | # | Check | Reject reason |
 |---|---|---|
@@ -265,7 +288,8 @@ lifetime). A mail of any kind except `ack` and `keys` whose `now − created` ex
 (receiver clock) is:
 
 - **not stored, not deduped and not applied**: no `mail_seen` row, no inbox row, no `mail.in`;
-- audited as `mail.reject {peer, id, reason: "stale"}` (same rate limit as other rejects);
+- logged as a `stale` reject (not audited since R55-F14: a relay can replay old mail it
+  carried, [above](#receiving-verification-order));
 - **acked under `rejected`** ([Ack](#ack); `unsupported` before R55-F18), so a late resend
   stops instead of running for the rest of the sender's 7 days.
 
@@ -294,7 +318,10 @@ In **one SQLite transaction**:
      `rejected`. `mail.ErrLimit` (a per-peer cap is reached, R55-F13) is handled the same way,
      with `mail.reject` reason `limit` ([request.md §Per-peer caps](request.md#per-peer-caps-r55-f13)).
 3. Commit. Audit `mail.in {peer, id, kind}` for every kind except `ack` and `keys`. This is the
-   daemon-side per-kind count of owner decision 4.
+   daemon-side per-kind count of owner decision 4. `kind` is the kind name only for a kind
+   this daemon registers; an unknown kind is audited as `kind: "unknown"`, so a peer cannot
+   write names of its choice into the audit log (R55-F14). No kind may be registered under
+   the name `unknown`.
 4. **After commit**, send the ack.
 
 Any other error in this transaction (database, a kind's apply that is not a bad body, the inbox
@@ -553,8 +580,8 @@ pinning about 256 × 700 KiB in the queue while the receiver is slow (review 55 
 | Action | Actor | Detail |
 |---|---|---|
 | `mailbox.rotate` | daemon | `{key_id, retired}` (`retired`: key_id or `""`) |
-| `mail.reject` | daemon | `{peer, id, reason}` (rate-limited, see above; reason `stale` also for the [receive age limit](#receive-age-limit), `bad_body` and `limit` for a refused application mail) |
-| `mail.in` | daemon | `{peer, id, kind}` |
+| `mail.reject` | daemon | `{peer, id?, reason}`: steps 8, 9, 10 and 12, `bad_body` and `limit` (a refused application mail, R55-F13) only, once per `(peer, id)`, rate-limited ([see above](#receiving-verification-order)). Before R55-F14 every reject, including `unpaired` and `stale`, was audited |
+| `mail.in` | daemon | `{peer, id, kind}` (`kind` is `unknown` for a kind this daemon does not register) |
 | `mail.expired` | daemon | `{peer, id, kind}` |
 
 Never plaintext, ciphertext, bodies or key material.

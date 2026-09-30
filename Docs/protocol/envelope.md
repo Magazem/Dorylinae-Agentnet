@@ -496,7 +496,8 @@ any future parse difference). The ack is sent only when all of these hold:
 3. Its `type` is not ephemeral (presence is never queued, so there is nothing to ack).
 
 Such a frame is not added to the seen-set (it was never handed up), and it is logged
-as one Warn line per minute with a count, not one line per frame. A frame whose routing
+as one Warn line per minute with a count, not one line per frame
+(`event=relay_bad_frame`, [Relay-driven log lines](#relay-driven-log-lines-daemon)). A frame whose routing
 fields do not parse is dropped without an ack and counted in the same line; an updated
 relay never delivers one. The relay deletes only rows addressed to the key that
 authenticated the connection, so a `to` that is not the daemon's own key needs no check
@@ -512,8 +513,8 @@ up and does not enter the seen-set. This check comes first, before the ephemeral
 applies to every type. A queued type is still acked, so the relay does not redeliver it. An
 ephemeral type (presence) is not acked, as for any ephemeral envelope (review 67b F9R-6). It
 is logged at Debug only (`event=relay_misrouted`, `type`, `id`; both already passed
-`Validate`). That line is relay-driven and per frame, so R55-F14's rate limit for per-frame
-relay warnings covers it too. The consumers bind the recipient inside their crypto anyway
+`Validate`). That line is relay-driven and per frame, so it is limited to one a minute like
+every [relay-driven log line](#relay-driven-log-lines-daemon) (R55-F14). The consumers bind the recipient inside their crypto anyway
 (mail `msg.to`, Noise sessions, presence through the mail opener), so this is defence in depth
 for a future type that would not.
 
@@ -552,4 +553,41 @@ re-read the raw frame.
 
 The `relay_disconnect` log line carries this same string as `error`. So one relay
 connection writes at most a few hundred bytes to the daemon log, not up to 1 MiB (review 55
-T5-01). How often such lines may appear is ticket R55-F14's rule.
+T5-01). How often such lines may appear is the rule below.
+
+### Relay-driven log lines (daemon)
+
+R55-F14 (D49; review 55 R55-016, R55-042). A relay can send frames as fast as the daemon
+reads them. So no log line may be written **once per frame** that a relay can cause.
+Each such event is logged **at most once a minute**. The line that is written describes the
+first occurrence in its minute and carries `suppressed_before`, the number of occurrences not
+logged since the previous line of that event (0 if none). The count is written with the next
+line, as in the relay's own [Logging rule](#logging-rule). The limiter keys on the **event
+name only**, a fixed set in the code, never on a relay-chosen value (key, id, type). So its
+memory stays constant during a flood from many keys, and at most one line a minute per event
+reaches the log whatever the relay sends.
+
+| Event | Where | Level | Fields besides `suppressed_before` |
+|---|---|---|---|
+| `relay_bad_frame` | `relayclient`: `Classify` or `Parse` failed (R55-F2) | Warn | `acked` |
+| `relay_misrouted` | `relayclient`: `to` is not the own key (R55-F9, above) | Debug | `type`, `id` |
+| `relay_ack_failed` | `relayclient`: sending the `ack` failed | Warn | `id`, `error` |
+| `mail_reject` | mail opener and receiver, every reject ([mail.md](mail.md#receiving-verification-order)) | Info | `reason`, `step`, `peer` |
+| `session_reject` | session manager, every reject ([session.md](session.md#rejection)) | Info | `reason`, `type`, `peer`, `session`? |
+| `session_drop` | session manager: inbox full | Warn | `type` |
+
+Presence keeps its own per-peer Debug limiter ([presence.md](presence.md)). The limiter
+spends the minute's line even at a level the handler does not print. So running at Debug does
+not change how many lines each event gets.
+
+Connection lines (`relay_connect`, `relay_disconnect`, and the `min_client` warning) are
+written once per connection, not per frame. The [reconnect backoff](#client-behaviour-daemon)
+bounds them: the delay resets only after 30 s up after `ready`, so a relay that keeps
+dropping the daemon gets at most about one connect line and one disconnect line every 30 s.
+They are not limited further, because each one is useful.
+
+Worst case: the six limited events give at most six lines a minute (about 2 MB a day). Add
+the connection lines and a flood of every kind still leaves the rotated log (`--log-file`,
+1 MiB plus one old generation; macOS and Windows, see
+[agentnetd-install.md](../cli/agentnetd-install.md#logs)) about half a day of history. On
+Linux the journal applies its own limits.

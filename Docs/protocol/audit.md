@@ -292,4 +292,34 @@ without an entry fails the build of the test suite. Gaps found while writing thi
   topics, positions, arguments, evidence, challenges, proposals, answers, constraints,
   context files and experience records, on both sides.
 - Pruning the log would break the chain; nothing prunes it in Phase 3. A later "checkpoint
-  then prune" design is deferred until a beta user's log gets large.
+  then prune" design is deferred until a beta user's log gets large. This rests on the
+  rule in [Who may cause a row](#who-may-cause-a-row-r55-f14) below. Without that rule a
+  relay could grow the log for ever (review 55 R55-015). **D49 keeps the log append-only**
+  and removes the relay-driven rows instead.
+
+## Who may cause a row (R55-F14)
+
+The no-prune decision assumed that rows come from the user's own activity and their paired
+peers. Review 55 (R55-015, T10-01) showed that the relay could also cause rows. It injected
+one junk `mail` and one junk `session.*` frame a second from unpaired keys. That gave 30
+`mail.reject` and 30 `session.reject` rows a minute, about 29 MB a day, for ever.
+
+The rule since R55-F14 (owner decision D49, extended by OD-F14-1): **a row is written only
+for an event that the user, their own devices or an authenticated peer caused.** Something
+that a relay alone can cause, including by forging a paired peer's `from` or replaying an
+envelope it carried, is **logged** under the daemon's
+[relay-driven log rule](envelope.md#relay-driven-log-lines-daemon) and never audited:
+
+| Event | Before | Since R55-F14 |
+|---|---|---|
+| Mail reject, steps 1–7 (`unpaired`, `malformed` at 2 or 5, `key_miss`, `decrypt`, `sender_mismatch`, `bad_signature`) | `mail.reject`, 30/min | log only |
+| Mail reject `stale` (step 11, receive age limit) | `mail.reject`, 30/min | log only (a relay replays old mail) |
+| Mail reject, steps 8, 9, 10, 12, and `bad_body` | `mail.reject`, 30/min | `mail.reject`, once per `(peer, id)` per run, 30/min, `id` only when valid ([mail.md](mail.md#receiving-verification-order)) |
+| Every session reject | `session.reject`, 30/min | log only ([session.md](session.md#rejection)) |
+| `mail.in` of a kind this daemon does not register | `kind` as sent | `kind: "unknown"` |
+
+Rows written before R55-F14 stay; the chain is not touched. A new audit action that could be
+caused by the relay must name its bound in its spec. The review of each spec checks this.
+Known peer-driven growth (a paired peer sending many valid mails, each giving `mail.in`) is
+R55-F13's concern ([review 55 T10-03](../review/55-code-review/99-report.md)), not the
+relay's.

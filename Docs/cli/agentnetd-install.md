@@ -28,7 +28,7 @@ Exit codes: 0 success, 1 failure, 2 usage error (including a remote `ws://` rela
 
 | OS | Mechanism | Definition | Started with |
 |---|---|---|---|
-| macOS | launchd agent `dev.dorylinae.agentnetd` | `~/Library/LaunchAgents/dev.dorylinae.agentnetd.plist` (`RunAtLoad`, `KeepAlive` on failure, log to `<home>/agentnetd.log`) | `launchctl bootstrap gui/<uid>` |
+| macOS | launchd agent `dev.dorylinae.agentnetd` | `~/Library/LaunchAgents/dev.dorylinae.agentnetd.plist` (`RunAtLoad`, `KeepAlive` on failure, `--log-file <home>/agentnetd.log`, stdout and stderr to `<home>/agentnetd.out.log`) | `launchctl bootstrap gui/<uid>` |
 | Linux | systemd user unit `agentnetd.service` | `$XDG_CONFIG_HOME` (default `~/.config`)`/systemd/user/agentnetd.service` (`Restart=on-failure`, `WantedBy=default.target`) | `systemctl --user enable --now` |
 | Windows | Task Scheduler task `Dorylinae agentnetd` | registered from an XML definition (written to `<home>\agentnetd-task.xml` for the `schtasks /Create` call, then deleted) | `schtasks /Run` |
 
@@ -36,11 +36,31 @@ Exit codes: 0 success, 1 failure, 2 usage error (including a remote `ws://` rela
 
 | OS | Where the daemon's log goes |
 |---|---|
-| macOS | launchd redirects stdout and stderr to `<home>/agentnetd.log` (not rotated) |
+| macOS | The plist runs `agentnetd run --home <home> [--relay URL] --log-file <home>/agentnetd.log`, rotated at 1 MiB to `agentnetd.log.1` as on Windows. launchd sends stdout and stderr to a separate `<home>/agentnetd.out.log` (see below) |
 | Linux | The systemd journal: `journalctl --user -u agentnetd` |
 | Windows | Task Scheduler keeps no output, so the task runs `agentnetd run --home <home> [--relay URL] --log-file <home>\agentnetd.log`. The daemon rotates that file at 1 MiB to `agentnetd.log.1` (one generation), see [agentnetd.md](agentnetd.md) |
 
-Only the Windows task passes `--log-file`.
+The macOS plist and the Windows task pass `--log-file`; the systemd unit does not.
+
+**Why macOS rotates (R55-F14, D49; review 55 R55-016).** Before R55-F14, launchd wrote the
+whole log to `<home>/agentnetd.log` and nothing rotated it. That was chosen with only the
+user's own activity in mind. But a relay can make the daemon log, so the file could grow
+until the disk was full. The daemon now writes its log itself, rotated, and it
+[limits relay-driven lines](../protocol/envelope.md#relay-driven-log-lines-daemon).
+
+`agentnetd.out.log` gets only what the daemon writes to stdout and stderr outside its log:
+the `listening on` line at each start, the insecure-relay notice, a fatal start error and a
+Go runtime crash report. None of it is written per frame, so it is not rotated. The one way
+it grows fast is a crash loop (launchd restarts the daemon at most every 10 s), and that
+needs a daemon bug; the file is small otherwise (residual, OD-F14-3). It gets
+its own file because launchd holds its own descriptor for that path. If both wrote one file,
+the rotation would leave launchd writing into `agentnetd.log.1`, which the next rotation
+deletes.
+
+**Existing installs.** A plist written before R55-F14 keeps the old behaviour until
+`agentnetd install` is run again (see [Behaviour to know about](#behaviour-to-know-about)).
+With its first log line the daemon then moves the old, possibly large `agentnetd.log` to
+`agentnetd.log.1` if it is over 1 MiB, and the next rotation deletes it.
 
 Run `agentnetd install --dry-run` to see the exact plist, unit or task XML for your machine.
 

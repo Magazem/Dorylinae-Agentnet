@@ -156,8 +156,8 @@ Unknown types are ignored. Later tickets add types; the envelope `type` stays
 
 ## Rejection
 
-The receiver drops, without answering, and writes the audit event
-`session.reject`:
+The receiver drops the envelope without answering and logs the reject (below). Since R55-F14
+it writes **no audit row**:
 
 | Reason | When |
 |--------|------|
@@ -169,10 +169,20 @@ The receiver drops, without answering, and writes the audit event
 | `decrypt` | A `session.data` ciphertext failed authentication |
 | `replay` | A `session.data` counter below the next acceptable value |
 
-Detail: `{"peer":"<key>","type":"session.data","reason":"decrypt","session":"<first 8 hex of sid>"}`.
-Never ciphertext or plaintext. At most 30 rejects per minute are audited; the
-rest are counted in the daemon log (`event=session_reject_suppressed`) so a
-misbehaving peer or relay cannot flood the audit log.
+**Why no audit row (R55-F14, D49; review 55 R55-015).** Every reason above can be caused by
+the relay alone. `unpaired` comes from any key (D49). For the others the relay uses a paired
+peer's key as `from`: a handshake message 1 needs no secret, so a forged `init` followed by
+a forged `fin` gives `bad_binding` or `bad_handshake`; garbage gives `decrypt` or
+`unknown_session`; and a captured `session.data` replayed gives `replay`. Before R55-F14 each
+of these wrote a `session.reject` row (30 a minute, in an audit log that is never pruned).
+Older logs still hold such rows; no new ones are written.
+
+**Log line.** Every reject goes to one log line per minute: `event=session_reject`, with
+`reason`, `type`, `peer` and `session` (the first 8 hex of `sid`, when the payload has one)
+of the first reject in the minute, and `suppressed_before`, the number of rejects not
+logged since the previous line. Never the envelope `id`, ciphertext or plaintext. This is
+the daemon's [relay-driven log rule](envelope.md#relay-driven-log-lines-daemon). A full
+session inbox (`event=session_drop`) follows the same rule.
 
 `session.open` detail: `{"peer":"<key>","role":"initiator|responder","session":"<8 hex>"}`.
 
