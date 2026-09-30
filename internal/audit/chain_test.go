@@ -62,7 +62,8 @@ func legacyStore(t *testing.T, rows ...string) (*store.Store, string) {
 	}
 	// Back to schema 17: undo migrations 22 (work_sessions.runner), 21
 	// (experience_records), 20 (decisions) and 19 (debates) too; 19 and 22
-	// alter work_sessions and would fail when replayed.
+	// alter work_sessions and would fail when replayed. Migration 23 (R55-F24)
+	// widens a CHECK and adds no table or column, so it needs no undo.
 	exec(t, s.DB(), `ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`, `DROP TABLE experience_records`,
 		`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,
 		`ALTER TABLE work_sessions DROP COLUMN kind`,

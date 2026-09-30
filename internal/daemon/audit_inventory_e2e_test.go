@@ -32,8 +32,8 @@ func TestAuditInventory(t *testing.T) {
 	raw := func() *json.RawMessage { return &json.RawMessage{} }
 
 	// Presence, notifications, mail, ping, trust.
-	run.call(a, "presence_set", daemon.PresenceSetParams{Invisible: true}, raw())
-	run.call(a, "presence_set", daemon.PresenceSetParams{Visible: true}, raw())
+	run.call(a, "presence_set", daemon.PresenceSetParams{Mode: "invisible"}, raw())
+	run.call(a, "presence_set", daemon.PresenceSetParams{Mode: "visible"}, raw())
 	off := false
 	run.call(a, "notify_set", daemon.NotifySetParams{Desktop: &off}, raw())
 	a.submit(b.key, "note", "inventory")
@@ -43,7 +43,12 @@ func TestAuditInventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run.call(a, "peers_verify", daemon.PeerVerifyParams{Peer: b.key, Fingerprint: envelope.FormatFingerprint(fpRaw)}, raw())
+	var pv daemon.PeerVerifyResult
+	run.call(a, "peers_verify", daemon.PeerVerifyParams{Peer: b.key, Fingerprint: envelope.FormatFingerprint(fpRaw)}, &pv)
+	a.humanApprove(pv.Approval.ID)
+	harnessWait(t, "the peer_verify approval to be performed", func() bool {
+		return a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'peer.verify'`) == 1
+	})
 
 	// Teams: rename, and a second and third team for leave, remove and delete.
 	run.call(a, "team_rename", daemon.TeamRenameParams{Team: e.teamID, Name: "x2"}, raw())

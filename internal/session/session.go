@@ -183,6 +183,9 @@ type Manager struct {
 	self string
 	log  *slog.Logger
 
+	pingGate func(ctx context.Context, peer string) bool // guarded by mu
+	initGate func(ctx context.Context, peer string) bool // guarded by mu
+
 	inbox chan envelope.Envelope
 	stop  chan struct{}
 	wg    sync.WaitGroup
@@ -206,6 +209,27 @@ type Manager struct {
 	// and session_send_failed (Docs/protocol/envelope.md §Relay-driven log
 	// lines (daemon)).
 	lines *lograte.Limiter
+}
+
+// SetPingGate sets a check that decides whether a ping from a paired peer is
+// answered; an unanswered ping simply times out on the peer's side. Nil (the
+// default) answers every ping. The daemon uses it so an invisible daemon is
+// not a liveness oracle (R55-077, Docs/protocol/presence.md §Visibility).
+func (m *Manager) SetPingGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.pingGate = gate
+	m.mu.Unlock()
+}
+
+// SetInitGate sets a check that decides whether a handshake Init from a paired
+// peer is answered. A refused Init is dropped without a Resp, an error or an
+// audit row, so the peer sees what it sees for an offline daemon. Nil (the
+// default) answers every Init. Together with SetPingGate it keeps an invisible
+// daemon from being probed by a ping (R55-077, review 79 M1).
+func (m *Manager) SetInitGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.initGate = gate
+	m.mu.Unlock()
 }
 
 // NewManager returns a running Manager; call Close to stop it.
@@ -574,6 +598,12 @@ func (m *Manager) handle(e envelope.Envelope) {
 
 func (m *Manager) onInit(ctx context.Context, from string, sid, body []byte) string {
 	m.mu.Lock()
+	gate := m.initGate
+	m.mu.Unlock()
+	if gate != nil && !gate(ctx, from) {
+		return "" // look offline: no Resp, no reject, no audit
+	}
+	m.mu.Lock()
 	if _, dup := m.sessions[string(sid)]; dup {
 		m.mu.Unlock()
 		return ReasonBadHandshake
@@ -670,15 +700,60 @@ func (m *Manager) onFin(ctx context.Context, from string, sid, body []byte) stri
 	return ""
 }
 
+// refuses reports whether the init gate turns peer away now (review 79b M1b).
+// The gate reads the database, so it runs without the lock.
+func (m *Manager) refuses(ctx context.Context, peer string) bool {
+	m.mu.Lock()
+	gate := m.initGate
+	m.mu.Unlock()
+	return gate != nil && !gate(ctx, peer)
+}
+
+// DropGatedSessions closes every open session whose peer the init gate now
+// refuses. The daemon calls it when the presence mode changes, so a session
+// opened while it was visible does not outlive that (review 79b M1b). The
+// peer is not told: its next message is dropped without an answer.
+func (m *Manager) DropGatedSessions(ctx context.Context) {
+	m.mu.Lock()
+	peers := map[string]bool{}
+	for _, s := range m.sessions {
+		peers[s.peer] = true
+	}
+	m.mu.Unlock()
+	refused := map[string]bool{}
+	for p := range peers {
+		if m.refuses(ctx, p) {
+			refused[p] = true
+		}
+	}
+	if len(refused) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for sid, s := range m.sessions {
+		if refused[s.peer] {
+			m.dropLocked(sid)
+		}
+	}
+}
+
 func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) string {
 	if len(body) < noise.CounterSize {
 		return ReasonMalformed
 	}
+	// From a peer the init gate refuses, data gets no answer and no error,
+	// whether or not the session is known (review 79b M1b); the exemption for
+	// responses is below, after decryption.
+	gated := m.refuses(ctx, from)
 	n := noise.Counter(body[:noise.CounterSize])
 	m.mu.Lock()
 	s, ok := m.sessions[string(sid)]
 	if !ok || s.peer != from || s.tr == nil {
 		m.mu.Unlock()
+		if gated {
+			return ""
+		}
 		return ReasonUnknownSession
 	}
 	pt, err := s.tr.Open(n, m.dataAD(from, m.self, s.sid, n), body[noise.CounterSize:])
@@ -696,6 +771,19 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 	}
 	switch msg.Type {
 	case "ping":
+		gate := m.pingGate
+		if gate != nil {
+			// The gate reads the database: ask it without the lock (R55-077).
+			m.mu.Unlock()
+			if !gate(ctx, from) {
+				return ""
+			}
+			m.mu.Lock()
+			if cur, ok := m.sessions[string(sid)]; !ok || cur != s || s.tr == nil {
+				m.mu.Unlock()
+				return ""
+			}
+		}
 		reply, _ := json.Marshal(message{Type: "pong", ID: msg.ID})
 		env, err := m.sealLocked(s, reply, "")
 		m.mu.Unlock()
@@ -710,6 +798,12 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 			m.finishLocked(p, nil)
 		}
 	default:
+		// Requests from a gated peer are dropped; a ".resp" answers something
+		// we sent, so it is let through.
+		if gated && !strings.HasSuffix(msg.Type, ".resp") {
+			m.mu.Unlock()
+			return ""
+		}
 		if h := m.handlers[msg.Type]; h != nil {
 			m.mu.Unlock()
 			h(from, bytes.Clone(pt))

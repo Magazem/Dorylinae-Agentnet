@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/idle"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/logfile"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
@@ -114,7 +116,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "%s: %s\n", name, warning)
 		logger.Warn(warning, "event", "relay_insecure")
 	}
-	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, RelayRoots: roots, Logger: logger}); err != nil {
+	if err := daemon.RunWithOptions(ctx, p, ready, daemonOptions(*relayURL, roots, logger)); err != nil {
 		if errors.Is(err, ipc.ErrAlreadyRunning) {
 			if pid := runningPID(p.Endpoint); pid > 0 {
 				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s (pid %d)\n", name, p.Dir, pid)
@@ -153,6 +155,16 @@ func rotateOutLog(stderr io.Writer, dir string) {
 		return
 	}
 	_ = os.Rename(path, path+".1") // replaces an older .1
+}
+
+// daemonOptions is the production daemon.Options. Idle is the OS input-idle
+// probe behind a 5 s cache, for the human-present level (R55-033,
+// Docs/protocol/presence.md Idle detection).
+func daemonOptions(relayURL string, roots *x509.CertPool, logger *slog.Logger) daemon.Options {
+	return daemon.Options{
+		RelayURL: relayURL, RelayRoots: roots, Logger: logger,
+		Idle: idle.Cached(idle.CacheTTL, time.Now, idle.Idle),
+	}
 }
 
 // runningPID asks the daemon already listening on endpoint for its PID, so

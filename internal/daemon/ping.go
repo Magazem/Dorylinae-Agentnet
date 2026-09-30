@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -143,4 +145,19 @@ func pingError(err error) error {
 	default:
 		return err
 	}
+}
+
+// peerHasLiveTies reports whether peer holds an active, unexpired grant we
+// issued or shares a work session with us that is not closed: such a peer may
+// open a session even while we are invisible. A database error answers false
+// (fail closed).
+func peerHasLiveTies(ctx context.Context, db *sql.DB, peer string) bool {
+	var n int
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	if err := db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM grants WHERE direction = 'issued' AND peer = ? AND state = 'active' AND exp > ?) +
+		(SELECT COUNT(*) FROM work_sessions WHERE peer = ? AND state <> 'closed')`, peer, now, peer).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }

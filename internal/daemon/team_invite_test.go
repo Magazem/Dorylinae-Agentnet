@@ -20,6 +20,16 @@ func harnessTeamInvite(t *testing.T, owner *harnessNode, teamRef string) daemon.
 	t.Helper()
 	var res daemon.TeamInviteResult
 	owner.call("team_invite", daemon.TeamInviteParams{Team: teamRef}, &res)
+	if res.Approval != nil {
+		// D48: the code exists only after the human approves in the window.
+		id := res.Approval.ID
+		owner.humanApprove(id)
+		harnessWait(t, "invite approval", func() bool {
+			res = daemon.TeamInviteResult{}
+			owner.call("team_invite", daemon.TeamInviteParams{Team: teamRef, Approval: id}, &res)
+			return res.Approval == nil
+		})
+	}
 	harnessWait(t, "invite code", func() bool {
 		owner.call("pair_status", daemon.PairStatusParams{PairingID: res.ID}, &res.PairStatus)
 		return res.Code != "" || res.State != "pending"
@@ -246,4 +256,17 @@ func TestTeamInviteFullTeam(t *testing.T) {
 	if err == nil || errCode(err) != "team_full" {
 		t.Fatalf("team_invite on a full team = %v, %+v, want team_full", err, res)
 	}
+}
+
+// harnessVerify runs peers_verify on n for peer and answers the approval in
+// the fake window (D48), then waits for the trust to become fingerprint.
+func harnessVerify(t *testing.T, n *harnessNode, peer, fingerprint string) {
+	t.Helper()
+	var res daemon.PeerVerifyResult
+	n.call("peers_verify", daemon.PeerVerifyParams{Peer: peer, Fingerprint: fingerprint}, &res)
+	n.humanApprove(res.Approval.ID)
+	harnessWait(t, "trust to become fingerprint", func() bool {
+		var trust string
+		return n.query(`SELECT trust FROM peers WHERE public_key = '`+peer+`'`, &trust) == nil && trust == "fingerprint"
+	})
 }

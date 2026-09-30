@@ -29,12 +29,16 @@ const (
 	// KindDebateConstraint gates a human constraint on a debate
 	// (Docs/protocol/debate.md §Human constraints, OD-P3-3).
 	KindDebateConstraint = "debate_constraint"
+	// KindPeerVerify gates `peers verify`, KindTeamInvite the owner's `team
+	// invite` (D48, R55-F24): both are trust changes.
+	KindPeerVerify = "peer_verify"
+	KindTeamInvite = "team_invite"
 )
 
 var validKinds = map[string]bool{
 	KindGrant: true, KindGrantPolicy: true, KindRelease: true,
 	KindAcceptResult: true, KindDeviceLink: true, KindDeviceScope: true,
-	KindDebateConstraint: true,
+	KindDebateConstraint: true, KindPeerVerify: true, KindTeamInvite: true,
 }
 
 // States (Docs/protocol/approval.md §Object).

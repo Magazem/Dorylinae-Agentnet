@@ -29,9 +29,17 @@ leading `@`. `<code>` is typed like a pairing code (case-insensitive, `-` and sp
 
 The invite code **is** a pairing v2 code ([pair.md](pair.md)), so the same rules apply: both
 daemons must be connected to the relay, the code is valid for 10 minutes, and each code can
-be redeemed once. `team invite` and `team join` follow the 2-second rule of `pair`. They
-return `pending` with a `pairing_id` if the exchange is not finished within 1 s. Poll it
-with `agentnet pair --status <id>`.
+be redeemed once. `team join` follows the 2-second rule of `pair`. It returns `pending` with
+a `pairing_id` if the exchange is not finished within 1 s. Poll it with `agentnet pair
+--status <id>`.
+
+`team invite` needs your approval first (kind `team_invite`, D48): anyone who redeems the
+code joins the team and every member's daemon then trusts them. The command creates the
+approval, prints `Approval <id>: type the code into the AgentNet approval window` on stderr
+and waits (up to about 11 minutes) until you type the code into the approval window (on a
+headless machine: into the daemon's terminal, see [approve.md](approve.md)). If you reject
+it or it expires, no code exists and the command exits 1. After the approval it follows the
+2-second rule of `pair`, like `team join`.
 
 When the join completes, the joiner is paired with the owner (`trust=code`) and asks to
 join. The owner's daemon adds the joiner and sends the new member list to everyone. The

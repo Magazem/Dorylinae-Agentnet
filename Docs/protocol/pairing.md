@@ -416,7 +416,7 @@ ALTER TABLE peers ADD COLUMN mailbox_keys TEXT NOT NULL DEFAULT '[]'
 |---|---|---|
 | `relay` | Key came from a v1 pairing. A hostile relay could have substituted it | Migration default for existing rows; any v1 pairing |
 | `code` | Key confirmed by a v2 code MAC | v2 pairing |
-| `fingerprint` | A human compared the fingerprint out of band | `agentnet peers verify` |
+| `fingerprint` | A human compared the fingerprint out of band | `agentnet peers verify`, after the human approves it in the approval window (D48) |
 
 Rank: `relay` < `code` < `fingerprint`. **`Store.Add` never lowers `trust`.** It stores
 the higher of the old and new values. A re-pair of a known key updates `name`, `harness`,
@@ -460,7 +460,9 @@ because only the first 20 characters (100 of 256 bits) are used.
   spaces. CLI doc updates are part of 0.8b.
 - `agentnet peers verify <peer> <fp>`: normalise `<fp>` like a code (case, `-`/space,
   aliases), require 20 characters, and compare in constant time with `fp(peer key)`. A match
-  sets `trust=fingerprint` and exits 0. A mismatch exits non-zero and changes nothing.
+  creates a `peer_verify` approval and exits 0; `trust=fingerprint` is set when the human
+  approves it ([approval.md](approval.md#trust-changes-peer_verify-and-team_invite), D48,
+  R55-082). A mismatch exits non-zero and changes nothing.
   `<peer>` is a public key or a unique peer name.
 - A fingerprint is the only way to detect a key substituted during an earlier v1 pairing.
 

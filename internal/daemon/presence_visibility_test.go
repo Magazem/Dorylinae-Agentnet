@@ -18,7 +18,7 @@ func TestPresenceInvisibleHidesFromPeers(t *testing.T) {
 
 	before := time.Now()
 	var set daemon.PresenceGetResult
-	b.call("presence_set", daemon.PresenceSetParams{Invisible: true}, &set)
+	b.call("presence_set", daemon.PresenceSetParams{Mode: "invisible"}, &set)
 	if set.Mode != "invisible" {
 		t.Fatalf("presence_set invisible: mode = %q", set.Mode)
 	}
@@ -87,7 +87,7 @@ func TestPresenceOnlyTeamScopesVisibility(t *testing.T) {
 	})
 
 	var set daemon.PresenceGetResult
-	b.call("presence_set", daemon.PresenceSetParams{OnlyTeam: teamX}, &set)
+	b.call("presence_set", daemon.PresenceSetParams{Mode: "only_team", Team: teamX}, &set)
 	if set.Mode != "only_team" || set.Team == nil || set.Team.ID != teamX {
 		t.Fatalf("presence_set only_team: %+v", set)
 	}
@@ -110,7 +110,7 @@ func TestPresenceOnlyTeamAutoInvisibleOnLeave(t *testing.T) {
 	_, _, b := setUpPresenceTeam(t, 300*time.Millisecond)
 
 	var set daemon.PresenceGetResult
-	b.call("presence_set", daemon.PresenceSetParams{OnlyTeam: seedTeamID}, &set)
+	b.call("presence_set", daemon.PresenceSetParams{Mode: "only_team", Team: seedTeamID}, &set)
 	if set.Mode != "only_team" {
 		t.Fatalf("presence_set only_team: %+v", set)
 	}
@@ -154,7 +154,7 @@ func TestPresenceHumanOffHidesFromPeers(t *testing.T) {
 	})
 
 	var set daemon.PresenceGetResult
-	b.call("presence_set", daemon.PresenceSetParams{Human: strPtr("off")}, &set)
+	b.call("presence_set", daemon.PresenceSetParams{HumanShare: boolPtr(false)}, &set)
 	if set.HumanShare {
 		t.Fatalf("presence_set human off: %+v", set)
 	}
@@ -165,4 +165,4 @@ func TestPresenceHumanOffHidesFromPeers(t *testing.T) {
 	})
 }
 
-func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool { return &b }

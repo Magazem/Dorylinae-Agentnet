@@ -74,6 +74,7 @@ func startApprovalNode(t *testing.T, name, relayURL string) (n *testNode, win *a
 	win = newApproveFakeWindow()
 	notifier = &approveFakeNotifier{}
 	desk = &desktopCalls{}
+	mixed := &mixedApprover{human: &autoHuman{}, win: win, notifier: notifier}
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	done := make(chan error, 1)
@@ -83,8 +84,8 @@ func startApprovalNode(t *testing.T, name, relayURL string) (n *testNode, win *a
 			Keystore:       ks,
 			Identity:       &identity.Options{Name: name, Harness: "test-harness"},
 			RelayURL:       relayURL,
-			ApprovalWindow: win,
-			ApprovalNotify: notifier,
+			ApprovalWindow: mixed,
+			ApprovalNotify: mixed,
 			NotifyShow:     desk.show,
 		})
 	}()

@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
@@ -28,6 +31,13 @@ type PeerVerifyParams struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// PeerVerifyResult is the result of "peers_verify": the pending peer_verify
+// approval. The peer is raised to fingerprint only once a human approves it
+// (D48, R55-082, Docs/protocol/approval.md).
+type PeerVerifyResult struct {
+	Approval approval.View `json:"approval"`
+}
+
 // PeerRemoveParams are the params of "peers_remove".
 type PeerRemoveParams struct {
 	Peer string `json:"peer"`
@@ -46,7 +56,7 @@ type peerAuditDetail struct {
 	Trust       string `json:"trust,omitempty"`
 }
 
-func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.Store) {
+func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.Store, apprStore *approval.Store, db *sql.DB) {
 	srv.Handle("peers_verify", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p PeerVerifyParams
 		if err := json.Unmarshal(params, &p); err != nil || p.Peer == "" || p.Fingerprint == "" {
@@ -67,16 +77,51 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 			}
 			return nil, &ipc.Error{Code: CodeFingerprintMismatch, Message: "the fingerprint does not match this peer's key; nothing was changed"}
 		}
-		if err := ps.SetTrust(ctx, peer.PublicKey, peers.TrustFingerprint); err != nil {
-			return nil, peerError(err)
-		}
-		peer.Trust = peers.TrustFingerprint
-		peer.IntroducedBy = nil
-		d.Trust = peer.Trust
-		if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerVerify, d); err != nil {
+		// The fingerprint matched, which any local agent can arrange (it is
+		// public), so raising the trust needs a human (D48, R55-082): a
+		// peer_verify approval whose window shows the peer's name and grouped
+		// fingerprint. Perform raises the trust and audits in the approval's
+		// transaction.
+		pf, err := peerFacts(ctx, db, peer.PublicKey)
+		if err != nil {
 			return nil, err
 		}
-		return PeerResult{Peer: peer}, nil
+		facts := approvaltext.PeerVerify{Peer: pf}
+		summary, err := approvaltext.BuildPeerVerify(facts)
+		if err != nil {
+			return nil, summaryField(err, "peer")
+		}
+		d.Trust = peers.TrustFingerprint
+		action := approval.Action{
+			Precondition: func(ctx context.Context, tx *sql.Tx) error {
+				_, ok, err := peerTrustTx(ctx, tx, peer.PublicKey)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return &ipc.Error{Code: CodeUnknownPeer, Message: "no such paired peer (see 'agentnet peers')"}
+				}
+				return nil
+			},
+			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.PeerVerify, error) {
+				pf, err := peerFacts(ctx, tx, peer.PublicKey)
+				return approvaltext.PeerVerify{Peer: pf}, err
+			}, approvaltext.BuildPeerVerify),
+			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
+				if err := peers.SetTrustTx(ctx, tx, peer.PublicKey, peers.TrustFingerprint); err != nil {
+					return nil, peerError(err)
+				}
+				if err := auditTx(ctx, tx, audit.ActorCLI, audit.ActionPeerVerify, d); err != nil {
+					return nil, err
+				}
+				return nil, nil
+			},
+		}
+		view, aerr := apprStore.Create(ctx, approval.KindPeerVerify, peer.PublicKey, summary, action)
+		if aerr != nil {
+			return nil, approvalError(aerr)
+		}
+		return PeerVerifyResult{Approval: view}, nil
 	})
 	srv.Handle("peers_remove", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p PeerRemoveParams

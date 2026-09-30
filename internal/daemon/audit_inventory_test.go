@@ -72,7 +72,7 @@ var methodInventory = map[string]invEntry{
 
 	// Teams.
 	"team_create": viaHarness("A", "team.create"),
-	"team_invite": viaHarness("A", "team.invite"),
+	"team_invite": viaHarness("A", "team.invite", "team.invite_issued"),
 	"team_join":   viaHarness("B", "team.join"),
 	"team_rename": acts("A", "team.rename"),
 	"team_remove": acts("A", "team.member_remove"),

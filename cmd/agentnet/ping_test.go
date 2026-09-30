@@ -187,6 +187,22 @@ func sessionEvents(t *testing.T, n *testNode, action string) []map[string]string
 	return out
 }
 
+// waitEvents polls n's audit log until it holds at least want rows of action.
+func waitEvents(t *testing.T, n *testNode, action string, want int) []map[string]string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		evs := sessionEvents(t, n, action)
+		if len(evs) >= want {
+			return evs
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s events = %v, want %d", action, evs, want)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // noSessionRejects asserts that n writes no session.reject row: session
 // rejects are logged, never audited (R55-F14, Docs/protocol/session.md
 // §Rejection). The reject is handled asynchronously, so it keeps checking for

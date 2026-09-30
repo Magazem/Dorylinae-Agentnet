@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,5 +99,42 @@ func TestIdleHangingCommandIsUnknown(t *testing.T) {
 	Idle(context.Background())
 	if el := time.Since(start); el > 3*time.Second {
 		t.Fatalf("Idle took %v", el)
+	}
+}
+
+func TestCachedReusesAResultForTheTTL(t *testing.T) {
+	var mu sync.Mutex
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
+	advance := func(d time.Duration) { mu.Lock(); clock = clock.Add(d); mu.Unlock() }
+	calls := 0
+	f := Cached(CacheTTL, now, func(context.Context) (time.Duration, bool) {
+		calls++
+		return time.Duration(calls) * time.Second, true
+	})
+	ctx := context.Background()
+	if d, ok := f(ctx); !ok || d != time.Second {
+		t.Fatalf("first call = %v, %v", d, ok)
+	}
+	advance(CacheTTL - time.Millisecond)
+	if d, _ := f(ctx); d != time.Second || calls != 1 {
+		t.Fatalf("inside the TTL: d = %v, calls = %d, want the cached value and 1 call", d, calls)
+	}
+	advance(time.Millisecond)
+	if d, _ := f(ctx); d != 2*time.Second || calls != 2 {
+		t.Fatalf("at the TTL: d = %v, calls = %d, want a fresh sample and 2 calls", d, calls)
+	}
+}
+
+func TestCachedKeepsAnUnknownResultToo(t *testing.T) {
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	calls := 0
+	f := Cached(CacheTTL, func() time.Time { return clock }, func(context.Context) (time.Duration, bool) {
+		calls++
+		return 0, false
+	})
+	f(context.Background())
+	if _, ok := f(context.Background()); ok || calls != 1 {
+		t.Fatalf("ok = %v, calls = %d, want unknown and 1 call", ok, calls)
 	}
 }
