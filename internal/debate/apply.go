@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -23,9 +22,7 @@ import (
 // mail dedupe transaction and touches only tx; audits, notifications and
 // the echo run after commit.
 
-// pending holds each applied mail's after-commit work, keyed by the
-// *mail.Opened pointer (as internal/request's pendingApply).
-var pending sync.Map // map[*mail.Opened]afters
+// Each applied mail's after-commit work (afters) rides in op.Outcome.
 
 // EntryKind is the receiver Kind for debate.entry (both directions).
 func (s *Store) EntryKind() mail.Kind {
@@ -43,14 +40,14 @@ func (s *Store) CloseKind() mail.Kind {
 }
 
 func (s *Store) after(ctx context.Context, op *mail.Opened) {
-	v, ok := pending.LoadAndDelete(op)
+	v, ok := op.Outcome.(afters)
 	if !ok {
 		return
 	}
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
-	v.(afters).run(ctx)
+	v.run(ctx)
 }
 
 // ignore records an ignored body: it is applied nowhere, so its inbox copy is
@@ -124,7 +121,7 @@ func (s *Store) applyEntry(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	var out afters
 	if !ok {
 		s.ignore(op, &out, sid, MailEntry, "unknown", false)
-		pending.Store(op, out)
+		op.Outcome = out
 		return nil
 	}
 	e, canon, err := DecodeEntry(kind, b["entry"])
@@ -139,7 +136,7 @@ func (s *Store) applyEntry(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	if err != nil {
 		return err
 	}
-	pending.Store(op, out)
+	op.Outcome = out
 	return nil
 }
 
@@ -346,7 +343,7 @@ func (s *Store) applyReveal(ctx context.Context, tx *sql.Tx, op *mail.Opened) (e
 	var out afters
 	defer func() {
 		if err == nil {
-			pending.Store(op, out)
+			op.Outcome = out
 		}
 	}()
 	if !ok {
@@ -502,10 +499,22 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 	if !ok {
 		return badBody("constraints must be an array")
 	}
+	// decision.md §Signing step 1: the sorted ids A holds active, so at most
+	// MaxActiveConstraints, strictly ascending (review 55 R55-021: a repeated
+	// or unbounded list would make B's derivation exceed MaxDecision).
+	if len(list) > MaxActiveConstraints {
+		return badBody("constraints holds more than %d ids", MaxActiveConstraints)
+	}
+	prev := ""
 	for _, v := range list {
-		if id, ok := v.(string); !ok || !constraintIDPattern.MatchString(id) {
+		id, ok := v.(string)
+		if !ok || !constraintIDPattern.MatchString(id) {
 			return badBody("constraints must hold constraint ids")
 		}
+		if id <= prev {
+			return badBody("constraints must be sorted and unique")
+		}
+		prev = id
 	}
 	entries, err := intMember(b, "entries")
 	if err != nil {
@@ -541,7 +550,7 @@ func (s *Store) applyClose(ctx context.Context, tx *sql.Tx, op *mail.Opened) (er
 	var out afters
 	defer func() {
 		if err == nil {
-			pending.Store(op, out)
+			op.Outcome = out
 		}
 	}()
 	if !found {
@@ -634,6 +643,12 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 		if errors.Is(err, decision.ErrClosedBeforeOpened) {
 			// Review 47 M1: both would sign a record verify step 5 rejects.
 			return s.refuseOnB(ctx, tx, r, tr, b, raw, "time", out)
+		}
+		var tl *decision.TooLargeError
+		if errors.As(err, &tl) {
+			// Review 55 R55-021: a plain error would roll the close back
+			// unacked on every resend. B refuses it instead.
+			return s.refuseOnB(ctx, tx, r, tr, b, raw, "size", out)
 		}
 		if err != nil {
 			return err

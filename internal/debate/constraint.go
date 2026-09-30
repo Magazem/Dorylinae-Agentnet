@@ -175,7 +175,7 @@ func (s *Store) applyConstraint(ctx context.Context, tx *sql.Tx, op *mail.Opened
 	var out afters
 	defer func() {
 		if err == nil {
-			pending.Store(op, out)
+			op.Outcome = out
 		}
 	}()
 	if !found {
@@ -184,6 +184,13 @@ func (s *Store) applyConstraint(ctx context.Context, tx *sql.Tx, op *mail.Opened
 	}
 	if r.phase == PhaseClosing || r.phase == PhaseClosed || r.phase == PhaseBroken {
 		s.ignore(op, &out, r.session, MailConstraint, "closed", false)
+		return nil
+	}
+	if !constraintPhase(r.phase) {
+		// Review 55 R55-070: constraints exist only in positions, rounds or
+		// converge; one for a debate still invited is not stored, so it
+		// neither shows nor counts toward the limit.
+		s.ignore(op, &out, r.session, MailConstraint, "state", false)
 		return nil
 	}
 	var dup int

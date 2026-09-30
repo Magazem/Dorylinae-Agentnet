@@ -61,8 +61,6 @@ func deliverMirror(t *testing.T, s *Store, kind, from string, created time.Time,
 	}
 	if err := applyFn(ctx, tx, op); err != nil {
 		_ = tx.Rollback()
-		pendingMirror.Delete(op)
-		pendingCancel.Delete(op)
 		return err
 	}
 	if err := tx.Commit(); err != nil {

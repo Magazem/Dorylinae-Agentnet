@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -34,6 +35,10 @@ const (
 	ReceiveMaxAge = 14 * 24 * time.Hour
 
 	pruneInterval = 24 * time.Hour
+
+	// maxFailLogged bounds the (from, id) pairs remembered for logFailure. At
+	// the bound the set starts over, so a pair may be logged again.
+	maxFailLogged = 4096
 )
 
 // Kind describes how the receiver processes one known application kind.
@@ -81,6 +86,9 @@ type Receiver struct {
 
 	commit    func(*sql.Tx) error // test hook; defaults to tx.Commit
 	beforeBad func()              // test hook; runs between the two bad-body transactions
+
+	failMu     sync.Mutex
+	failLogged map[string]struct{} // (from, id) pairs logFailure has logged
 }
 
 // ErrNoKindHandler is returned for mail of kind keys when no handler is
@@ -151,6 +159,7 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 
 	res, err := r.store(ctx, op, k, known)
 	if err != nil {
+		r.logFailure(op, known, err)
 		return err
 	}
 	if res == seenBad || res == seenDupBad {
@@ -173,6 +182,32 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	// After commit (or for a duplicate, after rollback): ack.
 	r.ack(ctx, op.Msg.From, op.Msg.ID, !known)
 	return nil
+}
+
+// logFailure logs a receive error that is not a rejection (a database,
+// Apply, inbox or commit error): the mail was rolled back and not acked, so the
+// sender resends it. Each (from, id) is logged once, not on every redelivery
+// (review 55 R55-058). The line carries no body content.
+func (r *Receiver) logFailure(op *Opened, known bool, err error) {
+	key := op.Msg.From + "\x00" + op.Msg.ID
+	r.failMu.Lock()
+	_, seen := r.failLogged[key]
+	if !seen {
+		if r.failLogged == nil || len(r.failLogged) >= maxFailLogged {
+			r.failLogged = map[string]struct{}{}
+		}
+		r.failLogged[key] = struct{}{}
+	}
+	r.failMu.Unlock()
+	if seen {
+		return
+	}
+	kind := op.Msg.Kind
+	if !known {
+		kind = "unknown"
+	}
+	r.log().Warn("mail: receive failed, not acked", "event", "mail_receive_failed",
+		"peer", op.Msg.From, "id", op.Msg.ID, "kind", kind, "error", err)
 }
 
 type seenResult int
@@ -199,6 +234,17 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return seenAs(ctx, tx, op) // rolled back by the deferred Rollback
+	}
+	// mail_seen is pruned after 35 d, mail_inbox is not: an id still in
+	// mail_inbox is a duplicate too, so a re-used id is never applied a
+	// second time (review 55 R55-017, mail.md §Dedupe and inbox).
+	var inInbox int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM mail_inbox WHERE from_key = ? AND id = ?`, op.Msg.From, op.Msg.ID).Scan(&inInbox); err != nil {
+		return seenNew, fmt.Errorf("mail: read inbox: %w", err)
+	}
+	if inInbox > 0 {
+		return seenDup, nil // rolled back by the deferred Rollback
 	}
 	if known {
 		if k.Apply != nil {

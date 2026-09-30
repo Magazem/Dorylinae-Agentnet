@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -17,9 +16,9 @@ import (
 )
 
 // The mail kinds of Docs/protocol/team.md §Kinds. Apply and After share the
-// per-message outcome through a map keyed by the *mail.Opened pointer, which
-// is unique to and stable across one Handle call (Apply runs, then After runs
-// on the same pointer), so this needs no message-identity comparison.
+// per-message outcome through op.Outcome: op is unique to one Handle call
+// (Apply runs, then After runs on the same op), and a failed transaction
+// drops it with nothing left behind.
 
 // maxEpoch is the exclusive upper bound of team.epoch (2^53).
 const maxEpoch = int64(1) << 53
@@ -55,8 +54,6 @@ type rosterOutcome struct {
 	gc       []peers.Removed
 }
 
-var pendingRoster sync.Map // map[*mail.Opened]*rosterOutcome
-
 // RosterKind returns the receiver handler for kind team.roster.
 func (s *Store) RosterKind() mail.Kind {
 	return mail.Kind{Apply: s.applyRoster, After: s.afterRoster}
@@ -77,7 +74,7 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		return fmt.Errorf("team: roster: owner trust: %w", err)
 	}
 	if trust != peers.TrustCode && trust != peers.TrustFingerprint {
-		pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: "owner_trust"})
+		op.Outcome = &rosterOutcome{ignored: true, reason: "owner_trust"}
 		return nil
 	}
 
@@ -97,13 +94,13 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 			}
 		}
 		if !ok {
-			pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: "not_invited"})
+			op.Outcome = &rosterOutcome{ignored: true, reason: "not_invited"}
 			return nil
 		}
 	case gerr != nil:
 		return fmt.Errorf("team: roster: %w", gerr)
 	case existing.Owner != ownerKey:
-		pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: "not_owner", teamID: existing.ID})
+		op.Outcome = &rosterOutcome{ignored: true, reason: "not_owner", teamID: existing.ID}
 		return nil
 	case epoch <= existing.Epoch:
 		return nil // idempotent resend or reordering: ignored silently, no audit
@@ -116,7 +113,7 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 			}
 		}
 		if !ok {
-			pendingRoster.Store(op, &rosterOutcome{ignored: true, reason: existing.State, teamID: existing.ID})
+			op.Outcome = &rosterOutcome{ignored: true, reason: existing.State, teamID: existing.ID}
 			return nil
 		}
 	}
@@ -213,19 +210,18 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		newPeers = kept
 	}
 
-	pendingRoster.Store(op, &rosterOutcome{
+	op.Outcome = &rosterOutcome{
 		teamID: teamID, epoch: epoch, added: added, removed: removedKeys, state: localState,
 		newPeers: newPeers, gc: gcRemoved,
-	})
+	}
 	return nil
 }
 
 func (s *Store) afterRoster(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingRoster.LoadAndDelete(op)
+	o, ok := op.Outcome.(*rosterOutcome)
 	if !ok {
 		return
 	}
-	o := v.(*rosterOutcome)
 	if o.ignored {
 		if o.reason == "" {
 			return
@@ -418,8 +414,6 @@ type joinOutcome struct {
 	epoch     int64
 }
 
-var pendingJoin sync.Map // map[*mail.Opened]*joinOutcome
-
 // JoinKind returns the receiver handler for kind team.join.
 func (s *Store) JoinKind() mail.Kind {
 	return mail.Kind{Apply: s.applyJoin, After: s.afterJoin}
@@ -445,7 +439,7 @@ func (s *Store) applyJoin(ctx context.Context, tx *sql.Tx, op *mail.Opened) erro
 		`SELECT team_id FROM team_invites WHERE lookup = ? AND peer_key = ? AND used IS NULL AND expires > ?`,
 		lookup, peer, stamp(now)).Scan(&teamID)
 	if errors.Is(err, sql.ErrNoRows) {
-		pendingJoin.Store(op, &joinOutcome{reason: "no_invite", peer: peer})
+		op.Outcome = &joinOutcome{reason: "no_invite", peer: peer}
 		return nil
 	}
 	if err != nil {
@@ -477,7 +471,7 @@ func (s *Store) applyJoin(ctx context.Context, tx *sql.Tx, op *mail.Opened) erro
 		return fmt.Errorf("team: join: mark used: %w", err)
 	}
 	if reason != "" {
-		pendingJoin.Store(op, &joinOutcome{reason: reason, peer: peer, teamID: teamID})
+		op.Outcome = &joinOutcome{reason: reason, peer: peer, teamID: teamID}
 		return nil
 	}
 	var nt Team
@@ -493,16 +487,15 @@ func (s *Store) applyJoin(ctx context.Context, tx *sql.Tx, op *mail.Opened) erro
 	if err != nil {
 		return fmt.Errorf("team: join: add member: %w", err)
 	}
-	pendingJoin.Store(op, &joinOutcome{succeeded: true, teamID: nt.ID, peer: peer, epoch: nt.Epoch})
+	op.Outcome = &joinOutcome{succeeded: true, teamID: nt.ID, peer: peer, epoch: nt.Epoch}
 	return nil
 }
 
 func (s *Store) afterJoin(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingJoin.LoadAndDelete(op)
+	o, ok := op.Outcome.(*joinOutcome)
 	if !ok {
 		return
 	}
-	o := v.(*joinOutcome)
 	if !o.succeeded {
 		detail := map[string]any{"peer": o.peer, "reason": o.reason}
 		if o.teamID != "" {
@@ -527,8 +520,6 @@ type leaveOutcome struct {
 	epoch     int64
 }
 
-var pendingLeave sync.Map // map[*mail.Opened]*leaveOutcome
-
 // LeaveKind returns the receiver handler for kind team.leave.
 func (s *Store) LeaveKind() mail.Kind {
 	return mail.Kind{Apply: s.applyLeave, After: s.afterLeave}
@@ -550,27 +541,26 @@ func (s *Store) applyLeave(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return fmt.Errorf("team: leave: %w", err)
 	}
 	if errors.Is(err, ErrNotFound) || t.State != StateActive || t.Owner != s.Self || peer == t.Owner {
-		pendingLeave.Store(op, &leaveOutcome{teamID: teamID, peer: peer})
+		op.Outcome = &leaveOutcome{teamID: teamID, peer: peer}
 		return nil
 	}
 	nt, rerr := s.removeMemberOwnedTx(ctx, tx, teamID, peer, now)
 	if rerr != nil {
 		if errors.Is(rerr, ErrNoSuchMember) {
-			pendingLeave.Store(op, &leaveOutcome{teamID: teamID, peer: peer})
+			op.Outcome = &leaveOutcome{teamID: teamID, peer: peer}
 			return nil
 		}
 		return fmt.Errorf("team: leave: %w", rerr)
 	}
-	pendingLeave.Store(op, &leaveOutcome{succeeded: true, teamID: nt.ID, peer: peer, epoch: nt.Epoch})
+	op.Outcome = &leaveOutcome{succeeded: true, teamID: nt.ID, peer: peer, epoch: nt.Epoch}
 	return nil
 }
 
 func (s *Store) afterLeave(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingLeave.LoadAndDelete(op)
+	o, ok := op.Outcome.(*leaveOutcome)
 	if !ok {
 		return
 	}
-	o := v.(*leaveOutcome)
 	if !o.succeeded {
 		s.audited(ctx, ActorDaemon, ActionLeaveIgnored, map[string]any{"team": o.teamID, "peer": o.peer})
 		return

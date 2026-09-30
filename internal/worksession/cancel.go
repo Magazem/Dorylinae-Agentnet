@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 )
@@ -107,8 +106,6 @@ type cancelOutcome struct {
 	expTruncated bool
 }
 
-var pendingCancel sync.Map // map[*mail.Opened]*cancelOutcome
-
 // CancelKind is the receiver Kind for "ws.cancel", applied on A.
 func (s *Store) CancelKind() mail.Kind {
 	return mail.Kind{Inbox: true, Apply: s.applyCancel, After: s.afterCancel}
@@ -169,11 +166,11 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		}
 	}
 	if errors.Is(err, ErrUnknownSession) {
-		pendingCancel.Store(op, &cancelOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &cancelOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if row.state != StateOpen {
-		pendingCancel.Store(op, &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: row.kind == SessionKindDebate})
+		op.Outcome = &cancelOutcome{result: "refused", sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: row.kind == SessionKindDebate}
 		return nil
 	}
 	if row.kind == SessionKindDebate {
@@ -188,25 +185,24 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		if applied {
 			result = "cancelled"
 		}
-		pendingCancel.Store(op, &cancelOutcome{result: result, sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: true, debateAfter: after})
+		op.Outcome = &cancelOutcome{result: result, sessionID: row.id, requestID: reqID, peer: op.Msg.From, debate: true, debateAfter: after}
 		return nil
 	}
 	expBytes, expTruncated, err := s.closeSessionTx(ctx, tx, row, OutcomeCancelled, "", "", RoleWorker, s.now())
 	if err != nil {
 		return err
 	}
-	pendingCancel.Store(op, &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From, closed: &row, expBytes: expBytes, expTruncated: expTruncated})
+	op.Outcome = &cancelOutcome{result: "cancelled", sessionID: row.id, requestID: reqID, peer: op.Msg.From, closed: &row, expBytes: expBytes, expTruncated: expTruncated}
 	return nil
 }
 
 // afterCancel audits the outcome, and re-echoes last_state for a refused
 // cancel (10-minute rule), after commit.
 func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingCancel.LoadAndDelete(op)
+	out, ok := op.Outcome.(*cancelOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*cancelOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}

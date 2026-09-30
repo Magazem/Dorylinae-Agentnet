@@ -90,6 +90,11 @@ type Opened struct {
 	// #inbox-copy-d18). The row itself (from_key, id, kind, created,
 	// received_at) is unaffected, so dedupe is unaffected either way.
 	Withhold bool
+	// Outcome is what a Kind's Apply leaves for its After. It lives only as
+	// long as op: when the transaction fails, After never runs and op is
+	// dropped, so nothing an Apply recorded outlives a failed delivery (review
+	// 55 R55-017).
+	Outcome any
 }
 
 // Open runs the verification steps of Docs/protocol/mail.md in order. env is

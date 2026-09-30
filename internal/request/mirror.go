@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -17,8 +16,8 @@ import (
 // request.complete and request.cancelled, sent by the recipient's daemon and
 // received here, at the original sender.
 
-// mirrorOutcome is stashed between Apply and After, keyed by the *mail.Opened
-// pointer (mirroring pendingApply in receive.go).
+// mirrorOutcome is passed from Apply to After in op.Outcome (as applyOutcome
+// in receive.go).
 type mirrorOutcome struct {
 	applied       bool // step 4 ran (seq advanced the row)
 	orphan        bool // no out row for (peer, request)
@@ -42,8 +41,6 @@ type mirrorOutcome struct {
 	// ws.ignored), run once after this transaction commits.
 	sessionAfter func(context.Context)
 }
-
-var pendingMirror sync.Map // map[*mail.Opened]*mirrorOutcome
 
 // mirrorEvent maps a lifecycle mail kind to its notification event
 // (Docs/protocol/notify.md §Triggers). KindCancelled is deliberately absent:
@@ -288,7 +285,7 @@ type resultAudit struct {
 func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, kind, reqID, newState string, seq int, at time.Time, extraSet string, extraArgs []any, ra *resultAudit, until time.Time, sessionAfter func(context.Context)) error {
 	row, err := getRow(ctx, tx, "out", op.Msg.From, reqID)
 	if errors.Is(err, ErrUnknownRequest) {
-		pendingMirror.Store(op, &mirrorOutcome{orphan: true, kind: kind, requestID: reqID, peer: op.Msg.From, sessionAfter: sessionAfter})
+		op.Outcome = &mirrorOutcome{orphan: true, kind: kind, requestID: reqID, peer: op.Msg.From, sessionAfter: sessionAfter}
 		return nil
 	}
 	if err != nil {
@@ -339,18 +336,17 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 		out.state = finalState
 	}
 
-	pendingMirror.Store(op, out)
+	op.Outcome = out
 	return nil
 }
 
 // afterMirror audits the outcome once, after a successful commit
 // (Docs/protocol/request.md §Sender mirror, §Audit and metrics).
 func (s *Store) afterMirror(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingMirror.LoadAndDelete(op)
+	out, ok := op.Outcome.(*mirrorOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*mirrorOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}

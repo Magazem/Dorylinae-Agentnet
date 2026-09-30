@@ -136,10 +136,13 @@ On `ws.state` from `msg.from` = A:
 1. Strict body ([Kinds](#kinds)); a failure is `mail.ErrBadBody`.
 2. Find the `work_sessions` row `(sid)` with `role = worker` and `peer = msg.from`. None:
    ack, ignore, audit `ws.orphan {session, peer, kind}`.
-3. `seq ≤ row.seq`: ignore (duplicate or out of order).
+3. `seq ≤ row.seq`: ignore (duplicate or out of order). Else, if the row is already `closed`:
+   ignore, audit `ws.ignored {session, peer, kind, reason: "closed"}`. Closed is final on B too,
+   so a later state can neither reopen the mirror nor close it a second time (review 55
+   R55-067).
 4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `verification` (if
    present), `state_at`. B does **not**
-   check the transition; A is authoritative and the higher `seq` wins.
+   check the transition otherwise; A is authoritative and the higher `seq` wins.
 5. If the new state is `closed`, B completes its request row ([Closing the
    request](#closing-the-request)).
 

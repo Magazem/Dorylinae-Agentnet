@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
@@ -16,8 +15,8 @@ import (
 // ws.result: B -> A (Docs/protocol/work-session.md §Kinds, "ws.result
 // receive steps on A"). Applied inside the mail dedupe transaction.
 
-// resultOutcome is stashed between Apply and After, keyed by the *mail.Opened
-// pointer (mirroring internal/request's pendingApply).
+// resultOutcome is passed from Apply to After in op.Outcome (as
+// internal/request's applyOutcome).
 type resultOutcome struct {
 	orphan      bool
 	ignored     string // "" (applied), "state" or "round"
@@ -31,8 +30,6 @@ type resultOutcome struct {
 	outputBytes int
 	artifacts   int
 }
-
-var pendingResult sync.Map // map[*mail.Opened]*resultOutcome
 
 // ResultKind is the receiver Kind for "ws.result", applied on A.
 func (s *Store) ResultKind() mail.Kind {
@@ -92,7 +89,7 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		// (#inbox-copy-d18 (2)); keeping its plaintext would let B park
 		// content in A's database past the peer-wide clause (review 35 H2).
 		op.Withhold = true
-		pendingResult.Store(op, &resultOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &resultOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if terr != nil {
@@ -102,7 +99,7 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		// Docs/protocol/debate.md §What a debate session does not do: a
 		// ws.result for a debate is ignored, its inbox copy stored blank.
 		op.Withhold = true
-		pendingResult.Store(op, &resultOutcome{ignored: "kind", sessionID: sid, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &resultOutcome{ignored: "kind", sessionID: sid, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	switch requestState {
@@ -110,7 +107,7 @@ func (s *Store) applyResult(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		// Docs/protocol/work-session.md #inbox-copy-d18 (2): an ignored
 		// ws.result is applied nowhere, so its inbox copy is withheld too.
 		op.Withhold = true
-		pendingResult.Store(op, &resultOutcome{ignored: "state", requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &resultOutcome{ignored: "state", requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 
@@ -135,12 +132,12 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 	// Step 4: state must be open and round must equal the row's round.
 	if row.state != StateOpen {
 		op.Withhold = true // #inbox-copy-d18 (2)
-		pendingResult.Store(op, &resultOutcome{ignored: "state", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &resultOutcome{ignored: "state", sessionID: row.id, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if round != row.round {
 		op.Withhold = true // #inbox-copy-d18 (2)
-		pendingResult.Store(op, &resultOutcome{ignored: "round", sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &resultOutcome{ignored: "round", sessionID: row.id, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 
@@ -177,10 +174,10 @@ WHERE id = ?`,
 		return fmt.Errorf("worksession: store result: %w", err)
 	}
 
-	pendingResult.Store(op, &resultOutcome{
+	op.Outcome = &resultOutcome{
 		sessionID: row.id, peer: op.Msg.From, requestID: reqID, round: round, seq: seq, quarantined: quarantined,
 		resultBytes: ResultBytes(resultCanon), outputBytes: OutputBytes(result.Output), artifacts: len(result.Artifacts),
-	})
+	}
 	return nil
 }
 
@@ -198,11 +195,10 @@ func requestOutState(ctx context.Context, tx *sql.Tx, peer, id string) (teamID, 
 // wrong-state/round result (10-minute rule), after commit
 // (Docs/protocol/work-session.md §Kinds, "ws.result receive steps on A").
 func (s *Store) afterResult(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingResult.LoadAndDelete(op)
+	out, ok := op.Outcome.(*resultOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*resultOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}

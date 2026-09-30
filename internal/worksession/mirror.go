@@ -5,19 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // ws.state: A -> B (Docs/protocol/work-session.md §Mirror (on B)). B does
-// not check the transition; A is authoritative and the higher seq wins.
+// not check the transition; A is authoritative and the higher seq wins, except
+// that closed is final.
 
 type stateOutcome struct {
 	orphan      bool
 	duplicate   bool
 	ignoredKind bool
+	closed      bool // the mirror is already closed: nothing leaves closed
 	applied     bool
 	sessionID   string
 	peer        string
@@ -31,8 +32,6 @@ type stateOutcome struct {
 	expBytes      int
 	expTruncated  bool
 }
-
-var pendingState sync.Map // map[*mail.Opened]*stateOutcome
 
 // StateKind is the receiver Kind for "ws.state", applied on B.
 func (s *Store) StateKind() mail.Kind {
@@ -121,7 +120,7 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 
 	row, err := findRowTx(ctx, tx, RoleWorker, op.Msg.From, reqID)
 	if errors.Is(err, ErrUnknownSession) {
-		pendingState.Store(op, &stateOutcome{orphan: true, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &stateOutcome{orphan: true, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if err != nil {
@@ -131,11 +130,19 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		// ws.state is never sent for a debate (Docs/protocol/debate.md
 		// §Kinds): debate.close closes B's mirror. One from a misbehaving A
 		// changes nothing.
-		pendingState.Store(op, &stateOutcome{ignoredKind: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &stateOutcome{ignoredKind: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 	if seq <= row.seq {
-		pendingState.Store(op, &stateOutcome{duplicate: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From})
+		op.Outcome = &stateOutcome{duplicate: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From}
+		return nil
+	}
+	if row.state == StateClosed {
+		// Closed is final on B too (review 55 R55-067, O-131): a later
+		// ws.state from a misbehaving A cannot reopen the mirror, and a
+		// second step into closed would re-insert the experience record and
+		// fail the mail transaction on every resend.
+		op.Outcome = &stateOutcome{closed: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From}
 		return nil
 	}
 
@@ -232,17 +239,16 @@ func (s *Store) applyState(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		}
 	}
 
-	pendingState.Store(op, &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete, expBytes: expBytes, expTruncated: expTruncated})
+	op.Outcome = &stateOutcome{applied: true, sessionID: row.id, requestID: reqID, peer: op.Msg.From, state: state, seq: seq, round: round, newRound: state == StateOpen && changes != "", auditComplete: auditComplete, expBytes: expBytes, expTruncated: expTruncated}
 	return nil
 }
 
 // afterState audits the outcome, once, after a successful commit.
 func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
-	v, ok := pendingState.LoadAndDelete(op)
+	out, ok := op.Outcome.(*stateOutcome)
 	if !ok {
 		return
 	}
-	out := v.(*stateOutcome)
 	if s.Outbox != nil {
 		s.Outbox.Wake()
 	}
@@ -266,9 +272,13 @@ func (s *Store) afterState(ctx context.Context, op *mail.Opened) {
 	if out.duplicate {
 		return
 	}
-	if out.ignoredKind {
+	if out.ignoredKind || out.closed {
+		reason := "kind"
+		if out.closed {
+			reason = "closed"
+		}
 		_ = s.Audit.Append(ctx, "daemon", "ws.ignored", map[string]any{
-			"session": out.sessionID, "peer": out.peer, "kind": KindState, "reason": "kind",
+			"session": out.sessionID, "peer": out.peer, "kind": KindState, "reason": reason,
 		})
 		return
 	}

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
@@ -161,10 +160,6 @@ type deviceHooks struct {
 	onLinked func(ctx context.Context, peer, role string)
 }
 
-// activatedRoles carries an activation from Apply to After, keyed by the
-// *mail.Opened pointer (unique for one Handle call).
-var activatedRoles sync.Map // map[*mail.Opened]string
-
 // deviceLinkKind is the receiver Kind for "device.link" (Docs/protocol/device.md
 // §Link flow step 3): activate when the local intent is complementary and
 // unexpired, otherwise keep the offer (one per peer) for IntentTTL. An offer
@@ -175,12 +170,13 @@ func deviceLinkKind(ds *device.Store, self string, hooks deviceHooks) mail.Kind 
 	return mail.Kind{
 		Inbox: true,
 		After: func(ctx context.Context, op *mail.Opened) {
-			if role, ok := activatedRoles.LoadAndDelete(op); ok && hooks.onLinked != nil {
-				hooks.onLinked(ctx, op.Msg.From, role.(string))
+			// An activation rides from Apply to After in op.Outcome (the role).
+			if role, ok := op.Outcome.(string); ok && hooks.onLinked != nil {
+				hooks.onLinked(ctx, op.Msg.From, role)
 			}
 		},
 		Apply: func(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
-			activatedRoles.Delete(op) // a retried Apply starts clean
+			op.Outcome = nil // a retried Apply starts clean
 			ob, offer, err := parseOffer(op.Msg.Body, op.Msg.From, self)
 			if err != nil {
 				return err
@@ -202,7 +198,7 @@ func deviceLinkKind(ds *device.Store, self string, hooks deviceHooks) mail.Kind 
 				return err
 			}
 			if activated {
-				activatedRoles.Store(op, l.Role)
+				op.Outcome = l.Role
 				return auditTx(ctx, tx, audit.ActorDaemon, "device.link_active", map[string]any{"link": l.ID, "peer": l.Peer, "role": l.Role})
 			}
 			raw, err := json.Marshal(ob)
