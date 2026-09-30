@@ -106,6 +106,7 @@ type Client struct {
 	mu   sync.Mutex
 	conn *websocket.Conn // non-nil only while authenticated
 	seen *seenSet        // envelopes already handed to OnEnvelope
+	bad  badFrames       // frames from the relay that could not be parsed
 
 	features []string // from the latest ready frame; guarded by mu
 	// minClient is ready.min_client from the latest ready frame ("" for
@@ -179,6 +180,7 @@ func New(cfg Config) (*Client, error) {
 	if c.log == nil {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	c.bad.log = c.log
 	return c, nil
 }
 
@@ -357,6 +359,7 @@ func (c *Client) session(ctx context.Context) (readyAt time.Time, err error) {
 				"event", "relay_min_client", "version", version.Version, "min_client", minClient)
 		}
 	}
+	defer c.bad.flush()
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
@@ -529,7 +532,7 @@ func (c *Client) HasFeature(feature string) bool {
 func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	f, err := envelope.Classify(frame)
 	if err != nil {
-		c.log.Warn("ignoring malformed frame from relay")
+		c.bad.add(false)
 		return
 	}
 	if f.Control != nil {
@@ -552,7 +555,7 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	}
 	e, err := envelope.Parse(frame)
 	if err != nil {
-		c.log.Warn("ignoring invalid envelope from relay", "error", err)
+		c.badEnvelope(ctx, frame)
 		return
 	}
 	// An envelope for another key is never handed up and does not enter the

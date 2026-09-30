@@ -72,9 +72,13 @@ would otherwise sit in the recipient's offline queue for the whole TTL. The chec
 
 - runs on every envelope, ephemeral ones included, at step 1 of [Forwarding](#forwarding);
 - finds `payload` with the same JSON decoding as the routing fields
-  (`envelope.ParseHeader`: Go's `encoding/json`, so a repeated key counts once, the last
-  one wins, and key names match case-insensitively), so it judges the value the recipient's
-  parser will see;
+  (`envelope.ParseHeader`: Go's `encoding/json`, so key names match case-insensitively,
+  exactly as for the recipient's parser);
+- judges **every** occurrence of the key (`payload`, `Payload`, `PAYLOAD`, ...), and one
+  bad value refuses the envelope. For the field's value the last key wins, but
+  `encoding/json` reports the first type error even when a later key overwrites the field,
+  so the recipient's parser refuses `"payload":1,"payload":"QQ=="` although its last value
+  is valid; the relay must refuse it too (R55-F2 code, a delta to review 66 test 10);
 - accepts only a JSON string token with no `\` escape inside it, whose content is valid
   standard base64 with padding, `=` only in the last four characters (`""` is valid);
   a missing field, `null`, a number, an object or an array is refused;

@@ -603,8 +603,10 @@ relay, the daemon **acks** a frame it cannot parse when its routing fields are v
 
 - The sweep deletes expired rows **oldest first in batches of at most 32 rows** (at most
   32 MiB of frames) through the `queue_by_age` index. Each batch is its own transaction and
-  takes the queue lock only for that batch; the lock is released between batches, so `add`,
-  `ack` and drains run in between. The totals are adjusted after the batch commits.
+  takes the queue lock only for that batch; the lock is released between batches, with a
+  5 ms pause, so `add`, `ack` and drains run in between (without the pause a waiter loses
+  the lock to the next batch once before Go's mutex hands it over, and waits two batches).
+  The totals are adjusted after the batch commits.
 - A batch that fails rolls back only itself. The batches before it stay deleted, and the next
   tick carries on, so a large expiry cannot livelock at any `--queue-max-total`. A 32 MiB
   batch takes about 0.35 s with `secure_delete=ON` on the NVMe disk measured in

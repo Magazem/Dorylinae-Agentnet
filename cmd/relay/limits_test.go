@@ -38,6 +38,7 @@ func TestLimitFlagDefaults(t *testing.T) {
 		QueuePairMaxEnvelopes: 300, QueuePairMaxBytes: 8 << 20,
 		QueueSenderMaxEnvelopes: 2000, QueueSenderMaxBytes: 64 << 20,
 		QueueMaxTotal: 4 << 30, QueueMinFreeDisk: 1 << 30,
+		QueueRedeliverPerKey: 32 << 20, QueueRedeliverPerPrefix: 128 << 20,
 	}
 	if !reflect.DeepEqual(o, want) {
 		t.Fatalf("defaults\n got %+v\nwant %+v", o, want)
@@ -49,7 +50,8 @@ func TestLimitFlagDefaults(t *testing.T) {
 	fs.SetOutput(&help)
 	fs.PrintDefaults()
 	for _, s := range []string{"-max-conns int", "(default 5000)", "-queue-max-total value", "(default 4GiB)", "-max-inflight value", "(default 256MiB)",
-		"-max-inflight-ephemeral value", "(default --max-inflight / 8, at least 1MiB)", "-frame-read-timeout duration", "(default 30s)"} {
+		"-max-inflight-ephemeral value", "(default --max-inflight / 8, at least 1MiB)", "-frame-read-timeout duration", "(default 30s)",
+		"-queue-redeliver-per-key value", "(default 32MiB)", "-queue-redeliver-per-prefix value", "(default 128MiB)"} {
 		if !strings.Contains(help.String(), s) {
 			t.Errorf("help lacks %q", s)
 		}
@@ -84,6 +86,42 @@ func TestMemoryBudgetFlags(t *testing.T) {
 	waitLogLine(t, errb, "memory budgets: max-inflight 48MiB (and as much again for frames being read); max-inflight-ephemeral 6MiB; frame-read-timeout 30s")
 	_, errb = startRelayLog(t, "--max-inflight-ephemeral", "2MiB", "--frame-read-timeout", "1m")
 	waitLogLine(t, errb, "max-inflight 256MiB (and as much again for frames being read); max-inflight-ephemeral 2MiB; frame-read-timeout 1m0s")
+}
+
+// R55-F2 (acceptance test 17): the two redelivery flags parse with units, are
+// positive, and the start line prints them per hour.
+func TestRedeliverFlags(t *testing.T) {
+	var lf limitFlags
+	fs := flag.NewFlagSet("x", flag.ContinueOnError)
+	lf.register(fs)
+	if err := fs.Parse([]string{"--queue-redeliver-per-key", "8MiB", "--queue-redeliver-per-prefix", "1GiB"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := lf.validate(false); err != nil {
+		t.Fatal(err)
+	}
+	var o relay.Options
+	lf.apply(&o)
+	if o.QueueRedeliverPerKey != 8<<20 || o.QueueRedeliverPerPrefix != 1<<30 {
+		t.Fatalf("got per key %d, per prefix %d", o.QueueRedeliverPerKey, o.QueueRedeliverPerPrefix)
+	}
+	for _, tc := range []struct {
+		args []string
+		msg  string
+	}{
+		{[]string{"--queue-redeliver-per-key", "0"}, "--queue-redeliver-per-key must be positive"},
+		{[]string{"--queue-redeliver-per-prefix", "0"}, "--queue-redeliver-per-prefix must be positive"},
+		{[]string{"--queue-redeliver-per-key", "lots"}, "not a byte size"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), tc.args, &out, &errb); code != 2 || !strings.Contains(errb.String(), tc.msg) {
+			t.Errorf("%v: exit %d, stderr %q; want 2 and %q", tc.args, code, errb.String(), tc.msg)
+		}
+	}
+	_, errb := startRelayLog(t)
+	waitLogLine(t, errb, "queue redelivery budgets: queue-redeliver-per-key 32MiB/h; queue-redeliver-per-prefix 128MiB/h")
+	_, errb = startRelayLog(t, "--queue-redeliver-per-key", "16MiB", "--queue-redeliver-per-prefix", "512MiB")
+	waitLogLine(t, errb, "queue redelivery budgets: queue-redeliver-per-key 16MiB/h; queue-redeliver-per-prefix 512MiB/h")
 }
 
 // waitLogLine waits for the relay's stderr to contain want.

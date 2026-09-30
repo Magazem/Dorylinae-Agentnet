@@ -306,9 +306,9 @@ inverted. Fake clock: `limitEnv.clock`.
     `bad_envelope`, is not queued (`Queued` 0) and is not forwarded to an online recipient:
     `"payload":1`, `{}`, `[]`, `null`, no `payload`, `"not base64!"`, `"QQ"` (unpadded),
     `"QQ==QUFB"` (padding inside), `"\u0051UFB"` (an escape; review 66b L2), a good `"payload":"QQ=="`
-    followed by `"payload":1`, and a good one followed by `"PAYLOAD":1`. Accepted and
-    forwarded byte for byte: `""`, `"QQ=="`, `"QUFB"`, a 700 KiB valid payload, and a bad
-    `"payload":1` followed by a good `"payload":"QQ=="` (last wins). A presence envelope
+    followed by `"payload":1`, a good one followed by `"PAYLOAD":1`, and (code delta, see
+    §8) a bad `"payload":1` followed by a good `"payload":"QQ=="`. Accepted and forwarded
+    byte for byte: `""`, `"QQ=="`, `"QUFB"` and a 700 KiB valid payload. A presence envelope
     with `"payload":1` gets `bad_envelope`.
 11. **Validator equals the decoder.** A fuzz test: for escape-free strings, the payload check
     accepts exactly what `base64.StdEncoding.DecodeString` accepts; and every
@@ -545,3 +545,32 @@ Files changed by this review: `Docs/review/66-r55-f2-spec.md`, `Docs/protocol/re
 **Verdict:** approve after these fixes. No Critical. H1 and H2 were real (a replay of the
 amplification, and possible loss of honest mail); the edits above close both. The spec is
 ready for the owner's OD decisions.
+
+## 8. Implementation deltas (R55-F2 code, branch p4/r55-f2)
+
+Found while coding (R55-F2-Opus, 2026-09-30); envelope.md and relay-hosted.md are updated.
+
+- **Every `payload` occurrence is judged (test 10).** `encoding/json` returns the first type
+  error even when a later key overwrites the field, so the recipient's `envelope.Parse`
+  refuses `"payload":1,"payload":"QQ=="`. Accepting it ("last wins", as test 10 had it)
+  would have let the relay queue a frame the daemon cannot parse, breaking "relay-accepted
+  ⇒ daemon-parseable". `payloadCheck` therefore refuses the frame if any occurrence is bad;
+  the test expects `bad_envelope` for it.
+- **A 5 ms pause between sweep batches.** Review 66b's "Go's mutex hands over to a waiter
+  after 1 ms, so add waits at most about one batch" did not hold: the woken waiter loses
+  the lock to the next batch once, and only then does the mutex hand over. Measured
+  without the pause, an add waited 1.05 s against a longest batch of 0.47 s. With it, the
+  add waits about 0.26 s (test 2).
+- **The probe is its own statement.** `claim` returns H and no rows when the cursor is below
+  H, and `probe` then reads that range's first `seq` and `LENGTH(frame)`. No frame is read
+  before the decision either way (test 6). First-delivery batches are still claimed in one
+  transaction under `q.mu`.
+- **A second skip on one connection widens the recorded range** (`skipFrom` = the lower,
+  `skipTo` = the higher). That happens only when a replaced connection's drain raised H
+  meanwhile. The retry then covers both.
+- **The client's Warn line** (`event=relay_bad_frame`, `count`, `acked`) is written one
+  minute after the first frame it counts, or when the connection ends, whichever is first.
+  Frames that fail `Classify` are counted in it too (not acked).
+- **Timings of test 2** (NVMe, Windows 11, `ZZ_MB`): 256 MiB swept in 2.2–3.1 s, 1 GiB in
+  9.7 s (33 batches), 2 GiB in 17.8 s (65 batches). The longest batch was 0.30–0.52 s, a
+  concurrent add waited ≤ 0.6 s, and the WAL was 0 bytes afterwards (truncated).

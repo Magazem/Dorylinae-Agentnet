@@ -33,6 +33,13 @@ type conn struct {
 	draining bool  // queued envelopes may still be waiting to be sent
 	cursor   int64 // highest queue seq already sent on this connection
 	ctx      context.Context
+	// Redeliveries skipped for want of budget (R55-F2), also under mu: the
+	// rows in [skipFrom, skipTo] wait for the retry; skipSize is the first
+	// skipped row's length (0: nothing skipped).
+	skipFrom, skipTo, skipSize int64
+	// waiting marks c as on its prefix's redelivery wait list, and
+	// waitClosed as closed, never to join it again; guarded by limits.mu.
+	waiting, waitClosed bool
 
 	// ephMu makes the half-full check and the send of an ephemeral frame one
 	// step. Without it, senders racing past the check could fill the buffer

@@ -145,6 +145,8 @@ Doing it by hand instead: the script is short, and every step can be run line by
 | `GOMEMLIMIT` | `400MiB` | Review 52 M2. Above the relay's ≈ 255 MiB (below), well inside a 1 GB VM |
 | `--queue-max-total` | `1GiB` | See below |
 | `--queue-min-free-disk` | `512MiB` | See below |
+| `--queue-redeliver-per-key` | `32MiB` | R55-F2: queued bytes sent **again** to a key that did not ack them, per hour (burst the same). First deliveries are not counted. Equals the default |
+| `--queue-redeliver-per-prefix` | `128MiB` | R55-F2: the same for all keys of one /24 together; one attacking prefix gets ≈ 0.3 Mbit/s of re-sends. Equals the default |
 | `LimitNOFILE` | `8192` | 2000 + 256 connections exceed the usual 1024 |
 | `--accounts` | not passed (off) | D40: the owner's own team only |
 
@@ -158,14 +160,18 @@ by `tcp_mem`, not the relay's heap.
 
 **Disk numbers.** Review 52 asked for disk limits scaled to a 2–3 GB volume:
 
-- `--queue-max-total 1GiB`: the SQLite file can grow to about the queue size plus the WAL
-  and free pages (the file does not shrink on its own). 1 GiB of queue plus that overhead
-  plus the 512 MiB floor still fits a 3 GB volume.
+- `--queue-max-total 1GiB`: the SQLite file can grow to about the queue size plus free pages
+  (the file does not shrink on its own). From R55-F2 the WAL is not as large as the queue:
+  the expiry sweep deletes 32 rows per transaction, the database has `journal_size_limit`
+  64 MiB, and a sweep that deleted more than that ends with a `TRUNCATE` checkpoint, so the
+  WAL is at most about 64 MiB after a sweep (a `relay backup` running at the same time can
+  hold it larger until the next large sweep). 1 GiB of queue plus that overhead plus the
+  512 MiB floor fits a 3 GB volume.
 - It is also ample for one team. Each recipient already holds at most 32 MiB, so 1 GiB
   covers about 30 devices that are all offline with full queues.
 - `--queue-min-free-disk 512MiB`: below this, new envelopes are refused, but acks and
-  deletes (which free space) still work. The floor leaves room for the WAL checkpoint, apt
-  and the journal.
+  deletes (which free space) still work. The floor leaves room for one sweep batch of WAL
+  (≈ 64 MiB), apt and the journal.
 
 The VM's root disk is much larger than 3 GB, so these limits are conservative. The database
 stays on the root disk: a separate Hetzner Volume is not needed.
@@ -270,6 +276,22 @@ runuser -u agentnet-relay -- /opt/agentnet-relay/relay backup --db /var/lib/agen
 ```
 
 Delete the copy once the new release runs.
+
+**R3 (R55-F2) and rolling it back.** The R55-F2 release adds relay migration R3 (the table
+`queue_delivered`). A relay binary older than it **refuses to start** on the migrated
+database ("schema version 3 is newer than this binary"). Upgrade the relay and the `relay`
+admin tool together: running a newer `relay admin` against the database applies R3 too.
+To go back to the release before R55-F2, either restore the pre-upgrade copy above, or,
+with the relay stopped, undo R3 with the `sqlite3` tool (`apt install sqlite3`) and then
+start the old binary:
+
+```
+systemctl stop agentnet-relay
+sqlite3 /var/lib/agentnet-relay/relay.db "DELETE FROM relay_migrations WHERE version = 3; DROP TABLE queue_delivered;"
+```
+
+Both keep the queue. Without the table the next binary treats every queued row as a first
+delivery once; upgrading again re-creates it.
 
 ## What changes later (the beta)
 

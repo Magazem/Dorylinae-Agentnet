@@ -211,6 +211,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	outb, ephb := byteSize(b.Outbound), byteSize(b.Ephemeral)
 	_, _ = fmt.Fprintf(stderr, "memory budgets: max-inflight %s (and as much again for frames being read); max-inflight-ephemeral %s; frame-read-timeout %s\n",
 		outb.String(), ephb.String(), b.FrameReadTimeout)
+	rk, rp := byteSize(b.RedeliverPerKey), byteSize(b.RedeliverPerPrefix)
+	_, _ = fmt.Fprintf(stderr, "queue redelivery budgets: queue-redeliver-per-key %s/h; queue-redeliver-per-prefix %s/h\n", rk.String(), rp.String())
 	if public && tf.allowAuthV1 {
 		_, _ = fmt.Fprintf(stderr, "%s: warning: --allow-auth-v1: this public relay accepts relay auth v1, which does not name the relay; remove it once every daemon is updated\n", name)
 	}
@@ -253,6 +255,8 @@ func metricsHandler(rs *relay.Server) http.Handler {
 		_, _ = fmt.Fprintf(w, "# HELP relay_connections Authenticated connections currently open.\n# TYPE relay_connections gauge\nrelay_connections %d\n", st.Connections)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_rows Envelopes waiting in the offline queue.\n# TYPE relay_queue_rows gauge\nrelay_queue_rows %d\n", st.QueueRows)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_bytes Bytes waiting in the offline queue.\n# TYPE relay_queue_bytes gauge\nrelay_queue_bytes %d\n", st.QueueBytes)
+		_, _ = fmt.Fprintf(w, "# HELP relay_queue_redelivered_bytes_total Queued bytes sent again to a recipient that had not acked them.\n# TYPE relay_queue_redelivered_bytes_total counter\nrelay_queue_redelivered_bytes_total %d\n", st.QueueRedeliveredBytes)
+		_, _ = fmt.Fprintf(w, "# HELP relay_queue_redeliveries_skipped_total Redeliveries skipped for want of redelivery budget.\n# TYPE relay_queue_redeliveries_skipped_total counter\nrelay_queue_redeliveries_skipped_total %d\n", st.QueueRedeliveriesSkipped)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
