@@ -535,8 +535,9 @@ their own record ([decision.md](decision.md)).
 `mail_inbox` rows are never deleted automatically. [`agentnet prune`](../cli/prune.md) removes
 rows older than its cutoff (at least 35 days), and in the same transaction first runs the
 `mail_seen` prune, so an id never leaves `mail_inbox` while `mail_seen` still holds it
-([retention.md](retention.md#finished-items)). The existing rows are blanked by the R55-F13
-migration ([retention.md §Migration](retention.md#migration)).
+([retention.md](retention.md#finished-items)). Rows written before R55-F13 keep their
+plaintext until the user runs `prune`, which blanks them in batches (OD-F13-4,
+[retention.md §Existing rows](retention.md#existing-rows)); the migration does not rewrite them.
 
 ### Receive queue (R55-F13)
 

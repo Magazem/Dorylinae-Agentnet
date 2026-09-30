@@ -204,8 +204,12 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
      without this bound a request could surface months later as new. An honest sender never
      resends after 21 d ([Idempotency](#idempotency)). Duplicates of a known id are still
      recognised at any age.
-   - with no row, and the sender is **over its daily cap** ([Per-peer caps](#per-peer-caps-r55-f13)):
-     it already has 200 `in` rows whose `received_at` falls in the last 24 h (any state,
+   - with no row, `type = debate`, and a `decisions` row for the derived session id: [invalid](#invalid-bodies)
+     (a request id re-used after [`prune`](retention.md#why-35-days) removed its debate but
+     kept its Decision; review 71b F8).
+   - with no row, and the sender is **over a daily cap** ([Per-peer caps](#per-peer-caps-r55-f13)):
+     it already has 200 `in` rows whose `received_at` falls in the last 24 h, or it is an
+     introduced peer and the keys introduced by the same owner already have 400 (any state,
      auto-declined and cancelled rows included). The mail is [refused for a
      limit](#per-peer-caps-r55-f13): no row, no reply, and a cancel tombstone stays in place.
    - with no row, and a [cancel tombstone](#cancel-od-p1-11) for `(msg.from, id)`: store the
@@ -222,7 +226,8 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
    - `unknown_team`: `team` is not a local team in state `active`.
    - `not_team_member`: `msg.from` or self is not in `team_members` of that team.
    - `inbox_full`: the sender already has **100** open `in` rows here (state `pending`,
-     `deferred` or `accepted`), the **open cap** of [Per-peer caps](#per-peer-caps-r55-f13).
+     `deferred` or `accepted`), or it is an introduced peer and the keys introduced by the same
+     owner already have **200**: the **open caps** of [Per-peer caps](#per-peer-caps-r55-f13).
 
    An auto-declined row keeps **no content**: `body` is stored as `{}` (its `body_hash` is
    the hash of the received canonical request, so step 2 still recognises a resend), and the
@@ -234,6 +239,10 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
    `urgency_declared`, then `downgraded_by = sender`, `urgency_declared` is taken from the
    body, and `urgency` from the body.
 5. Insert the `in` row (`state = pending`, `received_at = now`).
+
+Every `in` row, whatever step stores it (3, 5 or the tombstone case of 2), records
+`introducer` = the sender's `peers.introduced_by` at that moment (NULL for a directly paired
+sender, [team.md §Introduced peers](team.md#introduced-peers)).
 
 After commit, for a new row: audit `request.in` (or `request.auto_decline`), and
 [notify](notify.md) if the row is `pending`.
@@ -268,11 +277,29 @@ not already hold (duplicates and conflicts of step 2 are never capped):
 |---|---|---|---|
 | **Open cap** | `in` rows from this peer in state `pending`, `deferred` or `accepted` | 100 | The new request is stored **declined** with code `inbox_full` (step 3), and the sender is told by the usual `request.decline`. This is the clear refusal: the sender's mirror ends `declined (inbox_full)`, and the sender may send a new request once the recipient has finished some |
 | **Daily cap** | `in` rows from this peer with `received_at ≥ now − 24 h`, in any state | 200 | The mail is **refused for a limit**: no row, no `request.decline` (see below) |
+| **Introducer open cap** | open `in` rows (as above) whose `introducer` is the sender's `introduced_by` | 200 | As the open cap (`inbox_full`) |
+| **Introducer daily cap** | `in` rows with that `introducer` and `received_at ≥ now − 24 h` | 400 | As the daily cap |
+
+**Why introducer caps (review 71b F2).** A team owner introduces keys into its roster
+([team.md](team.md#introduced-peers)), and a key it introduces is trusted `team`, so its
+requests are stored `pending` with their content. Per-key caps alone would let a hostile owner
+multiply them: introduce 31 fresh keys, have each fill its 100 open slots, replace them in the
+next roster epoch, and repeat. Garbage collection removes the old keys' `peers` rows but not
+their requests. The introducer caps are counted on the stored `introducer` column, so keys
+that have since left the roster still count. They apply only to senders whose
+`introduced_by` is not NULL; the owner's own requests count only on its own key, and a key
+that the user pairs directly (which clears `introduced_by`) counts only on itself from then on.
+The values are twice the per-key ones so that an honest team of up to 32 members sharing one
+owner is not refused at a normal pace (OD-F13-16).
 
 The open cap bounds the requests a human or agent still has to look at; its rows keep their
 content. The daily cap bounds everything else a peer can create without anyone acting,
-including `inbox_full` and other auto-declined rows (which keep no content, step 3) and
-cancelled rows from tombstones. It also bounds the recipient's outgoing auto-decline mail,
+including `inbox_full` and other auto-declined rows (which keep no content, step 3), cancelled
+rows from tombstones, and requests the sender cancels itself. **Cancelled rows keep their
+content** (the user may still look at them, and deleting it would be automatic deletion,
+D50), so the content bound is per day, not per moment: a hostile peer can store at most 200
+request bodies per 24 h, about 64 MiB at the 320 KiB `question` maximum, until the user runs
+`prune` (OD-F13-17). It also bounds the recipient's outgoing auto-decline mail,
 which would otherwise spend the recipient's own relay budget at the sender's pace. Every
 request type counts, `debate` and `question` included, and so does a request routed to an
 own-device helper.
@@ -282,9 +309,12 @@ own-device helper.
 in a new transaction inserts only the `mail_seen` row (so a resend of that mail is re-acked
 without being re-evaluated), audits `mail.reject {peer, id, reason: "limit"}` under the same
 rate limit as other rejects, and acks the id under `rejected`. The sender's outbox row ends
-`failed` (`rejected`), and its request mirror shows the delivery failure. A sender that resends
-the same request later in a new mail is evaluated again (the request id is still unknown
-here), so an honest resend after the window passes is accepted.
+`failed` (`rejected`): `request show` reports delivery `failed` while the request stays
+`pending`. The ack carries no reason, so the sender cannot tell a limit from a bad body; the
+recipient's audit log can (`mail.reject` reason `limit`). The request is not lost: a resend
+(`agentnet request resend <id>`, a new mail carrying the same request) is evaluated again,
+since the request id is still unknown here, so a resend after the window has passed is
+accepted. Nothing resends automatically.
 
 A `pending` or `deferred` request that the user leaves alone keeps its slot in the open cap
 until someone declines, accepts or defers it (a defer keeps it open) or the sender cancels
@@ -744,11 +774,15 @@ a new migration 12 (ticket 1.6a), and the webhook queue moves to migration 13
 ([notify.md](notify.md#delivery)).
 
 ```sql
--- migration N (R55-F13; N = the next free version when it merges): the open-cap count
+-- migration N (R55-F13; N = the next free version when it merges): the per-peer caps
 CREATE INDEX requests_peer_state ON requests (direction, peer, state);
+ALTER TABLE requests ADD COLUMN introducer TEXT;    -- in only: sender's introduced_by at receipt, NULL if directly paired
+CREATE INDEX requests_introducer_state ON requests (direction, introducer, state);
+CREATE INDEX requests_introducer_time ON requests (direction, introducer, received_at);
 ```
 
-The daily cap counts with the existing `requests_peer_time` index.
+The daily cap counts with the existing `requests_peer_time` index. The full migration, with
+the `mail_inbox` index for `prune`, is in [retention.md §Migration](retention.md#migration).
 
 For `out` rows, `urgency_declared` = `urgency` unless the sender downgraded. For `in` rows,
 it is the body's `urgency_declared` if present, else the body's `urgency`. Rows are never

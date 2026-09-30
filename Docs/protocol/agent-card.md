@@ -68,9 +68,20 @@ skills (480 KiB), which every later read of the peers table decoded again.
 - The limit is checked at [Verification](#verification) step 1, before parsing, so an
   oversize document costs no parse. The skills count is checked at step 5.
 - `internal/agentcard` refuses to create or sign a card that breaks either limit, so a user can
-  never publish a card that peers refuse. The largest card within the per-member limits
-  (32 skills of 3 × 128 four-byte code points) is larger than 16 KiB; such a card is refused
-  at creation, with an error naming the size.
+  never publish a card that peers refuse. For the byte limit it measures the envelope as
+  `internal/identity` writes `agent-card.json`: Go's `json.MarshalIndent(signed, "", "  ")`,
+  which indents and escapes `<`, `>`, `&`, U+2028 and U+2029 as 6-byte `\u` escapes. That is
+  the largest form any Dorylinae component emits, so every other form fits too: the pairing
+  frame (`json.Marshal` of the control frame, which compacts the card but keeps those
+  escapes; the relay and the peer measure those bytes), the canonical stored form, and the
+  file itself, which the daemon re-verifies with `Verify` at every start (review 71b F7). A
+  limit on the canonical form alone would let a card of 16384 canonical bytes with many `<`
+  pass creation and then fail the relay's check and the next daemon start. The largest card
+  within the per-member limits (32 skills of 3 × 128 four-byte code points) is larger than
+  16 KiB; such a card is refused at creation, with an error naming the size.
+- No released daemon sets skills on its own card (`internal/identity` passes none), so every
+  existing own card is far below both limits and no upgrade can fail the start-up
+  re-verification.
 
 A stored card that breaks a limit (introduced before R55-F13) is handled like any stored card
 that fails the new `Verify`: it is kept, reported by `agentnet doctor`, and refused when the
@@ -392,7 +403,7 @@ decoder that skips CR and LF gives the same 64 bytes.
 ### Size vectors (R55-F13)
 
 **P2: accepted.** 32 skills, the most a card may declare ([Size](#size)); signed by the seed
-over the canonical form of this card (1808 bytes).
+over the canonical form of this card (1698 bytes; the envelope is 1808 bytes).
 
 ```
 {"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"","id":"s01","name":"Skill 01"},{"description":"","id":"s02","name":"Skill 02"},{"description":"","id":"s03","name":"Skill 03"},{"description":"","id":"s04","name":"Skill 04"},{"description":"","id":"s05","name":"Skill 05"},{"description":"","id":"s06","name":"Skill 06"},{"description":"","id":"s07","name":"Skill 07"},{"description":"","id":"s08","name":"Skill 08"},{"description":"","id":"s09","name":"Skill 09"},{"description":"","id":"s10","name":"Skill 10"},{"description":"","id":"s11","name":"Skill 11"},{"description":"","id":"s12","name":"Skill 12"},{"description":"","id":"s13","name":"Skill 13"},{"description":"","id":"s14","name":"Skill 14"},{"description":"","id":"s15","name":"Skill 15"},{"description":"","id":"s16","name":"Skill 16"},{"description":"","id":"s17","name":"Skill 17"},{"description":"","id":"s18","name":"Skill 18"},{"description":"","id":"s19","name":"Skill 19"},{"description":"","id":"s20","name":"Skill 20"},{"description":"","id":"s21","name":"Skill 21"},{"description":"","id":"s22","name":"Skill 22"},{"description":"","id":"s23","name":"Skill 23"},{"description":"","id":"s24","name":"Skill 24"},{"description":"","id":"s25","name":"Skill 25"},{"description":"","id":"s26","name":"Skill 26"},{"description":"","id":"s27","name":"Skill 27"},{"description":"","id":"s28","name":"Skill 28"},{"description":"","id":"s29","name":"Skill 29"},{"description":"","id":"s30","name":"Skill 30"},{"description":"","id":"s31","name":"Skill 31"},{"description":"","id":"s32","name":"Skill 32"}],"version":1},"signature":"2slzd1dpD_BMAZl71UwBbYvgho4AwrxhLzI2hrz_J5Xl3RftkXs-1YClKzwtN_8qW4GSucHGP1MXwKR-SCamDg"}

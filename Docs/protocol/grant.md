@@ -190,15 +190,22 @@ mirror state; a session the holder does not know yet is an orphan: acked, ignore
 `grant.orphan`), then insert the holder row. Duplicate `id` with identical token: nothing.
 Different token under a known id: keep the first, audit `grant.conflict`.
 
-**Held cap (R55-F13, review 55 R55-064).** A holder keeps at most **64 held rows per session**
-(any state). A `grant` for a new id when the session already has 64 is refused for a limit:
-`Apply` returns `mail.ErrLimit`, so only `mail_seen` is kept, `mail.reject` reason `limit` is
-audited and the mail is acked under `rejected` ([request.md §Per-peer
+**Held caps (R55-F13, review 55 R55-064).** Per session, a holder keeps at most **64 live held
+rows** (`exp` later than now, any state) and **512 held rows in total** (any state, any
+`exp`). A `grant` for a new id that would break either is refused for a limit: `Apply`
+returns `mail.ErrLimit`, so only `mail_seen` is kept, `mail.reject` reason `limit` is audited
+and the mail is acked under `rejected` ([request.md §Per-peer
 caps](request.md#per-peer-caps-r55-f13)); the grantor's outbox row ends `failed`
-(`rejected`). A requester needs a human approval (or a policy) per grant, so an honest session
-never comes near 64; the cap stops a hostile requester from signing its own grant mails
-without end. Open sessions with one peer are bounded by the request open cap, so held rows
-per peer are bounded too.
+(`rejected`). The check comes after the duplicate and conflict checks, so a redelivered grant
+is never refused. An honest grantor gets one human approval per grant, but a
+[policy](#policies) approves grants without a human, and a grant lives 2 h by default: a
+long session whose agent asks for a fresh grant every 2 h would pass 64 grants in about
+5 days, so a cap on the total alone would lock such a session out (review 71b F6). The live
+cap bounds what a hostile grantor can make usable at once; the total cap bounds the rows a
+grantor that signs its own 1-minute grants can store (512 × about 1.5 KB per session). Held
+grants need an `open` work session, and each of those comes from a request the holder sent
+or accepted, so held rows per peer are bounded by the holder's own actions. `prune` removes held rows past
+their `exp` ([retention.md](retention.md#finished-items)).
 
 Holder apply of `grant.revoke`: find the `held` row with this id **and `peer = msg.from`**
 and mark it `revoked`. Unknown id, or a row held from another grantor: ignore (so one peer
@@ -508,9 +515,11 @@ CREATE TABLE grant_policies (
 ```
 
 `expired` is derived from `exp` at read time, not stored. Grant rows are never deleted
-automatically (owner decision D50). [`agentnet prune`](../cli/prune.md) removes grants whose
-`exp`, or whose `revoked_at` when `revoked`, is older than its cutoff, and every grant of a
-pruned session ([retention.md](retention.md#finished-items)). Every table goes into the DROP
+automatically (owner decision D50). [`agentnet prune`](../cli/prune.md) removes every grant
+of a pruned session, `held` grants whose `exp` (or `revoked_at`) is older than its cutoff, and
+`issued` grants past the cutoff only when their session row is gone: an issued sensitive grant
+must stay while its session exists, for the quarantine rule
+([retention.md](retention.md#finished-items), review 71b F1). Every table goes into the DROP
 lists of both rewind tests in `internal/store/store_test.go`.
 
 ## Threat model

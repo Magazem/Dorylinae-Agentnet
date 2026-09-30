@@ -20,7 +20,14 @@ agentnet prune --older-than DURATION [--yes] [--json]
 is closed or broken, both also before the cutoff. Its session, the session's grants, its
 experience records and its debate go with it. Expired or revoked grants, closed sessions and
 debates left without a request, and inbox records (which keep no content) older than the
-cutoff are removed too. Anything still open is kept, however old.
+cutoff are removed too. A grant you issued is removed only with its session, because the
+quarantine rule still needs it while the session exists. Anything still open is kept, however
+old; so is a request of yours that was never delivered (it stays pending: resend it or leave
+it).
+
+**Inbox copies from older versions.** Before R55-F13 the daemon kept a second, signed copy of
+every mail it applied. Each run with `--yes` also blanks those old copies, whatever their age
+(`old inbox copies` in the output, `inbox_blanked` in `--json`). Nothing reads them; this only frees space.
 
 **Never removed:** the audit log (append-only; the `agentnet log` rows of a pruned request
 stay), Decisions (`agentnet decision`), peers, teams and keys.
@@ -32,8 +39,17 @@ The database file does not shrink: SQLite reuses the freed space for new data. R
 are overwritten on disk (`secure_delete`).
 
 The daemon must be running. The command calls IPC `data_prune` repeatedly (at most 500
-requests per call) until nothing is left, then prints the totals. Each call that removed
-something writes one `data.prune` audit row with the counts.
+requests and about 8 MiB of content per call, so mail and other commands are not held up)
+until nothing is left, then prints the totals. Each call that removed or blanked something
+writes one `data.prune` audit row with the counts.
+
+**Removal cannot be undone**, and any local program that can run `agentnet` can run it, your
+agent included. It never touches anything unfinished, younger than 35 days, a Decision or the
+audit log, and every run is in `agentnet log`.
+
+**Full disk.** Removing rows briefly needs free space of about what one call removes (the
+removed data is overwritten through the database's write-ahead log). If the disk is
+completely full, free a few tens of MB first; a failed call removes nothing.
 
 ## Exit codes
 
@@ -56,6 +72,7 @@ would remove (finished before 2026-08-26T10:00:00Z):
   debates               3  (+ 41 entries, 2 constraints)
   experience records  133
   inbox records      5210
+  old inbox copies    830
 run again with --yes to remove them
 ```
 
@@ -68,7 +85,7 @@ nothing matches: `nothing to remove (finished before …)`.
 {"ok": true, "dry_run": false, "cutoff": "2026-08-26T10:00:00Z",
  "counts": {"requests": 412, "work_sessions": 130, "grants": 57, "debates": 3,
             "debate_entries": 41, "debate_constraints": 2, "experience_records": 133,
-            "mail_inbox": 5210}}
+            "mail_inbox": 5210, "inbox_blanked": 830}}
 ```
 
 `counts` are totals over every call. If a later call fails, the output is the error with

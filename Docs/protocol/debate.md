@@ -617,7 +617,9 @@ CREATE TABLE debate_constraints (
 A's slot-0 position is stored `committed` at submit (the request transaction) and becomes
 `applied` when revealed. Rows are never deleted automatically (like `work_sessions`); [`agentnet
 prune`](../cli/prune.md) removes a `closed` or `broken` debate older than its cutoff with its
-entries and constraints ([retention.md](retention.md#finished-items)). Its Decision is kept. `debates`,
+entries and constraints ([retention.md](retention.md#finished-items)). Its Decision is kept, so
+a later `debate` request that re-uses the pruned request id (its derived session already has a
+Decision) is refused as an invalid body ([request.md §Receiving](request.md#receiving) step 2). `debates`,
 `debate_entries`, `debate_constraints` and the rebuilt tables go into the DROP lists of
 **both** rewind tests in `internal/store/store_test.go`; the requests rebuild gets its own
 test (rows, `result` column, indexes and the unique idempotency index survive).
