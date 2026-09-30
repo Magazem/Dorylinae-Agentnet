@@ -1,0 +1,95 @@
+package relay
+
+import (
+	"io"
+	"log/slog"
+	"sync"
+	"testing"
+	"time"
+)
+
+// Review 74b probe (a): several connections of one prefix served in the same
+// tick (L-3) each size their read by redeliverAvail before any of them has
+// charged its rows, so together they read about K times what the prefix
+// budget pays for.
+func TestZZSec74bConcurrentServedReadAmplification(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	s := testServer(t, noBufferLimits(Options{Now: clock.Now, QueueRedeliverPerKey: -1, QueueRedeliverPerPrefix: 1 << 20}))
+	const prefix = "10.9.0.0"
+	const k = 16
+	var keys []string
+	for range k {
+		key := testKey(t)
+		keys = append(keys, key)
+		queueRows(t, s.q, key, "tiny", 1, 100)
+		queueRows(t, s.q, key, "big", 40, 16<<10)
+		if n := drainAll(s, keyConn(t, s, key, prefix)); n != 41 {
+			t.Fatalf("first delivery %d", n)
+		}
+	}
+	s.lim.mu.Lock()
+	s.lim.redeliverPrefix.take(prefix, clock.Now(), 1<<20)
+	s.lim.mu.Unlock()
+	for _, key := range keys { // all reconnect, all are refused and wait in order
+		if n := drainAll(s, keyConn(t, s, key, prefix)); n != 0 {
+			t.Fatalf("redelivered %d with the budget spent", n)
+		}
+	}
+	var mu sync.Mutex
+	var readBytes int64
+	s.q.mu.Lock()
+	s.q.readHook = func(_ string, rows []queued) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, r := range rows {
+			readBytes += int64(len(r.frame))
+		}
+	}
+	s.q.mu.Unlock()
+	sentBefore := s.redeliveredBytes.Load()
+	clock.Advance(time.Hour) // 1 MiB of prefix budget; every waiter's tiny row fits
+	s.retrySkipped()
+	s.drainWG.Wait()
+	sent := s.redeliveredBytes.Load() - sentBefore
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("one tick, %d served: read %d bytes of old frames, redelivered %d (%.1fx)", k, readBytes, sent, float64(readBytes)/float64(max(sent, 1)))
+	if readBytes > 2*sent {
+		t.Errorf("read %d bytes of old frames for %d redelivered", readBytes, sent)
+	}
+}
+
+// Review 74b probe (b): a connection that joined the wait list behind V goes
+// ahead of V when both are served in one tick and the prefix runs short for
+// it last: each is inserted at index 0.
+func TestZZSec74bHeadReinsertReordersWaiters(t *testing.T) {
+	clock := &testClock{now: time.Now()}
+	l := newLimits(Options{QueueRedeliverPerKey: -1, QueueRedeliverPerPrefix: 3600}, clock.Now, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	v, a := newConn(nil, "v", 4, "p"), newConn(nil, "a", 4, "p")
+	l.mu.Lock()
+	l.redeliverPrefix.take("p", clock.Now(), 3600)
+	l.mu.Unlock()
+	for _, x := range []*conn{v, a} {
+		if got := l.redeliverAllowed(x, 1000); got != limitRedeliverPrefix {
+			t.Fatal(got)
+		}
+		x.skipSize = 1000
+	}
+	clock.Advance(time.Hour)
+	picked := l.nextServed(func(x *conn) int64 { return x.skipSize }, func(*conn) bool { return true })
+	if len(picked) != 2 {
+		t.Fatalf("picked %d", len(picked))
+	}
+	_ = l.redeliverAllowed(v, 3000) // v paid, then short
+	_ = l.redeliverAllowed(v, 3000)
+	_ = l.redeliverAllowed(a, 3000) // a short after v
+	l.mu.Lock()
+	order := ""
+	for _, x := range l.redeliverWait["p"] {
+		order += x.key
+	}
+	l.mu.Unlock()
+	if order != "va" {
+		t.Errorf("wait list %q after both ran short; v waited first", order)
+	}
+}
