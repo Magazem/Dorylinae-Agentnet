@@ -84,6 +84,7 @@ func TestDebateConstrainE2E(t *testing.T) {
 		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1}}, &res)
 	sid := res.Session
 	harnessWait(t, "B to store the debate", phaseIs(b.harnessNode, sid, debate.PhaseInvited))
+	windowsBefore := a.win.startCount() // the setup's team invite approval opened one (D48)
 	if code, msg := callCode(t, a.harnessNode, "debate_constrain", daemon.DebateConstrainParams{ID: sid, Text: "Too early"}); code != "bad_state" {
 		t.Fatalf("invited: %q (%s), want bad_state", code, msg)
 	}
@@ -111,7 +112,7 @@ func TestDebateConstrainE2E(t *testing.T) {
 	if code, _ := callCode(t, a.harnessNode, "debate_constrain", daemon.DebateConstrainParams{ID: "s-0123456789abcdef0123456789abcdef", Text: "x"}); code != "unknown_session" {
 		t.Fatalf("unknown debate: %q", code)
 	}
-	if n := a.win.startCount(); n != 0 {
+	if n := a.win.startCount() - windowsBefore; n != 0 {
 		t.Fatalf("a refused constraint opened %d approval windows", n)
 	}
 

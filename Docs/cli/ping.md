@@ -34,6 +34,11 @@ A ping to a peer that is not connected therefore fails with `timeout` after 10 s
 (unless the peer comes back within that time). To send something that waits for an offline
 peer, use mail ([mail.md](mail.md)), not ping.
 
+**An invisible peer looks the same.** A daemon in presence mode `invisible` does not answer
+pings (with `only_team`, only that team's members get an answer), so the ping fails with
+`timeout` and does not reveal whether the peer is online
+([../protocol/presence.md](../protocol/presence.md#visibility)).
+
 ## Exit codes
 
 | Code | Meaning |

@@ -194,8 +194,51 @@ func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
 	return n
 }
 
+// ensureApprover gives the node a fake approval notifier and window when the
+// test set none, so a human decision (peers verify, team invite: D48) can be
+// answered in the fake window and never in a real dialog.
+func (n *harnessNode) ensureApprover() {
+	if n.ApprovalNotify == nil {
+		n.ApprovalNotify = &fakeApprovalNotifier{}
+	}
+	if n.ApprovalWindow == nil {
+		n.ApprovalWindow = newFakeWindowRunner()
+	}
+}
+
+// humanApprove types the approval's code into the fake window, as the human
+// would. It waits for the window to open. The node's notifier and window are
+// whichever fakes the test installed (see ensureApprover).
+func (n *harnessNode) humanApprove(id string) {
+	n.t.Helper()
+	fw, ok := n.ApprovalWindow.(interface{ answer(id, kind, code string) })
+	if !ok {
+		n.t.Fatalf("%s: the approval window is not a fake that can answer", n.name)
+	}
+	if w, ok := n.ApprovalWindow.(*fakeWindowRunner); ok {
+		harnessWait(n.t, "approval window for "+id, func() bool {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			return w.handles[id] != nil
+		})
+	}
+	var code string
+	switch nf := n.ApprovalNotify.(type) {
+	case interface {
+		code(*testing.T, string) string
+	}:
+		code = nf.code(n.t, id)
+	case interface{ lastCode(*testing.T) string }:
+		code = nf.lastCode(n.t)
+	default:
+		n.t.Fatalf("%s: the approval notifier is not a fake that shows codes", n.name)
+	}
+	fw.answer(id, "approve", code)
+}
+
 func (n *harnessNode) start() {
 	n.t.Helper()
+	n.ensureApprover()
 	ks, err := identity.NewKeystore(n.p.Dir, "file") // never touch the real keychain from tests
 	if err != nil {
 		n.t.Fatal(err)

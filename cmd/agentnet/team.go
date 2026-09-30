@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"text/tabwriter"
+	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -263,6 +265,10 @@ func shortTeamID(id string) string {
 	return id[:prefix] + "…" + id[len(id)-4:]
 }
 
+// inviteApprovalPoll is how often `team invite` asks the daemon whether the
+// human has decided.
+var inviteApprovalPoll = 500 * time.Millisecond
+
 func runTeamInvite(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet team invite", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -277,8 +283,12 @@ Flags:
   --json    print {"ok":true,"pairing_id","role":"issuer","state","code"?,"expires"?,
             "team":{"id","name"}} (or {"ok":false,"error":{"code","message"}})
 
-The command returns in under 2 seconds. If the exchange is not finished by
-then, state is "pending"; poll it with 'agentnet pair --status <id>'.
+The invite needs your approval (kind team_invite): the command creates the
+approval, then waits until you type the code into the AgentNet approval window
+(or, on a headless machine, into the daemon's terminal). If you reject it or it
+expires, no code is created and the command exits 1. After the approval it
+returns in under 2 seconds. If the exchange is not finished by then, state is
+"pending"; poll it with 'agentnet pair --status <id>'.
 
 Exit codes: 0 ok (including pending), 1 error or the invite failed, 2 usage,
 3 daemon not running.
@@ -295,8 +305,27 @@ Exit codes: 0 ok (including pending), 1 error or the invite failed, 2 usage,
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give exactly one <team> (see 'agentnet team invite --help')")
 	}
 	var res daemon.TeamInviteResult
-	if code := callDaemon(*asJSON, stdout, stderr, pairTimeout, "team_invite", daemon.TeamInviteParams{Team: pos[0]}, &res); code != exitOK {
+	if code := callDaemon(*asJSON, stdout, stderr, approveTimeout, "team_invite", daemon.TeamInviteParams{Team: pos[0]}, &res); code != exitOK {
 		return code
+	}
+	// The code exists only once a human approves the invite (D48): wait for
+	// the decision here, polling the daemon with the approval id.
+	if res.Approval != nil {
+		id := res.Approval.ID
+		if !*asJSON {
+			_, _ = fmt.Fprintf(stderr, "Approval %s: type the code into the AgentNet approval window to create the invite code.\n", id)
+		}
+		deadline := time.Now().Add(approval.TTL + time.Minute)
+		for res.Approval != nil {
+			if time.Now().After(deadline) {
+				return failJSON(*asJSON, stdout, stderr, exitError, "approval_timeout", "the invite was not approved in time")
+			}
+			time.Sleep(inviteApprovalPoll)
+			res = daemon.TeamInviteResult{}
+			if code := callDaemon(*asJSON, stdout, stderr, pairTimeout, "team_invite", daemon.TeamInviteParams{Team: pos[0], Approval: id}, &res); code != exitOK {
+				return code
+			}
+		}
 	}
 	if *asJSON {
 		_ = json.NewEncoder(stdout).Encode(teamInviteBody{OK: res.State != peers.StateFailed, TeamInviteResult: res})

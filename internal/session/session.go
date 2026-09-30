@@ -182,6 +182,8 @@ type Manager struct {
 	self string
 	log  *slog.Logger
 
+	pingGate func(ctx context.Context, peer string) bool // guarded by mu
+
 	inbox chan envelope.Envelope
 	stop  chan struct{}
 	wg    sync.WaitGroup
@@ -205,6 +207,16 @@ type Manager struct {
 	rejWindow  time.Time
 	rejCount   int
 	suppressed int
+}
+
+// SetPingGate sets a check that decides whether a ping from a paired peer is
+// answered; an unanswered ping simply times out on the peer's side. Nil (the
+// default) answers every ping. The daemon uses it so an invisible daemon is
+// not a liveness oracle (R55-077, Docs/protocol/presence.md §Visibility).
+func (m *Manager) SetPingGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.pingGate = gate
+	m.mu.Unlock()
 }
 
 // NewManager returns a running Manager; call Close to stop it.
@@ -692,6 +704,19 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 	}
 	switch msg.Type {
 	case "ping":
+		gate := m.pingGate
+		if gate != nil {
+			// The gate reads the database: ask it without the lock (R55-077).
+			m.mu.Unlock()
+			if !gate(ctx, from) {
+				return ""
+			}
+			m.mu.Lock()
+			if cur, ok := m.sessions[string(sid)]; !ok || cur != s || s.tr == nil {
+				m.mu.Unlock()
+				return ""
+			}
+		}
 		reply, _ := json.Marshal(message{Type: "pong", ID: msg.ID})
 		env, err := m.sealLocked(s, reply, "")
 		m.mu.Unlock()

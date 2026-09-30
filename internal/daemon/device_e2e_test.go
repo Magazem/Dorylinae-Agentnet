@@ -300,9 +300,8 @@ func TestDeviceLinkFingerprintMismatch(t *testing.T) {
 func TestDeviceTrustOnlyFromLinkFlow(t *testing.T) {
 	a, b := newDevPair(t)
 	harnessSharedTeam(t, a.harnessNode, b.harnessNode, "x") // team_create, invite, join, roster mails
-	var pr daemon.PeerResult
-	a.call("peers_verify", daemon.PeerVerifyParams{Peer: b.key, Fingerprint: devFP(t, b)}, &pr)
-	b.call("peers_verify", daemon.PeerVerifyParams{Peer: a.key, Fingerprint: devFP(t, a)}, &pr)
+	harnessVerify(t, a.harnessNode, b.key, devFP(t, b))
+	harnessVerify(t, b.harnessNode, a.key, devFP(t, a))
 	// A request over the team, to exercise the mail paths, then a settle time
 	// for late roster and presence mail.
 	time.Sleep(500 * time.Millisecond)

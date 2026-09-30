@@ -560,6 +560,20 @@ func (s *Store) applyLeave(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		op.Outcome = &leaveOutcome{teamID: teamID, peer: peer}
 		return nil
 	}
+	// A leave made before the member's current membership began (a delayed
+	// team.leave arriving after a rejoin) must not remove the rejoined
+	// member (R55-068, R16 M2).
+	var added string
+	switch err := tx.QueryRowContext(ctx, `SELECT added FROM team_members WHERE team_id = ? AND key = ?`, teamID, peer).Scan(&added); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("team: leave: %w", err)
+	default:
+		if at, perr := time.Parse(wireTimeFmt, added); perr == nil && op.Msg.Created.Truncate(time.Second).Before(at) {
+			pendingLeave.Store(op, &leaveOutcome{teamID: teamID, peer: peer})
+			return nil
+		}
+	}
 	nt, rerr := s.removeMemberOwnedTx(ctx, tx, teamID, peer, now)
 	if rerr != nil {
 		if errors.Is(rerr, ErrNoSuchMember) {

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -88,4 +89,27 @@ func parseMillis(re *regexp.Regexp, out []byte) (time.Duration, error) {
 		return 0, errNoMatch
 	}
 	return time.Duration(n) * time.Millisecond, nil
+}
+
+// CacheTTL is how long a sampled idle time is reused (Docs/protocol/
+// presence.md §Idle detection: at most one OS query per 5 s).
+const CacheTTL = 5 * time.Second
+
+// Cached wraps f so that a result, known or unknown, is reused for ttl. It is
+// safe for concurrent use; concurrent callers during a refresh wait for it.
+func Cached(ttl time.Duration, now func() time.Time, f func(context.Context) (time.Duration, bool)) func(context.Context) (time.Duration, bool) {
+	var mu sync.Mutex
+	var at time.Time
+	var d time.Duration
+	var ok, have bool
+	return func(ctx context.Context) (time.Duration, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if t := now(); have && t.Sub(at) < ttl && !t.Before(at) {
+			return d, ok
+		}
+		d, ok = f(ctx)
+		at, have = now(), true
+		return d, ok
+	}
 }

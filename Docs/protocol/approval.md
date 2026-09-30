@@ -53,6 +53,36 @@ screenshot, accessibility or notification-history tools (for Claude Code: deny r
 those paths and commands). OD-P2-2 records this boundary. On a machine without a desktop,
 see [Headless machines](#headless-machines).
 
+
+## Trust changes: `peer_verify` and `team_invite`
+
+Owner decision D48 (review 55, R55-082 and R55-084). Two IPC methods that used to act at
+once now wait for a human, in the same window, with the same code, limits and terminal mode
+as every other kind:
+
+- **`peers_verify`** raises a peer to `trust = fingerprint`, which lifts the D5 refusal and
+  clears `introduced_by`. The fingerprint is public, so the method cannot tell the user from
+  a local agent that only knows it. The method first checks the typed fingerprint against
+  the peer's key (a wrong one is `fingerprint_mismatch` at once, audited `peer.verify_fail`,
+  and creates no approval), then creates a `peer_verify` approval with `subject` = the peer
+  key. Perform, in the confirm transaction, raises the trust and audits `peer.verify`
+  (actor `cli`). Precondition: the peer is still paired. The window shows the peer's name
+  and its whole fingerprint in five groups (D9, R55-F5 rules), so the person compares it
+  with what the other person's `agentnet identity` shows.
+- **`team_invite`** (owner side) starts a pairing v2 issuer whose code any teammate's daemon
+  then trusts as `team`. The method validates the team (owner, active, not full) and creates
+  a `team_invite` approval with `subject` = the team id. No code, pairing or relay traffic
+  exists until the human approves. Precondition: the team is still active and owned by
+  self. After approval, the caller repeats `team_invite` with the approval id
+  ([ipc.md](ipc.md#phase-1-methods)); the daemon starts the pairing then. The approval id
+  releases exactly one code, for its own team only; the daemon keeps it in memory, so a
+  restart (which expires every pending approval) needs a new approval. `team_join`,
+  `team_create` and the other team methods are not gated.
+
+Both kinds refuse a summary that does not fit, like the others, and both are listed by
+`approval_list` and answered in the window or, on a headless machine, on the daemon's
+stdin ([Headless machines](#headless-machines)).
+
 ## Object
 
 ```
@@ -61,7 +91,8 @@ approval = {id: "a-" + 32 hex, kind, subject, summary, created, expires,
 ```
 
 - `kind`: `grant`, `grant_policy`, `release`, `accept_result`, `device_link`,
-  `device_scope`, `debate_constraint` (3.4, [debate.md](debate.md#human-constraints-34)). The
+  `device_scope`, `debate_constraint` (3.4, [debate.md](debate.md#human-constraints-34)),
+  `peer_verify` and `team_invite` (D48, R55-F24: see [Trust changes](#trust-changes-peer_verify-and-team_invite)). The
   action waits in the owning table in a `pending_approval` state that references the approval
   id, except `debate_constraint`: the constraint waits only in the approval's in-memory action
   and is stored by its Perform, so a restart (which expires every pending approval) or a
@@ -261,7 +292,8 @@ summary.
   Precondition, after its existing state checks:
   1. re-derives the facts from the tables of record: the stored row (grant, policy, link
      intent, session); for the two kinds whose waiting object lives only in memory
-     (`device_scope`, `debate_constraint`), the captured object plus the current `peers` row;
+     (`device_scope`, `debate_constraint`, `peer_verify`), the captured object plus the current
+     `peers` row; for `team_invite`, the current `teams` row (still `active`, still owned by self);
   2. requires them equal to the facts captured at Create, field by field (times compared as
      instants);
   3. requires `Build(facts)` to equal `approvals.summary`, read in the same transaction, byte
@@ -476,6 +508,8 @@ Every field listed as a fact is in the summary. The templates below are the exac
 | `device_link` | link intent id; peer key, name; role | `Link this device as the <role> of <peer>. <role part> Compare all five groups of this fingerprint with what 'agentnet identity' shows on the other device. Confirm only if all of them match and you started this on both devices.` Role part: helper → `That device will be able to run, on this device, the commands of a scope you set later.`; controller → `This device will be able to ask that device to run the commands of its scope.` (D9 as decided in D44: the human **compares**; nothing is typed.) |
 | `device_scope` | peer key, name; the resolved scope (types, repos, commands with resolved argv, env names, timeouts, expires) | `Let <peer> run <N> command(s) (<name>, <name>, …) on this device until <utc(expires)>, for <types> requests:` then per command ` [<name>] in <q(dir)> runs <argv as a JSON array of q()> (timeout <n> s[, env <names>]);`, then ` Confirm only if you set this scope yourself.` (today's text, with the command count and names first (review 58a, M1), the fingerprint added and the expiry in UTC). Command names, types and env names are ASCII by device.md's rules and need no quoting |
 | `debate_constraint` | debate session id; peer key, name; constraint id; text | `Add a human constraint to the debate <sid> with <peer>: <q(text)>. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.` (today's text, with the fingerprint added) |
+| `peer_verify` | peer key, name (the fingerprint follows from the key) | `Mark <peer> as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.` (D48, R55-082) |
+| `team_invite` | team id, name | `Create a one-time invite code for the team <name> (<team id>). Whoever redeems it joins the team, and every member's daemon will then trust them as a team member. Confirm only if you asked for this invite yourself.` (D48, R55-084; the team name is `[a-z0-9-]` and shown as is, the team id is `t-` and 32 hex) |
 
 Notes:
 - **Grant with a matching policy.** No approval, so no summary. The policy's own summary
@@ -611,7 +645,8 @@ session, `i-…` device-link intent, `l-…` link for a scope). Never the code o
 
 ```sql
 -- migration 15 (2.2a): approvals, grant_policies (policies: grant.md)
--- (migration 19, 3.4, rebuilds approvals to add 'debate_constraint' to the kind CHECK)
+-- (migration 19, 3.4, rebuilds approvals to add 'debate_constraint' to the kind CHECK;
+--  migration 23, D48, adds 'peer_verify' and 'team_invite')
 CREATE TABLE approvals (
     id        TEXT PRIMARY KEY,                 -- a-<32 hex>
     kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope')),

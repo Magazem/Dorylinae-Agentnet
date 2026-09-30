@@ -240,11 +240,18 @@ Acceptance (1.3): with B `invisible`, A's `status --team x` shows B with
 the time of B's goodbye. It never shows B online while B stays invisible, because B sends
 A nothing.
 
+**Pings.** An invisible daemon does not answer session `ping`s either (R55-077): a paired
+peer would otherwise get an on-demand liveness check that the mode is meant to remove. In
+mode `only_team`, only members of that team get a `pong`; in mode `visible`, every paired
+peer does (ping is a paired-peer tool, not team-scoped). An unanswered ping fails with
+`timeout` on the sender's side, like a ping to an offline peer.
+
 ### Human sharing
 
 Pending OD-P1-6. `agentnet presence --human off|on` stores `presence.human` =
 `{"share": false|true}` (default `true`). With `false`, heartbeats always carry `human: 2`.
-Local `status` still shows the user their own detected value.
+Local `status` still shows the user their own detected value (R55-109): the idle time is
+read whether or not it is shared, and sharing decides only what a heartbeat carries.
 
 ## Idle detection
 
@@ -312,3 +319,8 @@ Heartbeats, rejects and state changes are not audited.
 `status` with `team` shows members with all three levels: [ipc.md](ipc.md#status) and
 [../cli/status.md](../cli/status.md). The visibility command is
 [../cli/presence.md](../cli/presence.md), backed by the IPC methods `presence_get` and `presence_set`.
+`presence_set` takes `{"mode": "visible"|"invisible"|"only_team", "team"?, "human_share"?}`,
+the shape of [ipc.md](ipc.md#phase-1-methods) (the CLI flags map to it: `--invisible` is
+`{"mode": "invisible"}`, `--only-team x` is `{"mode": "only_team", "team": "x"}`, `--human
+off` is `{"human_share": false}`), and refuses members it does not know, so a call in another
+shape is `bad_request`, never a silent no-op (R55-112).
