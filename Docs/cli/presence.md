@@ -18,7 +18,10 @@ otherwise). `--human` may be combined with any of them.
 
 Invisible hides you from **teammates**. The relay operator can still see that your daemon is
 connected. Going invisible, or leaving a peer's visibility, sends that peer one "offline"
-message, so the peer sees you go offline at once, with a `last_seen` of that moment.
+message, so the peer sees you go offline at once, with a `last_seen` of that moment. While
+invisible, the daemon does not answer `agentnet ping` either (a ping to you times out); with
+`--only-team`, only members of that team get an answer
+([../protocol/presence.md](../protocol/presence.md#visibility)).
 
 ## Exit codes
 

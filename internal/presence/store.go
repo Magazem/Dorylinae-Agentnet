@@ -106,7 +106,7 @@ type PeerView struct {
 	Known            bool
 	DaemonOnline     bool
 	AgentActive      bool
-	HumanPresent     *bool // nil = unknown or daemon offline
+	HumanPresent     *bool // nil = online with the level unknown or not shared; false while offline
 	LastSeen         *time.Time
 	AgentLastActive  *time.Time
 	HumanLastPresent *time.Time
@@ -122,7 +122,10 @@ func (s *Store) View(ctx context.Context, peer string, now time.Time) (PeerView,
 		`SELECT state, agent, human, interval, last_rx, last_agent, last_human FROM presence_peers WHERE key = ?`, peer,
 	).Scan(&state, &agent, &human, &interval, &lastRxStr, &lastAgent, &lastHuman)
 	if errors.Is(err, sql.ErrNoRows) {
-		return PeerView{}, nil
+		// Never heard: offline, so human_present is false, not null
+		// (Docs/protocol/presence.md §Receiving, "Effective state").
+		off := false
+		return PeerView{HumanPresent: &off}, nil
 	}
 	if err != nil {
 		return PeerView{}, fmt.Errorf("presence: view: %w", err)
@@ -139,6 +142,10 @@ func (s *Store) View(ctx context.Context, peer string, now time.Time) (PeerView,
 			b := human == 1
 			v.HumanPresent = &b
 		}
+	} else {
+		// human_present is false, not unknown, while the daemon is offline.
+		off := false
+		v.HumanPresent = &off
 	}
 	if lastAgent.Valid {
 		if t, perr := time.Parse(storeTimeFmt, lastAgent.String); perr == nil {

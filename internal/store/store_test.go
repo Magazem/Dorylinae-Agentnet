@@ -242,7 +242,8 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 		for _, q := range []string{
 			// Back to schema 17: undo migrations 22 (work_sessions.runner),
 			// 21 (experience_records), 20 (decisions) and 19 (debates, which
-			// alters work_sessions).
+			// alters work_sessions). Migration 23 (R55-F24) only rebuilds approvals
+			// with a wider kind CHECK and adds no table or column: nothing to undo.
 			`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`,
 			`DROP TABLE experience_records`,
 			`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,

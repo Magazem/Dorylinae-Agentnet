@@ -538,6 +538,28 @@ CREATE TABLE experience_records (
 ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
 ALTER TABLE work_sessions ADD COLUMN result_mail TEXT;
 `},
+	// Human approval of peers verify and of the owner's team invite (D48,
+	// R55-F24, Docs/protocol/approval.md): the approvals kind CHECK gains
+	// 'peer_verify' and 'team_invite'. Rebuilt with explicit column lists, as
+	// migration 19 did; no table references approvals and it has no trigger.
+	{23, "approval_kinds_peer_team", `
+CREATE TABLE approvals_new (
+    id        TEXT PRIMARY KEY,
+    kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope','debate_constraint','peer_verify','team_invite')),
+    subject   TEXT NOT NULL,
+    summary   TEXT NOT NULL,
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    state     TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','expired')),
+    decided   TEXT
+);
+INSERT INTO approvals_new (id, kind, subject, summary, created, expires, attempts, state, decided)
+SELECT id, kind, subject, summary, created, expires, attempts, state, decided FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_state ON approvals (state, expires);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

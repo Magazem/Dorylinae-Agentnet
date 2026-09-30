@@ -89,9 +89,14 @@ agentnet peers verify my-laptop "2ED9 TGVE R471 63MC C451"
 ```
 
 The fingerprint is case-insensitive, `-` and spaces are ignored, and it may be
-given as several arguments. On a match the peer's `trust` becomes `fingerprint`
-and the command exits 0, printing `Verified <name> (<fingerprint>): trust is now
-fingerprint`; with `--json`, `{"ok": true, "peer": {...}}`. On a mismatch it
+given as several arguments. On a match the command creates an approval (kind
+`peer_verify`, D48) and exits 0, printing `Approval <id>: the peer is marked verified once
+you type the code into the AgentNet approval window.`; with `--json`,
+`{"ok": true, "approval": {...}}`. The peer's `trust` becomes `fingerprint` only when you
+type the code into the approval window (on a headless machine: into the daemon's
+terminal, see [approve.md](approve.md)). The window shows the peer's name and its
+fingerprint in five groups: compare them with `agentnet identity` on the other machine
+before you confirm. Rejecting the approval, or letting it expire, changes nothing. On a mismatch it
 exits 1 with error code `fingerprint_mismatch` and changes nothing. A value that
 is not 20 characters of the alphabet fails with `bad_fingerprint`. Other error
 codes: `unknown_peer`, `ambiguous_peer`.

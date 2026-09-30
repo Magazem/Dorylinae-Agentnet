@@ -390,6 +390,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		PresenceInterval: opts.PresenceInterval,
 		AgentWindow:      opts.AgentWindow,
 	}
+	// An invisible daemon does not answer session pings (R55-077).
+	sessions.SetPingGate(presenceSender.PingAllowed)
+	// An invisible daemon also refuses the handshake, so a ping cannot tell it
+	// from an offline one, unless the peer holds a grant from us or shares an
+	// open work session with us (granted fetches keep working, review 79 M1).
+	sessions.SetInitGate(func(ctx context.Context, peer string) bool {
+		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer)
+	})
+	presenceSender.ModeChanged = sessions.DropGatedSessions
 	if err := presenceSender.LoadSettings(ctx); err != nil {
 		_ = ln.Close()
 		return err
@@ -651,8 +660,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	srv.Logger = opts.Logger // handler panics and failing Accept calls (review 77)
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
-	registerTrust(srv, peerStore, log, teamStore)
-	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
+	registerTrust(srv, peerStore, log, teamStore, apprStore, st.DB())
+	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name, apprStore)
 	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
