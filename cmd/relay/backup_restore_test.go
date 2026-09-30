@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"database/sql"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -134,6 +135,17 @@ func TestMetricsListenerServesMetrics(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /metrics = %d, want 200", resp.StatusCode)
+	}
+	// R55-F2 (acceptance test 17): the redelivery counters, unlabelled.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"relay_queue_redelivered_bytes_total 0\n", "relay_queue_redeliveries_skipped_total 0\n",
+		"# TYPE relay_queue_redelivered_bytes_total counter", "# TYPE relay_queue_redeliveries_skipped_total counter"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("/metrics lacks %q:\n%s", want, body)
+		}
 	}
 }
 

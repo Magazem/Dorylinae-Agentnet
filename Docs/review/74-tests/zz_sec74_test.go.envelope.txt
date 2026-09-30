@@ -1,0 +1,44 @@
+package envelope_test
+
+import (
+	"crypto/ed25519"
+	"testing"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+)
+
+// Review 74: whole-frame differential. Relay-accepted implies
+// daemon-parseable, with the same routing fields; AckTarget never yields a
+// (from, id) other than what ParseHeader's decoding yields.
+func FuzzZZSec74RelayAcceptedDaemonParses(f *testing.F) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	k := envelope.KeyString(pub)
+	bs := string([]byte{0x5c}) // a backslash
+	base := `{"from":"` + k + `","to":"` + k + `","team":"t","type":"ping","id":"i","ts":"2026-01-02T03:04:05Z"`
+	for _, s := range []string{
+		base + `,"payload":"QQ=="}`, base + `,"payload":""}`, base + `,"payload":"QQ==","PAYLOAD":"QUFB"}`,
+		base + `,"payload":[65]}`, base + `,"payload":"QR=="}`, base + `,"payload":"Q` + bs + `u0051=="}`,
+		"\xef\xbb\xbf" + base + `,"payload":"QQ=="}`, base + `,"pay` + bs + `u006coad":"!!"}`, base + `,"payload":"QQ==","payload":null}`,
+		base + `,"Payload":"QQ==","payload":{}}`, base + `,"paylo` + bs + `u0061d":"QQ==","payloaD":"QQ=="}`,
+		base + `,"payload":"QQ==","id":"j","ID":"k"}`, base + `,"payload":"QQ==","from":null}`,
+	} {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, frame []byte) {
+		h, herr := envelope.ParseHeader(frame)
+		from, id, _, ok := envelope.AckTarget(frame)
+		if ok && herr == nil && (from != h.From || id != h.ID) {
+			t.Fatalf("AckTarget (%s,%s) != ParseHeader (%s,%s)", from, id, h.From, h.ID)
+		}
+		if herr != nil {
+			return
+		}
+		e, err := envelope.Parse(frame)
+		if err != nil {
+			t.Fatalf("relay accepts, daemon refuses: %v: %q", err, frame)
+		}
+		if e.Header() != h {
+			t.Fatalf("header differs: %+v vs %+v", e.Header(), h)
+		}
+	})
+}

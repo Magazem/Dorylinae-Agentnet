@@ -306,9 +306,9 @@ inverted. Fake clock: `limitEnv.clock`.
     `bad_envelope`, is not queued (`Queued` 0) and is not forwarded to an online recipient:
     `"payload":1`, `{}`, `[]`, `null`, no `payload`, `"not base64!"`, `"QQ"` (unpadded),
     `"QQ==QUFB"` (padding inside), `"\u0051UFB"` (an escape; review 66b L2), a good `"payload":"QQ=="`
-    followed by `"payload":1`, and a good one followed by `"PAYLOAD":1`. Accepted and
-    forwarded byte for byte: `""`, `"QQ=="`, `"QUFB"`, a 700 KiB valid payload, and a bad
-    `"payload":1` followed by a good `"payload":"QQ=="` (last wins). A presence envelope
+    followed by `"payload":1`, a good one followed by `"PAYLOAD":1`, and (code delta, see
+    §8) a bad `"payload":1` followed by a good `"payload":"QQ=="`. Accepted and forwarded
+    byte for byte: `""`, `"QQ=="`, `"QUFB"` and a 700 KiB valid payload. A presence envelope
     with `"payload":1` gets `bad_envelope`.
 11. **Validator equals the decoder.** A fuzz test: for escape-free strings, the payload check
     accepts exactly what `base64.StdEncoding.DecodeString` accepts; and every
@@ -545,3 +545,69 @@ Files changed by this review: `Docs/review/66-r55-f2-spec.md`, `Docs/protocol/re
 **Verdict:** approve after these fixes. No Critical. H1 and H2 were real (a replay of the
 amplification, and possible loss of honest mail); the edits above close both. The spec is
 ready for the owner's OD decisions.
+
+## 8. Implementation deltas (R55-F2 code, branch p4/r55-f2)
+
+Found while coding (R55-F2-Opus, 2026-09-30); envelope.md and relay-hosted.md are updated.
+
+- **Every `payload` occurrence is judged (test 10).** `encoding/json` returns the first type
+  error even when a later key overwrites the field, so the recipient's `envelope.Parse`
+  refuses `"payload":1,"payload":"QQ=="`. Accepting it ("last wins", as test 10 had it)
+  would have let the relay queue a frame the daemon cannot parse, breaking "relay-accepted
+  ⇒ daemon-parseable". `payloadCheck` therefore refuses the frame if any occurrence is bad;
+  the test expects `bad_envelope` for it.
+- **A 5 ms pause between sweep batches.** Review 66b's "Go's mutex hands over to a waiter
+  after 1 ms, so add waits at most about one batch" did not hold: the woken waiter loses
+  the lock to the next batch once, and only then does the mutex hand over. Measured
+  without the pause, an add waited 1.05 s against a longest batch of 0.47 s. With it, the
+  add waits about 0.26 s (test 2).
+- **The probe is its own statement.** `claim` returns H and no rows when the cursor is below
+  H, and `probe` then reads that range's first `seq` and `LENGTH(frame)`. No frame is read
+  before the decision either way (test 6). First-delivery batches are still claimed in one
+  transaction under `q.mu`.
+- **A second skip on one connection widens the recorded range** (`skipFrom` = the lower,
+  `skipTo` = the higher). That happens only when a replaced connection's drain raised H
+  meanwhile. The retry then covers both.
+- **The client's Warn line** (`event=relay_bad_frame`, `count`, `acked`) is written one
+  minute after the first frame it counts, or when the connection ends, whichever is first.
+  Frames that fail `Classify` are counted in it too (not acked).
+- **Timings of test 2** (NVMe, Windows 11, `ZZ_MB`): 256 MiB swept in 2.2–3.1 s, 1 GiB in
+  9.7 s (33 batches), 2 GiB in 17.8 s (65 batches). The longest batch was 0.30–0.52 s, a
+  concurrent add waited ≤ 0.6 s, and the WAL was 0 bytes afterwards (truncated).
+
+Fixes after security review 74 ([74-r55-f2-security.md](74-r55-f2-security.md)):
+
+- **M-1: turns are bounded.** A prefix may have several served connections at once. A
+  served connection's turn ends after `redeliverTurn` (1 min, one sweep tick); a slow reader
+  loses its turn and its next redelivery joins the tail. A served connection that the
+  **prefix** bucket cannot pay part way through goes back to its place in the list (by
+  join ticket since 74b L-b), not the tail. Test: `TestRedeliverSlowReaderDoesNotHoldTurn` (the reviewer's probe, inverted).
+- **L-3: several connections per tick.** `nextServed` serves, in list order, every waiter
+  whose first skipped row the prefix bucket can still pay after those picked before it in
+  the tick. Test: `TestRedeliverTurnsHeadSliceAndSeveralPerTick` (it covers M-1's
+  head/tail/slice rules too).
+- **M-2: reads bounded by the budget.** After the probed row is paid, `nextRange` reads the
+  range's lengths first and fetches only the frames that fit the buckets' remaining tokens
+  (at most `drainBatchBytes`). Test: `TestRedeliverReadsOnlyWhatBudgetPays` (reviewer's
+  probe, inverted: 20 reconnects read exactly the 18 384 bytes they redeliver).
+- **L-1:** `cmd/relay` refuses `--queue-redeliver-per-key` / `-per-prefix` below 1 MiB
+  (`envelope.MaxFrameBytes`); `-h` says so. The `Options` fields accept any value (tests).
+- **L-2:** the `busy_timeout` restore after the non-waiting checkpoint uses its own context;
+  on error the connection is discarded (`driver.ErrBadConn` through `Conn.Raw`).
+
+Fixes after re-review 74b ([74b-r55-f2-rereview.md](74b-r55-f2-rereview.md)):
+
+- **L-a: the read budget is taken, then refunded.** `redeliverReserve` takes from both
+  buckets what they hold (at most one batch) before the read; `redeliverStep` pays each row
+  from it and `redeliverRefund` gives back the rest. Connections served in the same tick
+  can no longer each size a read by the same tokens. Test:
+  `TestRedeliverServedTogetherReadOnlyWhatIsPaid` (reviewer's probe, inverted: 16 served in
+  one tick read exactly the 1 032 492 bytes they redeliver, within the 1 MiB budget).
+- **L-b: join tickets.** A connection gets a ticket when it joins a wait list and keeps it
+  while served; coming back after its prefix ran short, it is re-inserted by ticket, not at
+  index 0. Test: `TestRedeliverBackToPlaceKeepsOrder`.
+- **Info: turns are stamped with the tick's start** (taken before its sweep), so a turn
+  lasts one tick however long the sweep took.
+- **Test hardening:** `readQuiet` (the external redelivery tests) no longer waits for a quiet
+  window; it waits, with a deadline, until the client has read every frame the relay wrote
+  to that connection (a per-connection write counter, `Server.Written` in tests).

@@ -3,9 +3,12 @@ package relay
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +26,23 @@ const (
 	drainBatch              = 64
 	drainBatchBytes         = 1 << 20
 	queueOpTimeout          = 10 * time.Second
+)
+
+// Expiry sweep and WAL bound (R55-F2, relay-hosted.md §2 "Expiry sweep in
+// bounded batches"): rows deleted per transaction, work per sweep tick, the
+// WAL size SQLite truncates back to (and past which a tick's deletions end
+// with a TRUNCATE checkpoint), marks pruned per statement, and the busy
+// timeout of the DSN.
+const (
+	sweepBatchRows  = 32
+	sweepTickBudget = 30 * time.Second
+	// sweepPause lets add, ack and drains take the queue lock between two
+	// batches: a woken waiter would otherwise lose the lock to the next
+	// batch at least once (sync.Mutex hands over only after 1 ms of waiting).
+	sweepPause     = 5 * time.Millisecond
+	walSizeLimit   = 64 << 20
+	pruneBatchRows = 256
+	busyTimeoutMS  = 5000
 )
 
 // Offline queue caps added by 4.0b (Docs/protocol/relay-hosted.md §2
@@ -89,6 +109,14 @@ type queue struct {
 	total       usage
 	diskChecked time.Time
 	diskLow     bool
+
+	// sweepHook, if set, runs under mu before each sweep batch with the
+	// batch's index in the tick and fails the batch if it returns an error;
+	// sweptHook runs under mu after each committed batch (tests only).
+	sweepHook func(i int) error
+	sweptHook func(i int, n int64, took time.Duration)
+	// readHook, if set, sees the rows whose frames a drain read (tests only).
+	readHook func(to string, rows []queued)
 }
 
 type queued struct {
@@ -126,6 +154,11 @@ CREATE INDEX IF NOT EXISTS queue_by_age ON queue (enqueued);
 CREATE INDEX IF NOT EXISTS queue_by_sender ON queue (from_key, enqueued);
 `},
 	{2, "R2_accounts", relayMigrationR2},
+	// R3 (R55-F2): the delivered high-water mark per recipient, H. A row of
+	// to_key with seq <= H has been handed to one of its connections before,
+	// so sending it again is a budgeted redelivery (relay-hosted.md §2
+	// "First delivery and redelivery").
+	{3, "R3_queue_delivered", `CREATE TABLE IF NOT EXISTS queue_delivered (to_key TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID;`},
 }
 
 // openQueue opens the SQLite relay database at path; "" means a private
@@ -207,7 +240,8 @@ func (q *queue) storageLow() bool {
 func openRelayDB(path string) (*sql.DB, error) {
 	dsn := "file::memory:?_pragma=busy_timeout(5000)&_pragma=secure_delete(1)"
 	if path != "" {
-		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)"
+		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)" +
+			"&_pragma=journal_size_limit(" + strconv.Itoa(walSizeLimit) + ")"
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -262,10 +296,12 @@ func (q *queue) cutoff() int64 { return q.now().Add(-q.ttl).UnixMilli() }
 // the in-memory totals or through an index (queueCapQueries), never by a
 // scan of the table.
 func (q *queue) add(h envelope.Header, frame []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
-	defer cancel()
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	// The deadline starts once the lock is held, so an add that waited
+	// behind a sweep batch still has its full time (R55-011).
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
 	tx, err := q.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -329,14 +365,131 @@ const (
 // queueCapQueries lists add's cap-check queries, for the query-plan test.
 var queueCapQueries = []string{queueDedupeQuery, queuePairQuery, queueRecipientQuery}
 
-// next returns up to limit unexpired envelopes for to with seq > after,
-// oldest first, stopping early once they hold maxBytes (always at least
-// one), so a drain holds a bounded batch in memory while it waits.
-func (q *queue) next(to string, after int64, limit int, maxBytes int64) ([]queued, error) {
+// claim reads the delivered high-water mark H of to. If after is below H it
+// returns H and no rows: the rows in (after, H] were delivered before, and
+// the caller decides on their redelivery (probe, nextRange). Otherwise it
+// returns up to limit unexpired rows with seq > after, oldest first,
+// stopping early once they hold maxBytes (always at least one), so a drain
+// holds a bounded batch in memory while it waits, and raises H to the last
+// of them before returning. They are claimed as first deliveries before a
+// frame is sent, so no later connection gets them as first deliveries again
+// (review 66b H1). One transaction under mu; H is never lowered.
+func (q *queue) claim(to string, after int64, limit int, maxBytes int64) (rows []queued, high int64, err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
 	defer cancel()
-	rows, err := q.db.QueryContext(ctx, `SELECT seq, frame FROM queue WHERE to_key = ? AND seq > ? AND enqueued >= ? ORDER BY seq LIMIT ?`,
-		to, after, q.cutoff(), limit)
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	err = tx.QueryRowContext(ctx, `SELECT seq FROM queue_delivered WHERE to_key = ?`, to).Scan(&high)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, err
+	}
+	if after < high {
+		return nil, high, nil
+	}
+	rows, err = readRows(ctx, tx, `SELECT seq, frame FROM queue WHERE to_key = ? AND seq > ? AND enqueued >= ? ORDER BY seq LIMIT ?`,
+		maxBytes, to, after, q.cutoff(), limit)
+	if err != nil || len(rows) == 0 {
+		return nil, high, err
+	}
+	last := rows[len(rows)-1].seq
+	if _, err := tx.ExecContext(ctx, `INSERT INTO queue_delivered (to_key, seq) VALUES (?, ?)
+		ON CONFLICT(to_key) DO UPDATE SET seq = MAX(seq, excluded.seq)`, to, last); err != nil {
+		return nil, high, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, high, err
+	}
+	if q.readHook != nil {
+		q.readHook(to, rows)
+	}
+	return rows, max(high, last), nil
+}
+
+// probe returns the seq and frame length of the first unexpired row of to in
+// (after, upto] without reading a frame: LENGTH of a blob comes from the
+// record header (review 66b M1). found is false when there is none.
+func (q *queue) probe(to string, after, upto int64) (seq, size int64, found bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	err = q.db.QueryRowContext(ctx, queueProbeQuery, to, after, upto, q.cutoff()).Scan(&seq, &size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	return seq, size, err == nil, err
+}
+
+// queueProbeQuery is probe's query. It is answered through queue_by_recipient
+// (a test checks its plan).
+const queueProbeQuery = `SELECT seq, LENGTH(frame) FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT 1`
+
+// nextRange returns up to limit unexpired rows of to in (after, upto], oldest
+// first, whose frames together hold at most maxBytes, and always the first
+// one: rows delivered before, for a redelivery (H is not changed). It reads
+// the rows' lengths first and then only the frames that fit, so a small first
+// row cannot make it read a whole batch the budget will not pay for (review
+// 74 M-2).
+func (q *queue) nextRange(to string, after, upto int64, limit int, maxBytes int64) ([]queued, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	lens, err := q.db.QueryContext(ctx, queueRangeLengthsQuery, to, after, upto, q.cutoff(), limit)
+	if err != nil {
+		return nil, err
+	}
+	n, last, total := 0, int64(0), int64(0)
+	for lens.Next() {
+		var seq, size int64
+		if err := lens.Scan(&seq, &size); err != nil {
+			_ = lens.Close()
+			return nil, err
+		}
+		if n > 0 && total+size > maxBytes {
+			break
+		}
+		n, last, total = n+1, seq, total+size
+	}
+	err = lens.Err()
+	_ = lens.Close()
+	if err != nil || n == 0 {
+		return nil, err
+	}
+	rows, err := readRows(ctx, q.db, `SELECT seq, frame FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT ?`,
+		max(total, 1), to, after, last, q.cutoff(), n)
+	if err == nil && q.readHook != nil {
+		q.readHook(to, rows)
+	}
+	return rows, err
+}
+
+// queueRangeLengthsQuery is nextRange's first query. It reads no frame and is
+// answered through queue_by_recipient (a test checks its plan).
+const queueRangeLengthsQuery = `SELECT seq, LENGTH(frame) FROM queue WHERE to_key = ? AND seq > ? AND seq <= ? AND enqueued >= ? ORDER BY seq LIMIT ?`
+
+// delivered reports the delivered high-water mark of to (0 for none).
+func (q *queue) delivered(to string) (int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	var h int64
+	err := q.db.QueryRowContext(ctx, `SELECT seq FROM queue_delivered WHERE to_key = ?`, to).Scan(&h)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return h, err
+}
+
+// querier is what readRows needs of a *sql.DB or *sql.Tx.
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// readRows runs a query returning seq and frame and collects its rows,
+// stopping once they hold maxBytes (always at least one).
+func readRows(ctx context.Context, db querier, query string, maxBytes int64, args ...any) ([]queued, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -377,28 +530,186 @@ func (q *queue) ack(to, from, id string) error {
 	return rows.Err()
 }
 
-// sweep deletes expired envelopes and reports how many.
+// sweep deletes every expired envelope (sweepExpired without a time limit)
+// and reports how many.
 func (q *queue) sweep() (int64, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
-	defer cancel()
+	n, _, err := q.sweepExpired(0, nil)
+	return n, err
+}
+
+// sweepExpired deletes expired rows oldest first, sweepBatchRows per
+// transaction with mu released between batches, until none is left, budget
+// has passed (0: no limit) or stop is closed; it reports the rows and frame
+// bytes deleted. A failed batch rolls back only itself: the batches before
+// it stay deleted and the next tick carries on (R55-011).
+func (q *queue) sweepExpired(budget time.Duration, stop <-chan struct{}) (n, bytes int64, err error) {
+	start := time.Now()
+	for i := 0; ; i++ {
+		bn, bb, err := q.sweepBatch(i)
+		n, bytes = n+bn, bytes+bb
+		if err != nil || bn == 0 {
+			return n, bytes, err
+		}
+		if budget > 0 && time.Since(start) >= budget {
+			return n, bytes, nil
+		}
+		select {
+		case <-stop:
+			return n, bytes, nil
+		case <-time.After(sweepPause):
+		}
+	}
+}
+
+// sweepBatch deletes at most sweepBatchRows expired rows, oldest first, in
+// one transaction, and adjusts the totals only once it has committed, so an
+// error part way leaves them exact.
+func (q *queue) sweepBatch(i int) (n, bytes int64, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	rows, err := q.db.QueryContext(ctx, `DELETE FROM queue WHERE enqueued < ? RETURNING from_key, LENGTH(frame)`, q.cutoff())
+	start := time.Now()
+	if q.sweepHook != nil {
+		if err := q.sweepHook(i); err != nil {
+			return 0, 0, err
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	gone, err := deleteExpired(ctx, tx, q.cutoff())
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	for _, g := range gone {
+		q.adjust(g.from, -1, -g.size)
+		bytes += g.size
+	}
+	n = int64(len(gone))
+	if q.sweptHook != nil {
+		q.sweptHook(i, n, time.Since(start))
+	}
+	return n, bytes, nil
+}
+
+// expiredRow is a row sweepBatch deleted: its sender and frame length.
+type expiredRow struct {
+	from string
+	size int64
+}
+
+// deleteExpired runs one batch's DELETE in tx and collects what it deleted.
+func deleteExpired(ctx context.Context, tx *sql.Tx, cutoff int64) ([]expiredRow, error) {
+	rows, err := tx.QueryContext(ctx, `DELETE FROM queue WHERE seq IN (SELECT seq FROM queue WHERE enqueued < ? ORDER BY enqueued LIMIT ?)
+		RETURNING from_key, LENGTH(frame)`, cutoff, sweepBatchRows)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var gone []expiredRow
+	for rows.Next() {
+		var g expiredRow
+		if err := rows.Scan(&g.from, &g.size); err != nil {
+			return nil, err
+		}
+		gone = append(gone, g)
+	}
+	return gone, rows.Err()
+}
+
+// pruneDelivered deletes the delivered marks of recipients with no queued row
+// left, pruneBatchRows per statement with mu released between, until none is
+// left, budget has passed (0: no limit) or stop is closed. A later row for
+// such a key gets a larger seq than any before it, so it is a first
+// delivery, as it should be.
+func (q *queue) pruneDelivered(budget time.Duration, stop <-chan struct{}) (int64, error) {
+	start := time.Now()
+	var total int64
+	for {
+		n, err := q.pruneBatch()
+		total += n
+		if err != nil || n == 0 {
+			return total, err
+		}
+		if budget > 0 && time.Since(start) >= budget {
+			return total, nil
+		}
+		select {
+		case <-stop:
+			return total, nil
+		default:
+		}
+	}
+}
+
+func (q *queue) pruneBatch() (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	res, err := q.db.ExecContext(ctx, `DELETE FROM queue_delivered WHERE to_key IN (SELECT d.to_key FROM queue_delivered d
+		WHERE NOT EXISTS (SELECT 1 FROM queue q WHERE q.to_key = d.to_key) LIMIT ?)`, pruneBatchRows)
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = rows.Close() }()
-	var n int64
-	for rows.Next() {
-		var from string
-		var size int64
-		if err := rows.Scan(&from, &size); err != nil {
-			return n, err
-		}
-		q.adjust(from, -1, -size)
-		n++
+	return res.RowsAffected()
+}
+
+// truncateWAL runs a TRUNCATE checkpoint that never waits: while another
+// connection reads an old snapshot (a relay backup) the busy handler would
+// otherwise hold the relay's only connection for the busy timeout (review
+// 66b M3). A busy result is not an error: the checkpoint is skipped. It
+// reports whether the WAL was truncated.
+func (q *queue) truncateWAL() (bool, error) {
+	if q.path == "" {
+		return false, nil
 	}
-	return n, rows.Err()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	conn, err := q.db.Conn(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = 0`); err != nil {
+		return false, err
+	}
+	defer restoreBusyTimeout(conn)
+	var busy, logFrames, checkpointed int64
+	err = conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &checkpointed)
+	switch {
+	case err != nil && isBusy(err):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return busy == 0, nil
+}
+
+// restoreBusyTimeout sets conn's busy timeout back to the DSN's, with a
+// context of its own (the checkpoint's may have ended). If that fails, the
+// connection is discarded, so the pool opens a new one with the DSN's
+// pragmas instead of keeping one that never waits (review 74 L-2).
+func restoreBusyTimeout(conn *sql.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	if _, err := conn.ExecContext(ctx, `PRAGMA busy_timeout = `+strconv.Itoa(busyTimeoutMS)); err != nil {
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+}
+
+// isBusy reports whether err is SQLite's SQLITE_BUSY or SQLITE_LOCKED.
+func isBusy(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "SQLITE_LOCKED") || strings.Contains(msg, "database is locked")
 }
 
 // count reports the unexpired envelopes waiting for to.

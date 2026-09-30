@@ -116,3 +116,34 @@ func (s *Server) ChargeEphemeral(n int64) { s.led.addUnowned(kindEphemeral, n) }
 func (s *Server) SetRouteHookForTest(f func(key string)) {
 	s.onRoute = func(c *conn) { f(c.key) }
 }
+
+// RetrySkipped runs the retry of skipped redeliveries now, as the sweep tick
+// does (R55-F2).
+func (s *Server) RetrySkipped() { s.retrySkipped() }
+
+// Delivered reports the delivered high-water mark H of key (0 for none).
+func (s *Server) Delivered(key string) int64 {
+	h, err := s.q.delivered(key)
+	if err != nil {
+		panic(err)
+	}
+	return h
+}
+
+// RedeliveredBytes reports the queued bytes sent again since start.
+func (s *Server) RedeliveredBytes() int64 { return s.redeliveredBytes.Load() }
+
+// Written reports the frames written to the current connection of key (0 if
+// none), the ready frame included.
+func (s *Server) Written(key string) int64 {
+	s.mu.Lock()
+	c := s.conns[key]
+	s.mu.Unlock()
+	if c == nil {
+		return 0
+	}
+	return c.sent.Load()
+}
+
+// RedeliverySkips reports the redeliveries skipped for want of budget.
+func (s *Server) RedeliverySkips() int64 { return s.redeliverySkips.Load() }

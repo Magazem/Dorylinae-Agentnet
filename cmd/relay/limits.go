@@ -9,25 +9,27 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 )
 
 // limitFlags are the abuse-limit flags of Docs/protocol/relay-hosted.md §2
 // (ticket 4.0b). Each default is the spec's; every value must be positive.
 type limitFlags struct {
-	upgradesPerMin, upgradeBurst       int
-	connsPerPrefix, authFailures       int
-	unauthConns, maxConns              int
-	keysPerPrefix, prefixEnvsPerMin    int
-	keyEnvsPerMin, keyEnvBurst         int
-	controlPerMin, reconnectsPerMin    int
-	pairEnvelopes, senderEnvelopes     int
-	prefixBytesPerMin, keyBytesPerMin  byteSize
-	connBuffer, maxInflight            byteSize
-	maxInflightEphemeral               byteSize // 0: --max-inflight / 8, at least 1 MiB
-	frameReadTimeout                   time.Duration
-	pairBytes, senderBytes, queueTotal byteSize
-	minFreeDisk                        byteSize
+	upgradesPerMin, upgradeBurst        int
+	connsPerPrefix, authFailures        int
+	unauthConns, maxConns               int
+	keysPerPrefix, prefixEnvsPerMin     int
+	keyEnvsPerMin, keyEnvBurst          int
+	controlPerMin, reconnectsPerMin     int
+	pairEnvelopes, senderEnvelopes      int
+	prefixBytesPerMin, keyBytesPerMin   byteSize
+	connBuffer, maxInflight             byteSize
+	maxInflightEphemeral                byteSize // 0: --max-inflight / 8, at least 1 MiB
+	frameReadTimeout                    time.Duration
+	pairBytes, senderBytes, queueTotal  byteSize
+	minFreeDisk                         byteSize
+	redeliverPerKey, redeliverPerPrefix byteSize // per hour (R55-F2)
 
 	clientIPHeader string
 	trustedProxies []netip.Prefix
@@ -66,6 +68,10 @@ func (l *limitFlags) register(fs *flag.FlagSet) {
 	fs.Var(&l.queueTotal, "queue-max-total", "bytes of queued envelopes relay-wide (e.g. 4GiB); past it queue_full")
 	l.minFreeDisk = 1 << 30
 	fs.Var(&l.minFreeDisk, "queue-min-free-disk", "free disk under the queue file below which new envelopes get internal (\"relay storage low\"), e.g. 1GiB")
+	l.redeliverPerKey = 32 << 20
+	fs.Var(&l.redeliverPerKey, "queue-redeliver-per-key", "bytes of queued envelopes sent again to one recipient key that did not ack them, per hour (e.g. 32MiB, at least 1MiB: one frame); past it the redelivery waits for the budget to refill. First deliveries are not counted")
+	l.redeliverPerPrefix = 128 << 20
+	fs.Var(&l.redeliverPerPrefix, "queue-redeliver-per-prefix", "bytes of queued envelopes sent again to all recipients on one client prefix together, per hour (e.g. 128MiB, at least 1MiB: one frame); past it the redelivery waits its turn")
 	fs.StringVar(&l.clientIPHeader, "client-ip-header", "", "with --behind-proxy (required there): the header carrying the client IP, e.g. Fly-Client-IP or X-Forwarded-For (its last entry); honoured only from a --trusted-proxy peer")
 	fs.Func("trusted-proxy", "CIDR or IP of the proxy in front of this relay (repeatable; required with --client-ip-header); --client-ip-header from any other peer is ignored", func(v string) error {
 		p, err := parseProxy(v)
@@ -114,9 +120,20 @@ func (l *limitFlags) validate(behindProxy bool) error {
 		{"--queue-pair-max-envelopes", int64(l.pairEnvelopes)}, {"--queue-pair-max-bytes", int64(l.pairBytes)},
 		{"--queue-sender-max-envelopes", int64(l.senderEnvelopes)}, {"--queue-sender-max-bytes", int64(l.senderBytes)},
 		{"--queue-max-total", int64(l.queueTotal)}, {"--queue-min-free-disk", int64(l.minFreeDisk)},
+		{"--queue-redeliver-per-key", int64(l.redeliverPerKey)}, {"--queue-redeliver-per-prefix", int64(l.redeliverPerPrefix)},
 	} {
 		if f.v <= 0 {
 			return fmt.Errorf("%s must be positive", f.name)
+		}
+	}
+	// A bucket smaller than a frame could never pay for a large one, which
+	// would then wait until it expires (review 74 L-1).
+	for _, f := range []struct {
+		name string
+		v    byteSize
+	}{{"--queue-redeliver-per-key", l.redeliverPerKey}, {"--queue-redeliver-per-prefix", l.redeliverPerPrefix}} {
+		if f.v < envelope.MaxFrameBytes {
+			return fmt.Errorf("%s must be at least 1MiB (one frame), got %s", f.name, f.v.String())
 		}
 	}
 	if l.frameReadTimeout <= 0 {
@@ -148,6 +165,7 @@ func (l *limitFlags) apply(o *relay.Options) {
 	o.QueuePairMaxEnvelopes, o.QueuePairMaxBytes = l.pairEnvelopes, int64(l.pairBytes)
 	o.QueueSenderMaxEnvelopes, o.QueueSenderMaxBytes = l.senderEnvelopes, int64(l.senderBytes)
 	o.QueueMaxTotal, o.QueueMinFreeDisk = int64(l.queueTotal), int64(l.minFreeDisk)
+	o.QueueRedeliverPerKey, o.QueueRedeliverPerPrefix = int64(l.redeliverPerKey), int64(l.redeliverPerPrefix)
 	o.ClientIPHeader, o.TrustedProxies = l.clientIPHeader, l.trustedProxies
 }
 

@@ -8,6 +8,8 @@
 #   + 48 read + 6 ephemeral = 102 MiB; about 255 MiB in total at 2000 connections. Caddy is
 #   outside GOMEMLIMIT (about 250 MiB more), so the VM needs about 1 GB of RAM.
 #   --queue-max-total 1GiB, --queue-min-free-disk 512MiB (fit a 2-3 GB volume; see the runbook).
+#   R55-F2 (relay-hosted.md "Offline queue delivery and expiry"): redelivery 32 MiB/h per key,
+#   128 MiB/h per prefix (both the defaults, written out); the sweep keeps the WAL <= 64 MiB.
 # No --accounts: accounts stay off (the flag's default) until the beta.
 
 [Unit]
@@ -33,7 +35,9 @@ ExecStart=/opt/agentnet-relay/relay \
     --max-inflight-ephemeral 6MiB \
     --frame-read-timeout 30s \
     --queue-max-total 1GiB \
-    --queue-min-free-disk 512MiB
+    --queue-min-free-disk 512MiB \
+    --queue-redeliver-per-key 32MiB \
+    --queue-redeliver-per-prefix 128MiB
 Restart=on-failure
 RestartSec=5
 # The relay drains for up to 5 s on SIGTERM (cmd/relay/main.go shutdownWindow).

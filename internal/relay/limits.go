@@ -1,10 +1,12 @@
 package relay
 
 import (
+	"cmp"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -88,6 +90,18 @@ const (
 	limitFrameTimeout   = "frame_read_timeout"
 )
 
+// Redelivery budgets of R55-F2 (relay-hosted.md §2 "Offline queue delivery
+// and expiry"): bytes of queued rows sent again to a key that did not ack
+// them, per recipient key and per prefix of the receiving connection, per
+// hour with a burst of the same size; and their limit names.
+const (
+	defaultQueueRedeliverPerKey    = 32 << 20
+	defaultQueueRedeliverPerPrefix = 128 << 20
+
+	limitRedeliverKey    = "queue_redeliver_key"
+	limitRedeliverPrefix = "queue_redeliver_prefix"
+)
+
 // orDefault returns v, def when v is 0, or 0 (off) when v is negative.
 func orDefault[T ~int | ~int64](v, def T) T {
 	switch {
@@ -127,6 +141,17 @@ type limits struct {
 	ctlPrune    time.Time
 	prefixConns map[string]int // open WebSocket connections per prefix
 	unauth      int            // connections still authenticating, relay-wide
+
+	// Redelivery (R55-F2): the key and prefix buckets, each prefix's wait
+	// list of connections skipped for want of prefix budget, oldest first,
+	// and the connections the retry is serving in each prefix, with the time
+	// their turn began (rule 6, review 66b H2, review 74 M-1 and L-3).
+	// conn.waiting and conn.waitClosed are guarded by mu too.
+	redeliverKey    bucketSet
+	redeliverPrefix bucketSet
+	redeliverWait   map[string][]*conn
+	redeliverServed map[string]map[*conn]time.Time
+	waitTickets     uint64 // the last join ticket given (review 74b L-b)
 
 	logMu   sync.Mutex
 	logSeen map[string]*logWindow
@@ -177,8 +202,231 @@ func newLimits(opts Options, now func() time.Time, log *slog.Logger) *limits {
 		control:           map[string]*controlWindowState{},
 		prefixConns:       map[string]int{},
 		logSeen:           map[string]*logWindow{},
+		redeliverKey:      perHour(orDefault(opts.QueueRedeliverPerKey, defaultQueueRedeliverPerKey)),
+		redeliverPrefix:   perHour(orDefault(opts.QueueRedeliverPerPrefix, defaultQueueRedeliverPerPrefix)),
+		redeliverWait:     map[string][]*conn{},
+		redeliverServed:   map[string]map[*conn]time.Time{},
 	}
 	return l
+}
+
+// perHour is a byte bucket refilling n bytes an hour with a burst of n (0: off).
+func perHour(n int64) bucketSet { return newBucketSet(float64(n)/3600, float64(n)) }
+
+// redeliverTurn is the time slice of a served connection (review 74 M-1):
+// one sweep tick. A connection still served after it loses its turn, so a
+// recipient that reads slowly cannot hold its prefix's turn.
+const redeliverTurn = time.Minute
+
+// redeliverAllowed charges a redelivery of n bytes to c's key and prefix, both
+// or neither, or returns the limit that refused it. While c's prefix has a
+// connection waiting or being served, only the served ones may redeliver; any
+// other is refused and joins the wait list's tail. A served connection that
+// its prefix bucket cannot pay ends its turn and goes back to its place in
+// the list, ahead of everyone who joined after it: the prefix ran short, not
+// it (review 74 M-1, 74b L-b). One the key bucket cannot pay keeps its place.
+func (l *limits) redeliverAllowed(c *conn, n int64) string {
+	now := l.now()
+	size := float64(n)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	served := l.redeliverServed[c.prefix]
+	_, isServed := served[c]
+	if !isServed && (len(served) > 0 || len(l.redeliverWait[c.prefix]) > 0) {
+		l.joinWaitLocked(c, false)
+		return limitRedeliverPrefix
+	}
+	if !l.redeliverKey.has(c.key, now, size) {
+		return limitRedeliverKey
+	}
+	if !l.redeliverPrefix.has(c.prefix, now, size) {
+		if isServed {
+			l.endTurnLocked(c)
+		}
+		l.joinWaitLocked(c, isServed)
+		return limitRedeliverPrefix
+	}
+	l.redeliverKey.take(c.key, now, size)
+	l.redeliverPrefix.take(c.prefix, now, size)
+	return ""
+}
+
+// redeliverReserve takes from c's key and prefix buckets, both, the bytes
+// they both hold now, at most limit (limit when neither is on), and returns
+// them: what a redelivery batch may read and send beyond its probed row
+// (review 74 M-2). It takes them before the read, so connections served in
+// the same tick cannot each size a read by the same tokens (review 74b L-a).
+// The caller gives back what the batch did not send with redeliverRefund.
+func (l *limits) redeliverReserve(c *conn, limit int64) int64 {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := float64(max(limit, 0))
+	if l.redeliverKey.rate > 0 {
+		n = min(n, l.redeliverKey.refill(c.key, now).tokens)
+	}
+	if l.redeliverPrefix.rate > 0 {
+		n = min(n, l.redeliverPrefix.refill(c.prefix, now).tokens)
+	}
+	n = float64(int64(n))
+	l.redeliverKey.take(c.key, now, n)
+	l.redeliverPrefix.take(c.prefix, now, n)
+	return int64(n)
+}
+
+// redeliverRefund gives n reserved bytes back to c's key and prefix buckets.
+func (l *limits) redeliverRefund(c *conn, n int64) {
+	if n <= 0 {
+		return
+	}
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.redeliverKey.refund(c.key, now, float64(n))
+	l.redeliverPrefix.refund(c.prefix, now, float64(n))
+}
+
+// joinWaitLocked puts c on its prefix's wait list unless it is on it or
+// closed. A connection joining anew gets the next ticket and goes to the
+// tail; one coming back after its prefix ran short in its turn (back) keeps
+// its ticket and goes back to its place by ticket, so a connection that
+// joined behind it can never come back ahead of it (review 74b L-b).
+func (l *limits) joinWaitLocked(c *conn, back bool) {
+	if c.waiting || c.waitClosed {
+		return
+	}
+	c.waiting = true
+	list := l.redeliverWait[c.prefix]
+	if !back || c.waitTicket == 0 {
+		l.waitTickets++
+		c.waitTicket = l.waitTickets
+		l.redeliverWait[c.prefix] = append(list, c)
+		return
+	}
+	i, _ := slices.BinarySearchFunc(list, c.waitTicket, func(x *conn, t uint64) int {
+		return cmp.Compare(x.waitTicket, t)
+	})
+	l.redeliverWait[c.prefix] = slices.Insert(list, i, c)
+}
+
+// removeWaitLocked takes c off its prefix's wait list.
+func (l *limits) removeWaitLocked(c *conn) {
+	if !c.waiting {
+		return
+	}
+	c.waiting = false
+	list := l.redeliverWait[c.prefix]
+	if i := slices.Index(list, c); i >= 0 {
+		list = slices.Delete(list, i, i+1)
+	}
+	if len(list) == 0 {
+		delete(l.redeliverWait, c.prefix)
+	} else {
+		l.redeliverWait[c.prefix] = list
+	}
+}
+
+// endTurnLocked removes c from its prefix's served connections.
+func (l *limits) endTurnLocked(c *conn) {
+	served := l.redeliverServed[c.prefix]
+	if _, ok := served[c]; !ok {
+		return
+	}
+	delete(served, c)
+	if len(served) == 0 {
+		delete(l.redeliverServed, c.prefix)
+	}
+}
+
+// redeliverForget removes a closed connection from the wait lists (rule 6: a
+// place is not kept across connections).
+func (l *limits) redeliverForget(c *conn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c.waitClosed = true
+	l.removeWaitLocked(c)
+	l.endTurnLocked(c)
+}
+
+// redeliverDone ends c's turn as a served connection of its prefix.
+func (l *limits) redeliverDone(c *conn) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.endTurnLocked(c)
+}
+
+// redeliverHas reports whether c's key and prefix buckets both hold n bytes,
+// without taking them.
+func (l *limits) redeliverHas(c *conn, n int64) bool {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.redeliverKey.has(c.key, now, float64(n)) && l.redeliverPrefix.has(c.prefix, now, float64(n))
+}
+
+// nextServed first ends every turn older than redeliverTurn (review 74 M-1;
+// such a connection redelivers again only after the others waiting, since
+// its next refusal puts it at the tail). Then, in each prefix, it walks the
+// wait list in order and picks every connection whose key bucket holds its
+// first skipped row and whose row the prefix bucket can still pay after the
+// rows of the connections picked before it in this tick (review 74 L-3).
+// skipped reports that row's size (0 while none is recorded); start accepts
+// a connection that is not draining and marks it draining. A connection whose
+// key bucket is short, or that is draining, keeps its place and the next is
+// tried; one the prefix bucket cannot pay ends the walk in that prefix, since
+// nobody behind it may go first. Picked connections leave the list and are
+// served from now. skipped and start run with mu held and may only take
+// conn.mu (lock order: limits.mu, then conn.mu).
+func (l *limits) nextServed(skipped func(c *conn) int64, start func(c *conn) bool) []*conn {
+	return l.nextServedAt(l.now(), skipped, start)
+}
+
+// nextServedAt is nextServed with the time the sweep tick began: turns are
+// stamped and aged by tick, so a turn lasts one tick however long that
+// tick's sweep took (review 74b, Info).
+func (l *limits) nextServedAt(tick time.Time, skipped func(c *conn) int64, start func(c *conn) bool) []*conn {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, served := range l.redeliverServed {
+		for c, since := range served {
+			if tick.Sub(since) >= redeliverTurn {
+				l.endTurnLocked(c)
+			}
+		}
+	}
+	var picked []*conn
+	for prefix, list := range l.redeliverWait {
+		var pending float64
+		for _, c := range slices.Clone(list) {
+			size := float64(skipped(c))
+			if size == 0 || !l.redeliverKey.has(c.key, now, size) {
+				continue
+			}
+			if !l.redeliverPrefix.has(prefix, now, pending+size) {
+				break
+			}
+			if !start(c) {
+				continue
+			}
+			pending += size
+			l.removeWaitLocked(c)
+			if l.redeliverServed[prefix] == nil {
+				l.redeliverServed[prefix] = map[*conn]time.Time{}
+			}
+			l.redeliverServed[prefix][c] = tick
+			picked = append(picked, c)
+		}
+	}
+	return picked
+}
+
+// waitingOrServed reports whether c is on a wait list or being served.
+func (l *limits) waitingOrServed(c *conn) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, served := l.redeliverServed[c.prefix][c]
+	return c.waiting || served
 }
 
 // hit logs that limit refused subject (a /24 or /48 prefix, or a key
@@ -433,6 +681,15 @@ func (b *bucketSet) spend(key string, now time.Time, cost float64) {
 	}
 	tb := b.refill(key, now)
 	tb.tokens = max(0, tb.tokens-cost)
+}
+
+// refund gives cost tokens back to key's bucket, up to its burst.
+func (b *bucketSet) refund(key string, now time.Time, cost float64) {
+	if b.rate <= 0 {
+		return
+	}
+	tb := b.refill(key, now)
+	tb.tokens = min(b.burst, tb.tokens+cost)
 }
 
 // take removes cost tokens from key's bucket if it holds them.

@@ -188,6 +188,15 @@ type Options struct {
 	QueueMaxTotal           int64
 	QueueMinFreeDisk        int64
 	FreeDisk                func(dir string) (uint64, error)
+	// QueueRedeliverPerKey and QueueRedeliverPerPrefix: bytes of queued rows
+	// sent again to a recipient that did not ack them, per recipient key and
+	// per prefix of the receiving connection, per hour with a burst of the
+	// same size (32 MiB and 128 MiB, --queue-redeliver-per-key and
+	// --queue-redeliver-per-prefix). Past them the redelivery is skipped and
+	// retried once the budget has refilled; first deliveries are not
+	// budgeted (R55-F2, relay-hosted.md "Offline queue delivery and expiry").
+	QueueRedeliverPerKey    int64
+	QueueRedeliverPerPrefix int64
 
 	// ClientIPHeader names the header a trusted proxy puts the client IP in
 	// (e.g. Fly-Client-IP or X-Forwarded-For, whose last entry is used). It
@@ -252,9 +261,14 @@ type Server struct {
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
 	drainHeld atomic.Int64   // bytes queue drains have read and not yet put in an outbound buffer
-	stopSweep chan struct{}
-	sweepDone chan struct{}
-	closeOnce sync.Once
+	// redeliveredBytes and redeliverySkips count queued bytes sent again and
+	// redeliveries skipped for want of budget (R55-F2 metrics).
+	redeliveredBytes atomic.Int64
+	redeliverySkips  atomic.Int64
+	stopSweep        chan struct{}
+	sweepBudget      time.Duration // work per sweep tick; sweepTickBudget (tests change it)
+	sweepDone        chan struct{}
+	closeOnce        sync.Once
 }
 
 // Journal returns the security journal writer configured by Options.Journal,
@@ -267,6 +281,11 @@ type Stats struct {
 	Connections int
 	QueueRows   int64
 	QueueBytes  int64
+	// QueueRedeliveredBytes and QueueRedeliveriesSkipped count, since start,
+	// queued bytes sent again to a key that had not acked them and
+	// redeliveries skipped for want of budget (R55-F2).
+	QueueRedeliveredBytes    int64
+	QueueRedeliveriesSkipped int64
 }
 
 // Stats reports current connections and offline-queue occupancy.
@@ -275,20 +294,25 @@ func (s *Server) Stats() (Stats, error) {
 	n := len(s.conns)
 	s.mu.Unlock()
 	rows, bytes, err := s.q.stats()
-	return Stats{Connections: n, QueueRows: rows, QueueBytes: bytes}, err
+	return Stats{Connections: n, QueueRows: rows, QueueBytes: bytes,
+		QueueRedeliveredBytes: s.redeliveredBytes.Load(), QueueRedeliveriesSkipped: s.redeliverySkips.Load()}, err
 }
 
 // Budgets are the memory budgets a Server enforces (relay-hosted.md
-// "Memory budgets and fairness"), with the defaults applied. 0 means none.
+// "Memory budgets and fairness"), with the defaults applied, and the
+// redelivery budgets per hour (R55-F2). 0 means none.
 type Budgets struct {
 	Outbound, Read, Ephemeral int64
 	FrameReadTimeout          time.Duration
+	RedeliverPerKey           int64
+	RedeliverPerPrefix        int64
 }
 
 // Budgets reports the memory budgets in force, for the start line.
 func (s *Server) Budgets() Budgets {
 	return Budgets{Outbound: s.led.pools[kindOutbound].max, Read: s.led.pools[kindRead].max,
-		Ephemeral: s.led.pools[kindEphemeral].max, FrameReadTimeout: s.frameTimeout}
+		Ephemeral: s.led.pools[kindEphemeral].max, FrameReadTimeout: s.frameTimeout,
+		RedeliverPerKey: int64(s.lim.redeliverKey.burst), RedeliverPerPrefix: int64(s.lim.redeliverPrefix.burst)}
 }
 
 // New returns a Server with an in-memory offline queue, ignoring
@@ -392,11 +416,13 @@ func Open(opts Options) (*Server, error) {
 		}
 	}
 	s.stopSweep, s.sweepDone = make(chan struct{}), make(chan struct{})
+	s.sweepBudget = sweepTickBudget
 	go s.sweepLoop(opts.SweepInterval)
 	return s, nil
 }
 
-// sweepLoop purges expired queue entries until Close.
+// sweepLoop purges expired queue entries, then retries skipped
+// redeliveries, until Close.
 func (s *Server) sweepLoop(every time.Duration) {
 	defer close(s.sweepDone)
 	t := time.NewTicker(every)
@@ -406,15 +432,29 @@ func (s *Server) sweepLoop(every time.Duration) {
 		case <-s.stopSweep:
 			return
 		case <-t.C:
+			tick := s.now() // before the sweep, which may take up to 30 s
 			_, _ = s.Sweep()
+			s.retrySkippedAt(tick)
 		}
 	}
 }
 
 // Sweep purges envelopes older than the queue TTL now and reports how many.
-// The relay also does this periodically.
+// The relay also does this periodically. It works in batches for at most
+// sweepTickBudget and stops early on Close; what is left expires on the next
+// tick (R55-011). A sweep that deleted more than the WAL limit ends with a
+// non-waiting TRUNCATE checkpoint, and the delivered marks of keys with no
+// row left are pruned.
 func (s *Server) Sweep() (int64, error) {
-	n, err := s.q.sweep()
+	n, bytes, err := s.q.sweepExpired(s.sweepBudget, s.stopSweep)
+	if bytes > walSizeLimit {
+		if _, cerr := s.q.truncateWAL(); cerr != nil {
+			s.log.Warn("queue checkpoint failed", "event", "queue_error", "op", "checkpoint", "error", cerr)
+		}
+	}
+	if _, perr := s.q.pruneDelivered(s.sweepBudget, s.stopSweep); perr != nil {
+		s.log.Warn("queue prune failed", "event", "queue_error", "op", "prune_delivered", "error", perr)
+	}
 	if s.acct != nil {
 		if perr := s.acct.store.prune(); perr != nil {
 			s.log.Warn("accounts failed", "event", "accounts_error", "op", "prune", "error", perr)
@@ -865,9 +905,15 @@ func (s *Server) route(sender *conn, frame []byte) bool {
 		}
 		return s.handleControl(sender, f.Control)
 	}
+	// Every envelope, presence included: a payload the recipient cannot
+	// parse is refused here and never queued or forwarded (R55-010).
 	h, err := envelope.ParseHeader(frame)
 	if err != nil {
-		s.reject(sender, envelope.CodeBadEnvelope, "invalid envelope: "+err.Error(), "")
+		ref := ""
+		if errors.Is(err, envelope.ErrBadPayload) {
+			ref = h.ID // the routing fields are valid
+		}
+		s.reject(sender, envelope.CodeBadEnvelope, "invalid envelope: "+err.Error(), ref)
 		return true
 	}
 	if h.From != sender.key {
@@ -1011,6 +1057,10 @@ func (s *Server) startDrain(c *conn) bool {
 // stops reading never holds frames the budget does not count. With wait
 // false (the inline first batch) it does not wait for room; it then reports
 // true so that the drain goroutine waits instead of the read loop.
+//
+// Rows above the key's delivered mark H are first deliveries, claimed before
+// they are sent; rows at or below it, from c's cursor up to H, are
+// redeliveries under the budget (redeliverStep, R55-F2).
 func (s *Server) drainStep(c *conn, wait bool) bool {
 	if !c.reserve(c.ctx, drainReserve, wait) {
 		return !wait
@@ -1018,11 +1068,27 @@ func (s *Server) drainStep(c *conn, wait bool) bool {
 	reserved := int64(drainReserve)
 	defer func() { c.unreserve(reserved) }() // what the batch did not use
 	c.mu.Lock()
-	rows, err := s.q.next(c.key, c.cursor, drainBatch, drainBatchBytes)
+	rows, high, err := s.q.claim(c.key, c.cursor, drainBatch, drainBatchBytes)
+	for err == nil && rows == nil && c.cursor < high { // rows delivered before: a redelivery, H unchanged
+		after := c.cursor
+		c.mu.Unlock()
+		next, sent, ok := s.redeliverStep(c, after, high, &reserved)
+		if !ok {
+			return false
+		}
+		c.mu.Lock()
+		c.cursor = max(c.cursor, next)
+		if sent > 0 {
+			c.mu.Unlock()
+			return true
+		}
+		// Nothing left to redeliver, or skipped: go on with first
+		// deliveries in this step, so an idle queue is still settled here.
+		rows, high, err = s.q.claim(c.key, c.cursor, drainBatch, drainBatchBytes)
+	}
 	if err != nil {
 		c.mu.Unlock()
-		s.log.Warn("queue failed", "event", "queue_error", "op", "next", "peer", short(c.key), "error", err)
-		go c.kick("offline queue unavailable")
+		s.queueFailed(c, "claim", err)
 		return false
 	}
 	if len(rows) == 0 {
@@ -1032,6 +1098,16 @@ func (s *Server) drainStep(c *conn, wait bool) bool {
 	}
 	c.cursor = rows[len(rows)-1].seq
 	c.mu.Unlock()
+	if !s.sendBatch(c, rows, &reserved) {
+		return false
+	}
+	s.log.Info("delivered from queue", "event", "queue_flush", "peer", short(c.key), "count", len(rows))
+	return true
+}
+
+// sendBatch hands rows read from the queue to c's buffer, counting them as
+// held by drains until they are in it. False means c is gone.
+func (s *Server) sendBatch(c *conn, rows []queued, reserved *int64) bool {
 	var held int64
 	for _, r := range rows {
 		held += int64(len(r.frame))
@@ -1039,14 +1115,188 @@ func (s *Server) drainStep(c *conn, wait bool) bool {
 	s.drainHeld.Add(held)
 	defer func() { s.drainHeld.Add(-held) }()
 	for _, r := range rows {
-		if !c.sendReserved(c.ctx, r.frame, &reserved) {
+		if !c.sendReserved(c.ctx, r.frame, reserved) {
 			return false
 		}
 		held -= int64(len(r.frame))
 		s.drainHeld.Add(-int64(len(r.frame)))
 	}
-	s.log.Info("delivered from queue", "event", "queue_flush", "peer", short(c.key), "count", len(rows))
 	return true
+}
+
+// queueFailed logs a queue error during a drain and closes c, as a failed
+// read always has.
+func (s *Server) queueFailed(c *conn, op string, err error) {
+	s.log.Warn("queue failed", "event", "queue_error", "op", op, "peer", short(c.key), "error", err)
+	go c.kick("offline queue unavailable")
+}
+
+// redeliverStep sends one batch of c's rows in (after, upto], all delivered
+// before, under the redelivery budget (relay-hosted.md §2 "Redelivery policy
+// for unacked rows"). The decision for the first row reads only its seq and
+// length (review 66b M1); every row is paid before it is handed over, the
+// rest of the batch from bytes reserved before the read, whose unused part
+// is given back. At the first row the budget refuses, the rest of the range
+// is recorded as skipped on c and the step ends there. It returns the position reached (upto after a
+// skip or when the range is done), how many rows it sent, and false in ok
+// when c is gone or the queue failed.
+func (s *Server) redeliverStep(c *conn, after, upto int64, reserved *int64) (next int64, sent int, ok bool) {
+	seq, size, found, err := s.q.probe(c.key, after, upto)
+	if err != nil {
+		s.queueFailed(c, "probe", err)
+		return after, 0, false
+	}
+	if !found {
+		return upto, 0, true
+	}
+	if limit := s.lim.redeliverAllowed(c, size); limit != "" {
+		s.skipRedelivery(c, seq, upto, size, limit)
+		return upto, 0, true
+	}
+	// Read only what the budget pays: the probed row (paid) and what the
+	// buckets hold after it, taken now and given back below if not sent
+	// (review 74 M-2, 74b L-a).
+	paid := size + s.lim.redeliverReserve(c, drainBatchBytes-size)
+	rows, err := s.q.nextRange(c.key, after, upto, drainBatch, paid)
+	if err != nil {
+		s.lim.redeliverRefund(c, paid)
+		s.queueFailed(c, "next", err)
+		return after, 0, false
+	}
+	next = upto // acked since the probe if there are no rows
+	for i, r := range rows {
+		n := int64(len(r.frame))
+		if n <= paid {
+			paid -= n
+			next = r.seq
+			continue
+		}
+		// The rows changed since the probe (an ack): charge this one alone.
+		if limit := s.lim.redeliverAllowed(c, n); limit != "" {
+			s.skipRedelivery(c, r.seq, upto, n, limit)
+			rows, next = rows[:i], upto
+			break
+		}
+		next = r.seq
+	}
+	s.lim.redeliverRefund(c, paid)
+	if !s.sendBatch(c, rows, reserved) {
+		return after, 0, false
+	}
+	s.redelivered(rows)
+	if len(rows) > 0 {
+		s.log.Info("redelivered from queue", "event", "queue_redeliver", "peer", short(c.key), "count", len(rows))
+	}
+	return next, len(rows), true
+}
+
+// redelivered counts rows sent again, for the metrics.
+func (s *Server) redelivered(rows []queued) {
+	for _, r := range rows {
+		s.redeliveredBytes.Add(int64(len(r.frame)))
+	}
+}
+
+// skipRedelivery records on c that the rows [from, to] were not redelivered
+// for want of budget; size is the first one's length. A range already
+// recorded is widened, so the retry covers both.
+func (s *Server) skipRedelivery(c *conn, from, to, size int64, limit string) {
+	c.mu.Lock()
+	if c.skipSize == 0 || from < c.skipFrom {
+		c.skipFrom, c.skipSize = from, size
+	}
+	c.skipTo = max(c.skipTo, to)
+	c.mu.Unlock()
+	s.redeliverySkips.Add(1)
+	if limit == limitRedeliverPrefix {
+		s.lim.hit(limit, "prefix", c.prefix)
+	} else {
+		s.lim.hit(limit, "peer", short(c.key))
+	}
+}
+
+// retrySkipped serves the redeliveries skipped for want of budget, once per
+// sweep tick (rule 5): in each prefix the waiting connections, in order,
+// whose first skipped rows the buckets now pay (nextServed), and every
+// connection skipped by
+// its key bucket alone whose buckets now hold it. Each drains its skipped
+// range again under the same rules, then goes on with its normal drain. A
+// connection that is draining keeps its place until a later tick.
+func (s *Server) retrySkipped() { s.retrySkippedAt(s.now()) }
+
+// retrySkippedAt is retrySkipped for the sweep tick that began at tick.
+func (s *Server) retrySkippedAt(tick time.Time) {
+	skipped := func(c *conn) int64 {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.skipSize
+	}
+	start := func(c *conn) bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.draining || c.skipSize == 0 {
+			return false
+		}
+		c.draining = true
+		return true
+	}
+	for _, c := range s.lim.nextServedAt(tick, skipped, start) {
+		s.startRetry(c)
+	}
+	s.mu.Lock()
+	conns := make([]*conn, 0, len(s.conns))
+	for _, c := range s.conns {
+		conns = append(conns, c)
+	}
+	s.mu.Unlock()
+	for _, c := range conns {
+		size := skipped(c)
+		if size == 0 || s.lim.waitingOrServed(c) || !s.lim.redeliverHas(c, size) || !start(c) {
+			continue
+		}
+		s.startRetry(c)
+	}
+}
+
+// startRetry starts the drain goroutine of a retry for c, which start has
+// marked draining: it redelivers c's skipped range, then resumes c's normal
+// drain at the cursor it had (direct forwarding was off meanwhile).
+func (s *Server) startRetry(c *conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		s.lim.redeliverDone(c)
+		return
+	}
+	s.drainWG.Add(1)
+	go func() {
+		defer s.drainWG.Done()
+		s.retryRange(c)
+		for s.drainStep(c, true) {
+		}
+	}()
+}
+
+// retryRange redelivers c's skipped range (rule 5) with a cursor of its own.
+// Rows acked meanwhile are gone; rows skipped again are recorded anew.
+func (s *Server) retryRange(c *conn) {
+	defer s.lim.redeliverDone(c)
+	c.mu.Lock()
+	after, upto := c.skipFrom-1, c.skipTo
+	c.skipFrom, c.skipTo, c.skipSize = 0, 0, 0
+	c.mu.Unlock()
+	for {
+		if !c.reserve(c.ctx, drainReserve, true) {
+			return
+		}
+		reserved := int64(drainReserve)
+		next, sent, ok := s.redeliverStep(c, after, upto, &reserved)
+		c.unreserve(reserved)
+		if !ok || sent == 0 || next >= upto {
+			return
+		}
+		after = next
+	}
 }
 
 // drainReserve is what one queue batch may hold in memory: next stops once a
@@ -1090,6 +1340,7 @@ func (s *Server) register(c *conn) (old, evict *conn, bound, suspended bool) {
 }
 
 func (s *Server) unregister(c *conn) {
+	s.lim.redeliverForget(c)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.unlistUnbound(c)

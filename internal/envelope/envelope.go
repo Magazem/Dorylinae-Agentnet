@@ -42,7 +42,8 @@ type Envelope struct {
 }
 
 // Header is the routing part of an Envelope. The relay decodes only this; the
-// payload field of the frame is never looked at.
+// payload field of the frame is never decoded, only its shape is checked
+// (ParseHeader).
 type Header struct {
 	From string `json:"from"`
 	To   string `json:"to"`
@@ -114,13 +115,113 @@ func Parse(frame []byte) (Envelope, error) {
 	return e, nil
 }
 
-// ParseHeader decodes and validates only the routing fields of a frame.
+// ErrBadPayload is ParseHeader's error for a frame whose routing fields are
+// valid but whose payload is not a JSON string of standard base64 (R55-010).
+var ErrBadPayload = errors.New("payload: not a base64 string")
+
+// ParseHeader decodes and validates the routing fields of a frame, then
+// checks the shape of its payload without decoding it (envelope.md "Payload
+// shape check"). When only the payload fails it returns the valid header and
+// an error wrapping ErrBadPayload, so the caller can name the envelope's id.
 func ParseHeader(frame []byte) (Header, error) {
-	var h Header
-	if err := json.Unmarshal(frame, &h); err != nil {
+	var w wireHeader
+	if err := json.Unmarshal(frame, &w); err != nil {
 		return Header{}, errors.New("not a valid JSON object")
 	}
-	return h, h.Validate()
+	h := w.header()
+	if err := h.Validate(); err != nil {
+		return h, err
+	}
+	if !w.Payload.ok() {
+		return h, ErrBadPayload
+	}
+	return h, nil
+}
+
+// AckTarget reads the (from, id) a daemon acks for a frame it cannot parse
+// (envelope.md "Frames it cannot parse"). It uses ParseHeader's decoding, the
+// one the relay applied at ingress, and ignores only the payload verdict: ok
+// is true when the frame decodes without error and every routing field
+// validates, exactly as the relay required before it queued the frame.
+func AckTarget(frame []byte) (from, id, typ string, ok bool) {
+	var w wireHeader
+	if err := json.Unmarshal(frame, &w); err != nil {
+		return "", "", "", false
+	}
+	h := w.header()
+	if h.Validate() != nil {
+		return "", "", "", false
+	}
+	return h.From, h.ID, h.Type, true
+}
+
+// wireHeader is the decoding ParseHeader and AckTarget share. Its fields have
+// the names and tags of Envelope's, so encoding/json resolves repeated and
+// case-variant keys for it exactly as for the recipient's Envelope.
+type wireHeader struct {
+	From    string       `json:"from"`
+	To      string       `json:"to"`
+	Team    string       `json:"team"`
+	Type    string       `json:"type"`
+	ID      string       `json:"id"`
+	TS      string       `json:"ts"`
+	Payload payloadCheck `json:"payload"`
+}
+
+func (w wireHeader) header() Header {
+	return Header{From: w.From, To: w.To, Team: w.Team, Type: w.Type, ID: w.ID, TS: w.TS}
+}
+
+// payloadCheck judges a payload value in place, keeping no copy of it. Every
+// occurrence of the key is judged and one bad value refuses the frame:
+// encoding/json keeps the first type error even when a later key overwrites
+// the field, so the recipient's Parse fails on any bad occurrence, not only
+// the last.
+type payloadCheck struct {
+	seen, bad bool
+}
+
+// UnmarshalJSON records the verdict for raw; null reaches it too and is
+// refused. It never fails, so a bad payload does not hide the routing fields.
+func (p *payloadCheck) UnmarshalJSON(raw []byte) error {
+	p.seen = true
+	if !validPayload(raw) {
+		p.bad = true
+	}
+	return nil
+}
+
+func (p payloadCheck) ok() bool { return p.seen && !p.bad }
+
+// validPayload reports whether raw is a JSON string token without escapes
+// whose content base64.StdEncoding accepts: a length that is a multiple of
+// 4, the standard alphabet, and "=" only as the last one or two characters.
+// "" is valid.
+func validPayload(raw []byte) bool {
+	if len(raw) < 2 || raw[0] != '"' || raw[len(raw)-1] != '"' {
+		return false
+	}
+	s := raw[1 : len(raw)-1]
+	n := len(s)
+	if n%4 != 0 {
+		return false
+	}
+	if n > 0 && s[n-1] == '=' {
+		n--
+		if s[n-1] == '=' {
+			n--
+		}
+	}
+	for _, c := range s[:n] {
+		if !isBase64Byte(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isBase64Byte(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '+' || c == '/'
 }
 
 // KeyString encodes a public key as used on the wire.

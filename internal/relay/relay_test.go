@@ -361,7 +361,9 @@ func TestBadEnvelopeAndSenderMismatch(t *testing.T) {
 	}{
 		{"not json", `not json`, envelope.CodeBadEnvelope},
 		{"missing fields", `{"to":"x"}`, envelope.CodeBadEnvelope},
-		{"spoofed from", mustJSON(b.env(a.key, "s-1", nil)), envelope.CodeBadSender},
+		// A payload, not nil: json.Marshal writes a nil []byte as null, which
+		// the relay refuses (R55-010) before it compares the sender.
+		{"spoofed from", mustJSON(b.env(a.key, "s-1", []byte("x"))), envelope.CodeBadSender},
 	} {
 		if err := ca.Write(ctx(t), websocket.MessageText, []byte(tc.frame)); err != nil {
 			t.Fatal(err)
