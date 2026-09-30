@@ -79,7 +79,8 @@ func TestStaleLeaveDoesNotRemoveRejoinedMember(t *testing.T) {
 		t.Fatal("a stale leave changed the epoch")
 	}
 
-	deliverAt(t, member, owner, "team.leave", map[string]any{"team": tm.ID}, owner.now().Add(time.Second))
+	// A leaver whose clock runs a few minutes behind is still honoured (skew).
+	deliverAt(t, member, owner, "team.leave", map[string]any{"team": tm.ID}, owner.now().Add(-mail.MaxSkew/2))
 	members, err = owner.ts.Members(ctx, tm.ID)
 	if err != nil || len(members) != 1 {
 		t.Fatalf("a leave after the membership began did not remove the member: %+v, %v", members, err)
@@ -89,6 +90,7 @@ func TestStaleLeaveDoesNotRemoveRejoinedMember(t *testing.T) {
 // txOutbox is a team.TxOutbox that can fail its transactional submit.
 type txOutbox struct {
 	fail    bool
+	failErr error // returned instead of the generic failure when set
 	queued  []string
 	woken   int
 	plainOK int
@@ -101,6 +103,9 @@ func (o *txOutbox) Submit(_ context.Context, _, _ string, _ any) (mail.Submitted
 
 func (o *txOutbox) SubmitTx(_ context.Context, _ *sql.Tx, to, _ string, _ any) (mail.Submitted, error) {
 	if o.fail {
+		if o.failErr != nil {
+			return mail.Submitted{}, o.failErr
+		}
 		return mail.Submitted{}, errors.New("outbox unavailable")
 	}
 	o.queued = append(o.queued, to)
@@ -139,5 +144,30 @@ func TestLeaveNotifyIsAtomicWithTheMail(t *testing.T) {
 	}
 	if len(ob.queued) != 1 || ob.queued[0] != owner.key || ob.woken != 1 {
 		t.Fatalf("queued = %v, woken = %d; want one team.leave to the owner and one wake", ob.queued, ob.woken)
+	}
+}
+
+// Review 79 L3: a permanent "cannot send" (owner unpaired, no mailbox key)
+// must not make leaving impossible: the team is left locally.
+func TestLeaveNotifyLeavesWhenTheMailCanNeverBeSent(t *testing.T) {
+	for _, sentinel := range []error{mail.ErrUnpaired, mail.ErrNoMailboxKey} {
+		owner, member, body := pairedTeam(t)
+		ctx := context.Background()
+		if err := deliver(t, owner, member, "team.roster", cloneBody(t, body)); err != nil {
+			t.Fatal(err)
+		}
+		teamID := teamField(t, body)["id"].(string)
+		ob := &txOutbox{fail: true, failErr: sentinel}
+		member.ts.Outbox = ob
+		if _, _, err := member.ts.LeaveNotify(ctx, teamID, member.now()); err != nil {
+			t.Fatalf("%v: LeaveNotify = %v, want the leave to commit", sentinel, err)
+		}
+		got, err := member.ts.Get(ctx, teamID)
+		if err != nil || got.State != team.StateLeft {
+			t.Fatalf("%v: team = %+v, %v; want left", sentinel, got, err)
+		}
+		if len(ob.queued) != 0 || ob.woken != 0 {
+			t.Fatalf("%v: queued %v, woken %d; want nothing", sentinel, ob.queued, ob.woken)
+		}
 	}
 }

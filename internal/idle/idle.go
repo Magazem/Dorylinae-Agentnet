@@ -108,7 +108,9 @@ func Cached(ttl time.Duration, now func() time.Time, f func(context.Context) (ti
 		if t := now(); have && t.Sub(at) < ttl && !t.Before(at) {
 			return d, ok
 		}
-		d, ok = f(ctx)
+		// A cancelled caller must not cache "unknown" for everyone (the 1 s
+		// Timeout still bounds the query).
+		d, ok = f(context.WithoutCancel(ctx))
 		at, have = now(), true
 		return d, ok
 	}

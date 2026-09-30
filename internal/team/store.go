@@ -42,6 +42,7 @@ const (
 // Audit actions, Docs/protocol/team.md §Audit.
 const (
 	ActionCreate        = "team.create"
+	ActionInviteIssued  = "team.invite_issued"
 	ActionMemberAdd     = "team.member_add"
 	ActionMemberRemove  = "team.member_remove"
 	ActionMemberLeave   = "team.member_leave"
@@ -456,9 +457,17 @@ func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify 
 	// The mail is queued before GC: the owner may be an introduced peer whose
 	// row GC would delete.
 	txo, inTx := s.Outbox.(TxOutbox)
+	queued := true
 	if notify && inTx {
 		if _, err := txo.SubmitTx(ctx, tx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
-			return Team{}, nil, err
+			// A permanent "cannot send" (the owner is no longer paired or has no
+			// mailbox key) must not make leaving impossible: leave locally and
+			// warn (review 79 L3). Any other error rolls back and can be retried.
+			if !errors.Is(err, mail.ErrUnpaired) && !errors.Is(err, mail.ErrNoMailboxKey) {
+				return Team{}, nil, err
+			}
+			s.log().Warn("team: leave without team.leave mail", "event", "team_error", "error", err)
+			queued = false
 		}
 	}
 	removed, err := s.peers.GCIntroduced(ctx, tx)
@@ -470,7 +479,9 @@ func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify 
 	}
 	if notify {
 		if inTx {
-			txo.Wake()
+			if queued {
+				txo.Wake()
+			}
 		} else if s.Outbox != nil {
 			if _, err := s.Outbox.Submit(ctx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
 				return t, removed, err

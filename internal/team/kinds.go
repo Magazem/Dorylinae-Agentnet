@@ -562,14 +562,16 @@ func (s *Store) applyLeave(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 	}
 	// A leave made before the member's current membership began (a delayed
 	// team.leave arriving after a rejoin) must not remove the rejoined
-	// member (R55-068, R16 M2).
+	// member (R55-068, R16 M2). The leaver's clock and the owner's differ by up
+	// to mail.MaxSkew, so only a leave older than that margin is stale (review
+	// 79 L2); one inside it is honoured.
 	var added string
 	switch err := tx.QueryRowContext(ctx, `SELECT added FROM team_members WHERE team_id = ? AND key = ?`, teamID, peer).Scan(&added); {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
 		return fmt.Errorf("team: leave: %w", err)
 	default:
-		if at, perr := time.Parse(wireTimeFmt, added); perr == nil && op.Msg.Created.Truncate(time.Second).Before(at) {
+		if at, perr := time.Parse(wireTimeFmt, added); perr == nil && op.Msg.Created.Add(mail.MaxSkew).Before(at) {
 			pendingLeave.Store(op, &leaveOutcome{teamID: teamID, peer: peer})
 			return nil
 		}

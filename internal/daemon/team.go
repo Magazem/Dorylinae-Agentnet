@@ -15,6 +15,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
 )
@@ -175,6 +176,19 @@ func (g *inviteGates) has(id, team string) bool {
 	return ok && v.team == team && time.Since(v.created) <= inviteGateTTL
 }
 
+// take spends the gate for id and team: a compare-and-delete under the mutex,
+// so of any number of concurrent callers exactly one gets true (review 79 H1).
+func (g *inviteGates) take(id, team string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	v, ok := g.m[id]
+	if !ok || v.team != team || time.Since(v.created) > inviteGateTTL {
+		return false
+	}
+	delete(g.m, id)
+	return true
+}
+
 func (g *inviteGates) drop(id string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -284,10 +298,20 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 			gates.drop(p.Approval)
 			return nil, &ipc.Error{Code: CodeBadState, Message: "the invite was not approved (" + view.State + ")"}
 		}
-		gates.drop(p.Approval) // one approval releases one code
+		// One approval releases at most one code: the id is spent atomically
+		// before the pairing starts, so concurrent callers cannot each start
+		// one. If StartTagged then fails the id stays spent (no code exists
+		// to collect) and the caller asks for a new approval.
+		if !gates.take(p.Approval, t.ID) {
+			return nil, &ipc.Error{Code: CodeBadState, Message: "no such pending invite approval for this team (start again with 'agentnet team invite')"}
+		}
 		st, err := pairs.StartTagged(ctx, team.InviteTag{Store: ts, TeamID: t.ID})
 		if err != nil {
 			return nil, pairError(err)
+		}
+		// The release is audited with ids only, never the code.
+		if err := log.Append(ctx, audit.ActorCLI, team.ActionInviteIssued, map[string]any{"team": t.ID, "approval": p.Approval, "pairing_id": st.ID}); err != nil {
+			return nil, err
 		}
 		return TeamInviteResult{PairStatus: st, Team: ref}, nil
 	})
@@ -611,3 +635,7 @@ func teamError(err error) error {
 		return err
 	}
 }
+
+// A signature drift in mail.Outbox must not silently switch team leave to the
+// non-atomic fallback (review 79 L3).
+var _ team.TxOutbox = (*mail.Outbox)(nil)

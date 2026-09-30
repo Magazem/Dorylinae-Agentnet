@@ -183,6 +183,7 @@ type Manager struct {
 	log  *slog.Logger
 
 	pingGate func(ctx context.Context, peer string) bool // guarded by mu
+	initGate func(ctx context.Context, peer string) bool // guarded by mu
 
 	inbox chan envelope.Envelope
 	stop  chan struct{}
@@ -216,6 +217,17 @@ type Manager struct {
 func (m *Manager) SetPingGate(gate func(ctx context.Context, peer string) bool) {
 	m.mu.Lock()
 	m.pingGate = gate
+	m.mu.Unlock()
+}
+
+// SetInitGate sets a check that decides whether a handshake Init from a paired
+// peer is answered. A refused Init is dropped without a Resp, an error or an
+// audit row, so the peer sees what it sees for an offline daemon. Nil (the
+// default) answers every Init. Together with SetPingGate it keeps an invisible
+// daemon from being probed by a ping (R55-077, review 79 M1).
+func (m *Manager) SetInitGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.initGate = gate
 	m.mu.Unlock()
 }
 
@@ -581,6 +593,12 @@ func (m *Manager) handle(e envelope.Envelope) {
 }
 
 func (m *Manager) onInit(ctx context.Context, from string, sid, body []byte) string {
+	m.mu.Lock()
+	gate := m.initGate
+	m.mu.Unlock()
+	if gate != nil && !gate(ctx, from) {
+		return "" // look offline: no Resp, no reject, no audit
+	}
 	m.mu.Lock()
 	if _, dup := m.sessions[string(sid)]; dup {
 		m.mu.Unlock()

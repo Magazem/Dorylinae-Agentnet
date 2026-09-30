@@ -243,8 +243,12 @@ A nothing.
 **Pings.** An invisible daemon does not answer session `ping`s either (R55-077): a paired
 peer would otherwise get an on-demand liveness check that the mode is meant to remove. In
 mode `only_team`, only members of that team get a `pong`; in mode `visible`, every paired
-peer does (ping is a paired-peer tool, not team-scoped). An unanswered ping fails with
-`timeout` on the sender's side, like a ping to an offline peer.
+peer does (ping is a paired-peer tool, not team-scoped). The daemon applies the same rule
+to the session handshake `init` (review 79 M1): a refused `init` gets no `resp`, no error
+and no audit row, so the ping fails with `timeout` on the sender's side and opens no session,
+exactly like a ping to an offline peer. One exception: a peer that holds an active,
+unexpired grant this daemon issued, or shares a work session with it that is not closed, may
+still open a session (granted fetches keep working while invisible).
 
 ### Human sharing
 

@@ -1,6 +1,6 @@
 package daemon_test
 
-// Review 79 (R55-F24 security review): one approved team_invite approval must
+// Review 79 H1 (R55-F24 security review): one approved team_invite approval must
 // release exactly one invite code, even when the caller repeats the call
 // concurrently. The gate's has/Show/drop sequence is not atomic.
 
@@ -14,7 +14,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 )
 
-func TestReview79TeamInviteApprovalConcurrentReuse(t *testing.T) {
+func TestTeamInviteApprovalConcurrentReuse(t *testing.T) {
 	a, _ := newGatePair(t)
 	var tr daemon.TeamResult
 	a.call("team_create", daemon.TeamCreateParams{Name: "x"}, &tr)

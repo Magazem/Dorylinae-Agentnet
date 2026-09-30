@@ -325,6 +325,7 @@ cards, announcements or codes.
 | Action | Detail |
 |---|---|
 | `team.create` | `{team, name}` |
+| `team.invite_issued` | `{team, approval, pairing_id}` (owner, when an approved `team_invite` releases its code; ids only, never the code) |
 | `team.invite` | `{team, pairing_id}` |
 | `team.join` | `{pairing_id, owner}` (joiner, on sending `team.join`) |
 | `team.member_add` | `{team, peer, epoch}` |

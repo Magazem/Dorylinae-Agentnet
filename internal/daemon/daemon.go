@@ -392,6 +392,12 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	// An invisible daemon does not answer session pings (R55-077).
 	sessions.SetPingGate(presenceSender.PingAllowed)
+	// An invisible daemon also refuses the handshake, so a ping cannot tell it
+	// from an offline one, unless the peer holds a grant from us or shares an
+	// open work session with us (granted fetches keep working, review 79 M1).
+	sessions.SetInitGate(func(ctx context.Context, peer string) bool {
+		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer)
+	})
 	if err := presenceSender.LoadSettings(ctx); err != nil {
 		_ = ln.Close()
 		return err

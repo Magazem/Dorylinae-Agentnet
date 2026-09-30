@@ -7,6 +7,7 @@ package daemon_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
@@ -189,4 +190,36 @@ func TestPresenceSetSpecShape(t *testing.T) {
 	if set.Mode != "invisible" {
 		t.Fatalf("a refused presence_set changed the mode to %q", set.Mode)
 	}
+}
+
+// Review 79 M1: a ping to an invisible daemon looks exactly like a ping to an
+// offline one: it times out, and no session is opened (no session.open row on
+// the pinger). Once the daemon is visible again the ping succeeds.
+func TestPingInvisibleLooksOffline(t *testing.T) {
+	a, b := newGatePair(t)
+	var set daemon.PresenceGetResult
+	b.call("presence_set", map[string]any{"mode": "invisible"}, &set)
+
+	var st daemon.PingStatus
+	a.call("ping", daemon.PingParams{Peer: b.key}, &st)
+	harnessWaitFor(t, "the ping to an invisible daemon to fail", 40*time.Second, func() bool {
+		a.call("ping_status", daemon.PingStatusParams{PingID: st.ID}, &st)
+		return st.State == "failed"
+	}, nil)
+	if st.Error == nil || st.Error.Code != "timeout" || st.RTTMillis != nil {
+		t.Fatalf("ping = %+v, want a plain timeout", st)
+	}
+	if n := a.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'session.open'`); n != 0 {
+		t.Fatalf("the pinger opened %d sessions with an invisible daemon", n)
+	}
+	if n := b.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'session.open'`); n != 0 {
+		t.Fatalf("the invisible daemon opened %d sessions", n)
+	}
+
+	b.call("presence_set", map[string]any{"mode": "visible"}, &set)
+	a.call("ping", daemon.PingParams{Peer: b.key}, &st)
+	harnessWait(t, "the ping to a visible daemon", func() bool {
+		a.call("ping_status", daemon.PingStatusParams{PingID: st.ID}, &st)
+		return st.State == "complete"
+	})
 }
