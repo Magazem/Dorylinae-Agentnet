@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -153,7 +154,7 @@ func TestRejectAuditConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 10; j++ {
-				a.Report("peer", "m-x", ReasonDecrypt)
+				a.Report("peer", fmt.Sprintf("m-%032x", i*10+j), reject(8, ReasonWrongRecipient, nil))
 			}
 		}()
 	}

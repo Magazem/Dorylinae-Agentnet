@@ -42,6 +42,8 @@ func TestLaunchdPlist(t *testing.T) {
 		<string>run</string>
 		<string>--home</string>
 		<string>/home/ann/.config/dorylinae</string>
+		<string>--log-file</string>
+		<string>/home/ann/.config/dorylinae/agentnetd.log</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -53,9 +55,9 @@ func TestLaunchdPlist(t *testing.T) {
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>StandardOutPath</key>
-	<string>/home/ann/.config/dorylinae/agentnetd.log</string>
+	<string>/home/ann/.config/dorylinae/agentnetd.out.log</string>
 	<key>StandardErrorPath</key>
-	<string>/home/ann/.config/dorylinae/agentnetd.log</string>
+	<string>/home/ann/.config/dorylinae/agentnetd.out.log</string>
 </dict>
 </plist>
 `
@@ -71,9 +73,18 @@ func TestLaunchdPlist(t *testing.T) {
 }
 
 func TestLaunchdPlistEscapesXML(t *testing.T) {
-	got := LaunchdPlist(Spec{Executable: "/opt/a&b/<agentnetd>", Home: "/h"})
+	got := LaunchdPlist(Spec{Executable: "/opt/a&b/<agentnetd>", Home: "/h&<x>"})
 	if !strings.Contains(got, "<string>/opt/a&amp;b/&lt;agentnetd&gt;</string>") {
 		t.Errorf("executable not escaped:\n%s", got)
+	}
+	for _, want := range []string{
+		"<string>--log-file</string>\n\t\t<string>/h&amp;&lt;x&gt;/agentnetd.log</string>",
+		"<key>StandardOutPath</key>\n\t<string>/h&amp;&lt;x&gt;/agentnetd.out.log</string>",
+		"<key>StandardErrorPath</key>\n\t<string>/h&amp;&lt;x&gt;/agentnetd.out.log</string>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log paths not escaped, want %q:\n%s", want, got)
+		}
 	}
 }
 
@@ -191,11 +202,11 @@ func TestRelayBakedIntoDefinitions(t *testing.T) {
 	u := unixSpec
 	u.Relay = relay
 	plist := LaunchdPlist(u)
-	if !strings.Contains(plist, "\t\t<string>--relay</string>\n\t\t<string>wss://relay.example.com:8787/?a=1&amp;b=2</string>\n\t</array>") {
-		t.Errorf("plist lacks --relay:\n%s", plist)
+	if !strings.Contains(plist, "\t\t<string>--relay</string>\n\t\t<string>wss://relay.example.com:8787/?a=1&amp;b=2</string>\n\t\t<string>--log-file</string>\n\t\t<string>/home/ann/.config/dorylinae/agentnetd.log</string>\n\t</array>") {
+		t.Errorf("plist lacks --relay followed by --log-file:\n%s", plist)
 	}
-	if strings.Contains(plist, "--log-file") {
-		t.Error("launchd redirects output itself and must not pass --log-file")
+	if strings.Count(plist, "<string>--log-file</string>") != 1 {
+		t.Error("the plist must pass --log-file once: launchd's own output file is not rotated (R55-F14)")
 	}
 	unit := SystemdUnitFile(u)
 	if want := `ExecStart="/opt/dorylinae/agentnetd" run --home "/home/ann/.config/dorylinae" --relay "wss://relay.example.com:8787/?a=1&b=2"`; !strings.Contains(unit, want) {

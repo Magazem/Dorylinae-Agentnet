@@ -389,7 +389,8 @@ is accepted before the first release (OD-F18-1 in
   (error `unsupported_kind`) and `rejected` rows to `failed` (error `rejected`). Ids that are
   unknown or already final are ignored.
 - If the sender has no mailbox key for the acking peer, the ack cannot be sealed. It is
-  dropped and logged (`event=ack_no_mailbox_key`).
+  dropped and counted in the limited `event=mail_ack_failed` line, reason `no_mailbox_key`
+  ([envelope.md](envelope.md#relay-driven-log-lines-daemon), R55-F14).
 
 ## Kinds
 

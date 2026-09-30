@@ -9,6 +9,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/noise"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // fakeRelay routes envelopes between managers in memory. tamper may change or
@@ -53,6 +56,7 @@ type node struct {
 	m   *Manager
 	key string
 	log *audit.Log
+	rec *testutil.LogRecorder
 }
 
 func newNode(t *testing.T, r *fakeRelay, paired map[string]bool) *node {
@@ -73,9 +77,10 @@ func newNode(t *testing.T, r *fakeRelay, paired map[string]bool) *node {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	log := audit.New(db.DB())
+	rec := &testutil.LogRecorder{}
 	var mu sync.Mutex
 	m := NewManager(Config{
-		Static: st, Audit: log, Sender: link{r}, PingTimeout: 2 * time.Second,
+		Static: st, Audit: log, Sender: link{r}, PingTimeout: 2 * time.Second, Logger: rec.Logger(),
 		IsPaired: func(_ context.Context, k string) (bool, error) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -83,7 +88,7 @@ func newNode(t *testing.T, r *fakeRelay, paired map[string]bool) *node {
 		},
 	})
 	t.Cleanup(m.Close)
-	n := &node{m: m, key: st.Identity(), log: log}
+	n := &node{m: m, key: st.Identity(), log: log, rec: rec}
 	r.mu.Lock()
 	r.nodes[n.key] = m
 	r.mu.Unlock()
@@ -105,6 +110,29 @@ func (n *node) events(t *testing.T, action string) []map[string]string {
 		}
 	}
 	return out
+}
+
+// rejects writes n's pending log lines and returns the session_reject counts
+// per reason in every line so far (R55-F14: rejects are logged, not audited).
+func (n *node) rejects() map[string]int {
+	n.m.lines.Flush()
+	out := map[string]int{}
+	for _, ln := range n.rec.Event("session_reject") {
+		for _, kv := range strings.Fields(ln.Attrs["reasons"]) {
+			k, v, _ := strings.Cut(kv, "=")
+			c, _ := strconv.Atoi(v)
+			out[k] += c
+		}
+	}
+	return out
+}
+
+// noRejectRows fails if n wrote a session.reject audit row (R55-F14).
+func (n *node) noRejectRows(t *testing.T) {
+	t.Helper()
+	if rows := n.events(t, "session.reject"); len(rows) != 0 {
+		t.Fatalf("session.reject rows = %v", rows)
+	}
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -182,10 +210,11 @@ func TestTamperedAndReplayedDataRejected(t *testing.T) {
 	if st := mustPing(t, a, b); st.State != StatePending {
 		t.Fatalf("tampered ping = %+v", st)
 	}
-	waitFor(t, "decrypt reject", func() bool { return len(b.events(t, ActionReject)) == 1 })
-	if d := b.events(t, ActionReject)[0]; d["reason"] != ReasonDecrypt || d["peer"] != a.key {
-		t.Fatalf("reject detail = %v", d)
+	waitFor(t, "decrypt reject", func() bool { return b.rejects()[ReasonDecrypt] == 1 })
+	if d := b.rec.Event("session_reject")[0].Attrs; d["reason"] != ReasonDecrypt || d["peer"] != a.key || d["type"] != TypeData || len(d["session"]) != 8 {
+		t.Fatalf("reject line = %v", d)
 	}
+	b.noRejectRows(t)
 
 	r.mu.Lock()
 	r.tamper = nil
@@ -205,12 +234,13 @@ func TestTamperedAndReplayedDataRejected(t *testing.T) {
 	r.mu.Unlock()
 	b.m.HandleEnvelope(last)
 	b.m.HandleEnvelope(captured)
-	waitFor(t, "replay rejects", func() bool { return len(b.events(t, ActionReject)) == 3 })
-	for _, d := range b.events(t, ActionReject)[1:] {
-		if d["reason"] != ReasonReplay {
-			t.Fatalf("reject detail = %v", d)
+	waitFor(t, "replay rejects", func() bool { return b.rejects()[ReasonReplay] == 2 })
+	for _, ln := range b.rec.Event("session_reject") {
+		if _, ok := ln.Attrs["id"]; ok {
+			t.Fatalf("reject line carries the envelope id: %v", ln.Attrs)
 		}
 	}
+	b.noRejectRows(t)
 	if st := mustPing(t, a, b); st.State != StateComplete {
 		t.Fatalf("ping after replay = %+v", st)
 	}
@@ -225,10 +255,11 @@ func TestUnpairedHandshakeRefused(t *testing.T) {
 	if st.State == StateComplete {
 		t.Fatal("unpaired ping completed")
 	}
-	waitFor(t, "unpaired reject", func() bool { return len(b.events(t, ActionReject)) == 1 })
-	if d := b.events(t, ActionReject)[0]; d["reason"] != ReasonUnpaired || d["type"] != TypeInit {
-		t.Fatalf("reject = %v", d)
+	waitFor(t, "unpaired reject", func() bool { return b.rejects()[ReasonUnpaired] >= 1 })
+	if d := b.rec.Event("session_reject")[0].Attrs; d["reason"] != ReasonUnpaired || d["type"] != TypeInit || d["peer"] != mallory.key {
+		t.Fatalf("reject line = %v", d)
 	}
+	b.noRejectRows(t)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, e := range r.seen {

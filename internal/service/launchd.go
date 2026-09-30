@@ -10,6 +10,13 @@ import (
 // LaunchdLabel is the launchd job label.
 const LaunchdLabel = "dev.dorylinae.agentnetd"
 
+// LaunchdOutFileName is the file inside the home directory that launchd sends
+// the daemon's stdout and stderr to (crash reports). It is not the
+// --log-file path: logfile renames and deletes that file, and launchd opens
+// this one itself (Docs/cli/agentnetd-install.md §Logs, R55-F14). The daemon
+// renames it to .1 at start when it is over logfile.MaxSize.
+const LaunchdOutFileName = "agentnetd.out.log"
+
 // Launchd installs a per-user launchd agent (~/Library/LaunchAgents).
 type Launchd struct{}
 
@@ -53,9 +60,11 @@ func (l Launchd) Uninstall(_ Spec, env Env) (Plan, error) {
 	}}, nil
 }
 
-// LaunchdPlist renders the launchd property list for spec.
+// LaunchdPlist renders the launchd property list for spec. The daemon writes
+// its own rotated log (--log-file, as on Windows); launchd's stdout and
+// stderr go to LaunchdOutFileName.
 func LaunchdPlist(spec Spec) string {
-	logPath := path.Join(spec.Home, "agentnetd.log")
+	outPath := path.Join(spec.Home, LaunchdOutFileName)
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -69,6 +78,8 @@ func LaunchdPlist(spec Spec) string {
 		<string>run</string>
 		<string>--home</string>
 		<string>` + xmlEscape(spec.Home) + `</string>` + relayPlistArgs(spec) + `
+		<string>--log-file</string>
+		<string>` + xmlEscape(path.Join(spec.Home, LogFileName)) + `</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
@@ -80,9 +91,9 @@ func LaunchdPlist(spec Spec) string {
 	<key>ProcessType</key>
 	<string>Background</string>
 	<key>StandardOutPath</key>
-	<string>` + xmlEscape(logPath) + `</string>
+	<string>` + xmlEscape(outPath) + `</string>
 	<key>StandardErrorPath</key>
-	<string>` + xmlEscape(logPath) + `</string>
+	<string>` + xmlEscape(outPath) + `</string>
 </dict>
 </plist>
 `)
