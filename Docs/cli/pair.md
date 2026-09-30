@@ -80,7 +80,8 @@ Paired with my-laptop (custom)
 Failures print `agentnet: pairing failed: <message> (<code>)` on stderr. Both come from the
 daemon already bounded (code at most 64 bytes, message at most 200). A relay's code is one of
 [envelope.md](../protocol/envelope.md#error-frame-relay---daemon)'s codes or `relay_error`,
-and a relay's message has gone through `displayLine(…, 200)` (R55-F9). The CLI applies
+and every failure's code and message have gone through `displayLine` at the daemon's pairing
+choke point ([pairing.md](../protocol/pairing.md), R55-F9). The CLI applies
 `displayLine` to both again before printing, so neither can hold a line break, an escape
 sequence or a bidi control. It cannot draw a fake `Paired with …` line either. The
 `pair.fail` audit row stores the same converted `code` and `reason`.

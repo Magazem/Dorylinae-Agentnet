@@ -396,8 +396,8 @@ pairing and sessions) receives only the converted form:
 - **`message`** becomes `displayLine(message, 200)`, the shared one-line rule of
   [approval.md §Sanitising](approval.md#sanitising-one-character-rule-two-renderings):
   every `hidden(r)` rune is removed (the ones that render as space become one space), runs of
-  spaces collapse, at most 2 combining marks stay on one base, the result is trimmed and cut
-  to 200 bytes on a rune boundary (a cut adds `…`). It can therefore hold no control
+  spaces collapse, at most 2 combining marks stay on one base, and the result is trimmed and
+  at most 200 bytes long, a `…` added on a cut included. It can therefore hold no control
   character, no escape sequence, no line break and no bidi control. The daemon reads at most
   the first 4 KiB of a longer message, so a 1 MiB message costs no more than a short one.
 - **`ref`** is kept only if it is a valid envelope `id` (1–128 characters from
@@ -424,8 +424,16 @@ backoff resets only after a connection **stayed up for at least 30 s after `read
 (R55-F9, review 55 C04-02). A connection that fails earlier is a failure like any
 other, even though it authenticated: the delay keeps doubling. Otherwise a relay that sends
 `ready` and closes at once would drive a reconnect about twice a second, each with a TLS
-handshake, a signature, an outbox re-send and a presence send. `relay_full` or `rate_limited`
-in place of `ready` is such a failure (the connection never became ready), so it is
+handshake, a signature, an outbox re-send and a presence send. The 30 s count from the
+moment `ready` was read, not from the dial.
+
+A connection the relay closes with **status 1013 (Try Again Later)** never resets the
+backoff, however long it was up, and the next wait is at least `jitter(5 s)` (review 67b
+F9R-4). 1013 is the relay's load-shedding close (relay-hosted.md §2: `relay_full`,
+`rate_limited`, "relay busy", "frame too slow"). Without the floor, every daemon shed at once
+after a long connection would come back within 375–625 ms, into a relay that has just said it
+is overloaded. The delay then doubles from there as usual. `relay_full` or `rate_limited`
+in place of `ready` is a failure too (the connection never became ready), so it is
 retried with the growing backoff. The mail outbox treats `rate_limited` and
 `relay_full` naming one of its rows like `queue_full`: back to queued, resent after
 its backoff ([mail.md](mail.md)). Sending while disconnected
@@ -438,10 +446,14 @@ then sends the `ack`.
 `queued` frames are delivered to `OnQueued`, not `OnControl`.
 
 An envelope whose `to` is not the client's own key (R55-F9, review 55 C04-03) is not handed
-up and does not enter the seen-set. It is still acked, so the relay does not redeliver it,
-and it is logged at Debug only (`event=relay_misrouted`, `type`, `id`). Every consumer binds
-the recipient inside its crypto anyway (mail `msg.to`, Noise sessions), so this is defence
-in depth for a future type that would not.
+up and does not enter the seen-set. This check comes first, before the ephemeral branch, so it
+applies to every type. A queued type is still acked, so the relay does not redeliver it. An
+ephemeral type (presence) is not acked, as for any ephemeral envelope (review 67b F9R-6). It
+is logged at Debug only (`event=relay_misrouted`, `type`, `id`; both already passed
+`Validate`). That line is relay-driven and per frame, so R55-F14's rate limit for per-frame
+relay warnings covers it too. The consumers bind the recipient inside their crypto anyway
+(mail `msg.to`, Noise sessions, presence through the mail opener), so this is defence in depth
+for a future type that would not.
 
 ### Relay-supplied text (daemon)
 
@@ -457,15 +469,24 @@ re-read the raw frame.
 | `ready.account` (4.2c, not yet read) | `state` kept only if it is `unbound`, `bound` or `suspended`; `display` goes through `displayLine` and is cut to 128 bytes before it is stored or shown (review 55 C04-04) |
 | The `op` of an unexpected control frame | Never echoed: the handshake error is `unexpected frame from relay` |
 | WebSocket close reason | Never kept: a close is reported as `closed by relay (status N)` |
-| HTTP headers in a failed upgrade | Covered by the `last_error` bound below |
+| HTTP redirect target (`Location`) | Never kept: a redirect is reported as `dial: the relay answered with a redirect (not followed)` (review 67b F9R-2) |
+| HTTP headers and TLS certificate names in a failed upgrade | May appear inside the WebSocket or TLS library's error text, which quotes header values (`%q`); covered by the `last_error` bound below (residual, review 67b F9R-2) |
+| `queued.ref` | Only looked up among the daemon's own ids; never stored, logged or shown |
+| `pair_code`, `pair_peer` | [pairing.md](pairing.md): a relay-made `code` is refused (`relay_v1`), the card and mailbox announcement are verified. Failure text goes through the pairing choke point ([pairing.md §Logging, audit](pairing.md)). The peer's card name on screen is R55-F10's (R55-055) |
+| Envelope header fields (`from`, `to`, `id`, `type`, `ts`) | `Validate`: strict keys and bounded ASCII sets, before any use |
 
 **`last_error`** (`State().LastError`, served as `status.relay.last_error`) is content-free
 ([../cli/status.md](../cli/status.md)):
 
 - For an `error` frame in place of `challenge` or `ready`: `relay: <code>`, with the
   converted code only, never the message.
-- For any other connection error: its text rendered with `displayLine` and cut to 256
-  bytes on a rune boundary (a cut adds `…`).
+- For a close by the relay: `closed by relay (status N)`; for a redirect, the fixed text
+  above.
+- For any other connection error: its text through `displayLine(…, 256)` (at most 256 bytes,
+  the `…` included). This is local text (dial, TLS, timeout). The one relay-influenced part
+  is what the WebSocket and TLS libraries quote from the upgrade response: a header value or
+  a certificate name. It is one line, has no control or escape character, and is at most
+  256 bytes, but its words may be chosen by the relay.
 
 The `relay_disconnect` log line carries this same string as `error`. So one relay
 connection writes at most a few hundred bytes to the daemon log, not up to 1 MiB (review 55

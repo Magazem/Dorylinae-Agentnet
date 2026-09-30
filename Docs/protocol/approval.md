@@ -386,8 +386,11 @@ untrusted diagnostic text that ends up on one terminal line: the relay's `error`
 the daemon's relay `last_error` ([envelope.md §Relay-supplied text](envelope.md#relay-supplied-text-daemon)).
 It is steps 1–3 of `displayName` (hidden runes that render as space become one space, the other
 hidden runes are removed, spaces collapse, text is trimmed, at most 2 combining marks per base).
-Then the text is cut to at most `max` bytes on a rune boundary, and `…` is appended when
-anything was cut. Digit runs and fingerprint-shaped text are **not** blanked (steps 4–5):
+Then, if the result is longer than `max` bytes, it is cut on a rune boundary to at most
+`max − 3` bytes, trailing spaces are trimmed again, and `…` (3 bytes) is appended, so **the
+output is never longer than `max` bytes, the `…` included** (`max` ≥ 4; review 67b F9R-1). An
+implementation that stops reading a long input early (envelope.md allows the first 4 KiB) must
+treat the unread rest as cut. Digit runs and fingerprint-shaped text are **not** blanked (steps 4–5):
 this text is diagnostic, and addresses such as `127.0.0.1:8787` must stay readable. It sits
 on one line after a fixed prefix (`agentnet: pairing failed:`, `last error:`), so it cannot
 pose as a separate line. An empty result stays empty. It is `displaytext.Line` in code; the
