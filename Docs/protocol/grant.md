@@ -190,6 +190,16 @@ mirror state; a session the holder does not know yet is an orphan: acked, ignore
 `grant.orphan`), then insert the holder row. Duplicate `id` with identical token: nothing.
 Different token under a known id: keep the first, audit `grant.conflict`.
 
+**Held cap (R55-F13, review 55 R55-064).** A holder keeps at most **64 held rows per session**
+(any state). A `grant` for a new id when the session already has 64 is refused for a limit:
+`Apply` returns `mail.ErrLimit`, so only `mail_seen` is kept, `mail.reject` reason `limit` is
+audited and the mail is acked under `rejected` ([request.md §Per-peer
+caps](request.md#per-peer-caps-r55-f13)); the grantor's outbox row ends `failed`
+(`rejected`). A requester needs a human approval (or a policy) per grant, so an honest session
+never comes near 64; the cap stops a hostile requester from signing its own grant mails
+without end. Open sessions with one peer are bounded by the request open cap, so held rows
+per peer are bounded too.
+
 Holder apply of `grant.revoke`: find the `held` row with this id **and `peer = msg.from`**
 and mark it `revoked`. Unknown id, or a row held from another grantor: ignore (so one peer
 cannot revoke grants another peer gave).
@@ -366,7 +376,13 @@ is the same as the grantor running any git command in that repository.
 ### Limits
 
 Per grant, on the grantor: at most 2 fetch operations in flight, 20 per second, and
-256 MiB served per 24 h (`rate_limited`). Per holder peer: at most 2 in flight across grants
+256 MiB served per rolling 24 h (`rate_limited`). The 24 h budget is a **sliding window**
+(R55-F13, review 55 R55-079): the daemon keeps the bytes served per clock hour and adds up
+the current hour and the 24 before it. A byte therefore counts for between 24 and 25 hours,
+and the bytes served in any 24 h never exceed the budget by more than the one operation that
+crossed it (an operation is refused once the sum has reached the budget). (Before R55-F13 it was a fixed window from the first byte, so twice the budget
+could be served within minutes across the boundary.) The counters are in memory, so a
+grantor restart starts them at zero; the holder cannot cause a restart. Per holder peer: at most 2 in flight across grants
 (so at most 16 fragments travel towards one holder, [Transport](#transport)).
 Per daemon: at most 32 in flight. These keep a holder from turning the grantor into a
 bandwidth or CPU sink. An operation stops being in flight when its last response (the
@@ -390,7 +406,7 @@ human approval and is audited.
 | Method | Params | Result |
 |---|---|---|
 | `grant_create` | `{"peer", "session", "action", "resource", "branch"?, "scope"?, "expires"?, "public"?: bool}` | `{"grant": <grant view>}` if a policy approved it, else `{"grant": <view, state pending_approval>, "approval": <approval view>}` |
-| `grant_list` | `{"session"?, "direction"?: "issued"\|"held", "state"?}` | `{"grants": [<grant view>]}` |
+| `grant_list` | `{"session"?, "direction"?: "issued"\|"held", "state"?, "limit"?, "cursor"?}` | `{"grants": [<grant view>], "next_cursor"?}`. Newest first (by `created`, then `id`), at most `limit` per call (default 200; 1-500, larger is clamped to 500; 0 or negative is `bad_request`). When more rows match, `next_cursor` is an opaque string to pass as `cursor` for the next page; it is absent on the last page. A `cursor` the daemon did not issue is `bad_request`. R55-F13 (review 55 R55-064): without paging, enough rows made the reply exceed the 1 MiB IPC line |
 | `grant_show` | `{"id"}` | `{"grant": <grant view>, "token"?: <token>}` (`token` only on the holder side, for debugging) |
 | `grant_revoke` | `{"id"}` | `{"grant": <view>, "mail_id"}`. Grantor only (`not_grantor`). Idempotent: already revoked → `duplicate: true` |
 | `grant_policy_add` / `_list` / `_remove` | see [Policies](#policies) | |
@@ -491,7 +507,10 @@ CREATE TABLE grant_policies (
 );
 ```
 
-`expired` is derived from `exp` at read time, not stored. Every table goes into the DROP
+`expired` is derived from `exp` at read time, not stored. Grant rows are never deleted
+automatically (owner decision D50). [`agentnet prune`](../cli/prune.md) removes grants whose
+`exp`, or whose `revoked_at` when `revoked`, is older than its cutoff, and every grant of a
+pruned session ([retention.md](retention.md#finished-items)). Every table goes into the DROP
 lists of both rewind tests in `internal/store/store_test.go`.
 
 ## Threat model

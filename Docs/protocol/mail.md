@@ -64,6 +64,15 @@ For a key created at time `t`:
 - The first key is created on demand by pairing (0.8c, see [pairing.md](pairing.md#mailbox-key-during-pairing))
   or by the rotation job, whichever comes first.
 - Decrypting uses any live key selected by `key_id`. Sealing uses the peer's newest announcement.
+- **Private keys are cached in memory** (R55-F13, review 55 R55-051). Step 3 of
+  [Receiving](#receiving-verification-order) runs before any signature check, so every frame
+  that names a live `key_id` (which the relay sees in clear) would otherwise cost a keystore
+  read: on macOS a `/usr/bin/security` process, on Linux a D-Bus call, for presence on the
+  relay read loop itself. The daemon loads each live mailbox private key from the keystore at
+  most once and keeps it in memory until the key is deleted (then the cached copy is cleared
+  too). The identity private key is cached the same way for the life of the process. A
+  keystore read error is not cached: the next frame tries again, at most once per second per
+  key.
 
 ### Announcement
 
@@ -275,12 +284,15 @@ In **one SQLite transaction**:
    55 R55-017.)
 2. Process by kind:
    - `keys`: apply the announcement ([below](#kind-keys)). There is no inbox row.
-   - A known application kind (Phase 1+): insert the `mail_inbox` row with the verified
-     plaintext kept as proof, plus the kind-specific rows.
+   - A known application kind (Phase 1+): insert the `mail_inbox` row with `signed = ''`,
+     plus the kind-specific rows. Since R55-F13 the row keeps no copy of the plaintext for any
+     kind: nothing ever read it back, and each kind stores what it needs in its own tables
+     ([Inbox rows](#inbox-rows-r55-f13)).
    - An unknown kind: nothing is stored beyond `mail_seen`. The ack lists it under `unsupported`.
    - A known kind whose `Apply` fails with `mail.ErrBadBody`: only the marked `mail_seen` row
      is kept ([request.md §Invalid bodies](request.md#invalid-bodies)). The ack lists it under
-     `rejected`.
+     `rejected`. `mail.ErrLimit` (a per-peer cap is reached, R55-F13) is handled the same way,
+     with `mail.reject` reason `limit` ([request.md §Per-peer caps](request.md#per-peer-caps-r55-f13)).
 3. Commit. Audit `mail.in {peer, id, kind}` for every kind except `ack` and `keys`. This is the
    daemon-side per-kind count of owner decision 4.
 4. **After commit**, send the ack.
@@ -389,6 +401,17 @@ When B receives mail from paired peer A whose `key_id` is not live (step 3):
    builds a new envelope with a new `ts`. A then replaces the stored frame, sets `key_id`,
    and sends it immediately. If the `key_id` already matches, A does nothing. Normal backoff
    continues, which prevents loops.
+
+   **A row is re-sealed at most once per hour** (R55-F13, review 55 R55-020). A `keys` mail
+   that lists a row re-sealed less than an hour ago leaves it alone: its stored frame (sealed
+   to the older key) waits for normal backoff, and a later key miss after the hour re-seals it.
+   Without this bound a hostile peer could send a stream of `keys` mails, each with an
+   announcement one second newer and `retry` = 256 row ids, and make A re-upload up to
+   256 × ~1 MB per small mail, spending A's relay budget so A's mail to others is
+   `rate_limited`. The time of the last re-seal is kept in memory per row id (dropped when the
+   row becomes final or after an hour); a restart forgets it, which allows at most one extra
+   re-seal per row per restart. An honest peer rotates weekly, so an honest row is re-sealed
+   once.
 4. The dedupe key is `(from, id)`, so a re-sealed copy that arrives after the original was
    somehow processed is a duplicate and is only re-acked.
 
@@ -473,7 +496,7 @@ CREATE TABLE mail_inbox (
     kind        TEXT NOT NULL,
     created     TEXT NOT NULL,                   -- msg.created
     received_at TEXT NOT NULL,
-    signed      TEXT NOT NULL,                   -- verified plaintext (proof of origin)
+    signed      TEXT NOT NULL,                   -- '' since R55-F13 (was: verified plaintext)
     PRIMARY KEY (from_key, id)
 );
 
@@ -498,12 +521,38 @@ CREATE INDEX outbox_due ON outbox (state, next_attempt);
 All times are RFC 3339 UTC with milliseconds (`2006-01-02T15:04:05.000Z`), so text order is
 time order. `msg.created` stays in whole seconds.
 
+### Inbox rows (R55-F13)
+
+Owner decision D50 (review 55 R55-018). A `mail_inbox` row is the `(from_key, id)` of an
+applied mail plus its `kind`, `created` and `received_at`; `signed` is always `''`. Before
+R55-F13 it held the full signed plaintext of every applied mail, a second copy of up to
+700 KiB per mail kept forever, which nothing read back. The D18 blanking of a withheld result
+([work-session.md §Quarantine](work-session.md#inbox-copy-d18)) is now the rule for every mail.
+The consequence: the daemon keeps no signed copy of what a peer sent, so it cannot later show
+a third party a peer's signature over a request or result. Decisions keep both signatures in
+their own record ([decision.md](decision.md)).
+
+`mail_inbox` rows are never deleted automatically. [`agentnet prune`](../cli/prune.md) removes
+rows older than its cutoff (at least 35 days), and in the same transaction first runs the
+`mail_seen` prune, so an id never leaves `mail_inbox` while `mail_seen` still holds it
+([retention.md](retention.md#finished-items)). The existing rows are blanked by the R55-F13
+migration ([retention.md §Migration](retention.md#migration)).
+
+### Receive queue (R55-F13)
+
+The relay read loop hands `mail` envelopes to the receiver through a queue, so a slow receiver
+never blocks it. The queue holds at most **256 envelopes and 64 MiB** of decoded payload. An
+envelope that would exceed either bound is dropped, like an envelope arriving at a full queue
+today: the sender's outbox resends it on its backoff. Dropped envelopes are counted in one log line per minute
+(`event=mail_queue_drop`, count and bytes), never audited. The byte bound stops a relay from
+pinning about 256 × 700 KiB in the queue while the receiver is slow (review 55 R55-052).
+
 ## Audit
 
 | Action | Actor | Detail |
 |---|---|---|
 | `mailbox.rotate` | daemon | `{key_id, retired}` (`retired`: key_id or `""`) |
-| `mail.reject` | daemon | `{peer, id, reason}` (rate-limited, see above; reason `stale` also for the [receive age limit](#receive-age-limit)) |
+| `mail.reject` | daemon | `{peer, id, reason}` (rate-limited, see above; reason `stale` also for the [receive age limit](#receive-age-limit), `bad_body` and `limit` for a refused application mail) |
 | `mail.in` | daemon | `{peer, id, kind}` |
 | `mail.expired` | daemon | `{peer, id, kind}` |
 

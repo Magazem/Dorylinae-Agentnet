@@ -383,7 +383,9 @@ back to the requester's side, that is, B's result. While `quarantined`:
   the kind's `Apply` in the same transaction (`internal/mail/receiver.go`), and the row
   carries no session or round, so the copy is not blanked afterwards: it is **stored blank
   (`''`) at receipt** whenever `Apply` marks the message's content as withheld or dropped
-  (review 29, H1). That covers (1) a `ws.result` that enters `quarantined`; (2) a `ws.result`
+  (review 29, H1). Since R55-F13 every `mail_inbox` row is stored blank, for every kind
+  ([mail.md §Inbox rows](mail.md#inbox-rows-r55-f13)); the cases below stay as the reason the
+  rule first existed, and the tests for them stay. That covers (1) a `ws.result` that enters `quarantined`; (2) a `ws.result`
   that is ignored (`ws.ignored`, wrong state or round, closed session); (3) a
   `request.complete` whose content is dropped as an [early
   complete](#early-complete-and-phase-1-workers); (4) a `ws.cancel` while the quarantine rule
@@ -569,7 +571,10 @@ session opened before the upgrade stays agent-owned for later rounds: if the con
 requests changes, the helper's agent can answer round 2, and no automatic `ws.cancel` is
 sent. This is accepted before the first release (review 69b F7).
 
-Rows are kept indefinitely in Phase 2 (they are the data for the 3.7 experience record).
+Rows are never deleted automatically (they are the data for the 3.7 experience record; owner
+decision D50). [`agentnet prune`](../cli/prune.md) removes a `closed` session older than its
+cutoff together with its request, grants and experience records
+([retention.md](retention.md#finished-items)).
 `peers remove` does not delete them; a session with a removed peer can no longer change
 (every mail from that key is `unpaired`), and A may still cancel it locally, which ends its
 grants. Migration 14 must be added to the DROP lists of **both** rewind tests in

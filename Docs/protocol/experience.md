@@ -68,8 +68,9 @@ CREATE TABLE experience_records (
 
 `experience_records` goes into the DROP lists of both rewind tests.
 
-- **Retention:** kept indefinitely in Phase 3, like `work_sessions` and `requests`, from
-  which it is derived (OD-P3-8 proposes a limit for the beta). `peers remove` does not
+- **Retention:** never deleted automatically, like `work_sessions` and `requests`, from
+  which it is derived (owner decision D50). [`agentnet prune`](../cli/prune.md) removes it
+  with its session ([retention.md](retention.md#finished-items)). `peers remove` does not
   delete it. Deleting the database deletes it.
 
 ## Who can read it

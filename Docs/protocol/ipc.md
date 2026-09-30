@@ -437,6 +437,14 @@ Specified in their documents, with the same rules (review 48: this table was mis
 - `audit_list`, `audit_verify`, `audit_head` ([audit.md](audit.md#agentnet-log); `audit_verify`
   is exempt from the 2-second rule, see [Audit events](#audit-events-written-by-the-daemon-lifecycle) below).
 
+## R55-F13 methods
+
+- `data_prune` ([retention.md](retention.md#ipc)): removes finished items older than a cutoff
+  of at least 35 days, in batches that each return within 2 s (`more: true` means call again);
+  `dry_run` only counts. Written by [`agentnet prune`](../cli/prune.md).
+- `grant_list` gains `limit` and `cursor`, and its result `next_cursor`
+  ([grant.md](grant.md#ipc)).
+
 ## Compatibility
 
 New methods and new result fields may be added without a version bump.

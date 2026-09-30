@@ -176,6 +176,17 @@ misbehaving peer or relay cannot flood the audit log.
 
 `session.open` detail: `{"peer":"<key>","role":"initiator|responder","session":"<8 hex>"}`.
 
+**Size check before queueing (R55-F13, review 55 R55-052).** The relay read loop hands
+`session.*` envelopes to the session worker through a queue of at most **256 envelopes and
+16 MiB** of decoded payload. Before queueing, an envelope whose decoded payload is longer than
+**65559 bytes** (the 16-byte `sid`, the 8-byte `counter` and one maximal 65535-byte Noise
+message, the largest any honest `session.*` payload can be) is dropped. So is an envelope that
+would exceed either queue bound. These drops happen before the sender is known to be a paired
+peer, so they are **not audited**. They are counted in one log line per minute
+(`event=session_drop`, with counts by reason `oversize` or `queue_full` and bytes). Before
+R55-F13 the queue was bounded by count only, and a relay could pin about 190 MiB of 1 MiB
+frames in it while the worker was slow.
+
 ## What the relay sees
 
 Routing fields (`from`, `to`, `team`, `type`, `id`, `ts`) and payload sizes.

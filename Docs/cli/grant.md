@@ -55,6 +55,10 @@ peer, action, resource (`label[#branch]`, never a local path), scope, expiry and
 (`pending_approval`, `active`, `revoked`, or `expired` once past its expiry). `--json`:
 `{"ok":true,"grants":[...]}` with the grant view of the protocol document; `resource.path`
 (the local path) appears on issued grants only, and `grants` is `[]` when there are none.
+The command reads every match through IPC `grant_list` pages of 200 (`cursor` /
+`next_cursor`, R55-F13) and prints them as one list, newest first, so a long list no longer
+fails on the 1 MiB IPC line. Expired and revoked grants stay listed until
+[`agentnet prune`](prune.md) removes them.
 
 Exit codes: 0, 1 error, 2 usage, 3 daemon not running.
 

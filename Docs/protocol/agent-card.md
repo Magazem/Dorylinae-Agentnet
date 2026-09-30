@@ -33,7 +33,7 @@ signature did not bind under that name (review 55 R55-019).
 | `name` | string | Display name, text of 1-128 characters (see below). Default: the machine hostname |
 | `public_key` | string | Ed25519 public key (RFC 8032), 32 bytes, strict base64url without padding (43 characters, [Verification](#verification) step 2) |
 | `harness` | string | Agent harness in use, text of 1-128 characters, e.g. `claude-code`, `codex`, `hermes`, `custom` (default) |
-| `skills` | array of skill | Declared skills, possibly empty. Order is preserved and signed |
+| `skills` | array of skill | Declared skills, 0-32 of them ([Size](#size)). Order is preserved and signed |
 | `created` | string | Creation time, RFC 3339 UTC with `Z` and whole seconds, e.g. `2026-01-02T03:04:05Z`: exactly `YYYY-MM-DDThh:mm:ssZ`, a real calendar date, hour 00-23, minute and second 00-59 (no leap second) |
 
 **Text** (every string member except `public_key` and `created`, skill members
@@ -51,6 +51,30 @@ skill without it is refused, review 55 R55-213):
 | `id` | string | Stable machine identifier, text of 1-128 characters |
 | `name` | string | Human name, text of 1-128 characters |
 | `description` | string | Free text, text of 0-128 characters |
+
+### Size
+
+A signed card envelope is at most **16384 bytes** (`MaxCardBytes`) and a card declares at most
+**32 skills** (review 55 R55-057, ticket R55-F13). 16 KiB is the limit the relay already
+applies to a card in a pairing frame ([pairing.md](pairing.md)); before R55-F13 a daemon
+checked it nowhere else, so a team owner could introduce a member whose card held about 1,700
+skills (480 KiB), which every later read of the peers table decoded again.
+
+- For a document a verifier receives on its own (a pairing frame, a file given to
+  `tools/verifycard`, `agentnet identity --json` output), the limit is on the bytes of that
+  document as received.
+- For a card inside another document (a roster's `members[].card`), the limit is on the
+  canonical form of that member's value.
+- The limit is checked at [Verification](#verification) step 1, before parsing, so an
+  oversize document costs no parse. The skills count is checked at step 5.
+- `internal/agentcard` refuses to create or sign a card that breaks either limit, so a user can
+  never publish a card that peers refuse. The largest card within the per-member limits
+  (32 skills of 3 × 128 four-byte code points) is larger than 16 KiB; such a card is refused
+  at creation, with an error naming the size.
+
+A stored card that breaks a limit (introduced before R55-F13) is handled like any stored card
+that fails the new `Verify`: it is kept, reported by `agentnet doctor`, and refused when the
+daemon would forward it in a roster (the R55-F23 stored-card check).
 
 ## Signed card (envelope)
 
@@ -117,7 +141,8 @@ a signature over another Dorylinae message.
 
 ## Verification
 
-1. Parse the whole envelope under rules 6-8 of [Canonical
+1. Refuse a document longer than 16384 bytes ([Size](#size)) without parsing it. Then
+   parse the whole envelope under rules 6-8 of [Canonical
    serialisation](#canonical-serialisation), and apply rule 4 to every
    number in it. A document that breaks one of these rules is malformed,
    even when the offending text sits in a top-level member that step 1 then
@@ -154,8 +179,8 @@ a signature over another Dorylinae message.
    - `name` and `harness` are text (as defined under [Card](#card)) within
      their limits;
    - `public_key` is the string from step 2;
-   - `skills` is an array of objects with exactly the three skill members,
-     each a text within its limits;
+   - `skills` is an array of at most 32 objects ([Size](#size)) with exactly the three
+     skill members, each a text within its limits;
    - `created` has the exact form and ranges given in the Card table.
 6. The verified card is the values read in step 5. An implementation must
    not decode the card again with a parser that folds member names or lets
@@ -271,7 +296,7 @@ canonical form of the card as shown, so step 4 passes. These vectors check
 that the schema step, not the signature, refuses them. `internal/agentcard`
 (`Verify`, and `ParseStrict` itself for N6-N10), `tools/verifycard` and
 `tools/verifyvectors` must all refuse every one of them at that step. They
-must also accept P1.
+must also accept P1 and P2.
 
 **P1: accepted.** A valid surrogate pair in an ignored top-level member. The
 verified card is exactly the card of [Test vector](#test-vector), and `name` is
@@ -364,6 +389,28 @@ decoder that skips CR and LF gives the same 64 bytes.
 {"card":<canonical card of the Test vector>,"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcX\r\nr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA"}
 ```
 
+### Size vectors (R55-F13)
+
+**P2: accepted.** 32 skills, the most a card may declare ([Size](#size)); signed by the seed
+over the canonical form of this card (1808 bytes).
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"","id":"s01","name":"Skill 01"},{"description":"","id":"s02","name":"Skill 02"},{"description":"","id":"s03","name":"Skill 03"},{"description":"","id":"s04","name":"Skill 04"},{"description":"","id":"s05","name":"Skill 05"},{"description":"","id":"s06","name":"Skill 06"},{"description":"","id":"s07","name":"Skill 07"},{"description":"","id":"s08","name":"Skill 08"},{"description":"","id":"s09","name":"Skill 09"},{"description":"","id":"s10","name":"Skill 10"},{"description":"","id":"s11","name":"Skill 11"},{"description":"","id":"s12","name":"Skill 12"},{"description":"","id":"s13","name":"Skill 13"},{"description":"","id":"s14","name":"Skill 14"},{"description":"","id":"s15","name":"Skill 15"},{"description":"","id":"s16","name":"Skill 16"},{"description":"","id":"s17","name":"Skill 17"},{"description":"","id":"s18","name":"Skill 18"},{"description":"","id":"s19","name":"Skill 19"},{"description":"","id":"s20","name":"Skill 20"},{"description":"","id":"s21","name":"Skill 21"},{"description":"","id":"s22","name":"Skill 22"},{"description":"","id":"s23","name":"Skill 23"},{"description":"","id":"s24","name":"Skill 24"},{"description":"","id":"s25","name":"Skill 25"},{"description":"","id":"s26","name":"Skill 26"},{"description":"","id":"s27","name":"Skill 27"},{"description":"","id":"s28","name":"Skill 28"},{"description":"","id":"s29","name":"Skill 29"},{"description":"","id":"s30","name":"Skill 30"},{"description":"","id":"s31","name":"Skill 31"},{"description":"","id":"s32","name":"Skill 32"}],"version":1},"signature":"2slzd1dpD_BMAZl71UwBbYvgho4AwrxhLzI2hrz_J5Xl3RftkXs-1YClKzwtN_8qW4GSucHGP1MXwKR-SCamDg"}
+```
+
+**N16: fails at 1. An envelope over 16384 bytes.** P1 with the `note` value replaced by
+16384 ASCII `a` characters (`"note":"aaa…a"`), so the envelope is 16727 bytes long, with the
+valid card and signature. A verifier that parses first and checks later still refuses it, but
+at a cost the limit is there to avoid; the check must come before the parse.
+
+**N17: fails at 5. 33 skills**, one over the limit; the signature is real, so only the
+schema step refuses it.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"","id":"s01","name":"Skill 01"},{"description":"","id":"s02","name":"Skill 02"},{"description":"","id":"s03","name":"Skill 03"},{"description":"","id":"s04","name":"Skill 04"},{"description":"","id":"s05","name":"Skill 05"},{"description":"","id":"s06","name":"Skill 06"},{"description":"","id":"s07","name":"Skill 07"},{"description":"","id":"s08","name":"Skill 08"},{"description":"","id":"s09","name":"Skill 09"},{"description":"","id":"s10","name":"Skill 10"},{"description":"","id":"s11","name":"Skill 11"},{"description":"","id":"s12","name":"Skill 12"},{"description":"","id":"s13","name":"Skill 13"},{"description":"","id":"s14","name":"Skill 14"},{"description":"","id":"s15","name":"Skill 15"},{"description":"","id":"s16","name":"Skill 16"},{"description":"","id":"s17","name":"Skill 17"},{"description":"","id":"s18","name":"Skill 18"},{"description":"","id":"s19","name":"Skill 19"},{"description":"","id":"s20","name":"Skill 20"},{"description":"","id":"s21","name":"Skill 21"},{"description":"","id":"s22","name":"Skill 22"},{"description":"","id":"s23","name":"Skill 23"},{"description":"","id":"s24","name":"Skill 24"},{"description":"","id":"s25","name":"Skill 25"},{"description":"","id":"s26","name":"Skill 26"},{"description":"","id":"s27","name":"Skill 27"},{"description":"","id":"s28","name":"Skill 28"},{"description":"","id":"s29","name":"Skill 29"},{"description":"","id":"s30","name":"Skill 30"},{"description":"","id":"s31","name":"Skill 31"},{"description":"","id":"s32","name":"Skill 32"},{"description":"","id":"s33","name":"Skill 33"}],"version":1},"signature":"0ouqXvsFbA9vVXVDizSQktby6mS3VqQfi2dIAq_2yrY1BgC0KRSJylOdSTYH3XKHjfg6Wo4QyK3C8Sp-xA7oBw"}
+```
+
 `<canonical card of the Test vector>` in P1, N12 and N14 stands for the canonical
 card line of [Test vector](#test-vector), inserted verbatim. `tools/verifyvectors/vectors.json` carries
-every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1).
+every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1
+and P2); N16 is generated by `tools/specvectors` rather than typed.

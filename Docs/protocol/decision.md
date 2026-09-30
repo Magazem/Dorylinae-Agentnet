@@ -367,7 +367,9 @@ CREATE TABLE decisions (
 );
 ```
 
-Kept indefinitely. `decisions` goes into the DROP lists of both rewind tests.
+Kept indefinitely: [`agentnet prune`](../cli/prune.md) never removes a Decision, even when it
+removes the debate it came from ([retention.md](retention.md#finished-items), OD-F13-6).
+`decisions` goes into the DROP lists of both rewind tests.
 
 ## IPC and CLI
 

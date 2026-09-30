@@ -184,8 +184,10 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
 
 ## Receiving
 
-Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept in
-`mail_inbox` as proof. `Apply` runs inside the mail dedupe transaction:
+Kind `request` is registered with `Inbox: true`, so a `mail_inbox` row records the mail's
+`(from, id)` for dedupe. Since R55-F13 that row keeps no copy of the signed plaintext
+(`signed = ''`, [mail.md §Dedupe and inbox](mail.md#dedupe-and-inbox)): the canonical request
+is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transaction:
 
 1. **Strict body** ([Request object](#request-object)), including every
    [size limit](#size-limits), `from = msg.from`, `to = msg.to`, and `created ≤ msg.created`.
@@ -202,6 +204,10 @@ Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept
      without this bound a request could surface months later as new. An honest sender never
      resends after 21 d ([Idempotency](#idempotency)). Duplicates of a known id are still
      recognised at any age.
+   - with no row, and the sender is **over its daily cap** ([Per-peer caps](#per-peer-caps-r55-f13)):
+     it already has 200 `in` rows whose `received_at` falls in the last 24 h (any state,
+     auto-declined and cancelled rows included). The mail is [refused for a
+     limit](#per-peer-caps-r55-f13): no row, no reply, and a cancel tombstone stays in place.
    - with no row, and a [cancel tombstone](#cancel-od-p1-11) for `(msg.from, id)`: store the
      row with `state = cancelled`, `state_seq = 1`, `first_response` NULL, `reason` from the
      tombstone, and
@@ -215,6 +221,14 @@ Kind `request` is registered with `Inbox: true`, so the signed plaintext is kept
    - `unverified_peer`: the rule of Submitting step 2, applied to the sender (D5).
    - `unknown_team`: `team` is not a local team in state `active`.
    - `not_team_member`: `msg.from` or self is not in `team_members` of that team.
+   - `inbox_full`: the sender already has **100** open `in` rows here (state `pending`,
+     `deferred` or `accepted`), the **open cap** of [Per-peer caps](#per-peer-caps-r55-f13).
+
+   An auto-declined row keeps **no content**: `body` is stored as `{}` (its `body_hash` is
+   the hash of the received canonical request, so step 2 still recognises a resend), and the
+   views show it without a title. The user never acts on these rows, so keeping a peer's
+   64 KiB (or 320 KiB) body for each one would let a peer grow the database with no human
+   in the loop (review 55 R55-018, O-093).
 4. **Receiver-side budget** ([Urgency guards](#urgency-guards-17)). This may lower the stored
    `urgency` to `normal`, with `downgraded_by = receiver`. If the body carries
    `urgency_declared`, then `downgraded_by = sender`, `urgency_declared` is taken from the
@@ -243,6 +257,40 @@ Any other `Apply` error keeps the current behaviour: roll back, no ack, and the 
 resends. A well-behaved sender never triggers `bad_body`, because it validates with the
 same code (`internal/request.Validate`) before submitting.
 
+### Per-peer caps (R55-F13)
+
+Owner decision D50 (review 55 D12, R55-018): a paired peer cannot make the recipient store an
+unbounded number of requests. Two caps apply per sender key, both counted on the recipient's
+own `in` rows (so a sender cannot reset them), and only for a request id the recipient does
+not already hold (duplicates and conflicts of step 2 are never capped):
+
+| Cap | Counts | Value | When reached |
+|---|---|---|---|
+| **Open cap** | `in` rows from this peer in state `pending`, `deferred` or `accepted` | 100 | The new request is stored **declined** with code `inbox_full` (step 3), and the sender is told by the usual `request.decline`. This is the clear refusal: the sender's mirror ends `declined (inbox_full)`, and the sender may send a new request once the recipient has finished some |
+| **Daily cap** | `in` rows from this peer with `received_at ≥ now − 24 h`, in any state | 200 | The mail is **refused for a limit**: no row, no `request.decline` (see below) |
+
+The open cap bounds the requests a human or agent still has to look at; its rows keep their
+content. The daily cap bounds everything else a peer can create without anyone acting,
+including `inbox_full` and other auto-declined rows (which keep no content, step 3) and
+cancelled rows from tombstones. It also bounds the recipient's outgoing auto-decline mail,
+which would otherwise spend the recipient's own relay budget at the sender's pace. Every
+request type counts, `debate` and `question` included, and so does a request routed to an
+own-device helper.
+
+**Refused for a limit** is the [invalid body](#invalid-bodies) path with a different reason.
+`Apply` returns an error wrapping the sentinel `mail.ErrLimit`. The receiver rolls back, then
+in a new transaction inserts only the `mail_seen` row (so a resend of that mail is re-acked
+without being re-evaluated), audits `mail.reject {peer, id, reason: "limit"}` under the same
+rate limit as other rejects, and acks the id under `rejected`. The sender's outbox row ends
+`failed` (`rejected`), and its request mirror shows the delivery failure. A sender that resends
+the same request later in a new mail is evaluated again (the request id is still unknown
+here), so an honest resend after the window passes is accepted.
+
+A `pending` or `deferred` request that the user leaves alone keeps its slot in the open cap
+until someone declines, accepts or defers it (a defer keeps it open) or the sender cancels
+it. `accepted` counts until the request completes. The numbers are constants of
+`internal/request` (`MaxOpenPerPeer`, `MaxNewPerPeerPerDay`), not settings.
+
 ## Lifecycle
 
 ### Kinds (recipient → sender)
@@ -252,7 +300,7 @@ Each body is strict, with exactly the listed members:
 | Kind | Body | Extra rules |
 |---|---|---|
 | `request.accept` | `{"at", "request", "seq"}` | |
-| `request.decline` | `{"at", "code", "reason"?, "request", "seq"}` | `code`: `user`, `not_team_member`, `unknown_team` or `unverified_peer`. `reason`: 1–500 code points, required when `code = user`, absent otherwise |
+| `request.decline` | `{"at", "code", "reason"?, "request", "seq"}` | `code`: `user`, `not_team_member`, `unknown_team`, `unverified_peer` or `inbox_full` ([Per-peer caps](#per-peer-caps-r55-f13); a pre-R55-F13 sender refuses `inbox_full` as a bad body). `reason`: 1–500 code points, required when `code = user`, absent otherwise |
 | `request.defer` | `{"at", "request", "seq", "until"}` | `at < until ≤ at + 90 d` |
 | `request.complete` | `{"at", "note"?, "request", "result"?, "seq"}` | `note`: 1–2000 code points. `result`: the optional [result payload](#result-payload-d14) (D14) |
 | `request.cancelled` | `{"at", "request", "seq"}` | Confirms a [cancel](#cancel-od-p1-11). Sent only by the recipient's daemon, never by a user action |
@@ -695,9 +743,18 @@ queries need not parse `last_reply`. Migration 11 is already merged, so the colu
 a new migration 12 (ticket 1.6a), and the webhook queue moves to migration 13
 ([notify.md](notify.md#delivery)).
 
+```sql
+-- migration N (R55-F13; N = the next free version when it merges): the open-cap count
+CREATE INDEX requests_peer_state ON requests (direction, peer, state);
+```
+
+The daily cap counts with the existing `requests_peer_time` index.
+
 For `out` rows, `urgency_declared` = `urgency` unless the sender downgraded. For `in` rows,
-it is the body's `urgency_declared` if present, else the body's `urgency`. Rows are kept
-indefinitely in Phase 1. `peers remove` does not delete them.
+it is the body's `urgency_declared` if present, else the body's `urgency`. Rows are never
+deleted automatically (owner decision D50). The user removes finished rows older than 35 days
+with [`agentnet prune`](../cli/prune.md) ([retention.md](retention.md)). `peers remove` does not
+delete them.
 
 A request id is unique per sender, not globally. A CLI or IPC reference by id alone that
 matches `in` rows from several peers is `ambiguous_request`, and the caller passes `from`.

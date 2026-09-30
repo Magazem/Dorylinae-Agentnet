@@ -26,6 +26,7 @@ directory **before** the ticket that implements it starts.
 - [decision.md](decision.md): the Decision record: derivation, canonical form, signatures by both daemons, offline verification, inert Markdown (tickets 3.3a/b, draft)
 - [audit.md](audit.md): the hash-chained audit log, `agentnet log`, `--verify` and anchors, the no-content rule (tickets 3.6a/b, draft)
 - [experience.md](experience.md): the private per-session experience record (ticket 3.7, draft)
+- [retention.md](retention.md): what the daemon keeps and for how long: per-peer caps, blank inbox rows, `agentnet prune` of finished items (owner decision D50, ticket R55-F13)
 - [relay-hosted.md](relay-hosted.md): Phase 4 public relay: TLS, relay auth v2 (origin-bound), abuse and pairing limits (the D17 beta gate), persistence, backup/restore, quotas, monitoring, what the hosted relay learns (tickets 4.0a–d, 4.1a–c, draft)
 - [accounts.md](accounts.md): accounts on the hosted relay: device-flow binding of a key to a GitHub user or email, account states, revocation, web security, cap enforcement without content (tickets 4.2a–c, draft)
 - [invites.md](invites.md): beta invite codes, quota groups, seats (admission by pairing), waitlist, waves (tickets 4.3a–b, draft)
