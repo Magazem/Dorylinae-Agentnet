@@ -299,13 +299,16 @@ sender's newest mailbox key and has a fresh `id`.
   understand**. Only an unknown kind is acked here, so a sender may read `unsupported` as
   "the peer does not know this kind", for example to detect an older peer
   ([work-session.md §Phase 1 requester](work-session.md#early-complete-and-phase-1-workers)).
-- `rejected` (R55-F18, review 55 R55-059): of a kind this daemon understands, but **refused
-  for this mail**. That covers a bad body (`mail.ErrBadBody`, recorded in `mail_seen` so a
-  resend is re-acked the same way; [request.md §Invalid bodies](request.md#invalid-bodies))
-  and mail refused by the [receive age limit](#receive-age-limit) (not recorded). It says
-  nothing about the peer's version.
+- `rejected` (R55-F18, review 55 R55-059): **refused for this mail**. That covers a bad body
+  of a known kind (`mail.ErrBadBody`, recorded in `mail_seen` so a resend is re-acked the
+  same way; [request.md §Invalid bodies](request.md#invalid-bodies)), and mail of any kind
+  refused by the [receive age limit](#receive-age-limit) (not recorded; the age check runs
+  before the kind is looked at). It says nothing about the peer's version.
 - Each member is optional and holds 1–256 ids when present. At least one must be present.
   No other members are allowed. One id appears in at most one member.
+- An ack that carries `rejected` carries **only** `rejected`, with one id (review 69b F3). A
+  pre-R55-F18 sender refuses the whole ack (below). Because `rejected` is always sent alone,
+  such a sender loses only the rejected mail's ack, never the `ids` of other mails.
 
 Before R55-F18 a bad body and a stale mail were acked under `unsupported`, so a sender could
 not tell them from an unknown kind. A daemon from before R55-F18 refuses an ack that
@@ -313,7 +316,8 @@ carries `rejected` as `malformed` (step 12). Its outbox row for that mail is not
 keeps resending until it ends `expired` after 7 days, each resend re-acked `rejected`. This
 is accepted before the first release (OD-F18-1 in
 [69-r55-f18-spec.md](../review/69-r55-f18-spec.md)).
-- The receiver may hold acks for up to 1 s to batch them per peer.
+- The receiver may hold acks for up to 1 s to batch them per peer (`ids` and `unsupported`
+  only; the current daemon sends one ack per mail).
 - Acks are **not** outboxed, not deduped and not acked. A lost ack means the sender resends,
   and the receiver's dedupe re-acks it.
 - On receiving an ack, the sender, for each id that is an outbox row addressed to the ack's

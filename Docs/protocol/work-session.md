@@ -137,9 +137,11 @@ On `ws.state` from `msg.from` = A:
 2. Find the `work_sessions` row `(sid)` with `role = worker` and `peer = msg.from`. None:
    ack, ignore, audit `ws.orphan {session, peer, kind}`.
 3. `seq ≤ row.seq`: ignore (duplicate or out of order). **Except** (R55-F18, review 55
-   R55-114): if `row.cancel = 'requested'` and the echoed `state` is not `open`, set
-   `row.cancel = 'refused'`. A only applies a `ws.cancel` in `open`, so an echo in any other
-   state is A's refusal ([Cancel](#cancel)).
+   R55-114): if `seq = row.seq` (an echo of the state B already has), `row.cancel =
+   'requested'` and the echoed `state` is `awaiting_result` or `quarantined`, set
+   `row.cancel = 'refused'`. A applies a `ws.cancel` only in `open`, and it re-sends
+   `last_state` when it refuses one, so such an echo is A's refusal ([Cancel](#cancel)).
+   An older `seq` (a reordered mail) is not an echo and changes nothing (review 69b F4).
 4. Otherwise copy `state`, `seq`, `round`, `outcome`, `changes`, `verification` (if
    present), `state_at`. B does **not**
    check the transition; A is authoritative and the higher `seq` wins. The `cancel` mark
@@ -180,9 +182,20 @@ store what B sent. A derives the request record's `result` and `note` from its o
   This is the result A's agent or human actually reviewed, even if B sent another one.
 - `outcome = cancelled`: no `result`, `note = "session cancelled"` (the fixed text).
 
-The `state`, `seq` and `state_at` still come from the mail, by `seq` as before. When B's
-`result` or `note` differs from what A stores (compared as canonical JSON), A audits
-`ws.ignored {session, peer, kind: "request.complete", reason: "result_mismatch"}`. The
+The `state`, `seq` and `state_at` still come from the mail, by `seq` as before. When the
+mirror **applies** the mail (its `seq` is higher) and B's `result` or `note` differs from
+what A stores (compared as canonical JSON), A audits `ws.ignored {session, peer, kind:
+"request.complete", reason: "result_mismatch"}`. A mail ignored by `seq` is not audited
+this way.
+
+The same rule applies in the other order (review 69b F1). A modified B can send
+`request.complete` while A's session is `awaiting_result` or `quarantined`, before A
+decides. The request record is then `completed` with no content ([Early
+complete](#early-complete-and-phase-1-workers) step 2). When A later closes that session
+(accept-result, discard, or cancel after a request for changes), the close transaction
+also writes A's view into the request record while it is `completed`, as above. So
+whichever arrives second, B's `request.complete` or A's close, the record ends with what A
+accepted. The
 message's inbox copy follows the existing rule: it is stored blank only when the
 [quarantine rule](#quarantine-24) holds ([D18](#inbox-copy-d18)). A released and accepted
 result is A's own reviewed copy, so A stores it in the request record even when the rule
@@ -204,6 +217,11 @@ trying to deliver content past the quarantine. A's daemon, in the mail transacti
    Closed: cancel` edge, caused by B), ending its grants as for every close, and sends the
    `ws.state` as usual (a Phase 1 B acks it `unsupported`). In `awaiting_result` or
    `quarantined` (only a misbehaving Phase 2 B can cause this) the session is left to A.
+   In that case, B's `result` and `note` are **not stored** in the request record
+   (R55-F18, review 69b F1), whether or not the quarantine rule holds. A result is under
+   review, so B's copy would compete with it. A writes its own view into the record when
+   it closes the session ([Closing the request](#closing-the-request)). This is audited
+   `ws.ignored {…, reason: "early_complete"}` when content was dropped.
 
 **Late decline or cancelled (R55-F18, review 55 R55-062).** A `request.decline` or
 `request.cancelled` from B with a higher `seq` can move A's mirror out of `accepted` after a
@@ -238,9 +256,11 @@ through the debate ([debate.md](debate.md)).
 
 The trigger is not lost on restart (R55-061). The daemon runs this check after an outbox row
 ends `failed`/`unsupported_kind`. It also runs it once at start, for every peer with a
-not-`closed`, non-debate worker session, after the store is open and before mail is
-received. Shutdown waits for a running check, or cancels it, before the store closes. The
-check is idempotent: it reads the durable outbox row
+not-`closed`, non-debate worker session, once the stores are wired. It does not need to run
+before mail is received, because each session is re-read inside its own transaction.
+Shutdown cancels running checks and waits for them before the store closes. After shutdown
+has begun, no new check starts: a trigger that arrives then is left to the next start's
+rescan (review 69b F6). The check is idempotent: it reads the durable outbox row
 (`failed`/`unsupported_kind`, created at or after the session opened), which is kept 30 days
 after it turned final.
 
@@ -412,9 +432,9 @@ disk, not fixed for Phase 3.
   is `open` (audit `ws.cancel_in {session, peer, result: "cancelled"}`), and otherwise
   ignores it (`result: "refused"`) and re-sends its `last_state` (10-minute rule), so B
   learns the real state. B's `ws_show` shows `cancel: "requested"` meanwhile, like the
-  request mirror. B sets `cancel: "refused"` when a `ws.state` shows a state other than `open`
-  or `closed` while its cancel is requested, whether that `ws.state` is new or an echo of one
-  B already has ([Mirror](#mirror-on-b) steps 3–4; R55-F18, review 55 R55-114). Before
+  request mirror. B sets `cancel: "refused"` when a `ws.state` shows `awaiting_result` or
+  `quarantined` while its cancel is requested. That `ws.state` may be new, or an echo with
+  the `seq` B already has, but not an older one ([Mirror](#mirror-on-b) steps 3–4; R55-F18, review 55 R55-114). Before
   R55-F18 `refused` was never set. With `cancel: "refused"`, B may send `--cancel` again (it
   is not a duplicate). An echo suppressed by the 10-minute rule leaves `requested` until A's
   next `ws.state`, which is acceptable because B can see the state it has.
@@ -478,9 +498,13 @@ R55-029):
   submission names its submitter (agent or runner), and an agent submission on a marked
   session fails there. So a new IPC path cannot bypass it.
 - When a `ws.state` opens a new round (`open`, `round ≥ 2`, after A requested changes), the
-  helper's daemon sends `ws.cancel` with no reason after commit, because the runner acts only
-  on arrival and a re-run needs a new request (device.md). A then closes the session
-  `cancelled`. Without this the session would stay `open` with no one able to answer.
+  helper's daemon sends `ws.cancel` with no reason, because the runner acts only on arrival
+  and a re-run needs a new request (device.md). It does this **in the same transaction** that
+  applies the `ws.state` (it marks `cancel = 'requested'` and submits the `ws.cancel` to the
+  outbox), so a crash cannot lose it (review 69b F5). A then closes the session
+  `cancelled`. Without this the session would stay `open` with no one able to answer. Each
+  applied `ws.state` sends at most one `ws.cancel`, and a duplicate or echo sends none, so
+  the number of `ws.cancel` mails is bounded by A's own `ws.state` mails.
 - The session view on B carries `"runner": true`.
 
 A requester cannot tell a run session from a normal one and needs no rule for it: A applies
@@ -533,10 +557,14 @@ CREATE UNIQUE INDEX work_sessions_request ON work_sessions (role, peer, request_
 ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
 ```
 
-`runner` is B only: 1 for a [run session](#run-sessions). Existing rows get 0 and need no
-backfill. A daemon restart, which every upgrade needs, already ends every queued or
-executing run through the runner's own restart path (device.md §Limits), and the
-one-result-per-round rule refuses any later agent result in that round.
+`runner` is B only: 1 for a [run session](#run-sessions). Existing rows get 0 and are not
+backfilled: the run queue forgets finished jobs, so the helper cannot tell which old sessions
+were runner-owned. A daemon restart, which every upgrade needs, ends every queued or
+executing run through the runner's own restart path (device.md §Limits). The
+one-result-per-round rule then refuses a later agent result **in that round** only. A run
+session opened before the upgrade stays agent-owned for later rounds: if the controller
+requests changes, the helper's agent can answer round 2, and no automatic `ws.cancel` is
+sent. This is accepted before the first release (review 69b F7).
 
 Rows are kept indefinitely in Phase 2 (they are the data for the 3.7 experience record).
 `peers remove` does not delete them; a session with a removed peer can no longer change
@@ -662,7 +690,7 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 | `ws.cancel_in` | A / `daemon` | `{session, peer, result}` |
 | `ws.state` | B / `daemon` | `{session, peer, state, seq, round}` |
 | `ws.close` | A / `daemon` | `{session, peer, outcome, rounds, age_s}` (`age_s` since `opened`: the time-to-result metric) |
-| `ws.ignored`, `ws.orphan` | either / `daemon` | `{session, peer, kind, reason?}`. `session` is always present (R55-167). `ws.ignored` reasons: `state`, `round`, `kind`, `early_complete`, `result_mismatch` (R55-F18) |
+| `ws.ignored`, `ws.orphan` | either / `daemon` | `{session, peer, kind, reason?}`. `session` is always present (R55-167). `ws.ignored` reasons: `state`, `round`, `kind`, `closed` (R55-067, ticket F12), `early_complete`, `result_mismatch` (R55-F18) |
 
 `verification` and `outcome` are enums the daemon sets from a closed set; the result's
 `status` and `exit_code` stay out of audit as in D14.
