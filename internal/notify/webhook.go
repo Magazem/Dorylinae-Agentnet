@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -10,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
@@ -120,14 +120,13 @@ func (w *Webhook) enqueue(ctx context.Context, cfg WebhookConfig, ev Event) erro
 		return err
 	}
 	p := buildPayload(id, ev, cfg.Title)
+	p.Queued = 1
 	body, err := marshalPayload(p)
 	if err != nil {
 		return err
 	}
-	body, err = applyFormat(cfg.Format, body, p.Text)
-	if err != nil {
-		return err
-	}
+	// The queue holds the generic body; title and format are applied per
+	// attempt from the current settings (R55-074).
 	return w.Queue.Enqueue(ctx, id, ev.Kind, body, w.now())
 }
 
@@ -172,6 +171,11 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 	if err != nil || !ok {
 		return // removed; --webhook off already failed pending rows.
 	}
+	if now.Sub(row.Created) > queueMaxAge {
+		// Too old: give up before the POST, not only after a failure (R55-076).
+		w.finish(ctx, row, 0, "expired", now, false)
+		return
+	}
 	if err := ValidateWebhookURL(cfg.URL); err != nil {
 		w.finish(ctx, row, 0, "bad_webhook", now, false)
 		return
@@ -187,9 +191,14 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 		return
 	}
 
+	body, err := renderBody([]byte(row.Body), cfg)
+	if err != nil {
+		w.finish(ctx, row, 0, "bad_webhook", now, false)
+		return
+	}
 	ts := now.Unix()
-	sig := Sign(secret, row.ID, ts, []byte(row.Body))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, strings.NewReader(row.Body))
+	sig := Sign(secret, row.ID, ts, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, bytes.NewReader(body))
 	if err != nil {
 		w.finish(ctx, row, 0, "bad_webhook", now, false)
 		return

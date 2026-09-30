@@ -244,9 +244,13 @@ func httpClient(scheme string, resolve Resolver) *http.Client {
 
 func newHTTPClient(scheme string, resolve Resolver, proxyFrom func(*http.Request) (*url.URL, error), dial dialFunc) *http.Client {
 	tracker := &proxyTracker{from: proxyFrom}
+	// Each attempt builds its own transport, so a kept-alive connection could
+	// never be reused and would sit idle (with two goroutines) until the
+	// receiver closes it (R55-026).
 	transport := &http.Transport{
-		Proxy:       tracker.proxy,
-		DialContext: resolvingDialer(scheme, resolve, tracker.isProxy, dial),
+		Proxy:             tracker.proxy,
+		DialContext:       resolvingDialer(scheme, resolve, tracker.isProxy, dial),
+		DisableKeepAlives: true,
 	}
 	return &http.Client{
 		Timeout:   10 * time.Second,

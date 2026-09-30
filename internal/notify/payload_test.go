@@ -142,7 +142,7 @@ func TestApplyFormatDiscordEscapesMarkdown(t *testing.T) {
 	if err := json.Unmarshal(out, &m); err != nil {
 		t.Fatal(err)
 	}
-	want := `\# bob \[click\]\(https://evil.test\) \|\|x\|\| \<\@123\> \*b\*`
+	want := `\# bob \[click\]\(https:` + "\u200b" + `//evil.test\) \|\|x\|\| \<\@123\> \*b\*`
 	if m["content"] != want {
 		t.Errorf("content = %v, want %v", m["content"], want)
 	}
