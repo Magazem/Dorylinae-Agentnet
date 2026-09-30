@@ -284,6 +284,12 @@ type Store struct {
 	mu      sync.Mutex
 	pending map[string]*live
 	closed  bool // set by Close: no window or approval is created after it
+	// unwritten holds approvals that expired while their row could not be
+	// updated: List hides them and Show reports them expired while the
+	// write is retried (review 77, L2).
+	unwritten map[string]struct{}
+	// expireRetry is expireRetryWait; tests shorten it before any expiry.
+	expireRetry time.Duration
 }
 
 // NewStore builds a Store with a fresh approval_key. now defaults to
@@ -300,7 +306,8 @@ func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, window WindowRunne
 	}
 	return &Store{
 		db: db, audit: audit, notifier: notifier, window: window, settings: NewSettings(db), now: now,
-		key: key, pending: map[string]*live{},
+		key: key, pending: map[string]*live{}, unwritten: map[string]struct{}{},
+		expireRetry: expireRetryWait,
 	}, nil
 }
 
@@ -308,7 +315,8 @@ func NewStore(db *sql.DB, audit AuditSink, notifier Notifier, window WindowRunne
 // (Docs/protocol/approval.md §The approval window, "kills it ... when the
 // daemon stops"). Call once, at daemon shutdown.
 func (s *Store) Close() {
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	s.closed = true
 	handles := make([]WindowHandle, 0, len(s.pending))
 	for _, e := range s.pending {
@@ -323,7 +331,7 @@ func (s *Store) Close() {
 			e.handle = nil
 		}
 	}
-	s.mu.Unlock()
+	release()
 	for _, h := range handles {
 		h.Kill()
 	}

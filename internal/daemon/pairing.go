@@ -92,6 +92,8 @@ func pairError(err error) error {
 		return &ipc.Error{Code: CodeBadCode, Message: "a 10-character code is a legacy v1 code; redeem it with 'agentnet pair --v1 <code>'"}
 	case errors.Is(err, peers.ErrNotFound):
 		return &ipc.Error{Code: CodeUnknownPairing, Message: "no pairing with that id"}
+	case errors.Is(err, peers.ErrTooManyStarts):
+		return &ipc.Error{Code: CodeTooManyPairings, Message: "too many pairings were started in the last minute; try again shortly"}
 	case errors.Is(err, peers.ErrTooMany):
 		return &ipc.Error{Code: CodeTooManyPairings, Message: "too many pairings in progress"}
 	default:

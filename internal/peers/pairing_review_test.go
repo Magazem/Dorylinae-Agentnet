@@ -1,7 +1,6 @@
 package peers
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
@@ -136,10 +135,9 @@ func startRevIssuer(t *testing.T, m *Manager) (*session, string) {
 func TestReviewTagInTimeWithSlowKCompletes(t *testing.T) {
 	m, snd, _, store := newRevManager(t, func(c *Config) { c.ConfirmWait = 40 * time.Millisecond })
 	s, id := startRevIssuer(t, m)
-	<-s.kd.ready
 	m.mu.Lock()
-	k := bytes.Clone(s.kd.k)
-	gate := &kderiv{ready: make(chan struct{})} // K "still computing"
+	k := deriveK(s.lookup, s.secret)
+	gate := &kderiv{ready: make(chan struct{}), started: true} // K "still computing"
 	s.kd = gate
 	lookup, ownMbox := s.lookup, s.ownMbox
 	m.mu.Unlock()
