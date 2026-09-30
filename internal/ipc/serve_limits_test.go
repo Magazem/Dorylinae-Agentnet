@@ -2,15 +2,22 @@ package ipc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 // chanListener hands out the connections sent on conns. Each Accept first
@@ -80,17 +87,6 @@ func roundTrip(t *testing.T, c net.Conn, method string) Response {
 	return resp
 }
 
-func waitFor(t *testing.T, what string, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-}
-
 func pingServer() *Server {
 	s := NewServer()
 	s.Handle("ping", func(context.Context, json.RawMessage) (any, error) { return "pong", nil })
@@ -114,45 +110,131 @@ func TestServeRetriesAcceptErrors(t *testing.T) {
 	}
 }
 
-// At most maxConns connections are served at once; the next is accepted
-// only once one of them ends (review 55, R55-083).
-func TestServeBoundsConnections(t *testing.T) {
+// testEndpoint is the IPC endpoint of a fresh home directory.
+func testEndpoint(t *testing.T) string {
+	t.Helper()
+	p, err := paths.In(testutil.TempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p.Endpoint
+}
+
+// holdSilent opens n connections that never send a request, as a local
+// client squatting on the slots would (review 77, M1).
+func holdSilent(t *testing.T, ln *chanListener, n int) []net.Conn {
+	t.Helper()
+	var held []net.Conn
+	t.Cleanup(func() {
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	for i := 0; i < n; i++ {
+		a, b := net.Pipe()
+		held = append(held, a)
+		ln.conns <- b
+	}
+	return held
+}
+
+// offer hands one more client to the server without blocking the test.
+func offer(ln *chanListener) net.Conn {
+	a, b := net.Pipe()
+	go func() {
+		select {
+		case ln.conns <- b:
+		case <-ln.closed:
+			_ = b.Close()
+		}
+	}()
+	return a
+}
+
+// At most maxConns connections are served at once. A client past the cap
+// is answered busy at once, not left hanging (review 55, R55-083; review 77,
+// M1).
+func TestServeAnswersBusyAtTheCap(t *testing.T) {
 	ln := newChanListener()
 	serveOn(t, pingServer(), ln)
-	var clients []net.Conn
+	holdSilent(t, ln, maxConns)
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	start := time.Now()
+	resp := roundTrip(t, a, "ping")
+	if resp.OK || resp.Error == nil || resp.Error.Code != CodeBusy || resp.ID != "1" {
+		t.Fatalf("response %+v, want busy for id 1", resp)
+	}
+	if d := time.Since(start); d > busyTimeout {
+		t.Fatalf("busy answer took %v", d)
+	}
+}
+
+// A connection that sends no request within firstRequestTimeout is closed,
+// so silent connections free their slots long before the idle timeout
+// (review 77, M1).
+func TestServeClosesSilentConnections(t *testing.T) {
+	ln := newChanListener()
+	serveOn(t, pingServer(), ln)
+	held := holdSilent(t, ln, maxConns)
+	_ = held[0].SetReadDeadline(time.Now().Add(firstRequestTimeout + 5*time.Second))
+	start := time.Now()
+	if _, err := held[0].Read(make([]byte, 1)); err == nil {
+		t.Fatal("a silent connection got data")
+	}
+	if d := time.Since(start); d > firstRequestTimeout+2*time.Second {
+		t.Fatalf("silent connection closed after %v, want about %v", d, firstRequestTimeout)
+	}
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	if resp := roundTrip(t, a, "ping"); !resp.OK {
+		t.Fatalf("after the silent connections timed out: %+v", resp)
+	}
+}
+
+// A client of a real listener (a named pipe on Windows, a Unix socket
+// elsewhere) gets the busy answer while every slot is held, instead of a
+// dial failure or a hang (review 77, M1).
+func TestListenerAnswersBusyAtTheCap(t *testing.T) {
+	endpoint := testEndpoint(t)
+	ln, err := Listen(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveOn(t, pingServer(), ln)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var held []net.Conn
 	defer func() {
-		for _, c := range clients {
+		for _, c := range held {
 			_ = c.Close()
 		}
 	}()
-	offer := func() {
-		a, b := net.Pipe()
-		clients = append(clients, a)
-		go func() {
-			select {
-			case ln.conns <- b:
-			case <-ln.closed:
-				_ = b.Close()
-			}
-		}()
+	for i := 0; i < maxConns; i++ {
+		c, err := Dial(ctx, endpoint)
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		held = append(held, c)
 	}
-	for i := 0; i < maxConns+3; i++ {
-		offer()
+	// Every held connection must be accepted and in a slot before the probe.
+	time.Sleep(200 * time.Millisecond)
+	cctx, ccancel := context.WithTimeout(context.Background(), busyTimeout+time.Second)
+	defer ccancel()
+	err = Call(cctx, endpoint, "ping", nil, nil)
+	var ie *Error
+	if !errors.As(err, &ie) || ie.Code != CodeBusy {
+		t.Fatalf("Call while every slot is held: %v, want busy", err)
 	}
-	waitFor(t, "maxConns accepted connections", func() bool { return ln.accepted.Load() == maxConns })
-	time.Sleep(50 * time.Millisecond) // an unbounded Serve would accept the rest by now
-	if n := ln.accepted.Load(); n != maxConns {
-		t.Fatalf("%d connections accepted at once, want %d", n, maxConns)
-	}
-	_ = clients[0].Close()
-	waitFor(t, "a waiting connection to be accepted", func() bool { return ln.accepted.Load() == maxConns+1 })
 }
 
 // A handler that panics answers "internal error" and the server keeps
 // serving (review 55, R55-143).
 func TestHandlerPanicIsInternalError(t *testing.T) {
 	s := pingServer()
-	s.Handle("boom", func(context.Context, json.RawMessage) (any, error) { panic("handler bug") })
+	s.Handle("boom", func(context.Context, json.RawMessage) (any, error) { panic("handler bug with secret") })
+	var logs syncBuffer
+	s.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	ln := newChanListener()
 	serveOn(t, s, ln)
 	a, b := net.Pipe()
@@ -168,4 +250,83 @@ func TestHandlerPanicIsInternalError(t *testing.T) {
 	if resp := roundTrip(t, a2, "ping"); !resp.OK {
 		t.Fatalf("after a panic: %+v", resp)
 	}
+	// Logged once, with the method and the stack, never the panic's text.
+	out := logs.String()
+	if n := strings.Count(out, "event=ipc_handler_panic"); n != 1 {
+		t.Fatalf("%d panic log lines, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "method=boom") || !strings.Contains(out, "panic=string") || !strings.Contains(out, "goroutine") {
+		t.Errorf("panic log lacks the method, the value's type or the stack:\n%s", out)
+	}
+	if strings.Contains(out, "secret") {
+		t.Errorf("panic log holds the panic's text:\n%s", out)
+	}
+}
+
+// A handler that panics while holding a lock it unlocks by hand still
+// leaves the server answering other methods (review 77, M2; the store
+// side is covered in internal/approval).
+func TestServeKeepsServingAfterPanics(t *testing.T) {
+	s := pingServer()
+	s.Handle("boom", func(context.Context, json.RawMessage) (any, error) { panic("x") })
+	s.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	ln := newChanListener()
+	serveOn(t, s, ln)
+	for i := 0; i < maxConns+5; i++ {
+		a := offer(ln)
+		if resp := roundTrip(t, a, "boom"); resp.Error == nil || resp.Error.Code != CodeInternal {
+			t.Fatalf("call %d: %+v", i, resp)
+		}
+		_ = a.Close()
+	}
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	if resp := roundTrip(t, a, "ping"); !resp.OK {
+		t.Fatalf("after %d panics: %+v", maxConns+5, resp)
+	}
+}
+
+// A run of failing Accept calls is logged once when it starts, not once per
+// retry (review 77, L3).
+func TestServeLogsAcceptFailures(t *testing.T) {
+	errs := make([]error, 8) // about 1.3 s of backoff
+	for i := range errs {
+		errs[i] = syscall.EMFILE
+	}
+	ln := newChanListener(errs...)
+	s := pingServer()
+	var logs syncBuffer
+	s.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+	serveOn(t, s, ln)
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	_ = a.SetDeadline(time.Now().Add(30 * time.Second))
+	if resp := roundTrip(t, a, "ping"); !resp.OK {
+		t.Fatalf("response %+v", resp)
+	}
+	out := logs.String()
+	if n := strings.Count(out, "event=ipc_accept_error"); n != 1 {
+		t.Fatalf("%d accept error log lines for one run of failures, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, "event=ipc_accept_recovered") {
+		t.Errorf("no recovery log line:\n%s", out)
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the server's goroutines.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

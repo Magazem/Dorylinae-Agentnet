@@ -127,14 +127,14 @@ a protocol version change (v3).
 
 ```
 Issuer I (pair --new)                  relay                    Redeemer R (pair <code>)
- generate code; start K = Argon2id(...)
+ generate code
  pair_new{lookup, card_I, mbox_I} ---->   store H(lookup) -> (I, card_I, mbox_I)
  <---- pair_code{expires}                 (no code in the reply)
  show LLLLL-SSSSS-SSSSS                                   human carries the code
                                           <---- pair_redeem{lookup, card_R, mbox_R}
-                                                          (R computes K in parallel)
+
  <---- pair_peer{key_R, card_R, mbox_R}   pair_peer{key_I, card_I, mbox_I} ---->
- verify card_R, mbox_R; compute T                         verify card_I, mbox_I; compute T
+ verify card_R, mbox_R; compute T, K                      verify card_I, mbox_I; compute T, K
  <-----------------------------------  envelope pair.confirm{tag_R}
  check tag_R
  ok: store R (trust=code)
@@ -386,9 +386,13 @@ The daemon does not trust the relay's clock or `expires`.
 
 An attempt that is still waiting when the code TTL ends is failed too. Finished pairings
 stay queryable for one hour. At most 16 pairings may be pending at once, as in v1.
-The daemon starts a pairing's derivation only once its `pair_new` or `pair_redeem` was
-sent to the relay, and runs at most **4** derivations at once (4 × 64 MiB); a derivation
-still waiting for its turn when its pairing ends is dropped (review 55, R55-031).
+The daemon derives K only once the pairing receives its first valid `pair_peer`: K is
+needed only to send or check a tag, so a code whose lookup the relay does not know costs
+no derivation. It runs at most **4** derivations at once (4 × 64 MiB); a derivation still
+waiting for its turn when its pairing ends is dropped. A daemon starts at most **10**
+pairings (`pair --new`, `pair <code>`, team invites and joins together) at once and
+**10 per minute** after that; past that a start is refused with `too_many_pairings`
+(review 55, R55-031; review 77, M3).
 
 ### Failure codes (daemon)
 

@@ -52,11 +52,16 @@ only if the current user owns it.
 Newline-delimited JSON (one JSON object per line, UTF-8). The client sends one
 request line and reads one response line; a connection may carry several
 request/response pairs in sequence. Lines are limited to 1 MiB. The server
-closes connections that stay idle for more than 30 s. It serves at most **64**
-connections at once; further clients wait until one ends. An `accept` error other than
-the listener closing (for example too many open files) is retried after a delay of
-5 ms doubling up to 1 s, not fatal. A handler that panics answers `internal`
-(review 55, R55-083, R55-143).
+closes connections that stay idle for more than 30 s, and a new connection that has not
+sent a complete first request line within **5 s**. It serves at most **64** connections at
+once. A client past that is answered one line with error `busy` (with its request's `id`
+when the request arrives within 2 s) and closed at once, so it fails fast instead of
+waiting; at most 16 such answers are in progress, past that the connection is closed
+without one. An `accept` error other than the listener closing (for example too many open
+files) is retried after a delay of 5 ms doubling up to 1 s, not fatal; the daemon logs the
+first failure of a run and then at most once a minute. A handler that panics answers
+`internal`; the daemon logs the method and the stack, never the params (review 55,
+R55-083, R55-143; review 77, M1-M2, L3).
 
 **Phase 3 draft (ticket 3.1b, review 43 M7):** the server encodes results with
 HTML escaping **off** (`json.Encoder.SetEscapeHTML(false)`). With the default
@@ -99,6 +104,7 @@ Error codes (stable, machine readable):
 | `bad_request` | Malformed JSON or missing `method` |
 | `unknown_method` | No handler registered for `method` |
 | `internal` | Handler failed; message has no sensitive detail |
+| `busy` | The daemon already serves its maximum of connections; try again |
 
 ## Methods
 

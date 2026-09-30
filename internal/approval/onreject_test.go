@@ -139,17 +139,24 @@ func TestOnRejectRunsOnLockout(t *testing.T) {
 
 // An expiry timer whose DB update fails still releases what the approval's
 // creator holds: the approval is already out of memory and can never be
-// confirmed (review 55, R55-146).
-func TestOnRejectRunsWhenExpiryUpdateFails(t *testing.T) {
+// confirmed (review 55, R55-146). While the write is retried, List hides the
+// approval and Show reports it expired; the audit row is written with the
+// row (review 77, L2).
+func TestExpiryUpdateFailure(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	s, _, _ := newTestStore(t, clock(&now))
+	s, _, audit := newTestStore(t, clock(&now))
+	s.expireRetry = 20 * time.Millisecond
+	t.Cleanup(s.Close)
 	var calls int32
 	v, err := s.Create(ctx, KindGrant, "g-1", "s", Action{OnReject: func(context.Context) { atomic.AddInt32(&calls, 1) }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s.db.Close() // every later query fails
+	if _, err := s.db.ExecContext(ctx, `CREATE TRIGGER no_expire BEFORE UPDATE OF state ON approvals
+WHEN NEW.state = 'expired' BEGIN SELECT RAISE(ABORT, 'test: write refused'); END`); err != nil {
+		t.Fatal(err)
+	}
 	s.expireNow(v.ID)
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("OnReject ran %d times, want 1", got)
@@ -157,5 +164,41 @@ func TestOnRejectRunsWhenExpiryUpdateFails(t *testing.T) {
 	s.expireNow(v.ID) // already out of memory: nothing more runs
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("OnReject ran %d times after a second expiry, want 1", got)
+	}
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("List = %+v, want the unwritten expiry hidden", list)
+	}
+	if got, err := s.Show(ctx, v.ID); err != nil || got.State != StateExpired {
+		t.Fatalf("Show = %+v, %v; want expired", got, err)
+	}
+	if _, err := s.Reject(ctx, v.ID, "ipc"); !errors.Is(err, ErrExpired) {
+		t.Fatalf("Reject = %v, want ErrExpired", err)
+	}
+	if audit.count("approval.reject") != 0 {
+		t.Fatal("expiry audited before its row was written")
+	}
+	if _, err := s.db.ExecContext(ctx, `DROP TRIGGER no_expire`); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var state string
+		if err := s.db.QueryRowContext(ctx, `SELECT state FROM approvals WHERE id = ?`, v.ID).Scan(&state); err != nil {
+			t.Fatal(err)
+		}
+		if state == StateExpired && !s.isUnwritten(v.ID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("row state %q after the write was allowed again", state)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := audit.count("approval.reject"); n != 1 {
+		t.Fatalf("%d approval.reject rows, want 1", n)
 	}
 }

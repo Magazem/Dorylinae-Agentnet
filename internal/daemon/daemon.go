@@ -606,6 +606,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	started := time.Now()
 	srv := ipc.NewServer()
 	srv.Activity = presenceSender.NoteActivity
+	srv.Logger = opts.Logger // handler panics and failing Accept calls (review 77)
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
 	registerTrust(srv, peerStore, log, teamStore)

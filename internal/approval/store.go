@@ -12,6 +12,20 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
+// lock takes s.mu and returns its release, which may be called more than
+// once. A function defers the release and may still call it early, so a
+// panic the IPC server recovers never leaves s.mu held (review 77, M2).
+func (s *Store) lock() (release func()) {
+	s.mu.Lock()
+	held := true
+	return func() {
+		if held {
+			held = false
+			s.mu.Unlock()
+		}
+	}
+}
+
 // ResolveTag finds the single pending approval whose id starts with tag, a
 // full id or a prefix of at least "a-" + 6 hex characters
 // (Docs/protocol/approval.md §Headless machines, "<tag> is the full id or a
@@ -59,43 +73,46 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	if !displaytext.Safe(summary) {
 		return View{}, ErrNotDisplaySafe
 	}
-	s.mu.Lock()
+	// The swept approvals' OnReject hooks run last, after s.mu is released
+	// (the release below is deferred later, so it runs first).
+	var swept []func(context.Context)
+	defer func() { runOnReject(context.WithoutCancel(ctx), swept...) }()
+	release := s.lock()
+	defer release()
 	now := s.now()
 	locked, err := s.settings.Locked(ctx, now)
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return View{}, err
 	}
 	if locked {
-		s.mu.Unlock()
+		release()
 		return View{}, ErrLocked
 	}
-	swept, err := s.sweepExpiredLocked(ctx, now)
-	// Every return below releases s.mu first, so the hooks run unlocked.
-	defer runOnReject(context.WithoutCancel(ctx), swept...)
+	swept, err = s.sweepExpiredLocked(ctx, now)
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return View{}, err
 	}
 	s.pruneDecided(ctx, now)
 	if len(s.pending) >= MaxPending {
-		s.mu.Unlock()
+		release()
 		s.auditLimit(ctx, "pending")
 		return View{}, ErrLimit
 	}
 	hourly, err := s.countCreatedSince(ctx, now.Add(-time.Hour))
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return View{}, err
 	}
 	if hourly >= MaxPerHour {
-		s.mu.Unlock()
+		release()
 		s.auditLimit(ctx, "hourly")
 		return View{}, ErrLimit
 	}
 	id, err := newID()
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return View{}, err
 	}
 	// Reserve the slot now, so a concurrent Create counts it toward
@@ -103,11 +120,11 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	// runs outside s.mu (Docs/protocol/approval.md §The approval window,
 	// "Locking").
 	if s.closed {
-		s.mu.Unlock()
+		release()
 		return View{}, ErrUnavailable
 	}
 	s.pending[id] = &live{action: action, reserved: true}
-	s.mu.Unlock()
+	release()
 
 	expires := now.Add(TTL)
 	var handle WindowHandle
@@ -120,11 +137,12 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 			}
 			return View{}, ErrUnavailable
 		}
-		s.mu.Lock()
+		release = s.lock()
+		defer release()
 		if entry, ok := s.pending[id]; ok {
 			entry.handle = handle
 		}
-		s.mu.Unlock()
+		release()
 	}
 
 	code, err := newCode()
@@ -161,11 +179,12 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	// The row is written and the slot finished under s.mu, and only if the
 	// reservation survived: a lockout (dropAllLocked) or Close during the
 	// ready wait removes it, and then nothing is stored (review 30, H1).
-	s.mu.Lock()
+	release = s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok || s.closed {
 		delete(s.pending, id)
-		s.mu.Unlock()
+		release()
 		if handle != nil {
 			handle.Kill()
 		}
@@ -180,7 +199,7 @@ INSERT INTO approvals (id, kind, subject, summary, created, expires, attempts, s
 VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 		id, kind, subject, summary, created, expiresStr); err != nil {
 		delete(s.pending, id)
-		s.mu.Unlock()
+		release()
 		if handle != nil {
 			handle.Kill()
 		}
@@ -190,7 +209,7 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 	entry.mac = mac
 	entry.reserved = false
 	entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
-	s.mu.Unlock()
+	release()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
 	}
@@ -221,9 +240,10 @@ func deliveryText(desktop bool, tag, summary, code string) (title, body string) 
 // dropReserved removes id's reserved (possibly not-yet-coded) pending slot,
 // used when Create fails after reserving it.
 func (s *Store) dropReserved(id string) {
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	delete(s.pending, id)
-	s.mu.Unlock()
+	release()
 }
 
 func (s *Store) auditLimit(ctx context.Context, reason string) {
@@ -255,16 +275,17 @@ func (s *Store) Confirm(ctx context.Context, id, code string) (any, error) {
 // ("window" or "terminal") and clearing any window handle so a caller that
 // wants to reopen the window can (Docs/protocol/approval.md §Audit).
 func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) {
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok || entry.reserved {
-		s.mu.Unlock()
+		release()
 		return nil, s.unknownOrExpired(ctx, id)
 	}
 	now := s.now()
 	expired, _, err := s.checkExpiryLocked(ctx, id, now)
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return nil, err
 	}
 	if expired {
@@ -273,7 +294,7 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 			entry.timer.Stop()
 		}
 		delete(s.pending, id)
-		s.mu.Unlock()
+		release()
 		if handle != nil {
 			handle.Kill()
 		}
@@ -290,7 +311,7 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		entry.handle = nil // the dialog already exited after sending this answer
 		attemptsLeft, rejected, err := s.recordBadCode(ctx, id, via)
 		if err != nil {
-			s.mu.Unlock()
+			release()
 			return nil, err
 		}
 		var rejectedHandle WindowHandle
@@ -309,7 +330,7 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 			// lock (review 26, M-2).
 			lockedEntries = s.dropAllLocked()
 		}
-		s.mu.Unlock()
+		release()
 		if rejectedHandle != nil {
 			rejectedHandle.Kill()
 		}
@@ -339,20 +360,23 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		s.mu.Unlock()
+		release()
 		return nil, fmt.Errorf("approval: begin confirm: %w", err)
 	}
+	// A panic in Precondition, Rebuild or Perform must not keep the only
+	// connection in an open transaction; after Commit this is a no-op.
+	defer func() { _ = tx.Rollback() }()
 	decided := now.UTC().Format(storeTimeFmt)
 	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'approved', decided = ? WHERE id = ?`, decided, id); err != nil {
 		_ = tx.Rollback()
-		s.mu.Unlock()
+		release()
 		return nil, fmt.Errorf("approval: mark approved: %w", err)
 	}
 	if action.Precondition != nil || action.Rebuild != nil {
 		if err := checkAction(ctx, tx, id, action); err != nil {
 			_ = tx.Rollback()
 			delete(s.pending, id)
-			s.mu.Unlock()
+			release()
 			if handle != nil {
 				handle.Kill()
 			}
@@ -376,16 +400,16 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 				// Create's initial timer.
 				e.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
 			}
-			s.mu.Unlock()
+			release()
 			return nil, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		s.mu.Unlock()
+		release()
 		return nil, fmt.Errorf("approval: commit confirm: %w", err)
 	}
 	delete(s.pending, id)
-	s.mu.Unlock()
+	release()
 	if handle != nil {
 		handle.Kill()
 	}
@@ -558,10 +582,11 @@ func (s *Store) sweepExpiredLocked(ctx context.Context, now time.Time) ([]func(c
 // §The approval window, "a per-approval timer, not only the lazy sweep").
 func (s *Store) expireNow(id string) {
 	ctx := context.Background()
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok {
-		s.mu.Unlock()
+		release()
 		return
 	}
 	if entry.watchCancel != nil {
@@ -569,34 +594,101 @@ func (s *Store) expireNow(id string) {
 	}
 	handle := entry.handle
 	delete(s.pending, id)
-	s.mu.Unlock()
+	release()
 	if handle != nil {
 		handle.Kill()
 	}
 	now := s.now()
 	decided := now.UTC().Format(storeTimeFmt)
-	kind, subject := s.kindSubject(ctx, id)
-	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
+	written, err := s.writeExpired(ctx, id, decided)
 	if err != nil {
 		// The approval is already out of memory, so it can no longer be
 		// confirmed; release what its creator holds anyway (review 55,
-		// R55-146). The row stays pending until ExpireStale on the next start.
+		// R55-146). It is hidden from List while the write is retried
+		// (review 77, L2); ExpireStale settles it at the next start if
+		// every retry fails.
+		s.setUnwritten(id, true)
 		if s.notifier != nil {
 			s.notifier.Remove(ctx, id)
 		}
 		runOnReject(ctx, entry.action.OnReject)
+		s.retryExpired(id, decided, 1)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if !written {
 		return // already decided by a concurrent Confirm/Reject
-	}
-	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
 	}
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
 	}
 	runOnReject(ctx, entry.action.OnReject)
+}
+
+// Retrying a failed expiry write: expireRetries more attempts, expireRetryWait
+// apart (review 77, L2).
+const (
+	expireRetries   = 12
+	expireRetryWait = 5 * time.Second
+)
+
+// writeExpired marks id's pending row expired and audits it. written is
+// false when the row was no longer pending.
+func (s *Store) writeExpired(ctx context.Context, id, decided string) (written bool, err error) {
+	kind, subject := s.kindSubject(ctx, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if s.audit != nil {
+		_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
+	}
+	return true, nil
+}
+
+// retryExpired retries writeExpired for an approval in s.unwritten, attempt
+// n of expireRetries, and forgets the id once the row is settled.
+func (s *Store) retryExpired(id, decided string, n int) {
+	if n > expireRetries {
+		return
+	}
+	time.AfterFunc(s.expireRetry, func() {
+		if s.isClosed() {
+			return
+		}
+		if _, err := s.writeExpired(context.Background(), id, decided); err != nil {
+			s.retryExpired(id, decided, n+1)
+			return
+		}
+		s.setUnwritten(id, false)
+	})
+}
+
+// setUnwritten adds id to s.unwritten, or removes it.
+func (s *Store) setUnwritten(id string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.unwritten[id] = struct{}{}
+	} else {
+		delete(s.unwritten, id)
+	}
+}
+
+func (s *Store) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
+// isUnwritten reports whether id expired without its row being updated yet.
+func (s *Store) isUnwritten(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.unwritten[id]
+	return ok
 }
 
 // decidedRetention is how long decided rows are kept (Docs/protocol/approval.md
@@ -664,7 +756,7 @@ func (s *Store) unknownOrExpired(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("approval: lookup: %w", err)
 	}
-	if state == StateExpired {
+	if state == StateExpired || s.isUnwritten(id) {
 		return ErrExpired
 	}
 	return ErrUnknown
@@ -675,11 +767,26 @@ func (s *Store) unknownOrExpired(ctx context.Context, id string) error {
 // own Reject button, "terminal" for `reject <tag>` on the daemon's stdin).
 // Any caller may reject: rejecting only removes access.
 func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
-	s.mu.Lock()
-	entry, ok := s.pending[id]
-	if !ok || entry.reserved {
-		s.mu.Unlock()
+	entry, handle, ok := s.takePending(id)
+	if !ok {
 		return View{}, s.unknownOrExpired(ctx, id)
+	}
+	if handle != nil {
+		handle.Kill()
+	}
+	s.rejectRow(ctx, id, "user", via)
+	runOnReject(ctx, entry.action.OnReject)
+	return s.Show(ctx, id)
+}
+
+// takePending removes id's pending entry, unless it is only reserved, and
+// stops its timer and window watch. The caller kills the returned window.
+func (s *Store) takePending(id string) (entry *live, handle WindowHandle, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok = s.pending[id]
+	if !ok || entry.reserved {
+		return nil, nil, false
 	}
 	if entry.timer != nil {
 		entry.timer.Stop()
@@ -687,15 +794,8 @@ func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 	if entry.watchCancel != nil {
 		entry.watchCancel()
 	}
-	handle := entry.handle
 	delete(s.pending, id)
-	s.mu.Unlock()
-	if handle != nil {
-		handle.Kill()
-	}
-	s.rejectRow(ctx, id, "user", via)
-	runOnReject(ctx, entry.action.OnReject)
-	return s.Show(ctx, id)
+	return entry, entry.handle, true
 }
 
 // RejectSubjects rejects every still-pending approval whose subject is one of
@@ -723,21 +823,10 @@ func (s *Store) RejectSubjects(ctx context.Context, subjects []string) {
 		_ = rows.Close()
 	}
 	for _, id := range ids {
-		s.mu.Lock()
-		entry, ok := s.pending[id]
-		if !ok || entry.reserved {
-			s.mu.Unlock()
+		entry, handle, ok := s.takePending(id)
+		if !ok {
 			continue
 		}
-		if entry.timer != nil {
-			entry.timer.Stop()
-		}
-		if entry.watchCancel != nil {
-			entry.watchCancel()
-		}
-		handle := entry.handle
-		delete(s.pending, id)
-		s.mu.Unlock()
 		if handle != nil {
 			handle.Kill()
 		}
@@ -753,14 +842,15 @@ func (s *Store) OpenWindow(ctx context.Context, id string) (View, error) {
 	if s.window == nil {
 		return View{}, ErrTerminalMode
 	}
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok || entry.reserved {
-		s.mu.Unlock()
+		release()
 		return View{}, s.unknownOrExpired(ctx, id)
 	}
 	alreadyOpen := entry.handle != nil || entry.opening
-	s.mu.Unlock()
+	release()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.open", map[string]string{"id": id})
 	}
@@ -781,32 +871,34 @@ func (s *Store) reopen(ctx context.Context, id, message string) {
 	if s.window == nil {
 		return
 	}
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok || entry.reserved || entry.opening || entry.handle != nil || s.closed {
-		s.mu.Unlock()
+		release()
 		return
 	}
 	entry.opening = true
-	s.mu.Unlock()
+	release()
 	handle := s.startWindow(ctx, id, message)
 
-	s.mu.Lock()
+	release = s.lock()
+	defer release()
 	entry, ok = s.pending[id]
 	if ok {
 		entry.opening = false
 	}
 	if handle == nil {
-		s.mu.Unlock()
+		release()
 		return
 	}
 	if !ok || s.closed {
-		s.mu.Unlock()
+		release()
 		handle.Kill()
 		return
 	}
 	entry.handle = handle
-	s.mu.Unlock()
+	release()
 	s.startWatch(id, handle)
 }
 
@@ -838,15 +930,16 @@ func (s *Store) startWindow(ctx context.Context, id, message string) WindowHandl
 // "Outcome").
 func (s *Store) startWatch(id string, handle WindowHandle) {
 	wctx, cancel := context.WithCancel(context.Background())
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	entry, ok := s.pending[id]
 	if !ok || entry.handle != handle {
-		s.mu.Unlock()
+		release()
 		cancel()
 		return
 	}
 	entry.watchCancel = cancel
-	s.mu.Unlock()
+	release()
 	go func() {
 		kind, code, err := handle.Answer(wctx)
 		if err != nil {
@@ -860,12 +953,13 @@ func (s *Store) onWindowAnswer(id string, handle WindowHandle, kind, code string
 	ctx := context.Background()
 	// The dialog has exited after its one answer: forget it first, so the
 	// reopen below (or a later approval_open) may start the next window.
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	if entry, ok := s.pending[id]; ok && entry.handle == handle {
 		entry.handle = nil
 		entry.watchCancel = nil
 	}
-	s.mu.Unlock()
+	release()
 	if kind != "dismiss" {
 		handle.Kill() // a decision always ends the dialog, even a slow-exiting one
 	}
@@ -964,6 +1058,9 @@ func (s *Store) Show(ctx context.Context, id string) (View, error) {
 	if v.AttemptsLeft < 0 {
 		v.AttemptsLeft = 0
 	}
+	if v.State == StatePending && s.isUnwritten(id) {
+		v.State = StateExpired
+	}
 	v.Window = s.windowState(id)
 	return v, nil
 }
@@ -971,9 +1068,10 @@ func (s *Store) Show(ctx context.Context, id string) (View, error) {
 // List returns every pending approval, oldest first, never a code
 // (Docs/protocol/approval.md §IPC and CLI).
 func (s *Store) List(ctx context.Context) ([]View, error) {
-	s.mu.Lock()
+	release := s.lock()
+	defer release()
 	swept, err := s.sweepExpiredLocked(ctx, s.now())
-	s.mu.Unlock()
+	release()
 	runOnReject(ctx, swept...)
 	if err != nil {
 		return nil, err
@@ -986,10 +1084,15 @@ func (s *Store) List(ctx context.Context) ([]View, error) {
 	// store has one SQLite connection, and Create/confirm hold s.mu while
 	// they query it, so taking s.mu with the cursor open deadlocks the
 	// daemon (review 55, R55-030).
-	for i := range out {
-		out[i].Window = s.windowState(out[i].ID)
+	kept := out[:0]
+	for _, v := range out {
+		if s.isUnwritten(v.ID) {
+			continue
+		}
+		v.Window = s.windowState(v.ID)
+		kept = append(kept, v)
 	}
-	return out, nil
+	return kept, nil
 }
 
 // listPendingRows reads every pending row, oldest first, and closes the
