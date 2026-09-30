@@ -148,7 +148,11 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 	defer func() { _ = c.Close() }()
 	r := bufio.NewReaderSize(c, 4096)
+	// HTML escaping stays off on the wire too: Response.Result is already
+	// marshalled by marshalResult, and a default encoder would re-escape its
+	// '<', '>' and '&' as six-byte sequences (ipc.md §Framing, review 43 M7).
 	enc := json.NewEncoder(c)
+	enc.SetEscapeHTML(false)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(idleTimeout))
 		line, err := readLine(r)
