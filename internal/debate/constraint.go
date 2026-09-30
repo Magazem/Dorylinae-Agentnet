@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
 // Human constraints (Docs/protocol/debate.md §Human constraints, ticket 3.4).
@@ -188,10 +189,22 @@ func (s *Store) applyConstraint(ctx context.Context, tx *sql.Tx, op *mail.Opened
 	}
 	if !constraintPhase(r.phase) {
 		// Review 55 R55-070: constraints exist only in positions, rounds or
-		// converge; one for a debate still invited is not stored, so it
-		// neither shows nor counts toward the limit.
-		s.ignore(op, &out, r.session, MailConstraint, "state", false)
-		return nil
+		// converge. B still invited has not accepted, so no A constraint can
+		// be legitimate. A still invited may hold a B constraint that
+		// overtook B's accept and slot-1 entry (mail can overtake mail,
+		// review 43 M3; review 70 M1): A stores it while its out request is
+		// pending or deferred, and ignores it only once the request is gone.
+		ok := false
+		if r.role == RoleInitiator {
+			var err error
+			if ok, err = outRequestOpen(ctx, tx, r); err != nil {
+				return err
+			}
+		}
+		if !ok {
+			s.ignore(op, &out, r.session, MailConstraint, "state", false)
+			return nil
+		}
 	}
 	var dup int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM debate_constraints WHERE session = ? AND id = ?`, r.session, cid).Scan(&dup); err != nil {
@@ -235,6 +248,20 @@ func (s *Store) applyConstraint(ctx context.Context, tx *sql.Tx, op *mail.Opened
 		return s.retryHeldClose(ctx, tx, r, &out)
 	}
 	return nil
+}
+
+// outRequestOpen reports whether A's out request of r is still pending or
+// deferred, so B's accept may yet arrive.
+func outRequestOpen(ctx context.Context, tx *sql.Tx, r row) (bool, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, r.peer, r.requestID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("debate: read out request: %w", err)
+	}
+	return state == request.StatePending || state == request.StateDeferred, nil
 }
 
 // countConstraints counts sid's constraints in state ("" for every state).

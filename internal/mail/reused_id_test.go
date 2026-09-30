@@ -80,8 +80,9 @@ func TestReceiveFailureLoggedOncePerID(t *testing.T) {
 	if got := strings.Count(buf.String(), "event=mail_receive_failed"); got != 1 {
 		t.Fatalf("log lines after 3 failures of one id = %d, want 1:\n%s", got, buf.String())
 	}
-	if !strings.Contains(buf.String(), "id="+testID) || strings.Contains(buf.String(), "text") {
-		t.Fatalf("log line must name the id and carry no body:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "id="+testID) || !strings.Contains(buf.String(), "stage=commit cause=other") ||
+		strings.Contains(buf.String(), "injected") {
+		t.Fatalf("log line must name the id, step and class, never the error text:\n%s", buf.String())
 	}
 	if err := f.rcv.Handle(ctx, f.mailEnv(otherID, "request", nil)); err == nil {
 		t.Fatal("commit failure was not reported")
@@ -91,5 +92,28 @@ func TestReceiveFailureLoggedOncePerID(t *testing.T) {
 	}
 	if f.out.count() != 0 {
 		t.Fatal("ack sent although the commit failed")
+	}
+}
+
+// Review 70 L2: the receive-failure log never carries an Apply error's text,
+// so body content cannot reach it even if a kind's plain error quoted it.
+func TestReceiveFailureLogCarriesNoErrorText(t *testing.T) {
+	f := newRecvFixture(t)
+	var buf bytes.Buffer
+	f.rcv.Log = slog.New(slog.NewTextHandler(&buf, nil))
+	const marker = "BODY-MARKER-7f3a"
+	f.rcv.Kinds["request"] = Kind{
+		Inbox: true,
+		Apply: func(_ context.Context, _ *sql.Tx, op *Opened) error {
+			text, _ := op.Msg.Body["text"].(string)
+			return errors.New("apply quoted the body: " + text) // not ErrBadBody
+		},
+	}
+	err := f.rcv.Handle(context.Background(), f.mailEnv(testID, "request", map[string]any{"text": marker}))
+	if err == nil || !strings.Contains(err.Error(), marker) {
+		t.Fatalf("Handle error = %v, want the apply error returned to the caller", err)
+	}
+	if got := buf.String(); strings.Contains(got, marker) || !strings.Contains(got, "stage=apply cause=other") {
+		t.Fatalf("log must carry the step and class only:\n%s", got)
 	}
 }

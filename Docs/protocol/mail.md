@@ -287,8 +287,8 @@ In **one SQLite transaction**:
 
 Any other error in this transaction (database, a kind's apply that is not a bad body, the inbox
 insert, the commit) rolls it back and sends no ack, so the sender resends. The daemon logs it
-**once per `(from, id)`** (`event=mail_receive_failed`, with peer, id, kind and the error, no
-body content), not on every redelivery (review 55 R55-058). What a kind's apply prepares for
+**once per `(from, id)`** (`event=mail_receive_failed`, with peer, id, kind, the failed step and
+an error class such as an SQLite result code; never the error text, so no body content), not on every redelivery (review 55 R55-058). What a kind's apply prepares for
 its after-commit step belongs to that one delivery and is discarded with it.
 
 `mail_seen` rows are pruned when `received_at < now − 35 d`, which runs daily and at start.

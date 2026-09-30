@@ -364,10 +364,15 @@ dependency"). It appears in the Decision under **human decisions**.
   `debate.constraint {session, peer, id, approval}`, and send `debate.constraint {at, id,
   request, session, text}` to the peer. The peer stores it (author = `msg.from`) and
   notifies `debate.constraint`. Precondition at confirm: the debate is still in one of the
-  three phases above (else `rejected`, reason `precondition`). A receiver whose debate is in
-  none of the three phases does not store it: `closing`, `closed` or `broken` is
-  `debate.ignored {reason: "closed"}`, `invited` (before the accept) is `debate.ignored
-  {reason: "state"}` (review 55 R55-070), so it neither shows nor counts toward the limit.
+  three phases above (else `rejected`, reason `precondition`). A receiver whose debate is
+  `closing`, `closed` or `broken` does not store it (`debate.ignored {reason: "closed"}`).
+  While the receiver's debate is still `invited` (review 55 R55-070): **B** ignores it
+  (`debate.ignored {reason: "state"}`), because B has not accepted, so no A constraint can be
+  legitimate. **A** stores it as usual while its `out` request is `pending` or `deferred`: B
+  accepts before it can constrain, but its constraint can overtake the `request.accept` and
+  the slot-1 entry, exactly as in [Applying peer entries](#submitting-entries) (review 43 M3;
+  review 70 M1). Once that request is gone or no longer pending or deferred, A ignores it with
+  reason `state`. Nothing ignored shows or counts toward the limit.
 - **Ordering.** Constraints are not slots. They are a set, ordered in the Decision by
   `(at, id)`. A's `debate.close` lists the ids A holds as `active`; both Decisions contain
   exactly those ([decision.md](decision.md#derivation)). **A is authoritative for the set.**
