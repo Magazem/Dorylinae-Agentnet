@@ -31,17 +31,18 @@ Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Hi
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
-**Wave R55-M live state (2026-09-30 ~11:10).** Worktrees `AgentNet-wt/r55-<x>`, branches `p4/r55-<x>`. Done: R55-009 verified (High, merged); specs F9, F2, F18, F23 approved + merged (D52–D55).
+**Wave R55-M live state (2026-09-30 ~13:30).** Worktrees `AgentNet-wt/r55-<x>`, branches `p4/r55-<x>`. MERGED: F11 (#24, b942c87), Dependabot #14/#15/#16. Specs approved + on main: F9, F2, F18, F23 (D52–D55). Owner D56 (Slack domains).
 | Ticket | Slot | Worktree | State |
 |---|---|---|---|
-| F11 | (retired) | r55-f11 | draft PR #24, CI running; merge when green |
-| F12 | R55-F12-Opus `01a0f1a3-df8f…` (task `01a0f1a4-bd7b…` reopened) | r55-f12 | code 87dc2ef + review 70 (changes needed: M1 constraint while invited, L2 log guard) → fixing. L1 (log only first error per id; R55-058 "mark bad after N failures" not done) = later backlog. After fix: gate, PR. Then F18 code, F13 code. |
-| F19 | R55-F19-Sonnet `01a0f1a3-e405…`; sec R55-F19sec-Opus `01a0f1fa-f017…` | r55-f19 | code 874443d; gate re-running; security review 73 running |
-| F9 | R55-F9-Opus `01a0f1ee-0048…` (task `01a0f1ee-27b4…`) | r55-f9 | coding (OD-10 = b) |
-| F2 | R55-F2-Opus `01a0f1fa-e612…` (task `01a0f1fb-1ebf…`) | r55-f2 | coding (relay migration R3) |
-| F23 | R55-F23-Opus `01a0f1fa-e8f4…` (task `01a0f1fb-3c73…`) | r55-f23 | coding (DB migration, if any, provisional 23) |
-| F13 spec | R55-F13spec-Opus `01a0f1fa-eb54…` | r55-f13spec | writing 71-r55-f13-spec.md (D50) |
-| F14 spec | R55-F14spec-Opus `01a0f1fa-ee0b…` | r55-f14spec | writing 72-r55-f14-spec.md (D49) |
+| F12 | (retired) | r55-f12 (branch now p4/r55-f12b) | draft PR #26 (replaces #25; rebased, work-session.md conflict with F18 spec resolved keeping both); merge when CI green. Then F18 code, F13 code. |
+| F19 | R55-F19-Sonnet `01a0f1a3-e405…` (task `01a0f1a4-ea60…` reopened) | r55-f19 | review 73 fixes (M1 per D56, L1–L3) in progress → gate → PR |
+| F9 | R55-F9-Opus `01a0f1ee-0048…` (idle, for fixes) | r55-f9 | code 3f55883; security review 75 by R55-F9sec-Opus `01a0f239-5c5b…` |
+| F2 | R55-F2-Opus `01a0f1fa-e612…` (idle) | r55-f2 | code 6418b7e; security review 74 by R55-F2sec-Opus `01a0f239-5973…` |
+| F23 | R55-F23-Opus `01a0f1fa-e8f4…` (idle) | r55-f23 | code eb25c07 (no DB migration); security review 76 by R55-F23sec-Opus `01a0f239-5eb5…` |
+| F13 spec | review by R55-F13rev-Opus `01a0f239-617c…` | r55-f13spec | spec 8c6d70b → review 71b |
+| F14 spec | review by R55-F14rev-Opus `01a0f239-6345…` | r55-f14spec | spec 89e1df0 → review 72b (writer says D49 wording is insufficient; OD-F14-1 (b)) |
+| F17 | R55-F17-Opus `01a0f292-d04a…` (task `01a0f292-fc89…`) | r55-f17 | coding |
+| F24 | R55-F24-Sonnet `01a0f292-d098…` (task `01a0f293-1f3f…`) | r55-f24 | coding (D48 gates; needs Opus security review) |
 Migrations: F18 = 22 (daemon), F23 maybe 23, F13 later. Next: F17 after F11 merges (ipc.go); F24 (D48) when a slot frees; F18 code after F12 merges; F14 code after F9 merges. F15 deferred (D46). Helper: `$TEMP/gate.sh <worktree>` runs the full gate → `$TEMP/gate-<worktree>.txt` (local daemon/device ACL failures are expected: TestHelper*, TestPhase2*, TestDeviceScopeSummary, TestAuditInventoryDevices, TestCheckProgramOwnerWindows, TestOwnerWalkJunction, TestCheckTarget, TestValidateScopeResolvesArgv0).
 
 **How to run it (lessons from this wave, all binding):**
@@ -355,6 +356,7 @@ must also add its tables to the DROP lists in BOTH rewind tests in `internal/sto
 - **Test flakiness patterns:** never read async state/audit once; poll with a deadline. Tests
   that write files use `internal/testutil.TempDir(t)` (Windows AV holds deleted files).
 - **CLI:** base64url keys can start with `-`; `parseInterspersed` handles it (don't regress).
+- **Rebase before the first push of a PR branch**, with `set -e` (a failed rebase once got chained into a push). Force-push is not authorised: to update a PR after a rebase, push a new branch (`-b` suffix) and replace the PR.
 - **GitHub hygiene (owner, 2026-09-30):** delete the remote branch after its PR merges (`git push origin --delete <branch>`), and check `gh pr list` for Dependabot PRs at every session start (rebase with `@dependabot rebase`, merge when CI is green). 11 stale branches were cleaned up on 2026-09-30.
 - **Workers:**
   - Paused after "could not process queued message after 3 delivery attempts": use
