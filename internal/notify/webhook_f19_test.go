@@ -176,7 +176,9 @@ func TestWebhookExpiredRowNotPosted(t *testing.T) {
 // clickable, and Discord embeds and Slack unfurls are switched off.
 func TestBreakURLsSlackDiscord(t *testing.T) {
 	text := "High review request from https://evil.example"
-	broken := "High review request from https:\u200b//evil.example"
+	z := string(rune(0x200b))
+	broken := "High review request from https:" + z + "//evil.example"
+	slackBroken := "High review request from https:" + z + "//evil." + z + "example"
 
 	out, err := applyFormat(FormatSlack, []byte(`{"v":1}`), text)
 	if err != nil {
@@ -184,7 +186,7 @@ func TestBreakURLsSlackDiscord(t *testing.T) {
 	}
 	var s map[string]any
 	_ = json.Unmarshal(out, &s)
-	if s["text"] != broken || s["unfurl_links"] != false || s["unfurl_media"] != false {
+	if s["text"] != slackBroken || s["unfurl_links"] != false || s["unfurl_media"] != false {
 		t.Fatalf("slack = %v", s)
 	}
 
@@ -277,5 +279,92 @@ func TestWebhookQueuedMarkerNotSent(t *testing.T) {
 	bodies := rec.all()
 	if len(bodies) != 1 || strings.Contains(bodies[0], "queued") {
 		t.Fatalf("bodies = %q", bodies)
+	}
+}
+
+// TestBreakSlackLinks (owner D56): in Slack text only, bare domains and email
+// addresses are broken too; ordinary punctuation is left alone.
+func TestBreakSlackLinks(t *testing.T) {
+	z := string(rune(0x200b))
+	for in, want := range map[string]string{
+		"see evil.com/login":  "see evil." + z + "com/login",
+		"mail a@evil.com now": "mail a@" + z + "evil." + z + "com now",
+		"end. Next":           "end. Next",
+		"v1.2":                "v1." + z + "2",
+		"x.":                  "x.",
+		".x":                  ".x",
+		"https://a.b":         "https:" + z + "//a." + z + "b",
+	} {
+		if got := breakSlackLinks(in); got != want {
+			t.Errorf("breakSlackLinks(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Discord is unchanged: a scheme-less domain stays as typed.
+	out, err := applyFormat(FormatDiscord, []byte(`{"v":1}`), "evil.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var d map[string]any
+	_ = json.Unmarshal(out, &d)
+	if d["content"] != "evil.com" {
+		t.Errorf("discord content = %q", d["content"])
+	}
+}
+
+// TestWebhookFailAuditCarriesDaemonCode (review 73 L1, L3): the notify.fail
+// row names why the delivery failed with a daemon-owned code, never a
+// transport error string, and a corrupt queued body fails as bad_body.
+func TestWebhookFailAuditCarriesDaemonCode(t *testing.T) {
+	ctx := context.Background()
+	wh, clock := openWebhook(t)
+	audit := &recordingAudit{}
+	wh.Audit = audit
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	mustSetWebhook(t, wh, srv.URL, false)
+
+	if err := wh.Queue.Enqueue(ctx, "w-corrupt", EventReceived, []byte("not json"), clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := wh.Enqueue(ctx, Event{Kind: EventReceived, PeerName: "bob", Type: "review", Urgency: "high", RequestID: "r-1", State: "pending", CreatedAt: clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	wh.tick(ctx)
+	// The rest are old by now and expire.
+	if err := wh.Enqueue(ctx, Event{Kind: EventReceived, PeerName: "bob", Type: "review", Urgency: "high", RequestID: "r-2", State: "pending", CreatedAt: clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(queueMaxAge + time.Minute)
+	wh.tick(ctx)
+
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	var codes []string
+	for _, d := range audit.details {
+		m, ok := d.(map[string]any)
+		if !ok {
+			t.Fatalf("detail = %#v", d)
+		}
+		c, _ := m["error"].(string)
+		codes = append(codes, c)
+	}
+	if len(codes) != 2 || codes[0] != "bad_body" || codes[1] != "expired" {
+		t.Fatalf("audit error codes = %v, want [bad_body expired]", codes)
+	}
+}
+
+func TestAuditErrorCodeNeverCopiesTransportText(t *testing.T) {
+	for in, want := range map[string]string{
+		"expired":                            "expired",
+		"http_503":                           "http_status",
+		"blocked_address":                    "blocked_address",
+		"dial tcp 10.1.2.3:443: i/o timeout": "timeout",
+		"dial tcp 10.1.2.3:443: connection reset": "network",
+	} {
+		if got := auditErrorCode(in); got != want {
+			t.Errorf("auditErrorCode(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

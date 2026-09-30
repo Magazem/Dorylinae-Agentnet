@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // maxPayloadBytes is the payload size cap (Docs/protocol/notify.md §Payload).
@@ -150,7 +151,7 @@ func applyFormat(format string, body []byte, text string) ([]byte, error) {
 		return body, nil
 	case FormatSlack:
 		return addFields(body, map[string]any{
-			"text":         breakURLs(slackEscape(text)),
+			"text":         breakSlackLinks(slackEscape(text)),
 			"unfurl_links": false,
 			"unfurl_media": false,
 		})
@@ -181,13 +182,40 @@ func addFields(generic []byte, extra map[string]any) ([]byte, error) {
 // discordSuppressEmbeds is Discord's SUPPRESS_EMBEDS message flag.
 const discordSuppressEmbeds = 4
 
+// zeroWidthSpace is U+200B, written as an escape so it stays visible in source.
+const zeroWidthSpace = "\u200b"
+
 // breakURLs inserts a zero-width space after the colon of every "://", so a
 // peer name or title such as "https://evil.example" is not turned into a live
 // link (or an unfurled preview) by Slack or Discord (R55-175). The text stays
 // readable.
 func breakURLs(s string) string {
-	return strings.ReplaceAll(s, "://", ":\u200b//")
+	return strings.ReplaceAll(s, "://", ":"+zeroWidthSpace+"//")
 }
+
+// breakSlackLinks is breakURLs plus, for Slack only, a U+200B after every "."
+// between two letters or digits and after every "@", so that Slack does not
+// link a bare domain ("evil.example/login") or an email address either. The
+// text stays readable. Discord only links URLs with a scheme, so it does not
+// need this.
+func breakSlackLinks(s string) string {
+	s = breakURLs(s)
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i, r := range rs {
+		b.WriteRune(r)
+		switch {
+		case r == '@':
+			b.WriteString(zeroWidthSpace)
+		case r == '.' && i > 0 && i+1 < len(rs) && isLetterOrDigit(rs[i-1]) && isLetterOrDigit(rs[i+1]):
+			b.WriteString(zeroWidthSpace)
+		}
+	}
+	return b.String()
+}
+
+func isLetterOrDigit(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // slackEscape applies Slack's required text escaping so that a peer-supplied
 // "<!channel>" or "<https://evil|click>" renders as inert text instead of a

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
@@ -193,7 +194,7 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 
 	body, err := renderBody([]byte(row.Body), cfg)
 	if err != nil {
-		w.finish(ctx, row, 0, "bad_webhook", now, false)
+		w.finish(ctx, row, 0, "bad_body", now, false)
 		return
 	}
 	ts := now.Unix()
@@ -262,20 +263,38 @@ func (w *Webhook) finish(ctx context.Context, row queueRow, status int, errStr s
 	if err := w.Queue.MarkFailed(ctx, row.ID, status, errStr, now); err != nil {
 		w.log().Warn("notify: mark webhook failed", "error", err)
 	}
-	w.reportFail(ctx, row.Event, row.ID, status)
+	w.reportFail(ctx, row.Event, row.ID, status, errStr)
 }
 
 // reportFail audits a permanent webhook failure. It never holds the URL or
-// the body (Docs/protocol/notify.md §Delivery).
-func (w *Webhook) reportFail(ctx context.Context, event, id string, status int) {
+// the body (Docs/protocol/notify.md §Delivery). error is one of a fixed set of
+// daemon-owned codes (auditErrorCode), never a transport error string.
+func (w *Webhook) reportFail(ctx context.Context, event, id string, status int, errStr string) {
 	if w.Audit == nil {
 		return
 	}
-	detail := map[string]any{"channel": "webhook", "event": event, "id": id}
+	detail := map[string]any{"channel": "webhook", "event": event, "id": id, "error": auditErrorCode(errStr)}
 	if status > 0 {
 		detail["status"] = status
 	}
 	_ = w.Audit.Append(ctx, "daemon", "notify.fail", detail)
+}
+
+// auditErrorCode maps a queue error string to a daemon-owned audit code.
+// Transport errors can carry the webhook host or IP, so they are only
+// classified, never copied.
+func auditErrorCode(errStr string) string {
+	switch {
+	case errStr == "expired", errStr == "redirect", errStr == "bad_webhook",
+		errStr == "bad_body", errStr == "no_secret", errStr == ErrBlockedAddress.Error():
+		return errStr
+	case strings.HasPrefix(errStr, "http_"):
+		return "http_status"
+	case strings.Contains(errStr, "timeout"), strings.Contains(errStr, "deadline exceeded"):
+		return "timeout"
+	default:
+		return "network"
+	}
 }
 
 // transportError renders a client.Do error for the queue's error column

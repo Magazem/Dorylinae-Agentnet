@@ -175,9 +175,12 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
 - **Bare URLs.** Slack and Discord turn a bare `https://…` in text into a live link. In
   `slack` `text` and `discord` `content`, every `://` is written `:` + U+200B (zero-width
   space) + `//`, so a peer name or title such as `https://evil.example` shows as text and
-  is not clickable. The `slack` object also carries `"unfurl_links": false` and
-  `"unfurl_media": false`, and the `discord` object `"flags": 4` (suppress embeds). Scheme-less
-  domains (`evil.example`) are not neutralised. The generic `text` is unchanged.
+  is not clickable. In `slack` `text` **only**, U+200B is also inserted after each `.` that
+  sits between two letters or digits and after each `@`, because Slack also links bare
+  domains (`evil.example/login`) and email addresses; the text stays readable. Discord only
+  links URLs with a scheme, so it needs no more. The `slack` object also carries
+  `"unfurl_links": false` and `"unfurl_media": false`, and the `discord` object `"flags": 4`
+  (suppress embeds). The generic `text` is unchanged.
 
 ### Signature
 
@@ -218,8 +221,10 @@ verify. The signature is for custom receivers.
 - `2xx` → `sent`. `408`, `429`, `5xx` or a network error → retry. Other `4xx` → `failed`.
 - Retry delays: 10 s, 1 min, 5 min, 30 min, 2 h, 6 h (×U(0.9, 1.1)). After the 7th attempt, or
   when older than 24 h, → `failed`. Honour `Retry-After` (seconds) if it is longer, capped at 6 h.
-- A `failed` delivery is audited `notify.fail {channel: "webhook", event, id, status?}`. It
-  never holds the URL or the body.
+- A `failed` delivery is audited `notify.fail {channel: "webhook", event, id, status?, error}`. `error` is
+  a daemon-owned code (`expired`, `redirect`, `http_status`, `bad_webhook`, `bad_body`,
+  `no_secret`, `blocked_address`, `timeout` or `network`), never a transport error string,
+  which can carry the host or IP. The row never holds the URL or the body.
 - Rows are deleted 7 days after `sent` or `failed`. At most 1000 non-final rows. When full,
   the oldest pending row is dropped (`failed`, `error = "overflow"`).
 - `agentnet notify --test` enqueues one `test` event (`request` omitted, `text` =
@@ -246,7 +251,9 @@ CREATE INDEX webhook_queue_due ON webhook_queue (state, next_attempt);
 `format` and `title` are re-read from settings on each attempt, and the body is rendered
 then: changing the URL redirects pending deliveries, `--webhook-title off` strips the title
 and result status from them, and `--format` reshapes them. (Turning the title on does not
-add a title to a row queued without one.) Removing the webhook
+add a title to a row queued without one.) Rows queued before this rendering existed hold
+their final body and are sent as stored, with the format and title they were queued with,
+until they expire (at most 24 h). Removing the webhook
 marks every pending row `failed` (`error = "removed"`).
 
 ## Privacy summary
