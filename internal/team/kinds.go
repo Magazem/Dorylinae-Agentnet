@@ -572,7 +572,7 @@ func (s *Store) applyLeave(ctx context.Context, tx *sql.Tx, op *mail.Opened) err
 		return fmt.Errorf("team: leave: %w", err)
 	default:
 		if at, perr := time.Parse(wireTimeFmt, added); perr == nil && op.Msg.Created.Add(mail.MaxSkew).Before(at) {
-			pendingLeave.Store(op, &leaveOutcome{teamID: teamID, peer: peer})
+			op.Outcome = &leaveOutcome{teamID: teamID, peer: peer}
 			return nil
 		}
 	}

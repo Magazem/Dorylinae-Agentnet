@@ -248,7 +248,19 @@ to the session handshake `init` (review 79 M1): a refused `init` gets no `resp`,
 and no audit row, so the ping fails with `timeout` on the sender's side and opens no session,
 exactly like a ping to an offline peer. One exception: a peer that holds an active,
 unexpired grant this daemon issued, or shares a work session with it that is not closed, may
-still open a session (granted fetches keep working while invisible).
+still open a session (granted fetches keep working while invisible). The rule also covers
+sessions that are already open: requests on them from a refused peer (for example `fetch.req`)
+get no answer, and when the mode changes the daemon closes the open sessions of the peers the
+new mode turns away, without telling them (review 79b M1b). Answers to what this daemon sent
+itself (`pong`, `*.resp`) are still accepted.
+
+**What invisible does not hide (D61).** Invisible hides presence heartbeats, pongs, and new
+or stale sessions from the peers it blocks. It does **not** make the daemon unreachable: a
+paired peer that sends **mail** can still infer that the daemon is online, from the delivery
+ack, from the relay's `queued` answer (sent only when the recipient is offline), and from a
+roster resync an invisible team owner sends to a member that reports a stale epoch. Invisible
+hides you from teammates' status views; it is not a way to hide from a peer you allow to send
+you mail.
 
 ### Human sharing
 

@@ -62,6 +62,11 @@ type Sender struct {
 	Now  func() time.Time
 	Log  *slog.Logger
 
+	// ModeChanged, if set, is called after SetMode applied a new mode, before
+	// the goodbye/online diff (the daemon closes sessions of peers the new
+	// mode turns away, review 79b M1b).
+	ModeChanged func(context.Context)
+
 	// PresenceInterval overrides the visible-set interval formula when set,
 	// the test option of Docs/protocol/presence.md §Body.
 	PresenceInterval time.Duration
@@ -419,6 +424,9 @@ func (s *Sender) SetMode(ctx context.Context, mode VisibilityMode) error {
 	s.mu.Lock()
 	s.mode, s.onlyTeam = mode.Mode, mode.Team
 	s.mu.Unlock()
+	if s.ModeChanged != nil {
+		s.ModeChanged(ctx)
+	}
 	// The mode is applied now, so the goodbye/online diff goes out even if
 	// the audit row cannot be written; the audit error is still returned
 	// (R55-107).

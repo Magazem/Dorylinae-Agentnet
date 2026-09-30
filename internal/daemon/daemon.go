@@ -398,6 +398,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	sessions.SetInitGate(func(ctx context.Context, peer string) bool {
 		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer)
 	})
+	presenceSender.ModeChanged = sessions.DropGatedSessions
 	if err := presenceSender.LoadSettings(ctx); err != nil {
 		_ = ln.Close()
 		return err
