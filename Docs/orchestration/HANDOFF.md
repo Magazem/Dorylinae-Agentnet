@@ -4,9 +4,60 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-28 night, home PC. **Release dry run PASSED (2nd attempt); L7+L8 done; branch protection on main tightened (D42); early private relay ticket 4.1p merged, owner deploys it next; then wave P4-4 on the owner's go.** Phases 0-3 merged and tagged. The orchestration rules for this PC: relay all hands-on work to workers (no self-edits, no subagents), poll CI in the background, verify a worker's factual claims (SHAs, diffs) myself before merging, and always check a worker's worktree/report against the logs before merging.
+Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Highs all merged; next wave = review-55 Mediums (D46). Older status below it is history.
 
 ## 0. Status and next steps
+
+### START HERE — state at 2026-09-30 (context reset by the owner)
+
+**Where we are.** Review 55 (full code review, `Docs/review/55-code-review/99-report.md`) is done. All six Highs are fixed and merged, each with an Opus security review and green CI on all three OSes: F1 relay fairness, F3 signed-SUMS binding, F4 decision-verify output, F5 approval-summary builder, F7 forbidden resources by file identity, F8 IPC pipe/socket ownership. F6 (approval-window rendering; must ship with F5) is merged too. Flake and CI fixes are merged, including two real bugs: an IPC Serve shutdown hang (21669f5) and the go-winio v0.6.2 close race (83b0b5b). **Main is green at f79bc46.** No workers are running and no PRs are open.
+
+**Owner decision D46 (2026-09-30): the next wave is the review-55 MEDIUM tickets.** Take them from `99-report.md` §4 (table plus §4.1 acceptance tests). For each ticket, follow the report's suggested model, spec-first flag and order.
+
+| Ticket | Title | Spec first? | Owner decision? | Order note |
+|---|---|---|---|---|
+| F2 | Relay queue abuse (R55-009 T10-02, 010 T6a-02, 011) | yes | D2 | F1 is merged, so this can start |
+| F9 | Relay error text: parse once, bound, sanitise; backoff | yes | — | report says "after F10 (Low: shared sanitiser)". `internal/displaytext` from F5 may already cover it; check. |
+| F11 | IPC encoder and list sizes | no | — | any time |
+| F12 | Poison mail: receive dedupe, pending leaks, silent errors | small | — | before F13 and F18 |
+| F13 | Peer-driven storage/CPU/queue bounds | yes | **D12** (retention) | after F12 |
+| F14 | Relay-driven audit and log volume | yes | **D10** | after F9 |
+| F15 | Accounts gate | yes | D3 | **skip**: only needed before `--accounts` is turned on / R-4.2 |
+| F17 | Daemon availability vs local agent | no | — | any time |
+| F18 | Work-session integrity and Phase 1 fallback | yes | — | after F12 |
+| F19 | Webhook and notification fixes | small | — | any time |
+| F23 | Agent-card and peer-input strictness | yes | — | before F10 |
+| F24 | Presence and teams | small | **D8** | any time |
+
+Ask the owner D2, D8, D10 and D12 (99-report §6) before coding the tickets that need them. The rest can start: specs first where marked (Opus writes the spec, an Opus adversarial review follows, the owner approves the ODs), then code. Security-relevant tickets get an Opus security review.
+
+**How to run it (lessons from this wave, all binding):**
+- One worker per ticket, in its own worktree `AgentNet-wt/<name>` on branch `p4/r55-<ticket>`.
+- **Every code change goes to main through a draft PR, and merges only when that PR's CI (race + ubuntu + macOS + windows) is green.** Test-only fixes too: PR #19 once broke Linux.
+- After every push, check the CI run of the **latest** main commit before calling main green.
+- At most about 3 workers running full test suites at once.
+- **Hard rule 14 plus the guard hook** (`~/.claude/hooks/agentnet-guard.js`) block recursive deletes, link creation, anything on D: and writes outside the worktrees and temp. Every FS/link-related brief repeats the safety paragraph.
+- internal/daemon and internal/device tests run on this PC only with the §5 subst trick, pointed at a dir inside temp. `TestCheckProgramOwnerWindows` always fails here (the C:\ ACL); CI is authoritative.
+- The race job runs only on CI (this PC has no cgo).
+
+**Open follow-ups (Low; not in D46, owner picks later):**
+- F8c: review 60b upgrade edges.
+- F3c: review 62, the fetch size cap and the re-run edge.
+- F6b: review 65, more confusables and decoy separators. Its F6S-3 is an owner option: fingerprint blanking also hides ordinary names like "Mary & Jake"; require a digit?
+- The Low R55 tickets F10, F16, F20, F21, F22, F25–F34.
+- TODO: when go-winio releases microsoft/go-winio#388, bump it and remove `pipeListener`'s close-retry workaround in `internal/ipc/transport_windows.go`.
+- `TestOfflineDeliveryRelayRestart` (macOS) stall is unexplained. It now dumps evidence on failure, so read it if it recurs.
+
+**Owner actions pending:**
+1. **D: recovery.** A worker's `rm -rf` through a junction deleted `D:\42` and `D:\Recovery` on 2026-09-29 (incident, rule 14). Do not write to D:. Recover with `winfr D: C:\recovered /extensive` or Recuva, onto C:/USB.
+2. **D7:** the two-account pipe-squat manual check. Steps are in `Docs/review/60-r55-f8-security.md` and the F8 report.
+3. **Early relay (4.1p) deploy:** follow `Docs/ops/early-relay-deploy.md`, "Owner actions on the VM that exists": IPv4-only 443, no AAAA record. Deploy is allowed now (D43); F1 is merged.
+4. **Manual window checks** in `tests/phase2-manual.md`: Ubuntu zenity, **KDE kdialog (mandatory, review 65)**, macOS.
+5. Done already: GitHub immutable releases (F3 OD-5).
+
+**Housekeeping for the new instance:** about 50 old worktrees in `AgentNet-wt/` belong to merged branches (review-55 cr-*, r55-*, fix/*). Remove them with `git worktree remove <path>` one at a time. Never delete recursively; the guard blocks it anyway. `%TEMP%\f3main` is a leftover scratch copy the owner can delete by hand.
+
+---
 
 **2026-09-28 night (home PC): everything from the work-PC park list is DONE.**
 - **D41 applied** across docs (OD-P4-20 timing, known-limitations.md); **SECURITY.md** + a non-blocking sensitive-paths PR check added; **Docs/ops/owner-next-steps.md** written (a short owner runbook for the signing key, backup key, backup storage, privacy note — honestly flags the backup-key format and storage interface as not yet specified, no guessed commands).
@@ -231,6 +282,7 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D43 | 2026-09-29: review 55 D1 — **deploy the early private relay (4.1p) now** for the owner and known testers, URL unpublished, accepting the availability risk of R55-001/002/009/010/011 (a stranger who finds the URL can stop mail delivery; no content/key exposure). **R55-F1 (relay budget fairness) must land before the URL is shared beyond known testers; R55-F2 before the beta.** The owner reads 99-report.md before picking any fix tickets; the code freeze stays until then. |
 | D44 | 2026-09-29 evening: owner lifted the review-55 code freeze **for the High tickets only**. Tonight: code R55-F4, F7, F8 (each: reviewer's zz test inverted into a permanent test, full gate + CI on all OSes, Opus security review before merge, one commit per ticket, sequenced where files overlap). F1, F3, F5 need spec changes: specs written + adversarially reviewed tonight, the owner approves their ODs before any code. **D9 (review 55 §6) = show the peer fingerprint next to its name in the device-link approval window and the human compares it** (not typed). Mediums/Lows wait for the owner's picks. |
 | D45 | 2026-09-29 night: owner approved **all open decisions of the R55-F1, F3 and F5 specs as recommended** (Docs/review/56 (9 ODs, incl. reopening R52 H1: evict the heaviest prefix's oldest holder), 57 (7 ODs: logged digest + fetch binding, F3b local rebuild before public launch, govulncheck + Dependabot gomod, GitHub immutable releases (owner setting), no Sigstore for now), 58 (10 ODs: full 20-char fingerprint in 5 groups, rename rejects, UTC + duration, …)). Specs merged to main (9781086, 4f77c10, ed073be). Code next: F1 and F3 now; F5 after F7 merges (shared grant.go); F6 must ship in the same release as F5. |
+| D46 | 2026-09-30: owner chose the **review-55 Medium tickets** as the next wave (after all Highs + F6 merged). F15 (accounts gate) stays deferred until accounts/R-4.2. Tickets needing owner decisions (F2/D2, F13/D12, F14/D10, F24/D8) wait for those answers. |
 
 Still open (not urgent): `Docs/` vs `docs/` casing. OD-P4-20 outside security review timing is
 settled (before public launch, D41). Accounts and code signing are settled by D36; hosting by
