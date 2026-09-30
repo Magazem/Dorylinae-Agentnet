@@ -99,7 +99,7 @@ recorded in `mail_seen`, audited `mail.reject {reason: "bad_body"}`, acked under
 | `team.members` | `active`: 1–32 entries, unique `key`, the owner included. `dissolved`: 0–32 entries |
 | `members[].key` | `<key>` |
 | `members[].added` | when the owner added the member |
-| `members[].card` | the member's signed Agent Card object ([agent-card.md](agent-card.md)); must verify, and `card.public_key` = `key` |
+| `members[].card` | the member's signed Agent Card object ([agent-card.md](agent-card.md)); must verify, and `card.public_key` = `key`. The owner sends, and a member stores, only the canonical `{"card", "signature"}` object: other top-level members are dropped ([agent-card.md §Verification](agent-card.md#verification), stored form) |
 | `members[].mailbox` | the member's newest signed mailbox announcement known to the owner, or `null`. Verified as in [mail.md §Announcement](mail.md#announcement) with `identity` = `key`. A **time** failure (check 5) makes it `null` for that member (the owner's copy may be old); any other failure is `bad_body` |
 
 The owner sends the roster, as one outboxed mail per recipient, to every member except

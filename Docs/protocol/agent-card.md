@@ -1,8 +1,10 @@
 # Agent Card (identity)
 
-Status: v1, introduced by ticket 0.3. Implemented in `internal/agentcard`
-(sign, verify) and `internal/identity` (key + card lifecycle). An independent
-verifier lives in `tools/verifycard` and shares no code with the daemon.
+Status: v1, introduced by ticket 0.3; parsing and schema rules made exact by
+review 55 ticket R55-F23. Implemented in `internal/agentcard` (sign, verify)
+and `internal/identity` (key + card lifecycle). An independent verifier lives
+in `tools/verifycard`; it shares no code with the daemon and performs every
+step of [Verification](#verification), the schema step included.
 
 The Agent Card is an A2A-style, self-signed description of one agent: who it is
 (name), how peers verify it (Ed25519 public key), what runs it (harness) and
@@ -11,8 +13,19 @@ what it says it can do (declared skills). It is exchanged at pairing (ticket
 
 ## Card
 
-A JSON object. All fields are required; unknown fields are rejected by the
-Go parser (but are still covered by the signature, see *Verification*).
+A JSON object with **exactly** the six members below and no others. Every
+member is required, and any other member makes the card invalid. Extra members
+are still covered by the signature, so a verifier checks the signature first and
+the member set afterwards (see [Verification](#verification)).
+
+**Member names are matched exactly**, code point for code point, with no case
+folding and no Unicode normalisation. A name that some JSON libraries treat as
+equal to a listed name is simply another member, and the card is refused. Examples:
+`Public_Key`, `public_Key`, `public_\u212Aey` (U+212A KELVIN SIGN in place of
+`k`) and `harne\u017F\u017F` (U+017F LATIN SMALL LETTER LONG S in place of
+`s`). Go's `encoding/json`, for example, folds all four onto a struct field, and
+the last one wins. A verifier that decodes the card that way returns values the
+signature did not bind under that name (review 55 R55-019).
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -23,7 +36,9 @@ Go parser (but are still covered by the signature, see *Verification*).
 | `skills` | array of skill | Declared skills, possibly empty. Order is preserved and signed |
 | `created` | string | Creation time, RFC 3339 UTC with `Z` and whole seconds, e.g. `2026-01-02T03:04:05Z` |
 
-Skill object (all fields required, `description` may be `""`):
+Skill object: **exactly** these three members, matched by exact name as above.
+All three are required; `description` may be `""` but must be present (a
+skill without it is refused, review 55 R55-213):
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -58,8 +73,31 @@ RFC 8785 (JCS):
 4. Numbers must be integers matching `-?(0|[1-9][0-9]*)` with magnitude below
    2^53, written as-is. Fractions, exponents and `-0` are rejected.
 5. `true`, `false`, `null` are literals. Arrays keep their order.
-6. Input must be valid UTF-8 and must not contain duplicate object keys
-   (rejected, not "last wins").
+6. Input must be valid UTF-8. (UTF-8-encoded surrogates, the byte
+   sequences `ED A0 80` to `ED BF BF`, are not valid UTF-8 and are refused
+   by this rule.)
+7. **Surrogate escapes must pair.** A `\uXXXX` escape whose value is in
+   `D800`-`DFFF` must be a high surrogate (`D800`-`DBFF`) immediately
+   followed by a `\uXXXX` escape of a low surrogate (`DC00`-`DFFF`). The
+   pair stands for one code point above U+FFFF, which the canonical form
+   writes literally as 4 UTF-8 bytes. Any other surrogate escape is refused:
+   a lone high, a lone low, a low before a high, or a high followed by
+   anything other than a low escape. The escape is never replaced by U+FFFD
+   (review 55 R55-153). The rule applies to member names and to values,
+   anywhere in the document, including members that a verifier ignores.
+   Hex digits in an escape may be upper or lower case.
+8. **Duplicate member names are refused**, not "last wins". Names are
+   compared after unescaping, as sequences of code points, with no case
+   folding or normalisation. So `"a"` and `"\u0061"` are duplicates, while
+   `"public_key"` and `"public_Key"` are two different members. The card
+   schema refuses the second of those as an extra member ([Card](#card)).
+
+Rules 6-8 are the strict parse. Every document read under these rules obeys
+them: card envelopes, and every other signed object whose spec refers to
+this section (mail plaintext, announcements, grant tokens, Decisions, pairing
+confirms, debate entries). The canonical writer never emits a `\u` escape
+except for code points below U+0020, so a canonical form never contains a
+surrogate escape.
 
 ## Signature
 
@@ -73,14 +111,48 @@ a signature over another Dorylinae message.
 
 ## Verification
 
-1. Parse the envelope (rules 6 above). Take `card` and `signature`.
-2. Decode `card.public_key` (must be 32 bytes) and `signature` (must be 64 bytes).
+1. Parse the whole envelope under rules 6-8 of [Canonical
+   serialisation](#canonical-serialisation). A document that breaks one of
+   them is malformed, even when the offending text sits in a top-level
+   member that step 1 then ignores. It must be an object. Take the members
+   named exactly `card` (an object) and `signature` (a string). Ignore any
+   other top-level member.
+2. Decode `card.public_key` and `signature` as **strict** base64url:
+   - only the alphabet `A-Z a-z 0-9 - _`;
+   - no padding and no whitespace;
+   - the unused low bits of the last character must be zero, so that every
+     byte string has exactly one encoding.
+
+   `public_key` must decode to 32 bytes: 43 characters, the last one of
+   `AEIMQUYcgkosw048`. `signature` must decode to 64 bytes: 86 characters,
+   the last one of `AQgw` (review 55 R55-154).
 3. Canonicalise the `card` object **as parsed generically**, not through a
-   typed struct, so a modified or added field of any name invalidates the
+   typed struct, so a modified or added member of any name invalidates the
    signature.
 4. `Ed25519.Verify(public_key, message, signature)`; a card is self-signed, so
    the key inside the card is the verifying key.
-5. Only then check the schema (version 1, field types and limits above).
+5. Only then check the schema. Check it on the same generic object, reading
+   members by exact name:
+   - `card` has exactly the six members of [Card](#card);
+   - `version` is the integer `1`;
+   - `name` and `harness` are strings within their limits;
+   - `public_key` is the string from step 2;
+   - `skills` is an array of objects with exactly the three skill members,
+     each within its limits;
+   - `created` is RFC 3339 UTC with `Z` and whole seconds.
+6. The verified card is the values read in step 5. An implementation must
+   not decode the card again with a parser that folds member names or lets
+   the last duplicate win (in Go: no `encoding/json` struct decode of the
+   card). A caller that expects a particular key compares it with that
+   `public_key`.
+
+**Stored and forwarded form.** A daemon that stores or forwards a peer's card
+never keeps the received bytes. This covers the pairing v1 and v2 `peers.card`,
+an introduced peer's card from a team roster, and a roster's `members[].card`.
+It keeps the canonical form of exactly `{"card": <card>, "signature":
+<signature>}` and drops any other top-level member. That form is what pairing
+v2 already MACs ([pairing.md](pairing.md#keys-and-tags)); review 55 R55-073
+extended it to v1 and to rosters.
 
 A valid signature proves the card was produced by the holder of the private
 key; it does not prove the name or harness are true, and it does not prove the
@@ -166,3 +238,96 @@ Signature over `"dorylinae-agent-card-v1\n" || canonical`:
 ```
 XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA
 ```
+
+## Negative test vectors (review 55 R55-F23)
+
+All vectors use the key and canonical card of [Test vector](#test-vector)
+above, with seed `00…1f`, `public_key` `A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg`
+and the signature `XN3G…PDA` given there. `K_R` is the responder key of
+[pairing.md §Test vectors](pairing.md#test-vectors), `Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc`.
+Each envelope below is one line of UTF-8, exactly as shown. A `\u` sequence in
+these envelopes is a JSON escape, written as the six ASCII characters.
+
+"Fails at" is the first [Verification](#verification) step that must refuse
+the vector. Where the step is 5, the signature is a real signature over the
+canonical form of the card as shown, so step 4 passes. These vectors check
+that the schema step, not the signature, refuses them. `internal/agentcard`
+(`Verify`, and `ParseStrict` for the step-1 vectors), `tools/verifycard` and
+`tools/verifyvectors` must all refuse every one of them at that step. They
+must also accept P1.
+
+**P1: accepted.** A valid surrogate pair in an ignored top-level member. The
+verified card is exactly the card of [Test vector](#test-vector), and `name` is
+`Ada "test" <é>`.
+
+```
+{"card":<canonical card of the Test vector>,"note":"😀","signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDA"}
+```
+
+**N1: fails at 5. A folded `public_key` (U+212A KELVIN SIGN).** The card
+carries `"public_Key"`, where the `K` is U+212A (bytes `E2 84 AA`), with the value `K_R`.
+It sorts after `public_key`. Go's `encoding/json` makes it win (review 55
+T1-01). This is the acceptance vector of ticket R55-F23.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","public_Key":"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"1A0as9bc-SW4UX42sgra2_j58MeJY4-rLEhxIaaEYX-jP67CHE5t55hBrBZvonaGm4e2BMDlalqMkRk-UVzDDw"}
+```
+
+**N2: fails at 5. An ASCII-case `public_Key`** (plain `K`, U+004B), value `K_R`,
+sorting before `public_key`.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_Key":"Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"Dq2T4Svz3zF-ain_uxsjdDCc90onZdFDUC-y3O7iTYaGIgyV6AaRQZu2sX6VcUo__TiPenhx6m4mqJnfXAKjAA"}
+```
+
+**N3: fails at 5. A folded `harness`** (`harneſſ`, each `ſ` U+017F, bytes
+`C5 BF`) with the value `spoofed`.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","harneſſ":"spoofed","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"wVEo49U_Ha--ze4SpQVxyzX3DYQz_rwpvQzJKR_8POMA5DtT51IJ7XIeZDrWxJEIDbdfU0GARkPiaqyyFYCaBA"}
+```
+
+**N4: fails at 5. A skill without `description`** (review 55 R55-213).
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"id":"review","name":"Code review"}],"version":1},"signature":"dQi9jlppLavLq5FuPaThp3rW2rtuiEboQ58nTCGy6ShpXZo_8EznS-1ffYcsQWvHWhpTuKkQL_ipIn-GSovbCg"}
+```
+
+**N5: fails at 5. A skill with a fourth member `Description`.**
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"Description":"x","description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"pFDCBOXUlckLSfSo0kZGTL1jdI-Cqx6ptg5lRY_dZ4s04h8DKxZPEpxn8L0NHDZygwvHEcNXnovN8X3Wouq2Cw"}
+```
+
+**N6 to N10: fail at 1.** Each is P1 with the `note` member replaced as shown.
+The card and signature are the valid ones from the Test vector, so only the
+strict parse (rules 7 and 8) can refuse them.
+
+| Vector | Replacement for `"note":"😀"` | Rule |
+|---|---|---|
+| N6 | `"note":"\ud800"` (lone high) | 7 |
+| N7 | `"note":"\udc00"` (lone low) | 7 |
+| N8 | `"note":"\udc00\ud800"` (low before high) | 7 |
+| N9 | `"note":"\ud800A"` (high, then a non-surrogate escape) | 7 |
+| N10 | `"note":1,"note":2` (the same name after unescaping) | 8 |
+
+**N11: fails at 2. `public_key` with non-zero trailing bits.** The key ends in
+`h` instead of `g`. It decodes to the same 32 bytes under a lax decoder, and
+the signature is over this exact string, so a verifier with lax base64
+accepts it.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbh","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"EXtkmE-d0-8pMsBH2sNOqKQsJTk23NYYv3CWJPiNuZ_fHuICp1Ba2Az2JWuFwIctj-jq8PIVkF5PL5gRtWKtDw"}
+```
+
+**N12: fails at 2. A signature with non-zero trailing bits.** This is the Test
+vector with the last signature character `A` changed to `B`. It decodes to the
+same 64 bytes under a lax decoder.
+
+```
+{"card":<canonical card of the Test vector>,"signature":"XN3GYSED9twF4mei-x7TUzHYzOMQU7aonCRQkebGdcXr8MvkkjLQVjZmtPiCNLTNigKIskMMBqF9hgQW5jdPDB"}
+```
+
+`<canonical card of the Test vector>` in P1 and N12 stands for the canonical
+card line of [Test vector](#test-vector), inserted verbatim. `tools/verifyvectors/vectors.json` carries
+every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1).

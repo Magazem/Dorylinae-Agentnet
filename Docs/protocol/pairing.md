@@ -468,7 +468,9 @@ because only the first 20 characters (100 of 256 bits) are used.
   (review-08b L1); `cmd/relay` always sets it explicitly from the flag.
 - **Daemon:** always issues v2 codes. It redeems a 10-character code only with
   `agentnet pair --v1 <code>`, and stores the result as `trust=relay` with an empty
-  `mailbox_keys`. A v1 peer has no mailbox key, so sending mail to it fails with
+  `mailbox_keys`. As in v2, the stored `card` is the canonical `{"card", "signature"}` object,
+  never the relay's bytes ([agent-card.md §Verification](agent-card.md#verification), stored form;
+  review 55 R55-073). A v1 peer has no mailbox key, so sending mail to it fails with
   `no_mailbox_key` ([mail.md](mail.md#sending)). The remedy is a v2 re-pair.
 - **Downgrade:** a v2 code is 15 characters and can never be redeemed as v1. A relay can
   refuse v2, which is visible as `relay_v1` or an error, but it cannot turn a v2 pairing into

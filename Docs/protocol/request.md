@@ -46,7 +46,11 @@ The body of kind `request` is `{"request": <object>}`, and nothing else. The obj
 | `debate` | cond. | object | **Phase 3 draft.** Required iff `type = debate`: `{"commitment", "rounds", "turn_timeout_s"}`. See [debate.md](debate.md#request-type-debate) |
 | `run` | no | object | **Phase 2 draft.** `{"command": "<name>"}` for an own-device helper. See [device.md](device.md#running-in-scope-requests) |
 
-No other members are allowed. Optional members are absent, never `null`. The canonical form of
+No other members are allowed. Optional members are absent, never `null`. A **present**
+optional string member is checked against its own rule and is never read as "absent": a present
+`urgency_declared`, `urgency_reason`, `requested_grant.note` or artifact member (`url`, `branch`,
+`commit`, `path`) that is `""` breaks its length rule, so the recipient answers `bad_body`
+(review 55 R55-072). A sender omits such a member; it never sends it empty. The canonical form of
 the object (`canonical(request)`) is what `body_hash` covers:
 `body_hash = lowercase hex SHA-256(canonical(request))`.
 

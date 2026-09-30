@@ -329,6 +329,11 @@ minutes (review 36 L8).
 | `device.link` | `{"at", "controller": <key>, "helper": <key>, "nonce": "<32 hex>", "role": "controller"\|"helper"}`. `role` names the sender's role; the sender's key must be the one in that role, and the recipient's key the other |
 | `device.unlink` | `{"at", "link"?: "l-…"}` (`link` absent when the sender has no active link) |
 
+`at` in both kinds is a wire time: RFC 3339 UTC with `Z` and whole seconds, for example
+`2026-01-02T03:04:05Z`. The string must round-trip exactly, so an offset (`+00:00`), a
+fraction (`.5`) or a lower-case `z` is `bad_body` (review 55 R55-152). A kept offer stores
+this exact string.
+
 Link-id vector (controller = seed `00…1f`, helper = seed `20…3f`,
 `nonce_c = 00112233445566778899aabbccddeeff`, `nonce_h = ffeeddccbbaa99887766554433221100`,
 nonces as the ASCII hex strings):

@@ -242,7 +242,12 @@ the name), `no_relay`, `relay_unavailable`, `unknown_ping`, `too_many_pings`;
 ### `mail_submit`
 
 Params: `{"to": "<peer name or public key>", "kind": "<kind>", "body": {...}}`. `body` is
-optional and must be a JSON object. Result: `{"id": "m-...", "state": "queued"}`. The mail is
+optional and must be a JSON object. The daemon reads `body` with the strict parse of
+[agent-card.md §Canonical serialisation](agent-card.md#canonical-serialisation) (rules 4 and 6-8),
+not as floating-point JSON. A number that is not an integer of magnitude below 2^53 (a fraction,
+an exponent, `-0`, or `9007199254740993`), a duplicate member or an unpaired surrogate escape is
+`bad_request`. The daemon never rounds a value or changes it in any other way before signing
+(review 55 R55-086). Result: `{"id": "m-...", "state": "queued"}`. The mail is
 signed, sealed and stored in the outbox; the call never waits for the relay (under 2 s). The
 daemon resends it until the peer acks it ([mail.md](mail.md#outbox)). A relay refusal such as
 `peer_offline` or `peer_busy` never fails the mail: it stays `queued`. The only CLI front end
