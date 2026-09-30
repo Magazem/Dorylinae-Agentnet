@@ -1,0 +1,46 @@
+package ipc
+
+import (
+	"testing"
+	"time"
+)
+
+// Review 77b proof (residual M1): connections that send one request each and
+// then stay idle keep every slot past firstRequestTimeout, so a later client
+// is still refused, now with busy instead of a hang.
+func TestF17ReProofKeepaliveHoldsSlots(t *testing.T) {
+	ln := newChanListener()
+	serveOn(t, pingServer(), ln)
+	held := holdSilent(t, ln, maxConns)
+	for i, c := range held {
+		if resp := roundTrip(t, c, "ping"); !resp.OK {
+			t.Fatalf("held %d: %+v", i, resp)
+		}
+	}
+	time.Sleep(firstRequestTimeout + time.Second)
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	if resp := roundTrip(t, a, "ping"); resp.Error == nil || resp.Error.Code != CodeBusy {
+		t.Fatalf("probe after %v: %+v, want busy (slots still held)", firstRequestTimeout, resp)
+	}
+}
+
+// Review 77b proof (residual M1): with every slot held and maxBusyReplies
+// silent clients sitting in the busy path, a further client is closed with
+// no answer at all (the CLI sees an unexpected EOF, not busy).
+func TestF17ReProofBusyPathSaturates(t *testing.T) {
+	ln := newChanListener()
+	serveOn(t, pingServer(), ln)
+	holdSilent(t, ln, maxConns)
+	holdSilent(t, ln, maxBusyReplies)
+	time.Sleep(100 * time.Millisecond)
+	a := offer(ln)
+	defer func() { _ = a.Close() }()
+	_ = a.SetDeadline(time.Now().Add(busyTimeout / 2))
+	_, werr := a.Write([]byte(`{"id":"1","method":"ping"}` + "\n"))
+	n, rerr := a.Read(make([]byte, 64))
+	if werr == nil && n > 0 {
+		t.Fatalf("probe got an answer (%d bytes)", n)
+	}
+	t.Logf("probe: write err %v, read err %v (closed without an answer)", werr, rerr)
+}
