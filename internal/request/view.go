@@ -145,9 +145,14 @@ type View struct {
 // toView decodes a storedRow into a View. It does not read the outbox
 // (Delivery is left "").
 func toView(r storedRow) (View, error) {
-	req, err := decodeStoredBody(r.body)
-	if err != nil {
-		return View{}, err
+	// An auto-declined `in` row keeps no content (body {}, R55-F13): it is
+	// shown without title, brief or any other body field.
+	req := &Request{}
+	if r.body != emptyBody {
+		var err error
+		if req, err = decodeStoredBody(r.body); err != nil {
+			return View{}, err
+		}
 	}
 	v := View{
 		ID: r.id, Direction: r.direction, Peer: r.peer, TeamID: r.teamID, Type: r.typ,

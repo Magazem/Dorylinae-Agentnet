@@ -61,11 +61,15 @@ approval = {id: "a-" + 32 hex, kind, subject, summary, created, expires,
 ```
 
 - `kind`: `grant`, `grant_policy`, `release`, `accept_result`, `device_link`,
-  `device_scope`, `debate_constraint` (3.4, [debate.md](debate.md#human-constraints-34)). The
+  `device_scope`, `debate_constraint` (3.4, [debate.md](debate.md#human-constraints-34)),
+  `data_prune` (R55-F13, owner decision D57: `agentnet prune --yes`,
+  [retention.md §Approval](retention.md#approval)). The
   action waits in the owning table in a `pending_approval` state that references the approval
-  id, except `debate_constraint`: the constraint waits only in the approval's in-memory action
-  and is stored by its Perform, so a restart (which expires every pending approval) or a
-  rejection leaves nothing in the debate tables.
+  id, except `debate_constraint` and `data_prune`: the constraint (or the prune's cutoff)
+  waits only in the approval's in-memory action, so a restart (which expires every pending
+  approval) or a rejection leaves nothing behind. A `data_prune` Perform removes nothing
+  itself: it allows the `data_prune` calls that name the approval to remove, in bounded
+  batches, for one hour.
 - `code`: 6 decimal digits from `crypto/rand` (uniform, leading zeros kept). The daemon keeps
   only a check value **in memory**:
   `code_mac = HMAC-SHA256(approval_key, "dorylinae-approval-v2\n" ‖ id ‖ "\n" ‖ code)`, where
@@ -230,7 +234,7 @@ opaque session id or the peer's self-chosen name, never its key; that grants and
 out scope, branch, `public`, `until` and the fingerprint; that grant summaries carried the raw
 card name; that a decoy code split by a zero-width character survived; and that a scope summary
 of up to 16384 bytes was cut at 4096 code points in every window, so a command placed last was
-approved unseen. This section is normative for all seven kinds and replaces every per-handler
+approved unseen. This section is normative for every kind (`data_prune` added by R55-F13) and replaces every per-handler
 summary.
 
 ### One builder
@@ -475,6 +479,7 @@ Every field listed as a fact is in the summary. The templates below are the exac
 | `accept_result` | as `release`, without K | `Accept the result of <peer> for your <type> request <q(title)> (session <sid>, round <n>): status <status>, <result_bytes> bytes, <output_bytes> bytes of output, <a> artifact(s). This closes the request as accepted. Confirm only if you checked this result.` (OD-R55F5-8) |
 | `device_link` | link intent id; peer key, name; role | `Link this device as the <role> of <peer>. <role part> Compare all five groups of this fingerprint with what 'agentnet identity' shows on the other device. Confirm only if all of them match and you started this on both devices.` Role part: helper → `That device will be able to run, on this device, the commands of a scope you set later.`; controller → `This device will be able to ask that device to run the commands of its scope.` (D9 as decided in D44: the human **compares**; nothing is typed.) |
 | `device_scope` | peer key, name; the resolved scope (types, repos, commands with resolved argv, env names, timeouts, expires) | `Let <peer> run <N> command(s) (<name>, <name>, …) on this device until <utc(expires)>, for <types> requests:` then per command ` [<name>] in <q(dir)> runs <argv as a JSON array of q()> (timeout <n> s[, env <names>]);`, then ` Confirm only if you set this scope yourself.` (today's text, with the command count and names first (review 58a, M1), the fingerprint added and the expiry in UTC). Command names, types and env names are ASCII by device.md's rules and need no quoting |
+| `data_prune` | minimum age (`older_than`); cutoff; the counts of a dry run at the cutoff (requests, work sessions, grants, debates, debate entries, debate constraints, experience records, inbox records, old inbox copies), taken at Create and again at confirm at the same cutoff and instant | `Remove for good the finished items older than <dur(older_than)>, last changed before <utc(cutoff)>: <n> request(s), <n> work session(s), <n> grant(s), <n> debate(s) (<n> entries, <n> constraints), <n> experience record(s) and <n> inbox record(s), and blank <n> old inbox copies. Anything still open, Decisions and the audit log are kept. This cannot be undone. Confirm only if you ran agentnet prune yourself.` Numbers only: never a peer, a request or any content |
 | `debate_constraint` | debate session id; peer key, name; constraint id; text | `Add a human constraint to the debate <sid> with <peer>: <q(text)>. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.` (today's text, with the fingerprint added) |
 
 Notes:
@@ -605,13 +610,15 @@ reported in the window or on the terminal.
 reopening by an agent is visible). The window's first opening, a dismiss and a malformed
 answer are not audited. `approval.approve` and `approval.reject` record whether the answer
 came from the window, the terminal or IPC (reject only) as `via`. `subject` is the id of the waiting object (`g-…` grant, `p-…` policy, `s-…`
-session, `i-…` device-link intent, `l-…` link for a scope). Never the code or its MAC.
+session, `i-…` device-link intent, `l-…` link for a scope, `n-…` a prune). Never the code or its MAC.
 
 ## Tables
 
 ```sql
 -- migration 15 (2.2a): approvals, grant_policies (policies: grant.md)
--- (migration 19, 3.4, rebuilds approvals to add 'debate_constraint' to the kind CHECK)
+-- (migration 19, 3.4, rebuilds approvals to add 'debate_constraint' to the kind CHECK;
+--  migration 25, R55-F13, rebuilds it again to add 'data_prune', listing R55-F24's
+--  'peer_verify' and 'team_invite' too)
 CREATE TABLE approvals (
     id        TEXT PRIMARY KEY,                 -- a-<32 hex>
     kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope')),

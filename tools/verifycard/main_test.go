@@ -77,8 +77,9 @@ func TestAcceptsUTF8BOM(t *testing.T) {
 }
 
 // A4 (review 68): the agent-card.md vectors, read from the transcription in
-// tools/verifyvectors/vectors.json. P1 verifies; N1-N5 verify at step 4 but
-// fail the schema (exit 1, INVALID); N6-N15 are malformed (exit 2).
+// tools/verifyvectors/vectors.json. P1 and P2 verify; N1-N5 and N17 verify at
+// step 4 but fail the schema (exit 1, INVALID); N6-N16 are malformed (exit 2).
+// R55-F13 A2: N16 (over 16384 bytes) exits 2, N17 (33 skills) exits 1.
 func TestNegativeVectors(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "verifyvectors", "vectors.json"))
 	if err != nil {
@@ -96,8 +97,8 @@ func TestNegativeVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.AgentCard.Cases) != 16 {
-		t.Fatalf("want 16 cases, got %d", len(v.AgentCard.Cases))
+	if len(v.AgentCard.Cases) != 19 {
+		t.Fatalf("want 19 cases, got %d", len(v.AgentCard.Cases))
 	}
 	for _, c := range v.AgentCard.Cases {
 		want := 2
@@ -114,9 +115,29 @@ func TestNegativeVectors(t *testing.T) {
 		if want == 1 && !strings.Contains(errs, "INVALID: card does not match the v1 schema") {
 			t.Errorf("%s: want a schema refusal, got %q", c.Name, errs)
 		}
-		if c.Name == "P1" && !strings.HasPrefix(out, `OK "Ada \"test\" <é>" A6EHv_`) {
-			t.Errorf("P1: output %q", out)
+		if (c.Name == "P1" || c.Name == "P2") && !strings.HasPrefix(out, `OK "Ada \"test\" <é>" A6EHv_`) {
+			t.Errorf("%s: output %q", c.Name, out)
 		}
+		if c.Name == "N16" && !strings.Contains(errs, "16727 bytes, over the limit of 16384") {
+			t.Errorf("N16: want a size refusal, got %q", errs)
+		}
+		if c.Name == "N17" && !strings.Contains(errs, "33 skills, at most 32") {
+			t.Errorf("N17: want a skills refusal, got %q", errs)
+		}
+	}
+}
+
+// R55-F13 A2: the size is checked before the parse. A document one byte over
+// the limit is refused for its size although it is not JSON; one at the limit
+// reaches the parse.
+func TestSizeBeforeParse(t *testing.T) {
+	code, _, errs := runOn(strings.Repeat("{", maxCardBytes+1))
+	if code != 2 || !strings.Contains(errs, "16385 bytes, over the limit of 16384") {
+		t.Fatalf("exit %d (%s), want 2 and a size refusal", code, errs)
+	}
+	code, _, errs = runOn(strings.Repeat("{", maxCardBytes))
+	if code != 2 || strings.Contains(errs, "over the limit") {
+		t.Fatalf("exit %d (%s), want 2 and a parse error", code, errs)
 	}
 }
 

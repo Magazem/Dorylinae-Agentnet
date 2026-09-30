@@ -13,9 +13,9 @@ import (
 	"unicode/utf8"
 )
 
-// agentCardVectors is Docs/protocol/agent-card.md §Negative test vectors:
-// P1 (fails_at 0, accepted) and N1-N15, each with the first Verification step
-// that must refuse it.
+// agentCardVectors is Docs/protocol/agent-card.md §Negative test vectors and
+// §Size vectors: P1 and P2 (fails_at 0, accepted) and N1-N17, each with the
+// first Verification step that must refuse it.
 type agentCardVectors struct {
 	Cases []struct {
 		Name     string `json:"name"`
@@ -40,7 +40,7 @@ func refuse(step int, format string, a ...any) error {
 // every case and checks that it stops at the stated step.
 func agentCard(c *checker, v *vectors) {
 	cases := v.AgentCard.Cases
-	c.ok("agent_card cases present", len(cases) == 16, fmt.Sprintf("%d cases, want 16 (P1, N1-N15)", len(cases)))
+	c.ok("agent_card cases present", len(cases) == 19, fmt.Sprintf("%d cases, want 19 (P1, P2, N1-N17)", len(cases)))
 	for _, tc := range cases {
 		name, err := verifyCardEnvelope([]byte(tc.Envelope))
 		got := 0
@@ -65,7 +65,11 @@ func agentCard(c *checker, v *vectors) {
 
 // verifyCardEnvelope returns the card name, or a *cardStepErr naming the step.
 func verifyCardEnvelope(env []byte) (string, error) {
-	// Step 1: strict parse of the whole envelope, then rule 4 on every number
+	// Step 1: the size, before any parsing (agent-card.md §Size).
+	if len(env) > maxCardBytes {
+		return "", refuse(1, "%d bytes, over %d", len(env), maxCardBytes)
+	}
+	// Then the strict parse of the whole envelope, then rule 4 on every number
 	// (canonicalise it once and discard the result).
 	doc, err := parseDoc(env)
 	if err != nil {
@@ -123,6 +127,12 @@ func lookup(ms []member, k string) any {
 	return nil
 }
 
+// Limits of agent-card.md §Size.
+const (
+	maxCardBytes = 16384
+	maxSkills    = 32
+)
+
 const b64uChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 // b64Exact decodes strict base64url of exactly n bytes. The decoder in the
@@ -161,6 +171,9 @@ func cardSchema(card []member) error {
 	skills, ok := lookup(card, "skills").([]any)
 	if !ok {
 		return errors.New("skills is not an array")
+	}
+	if len(skills) > maxSkills {
+		return fmt.Errorf("%d skills, at most %d", len(skills), maxSkills)
 	}
 	for i, s := range skills {
 		sk, ok := s.([]member)

@@ -436,8 +436,10 @@ func testOfflineDelivery(t *testing.T, restartRelay bool) {
 		t.Fatalf("mail.in audit rows = %d, want 1", n)
 	}
 	var signed string
-	if err := b.query(`SELECT signed FROM mail_inbox WHERE id = '`+res.ID+`'`, &signed); err != nil || !strings.Contains(signed, harnessSecret) {
-		t.Fatalf("inbox row does not keep the verified plaintext: %v", err)
+	// The inbox row only deduplicates: no second copy of the plaintext
+	// (Docs/protocol/mail.md §Inbox rows, R55-F13).
+	if err := b.query(`SELECT signed FROM mail_inbox WHERE id = '`+res.ID+`'`, &signed); err != nil || signed != "" {
+		t.Fatalf("inbox row signed = %d bytes, %v; want blank", len(signed), err)
 	}
 
 	// A comes back and learns of the ack.

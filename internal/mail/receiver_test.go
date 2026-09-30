@@ -165,9 +165,11 @@ func TestTripleDeliveryOneRowThreeAcks(t *testing.T) {
 	if len(f.audits.events) != 1 || f.audits.events[0].action != ActionIn {
 		t.Fatalf("audit events = %+v, want one %s", f.audits.events, ActionIn)
 	}
+	// The inbox row only deduplicates: it keeps no copy of the signed
+	// plaintext, for any kind (Docs/protocol/mail.md §Inbox rows, R55-F13).
 	var signed string
-	if err := f.st.DB().QueryRow(`SELECT signed FROM mail_inbox`).Scan(&signed); err != nil || signed == "" {
-		t.Fatalf("inbox signed = %q, %v", signed, err)
+	if err := f.st.DB().QueryRow(`SELECT signed FROM mail_inbox`).Scan(&signed); err != nil || signed != "" {
+		t.Fatalf("inbox signed = %q, %v; want blank", signed, err)
 	}
 }
 

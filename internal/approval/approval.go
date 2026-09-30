@@ -29,12 +29,15 @@ const (
 	// KindDebateConstraint gates a human constraint on a debate
 	// (Docs/protocol/debate.md §Human constraints, OD-P3-3).
 	KindDebateConstraint = "debate_constraint"
+	// KindDataPrune gates agentnet prune --yes (Docs/protocol/retention.md
+	// §Approval, owner decision D57): removal needs a human.
+	KindDataPrune = "data_prune"
 )
 
 var validKinds = map[string]bool{
 	KindGrant: true, KindGrantPolicy: true, KindRelease: true,
 	KindAcceptResult: true, KindDeviceLink: true, KindDeviceScope: true,
-	KindDebateConstraint: true,
+	KindDebateConstraint: true, KindDataPrune: true,
 }
 
 // States (Docs/protocol/approval.md §Object).

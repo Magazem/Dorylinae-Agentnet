@@ -64,7 +64,7 @@ type cardCase struct {
 	FailsAt  int    `json:"fails_at"`
 }
 
-// loadCardCases reads the agent-card.md vectors P1 and N1-N15 from
+// loadCardCases reads the agent-card.md vectors P1, P2 and N1-N17 from
 // tools/verifyvectors/vectors.json, where they are transcribed in full.
 func loadCardCases(t *testing.T) []cardCase {
 	t.Helper()
@@ -80,23 +80,24 @@ func loadCardCases(t *testing.T) []cardCase {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.AgentCard.Cases) != 16 {
-		t.Fatalf("want 16 agent_card cases (P1, N1-N15), got %d", len(v.AgentCard.Cases))
+	if len(v.AgentCard.Cases) != 19 {
+		t.Fatalf("want 19 agent_card cases (P1, P2, N1-N17), got %d", len(v.AgentCard.Cases))
 	}
 	return v.AgentCard.Cases
 }
 
-// A2: P1 verifies; each N vector is refused at the step agent-card.md names.
+// A2: P1 and P2 verify; each N vector is refused at the step agent-card.md
+// names (R55-F13 A2: N16 for its size at step 1, N17 for 33 skills at step 5).
 func TestNegativeVectors(t *testing.T) {
 	for _, c := range loadCardCases(t) {
 		t.Run(c.Name, func(t *testing.T) {
 			sc, err := Verify([]byte(c.Envelope))
 			if c.FailsAt == 0 {
 				if err != nil {
-					t.Fatalf("P1 refused: %v", err)
+					t.Fatalf("%s refused: %v", c.Name, err)
 				}
 				if sc.Card.Name != `Ada "test" <é>` || sc.Card.PublicKey != "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg" {
-					t.Fatalf("P1 card = %+v", sc.Card)
+					t.Fatalf("%s card = %+v", c.Name, sc.Card)
 				}
 				return
 			}
@@ -110,6 +111,12 @@ func TestNegativeVectors(t *testing.T) {
 			}
 			switch c.FailsAt {
 			case 1:
+				if c.Name == "N16" {
+					if len(c.Envelope) != 16727 || !strings.Contains(err.Error(), "16727 bytes, over the limit of 16384") {
+						t.Fatalf("want a size refusal of 16727 bytes, got %v", err)
+					}
+					return
+				}
 				if perr == nil && cerr == nil {
 					t.Fatalf("step 1 passes (ParseStrict and rule 4); Verify said %v", err)
 				}

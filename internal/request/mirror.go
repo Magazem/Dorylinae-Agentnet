@@ -130,9 +130,9 @@ func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) e
 		return badBody("%s", err.Error())
 	}
 	switch code {
-	case "user", "not_team_member", "unknown_team", "unverified_peer":
+	case "user", "not_team_member", "unknown_team", "unverified_peer", "inbox_full":
 	default:
-		return badBody("code must be user, not_team_member, unknown_team or unverified_peer")
+		return badBody("code must be user, not_team_member, unknown_team, unverified_peer or inbox_full")
 	}
 	reason, err := decodeNonEmpty(body, "reason")
 	if err != nil {

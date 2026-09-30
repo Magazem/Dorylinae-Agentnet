@@ -6,15 +6,16 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
@@ -23,9 +24,18 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
-// mailQueue is how many mail envelopes may wait for the receiver. The relay
-// read loop must not block; a dropped envelope is resent by its sender.
-const mailQueue = 256
+// mailQueue is how many mail envelopes may wait for the receiver, and
+// mailQueueBytes how many decoded payload bytes (R55-F13, Docs/protocol/mail.md
+// §Receive queue). The relay read loop must not block; a dropped envelope is
+// resent by its sender.
+const (
+	mailQueue      = 256
+	mailQueueBytes = 64 << 20
+)
+
+// mailDropWindow is how often at most the dropped mail envelopes are logged:
+// one mail_queue_drop line per window.
+var mailDropWindow = time.Minute
 
 // peerDirectory answers the mail package's Peers and PeerKeys questions from
 // the peers table.
@@ -108,20 +118,10 @@ type ownKeys interface {
 // newMailReceiver builds the receiver and the pusher of keys mail. keys supplies
 // the own mailbox private keys (created by pairing and rotation, tickets 0.8c
 // and 1.0b). Both need Sender, which startMail sets.
-func newMailReceiver(db *sql.DB, log *audit.Log, ks *keystore.Store, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store, ws *worksession.Store, caps *capability.Store) (*mail.Receiver, *mail.Pusher) {
+func newMailReceiver(db *sql.DB, log *audit.Log, idKey *identityKey, self ed25519.PublicKey, keys mail.Keys, lg *slog.Logger, ts *team.Store, rs *request.Store, ws *worksession.Store, caps *capability.Store) (*mail.Receiver, *mail.Pusher) {
 	dir := peerDirectory{db}
 	selfKey := envelope.KeyString(self)
-	priv := func() (ed25519.PrivateKey, error) {
-		seed, _, err := ks.Load()
-		if err != nil {
-			return nil, err
-		}
-		defer clear(seed)
-		if len(seed) != ed25519.SeedSize {
-			return nil, errors.New("stored identity key has the wrong length")
-		}
-		return ed25519.NewKeyFromSeed(seed), nil
-	}
+	priv := idKey.Priv
 	pusher := &mail.Pusher{Priv: priv, Peers: dir, List: dir.PeersWithKeys, Log: lg}
 	rcv := &mail.Receiver{
 		Opener: &mail.Opener{
@@ -165,7 +165,7 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 		_, err := ob.Submit(ctx, peer, "keys", body)
 		return err
 	}
-	q := make(chan envelope.Envelope, mailQueue)
+	q := newMailInbox(rcv.Log)
 	mctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go rcv.RunPrune(mctx)
@@ -180,49 +180,93 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 			select {
 			case <-mctx.Done():
 				return
-			case e := <-q:
+			case e := <-q.ch:
+				q.bytes.Add(-int64(len(e.Payload)))
 				_ = rcv.Handle(mctx, e) // rejections are audited by the receiver
 			}
 		}
 	}()
-	return func(e envelope.Envelope) {
-			select {
-			case q <- e:
-			default: // full: dropped, the sender resends
-			}
-		}, func() {
-			cancel()
-			<-done
-		}
+	return q.push, func() {
+		cancel()
+		<-done
+		q.flush()
+	}
+}
+
+// mailInbox is the receive queue of Docs/protocol/mail.md §Receive queue: at
+// most mailQueue envelopes and mailQueueBytes of decoded payload. bytes is
+// added before an envelope is queued and taken off when the receiver gets it.
+type mailInbox struct {
+	ch    chan envelope.Envelope
+	bytes atomic.Int64
+	log   *slog.Logger
+
+	mu        sync.Mutex
+	dropped   int
+	dropBytes int64
+	timer     *time.Timer
+}
+
+func newMailInbox(lg *slog.Logger) *mailInbox {
+	if lg == nil {
+		lg = slog.Default()
+	}
+	return &mailInbox{ch: make(chan envelope.Envelope, mailQueue), log: lg}
+}
+
+// push queues e, or drops it when either bound is reached (the sender's
+// outbox resends it). It never blocks.
+func (q *mailInbox) push(e envelope.Envelope) {
+	n := int64(len(e.Payload))
+	if q.bytes.Add(n) > mailQueueBytes {
+		q.bytes.Add(-n)
+		q.drop(n)
+		return
+	}
+	select {
+	case q.ch <- e:
+	default:
+		q.bytes.Add(-n)
+		q.drop(n)
+	}
+}
+
+// drop counts a dropped envelope into the next mail_queue_drop line.
+func (q *mailInbox) drop(n int64) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.dropped++
+	q.dropBytes += n
+	if q.timer == nil {
+		q.timer = time.AfterFunc(mailDropWindow, q.flush)
+	}
+}
+
+// flush logs the drops counted so far, if any. Never audited.
+func (q *mailInbox) flush() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.timer != nil {
+		q.timer.Stop()
+		q.timer = nil
+	}
+	if q.dropped == 0 {
+		return
+	}
+	q.log.Warn("mail receive queue full, envelopes dropped", "event", "mail_queue_drop", "count", q.dropped, "bytes", q.dropBytes)
+	q.dropped, q.dropBytes = 0, 0
 }
 
 // newOutbox builds the sender outbox. Its Sender is set by startMail once the
 // relay client exists; until then rows stay queued.
-func newOutbox(db *sql.DB, log *audit.Log, ks *keystore.Store, lg *slog.Logger) *mail.Outbox {
+func newOutbox(db *sql.DB, log *audit.Log, idKey *identityKey, lg *slog.Logger) *mail.Outbox {
 	dir := peerDirectory{db}
 	return &mail.Outbox{
 		DB:    db,
 		Peers: dir,
 		Audit: log,
 		Log:   lg,
-		Priv:  identityPriv(ks),
-	}
-}
-
-// identityPriv returns a function that loads the daemon's identity private
-// key from ks, for callers (the outbox, the mail receiver, the presence
-// sender) that each need their own copy to clear after use.
-func identityPriv(ks *keystore.Store) func() (ed25519.PrivateKey, error) {
-	return func() (ed25519.PrivateKey, error) {
-		seed, _, err := ks.Load()
-		if err != nil {
-			return nil, err
-		}
-		defer clear(seed)
-		if len(seed) != ed25519.SeedSize {
-			return nil, errors.New("stored identity key has the wrong length")
-		}
-		return ed25519.NewKeyFromSeed(seed), nil
+		Priv:  idKey.Priv,
 	}
 }
 

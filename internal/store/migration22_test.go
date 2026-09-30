@@ -30,6 +30,8 @@ func TestMigration22Runner(t *testing.T) {
 
 	// Back to schema 21 with one row, then reopen.
 	for _, q := range []string{
+		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
+		`ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`, // migration 24
 		`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`,
 		`DELETE FROM migrations WHERE version > 21`,
 		`INSERT INTO work_sessions (id, role, peer, request_id, team_id, state, seq, round, opened, state_at, updated, kind)

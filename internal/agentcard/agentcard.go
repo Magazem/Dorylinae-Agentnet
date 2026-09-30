@@ -24,6 +24,20 @@ const domain = "dorylinae-agent-card-v1\n"
 
 const maxTextLen = 128
 
+// Size limits (agent-card.md §Size, review 55 R55-057).
+const (
+	// MaxCardBytes is the largest signed card envelope, in bytes. Verify
+	// checks it before parsing.
+	MaxCardBytes = 16384
+	// MaxSkills is the most skills a card may declare.
+	MaxSkills = 32
+)
+
+// parseEnvelope is the parse Verify runs after the size check. It is a
+// variable only so a test can count the calls (agent-card.md §Size: an
+// oversize document costs no parse).
+var parseEnvelope = ParseStrict
+
 // Strict: no padding, and trailing bits must be zero, so a value has one encoding.
 var b64 = base64.RawURLEncoding.Strict()
 
@@ -69,7 +83,30 @@ func New(pub ed25519.PublicKey, name, harness string, skills []Skill, created ti
 	if err := c.validate(); err != nil {
 		return Card{}, err
 	}
+	// The signature is not known yet; any valid one has the same length.
+	if err := checkSize(Signed{Card: c, Signature: strings.Repeat("A", sigChars)}); err != nil {
+		return Card{}, err
+	}
 	return c, nil
+}
+
+// sigChars is the length of a signature in strict base64url.
+const sigChars = (ed25519.SignatureSize*8 + 5) / 6
+
+// checkSize refuses a card whose envelope is over MaxCardBytes in the form
+// internal/identity writes agent-card.json: json.MarshalIndent(s, "", "  "),
+// indented and with <, >, &, U+2028 and U+2029 escaped. That is the largest
+// form any component emits, so the pairing frame, the stored form and the
+// file all fit too (agent-card.md §Size, review 71b F7).
+func checkSize(s Signed) error {
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Errorf("agentcard: marshal: %w", err)
+	}
+	if len(b) > MaxCardBytes {
+		return fmt.Errorf("agentcard: the signed card is %d bytes, over the limit of %d", len(b), MaxCardBytes)
+	}
+	return nil
 }
 
 func (c Card) validate() error {
@@ -87,6 +124,9 @@ func (c Card) validate() error {
 	}
 	if c.Skills == nil {
 		return errors.New("agentcard: skills is required")
+	}
+	if len(c.Skills) > MaxSkills {
+		return fmt.Errorf("agentcard: %d skills, at most %d", len(c.Skills), MaxSkills)
 	}
 	for i, s := range c.Skills {
 		if err := checkText(fmt.Sprintf("skills[%d].id", i), s.ID, true); err != nil {
@@ -162,7 +202,11 @@ func Sign(priv ed25519.PrivateKey, c Card) (Signed, error) {
 		return Signed{}, err
 	}
 	sig := ed25519.Sign(priv, signingInput(canon))
-	return Signed{Card: c, Signature: b64.EncodeToString(sig)}, nil
+	s := Signed{Card: c, Signature: b64.EncodeToString(sig)}
+	if err := checkSize(s); err != nil {
+		return Signed{}, err
+	}
+	return s, nil
 }
 
 // b64Alphabet is the base64url alphabet, in value order.
@@ -226,6 +270,9 @@ func cardFromGeneric(card map[string]any) (Card, error) {
 	if !ok {
 		return Card{}, errors.New("skills must be an array")
 	}
+	if len(skills) > MaxSkills {
+		return Card{}, fmt.Errorf("%d skills, at most %d", len(skills), MaxSkills)
+	}
 	c.Skills = make([]Skill, 0, len(skills))
 	for i, el := range skills {
 		sk, ok := el.(map[string]any)
@@ -262,7 +309,9 @@ func stringMember(m map[string]any, name string) (string, error) {
 }
 
 // Verify checks a signed-card envelope (JSON) as agent-card.md §Verification
-// specifies. The whole envelope is read under the strict parse, and every
+// specifies. An envelope over MaxCardBytes is refused before any parsing, and
+// a card with more than MaxSkills skills fails the schema. The whole envelope
+// is read under the strict parse, and every
 // number in it must be a canonical integer, in ignored members too. Members
 // other than "card" and "signature" are ignored. The key and the signature
 // are strict base64url. The signature is checked over the card as parsed
@@ -271,7 +320,10 @@ func stringMember(m map[string]any, name string) (string, error) {
 // exactly six card members and three per skill. The returned card holds the
 // values read there; the card is never decoded a second time.
 func Verify(data []byte) (*Signed, error) {
-	doc, err := ParseStrict(data)
+	if len(data) > MaxCardBytes {
+		return nil, fmt.Errorf("agentcard: envelope is %d bytes, over the limit of %d", len(data), MaxCardBytes)
+	}
+	doc, err := parseEnvelope(data)
 	if err != nil {
 		return nil, fmt.Errorf("agentcard: %w", err)
 	}

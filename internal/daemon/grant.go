@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -49,7 +50,7 @@ const (
 
 // grantIdentity is the subset of daemon identity grant.go needs to sign
 // tokens: the own key in wire form and a private-key loader that clears the
-// seed after use, matching identityPriv's pattern in mail.go.
+// seed after use (identityKey.Priv hands out a copy, identity_key.go).
 type grantIdentity struct {
 	Self string
 	Priv func() (ed25519.PrivateKey, error)
@@ -441,7 +442,30 @@ type GrantListParams struct {
 	Session   string `json:"session,omitempty"`
 	Direction string `json:"direction,omitempty"`
 	State     string `json:"state,omitempty"`
+	// Limit is the page size (default 200, 1-500, larger is clamped; 0 or
+	// negative is bad_request); Cursor is a previous page's NextCursor
+	// (R55-F13, review 55 R55-064).
+	Limit  *int   `json:"limit,omitempty"`
+	Cursor string `json:"cursor,omitempty"`
 }
+
+// GrantListResult is the result of "grant_list". NextCursor is set when more
+// rows match; pass it as Cursor for the next page.
+type GrantListResult struct {
+	Grants     []GrantView `json:"grants"`
+	NextCursor string      `json:"next_cursor,omitempty"`
+}
+
+// grant_list page sizes (Docs/protocol/grant.md §IPC), and the bytes of
+// views one page may carry, under the 1 MiB IPC line with room for the reply
+// envelope and next_cursor. 500 held views fit (each is bounded by its 2 KiB
+// token), but an issued view's local path has no protocol bound, so a page
+// also ends at this size.
+const (
+	grantListDefault  = 200
+	grantListMax      = 500
+	grantListMaxBytes = 1000 << 10
+)
 
 // GrantShowParams are the params of "grant_show".
 type GrantShowParams struct {
@@ -793,15 +817,41 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
 			}
 		}
-		recs, err := capStore.List(ctx, capability.ListFilter{Session: p.Session, Direction: p.Direction, State: p.State})
+		limit := grantListDefault
+		if p.Limit != nil {
+			if *p.Limit <= 0 {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "limit must be 1-500"}
+			}
+			limit = min(*p.Limit, grantListMax)
+		}
+		// One row more than the page, to know whether another page follows.
+		recs, err := capStore.List(ctx, capability.ListFilter{Session: p.Session, Direction: p.Direction, State: p.State,
+			Limit: limit + 1, Cursor: p.Cursor})
+		if errors.Is(err, capability.ErrBadCursor) {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "cursor was not issued by grant_list"}
+		}
 		if err != nil {
 			return nil, err
 		}
-		views := make([]GrantView, 0, len(recs))
-		for _, r := range recs {
-			views = append(views, grantView(ctx, ps, r))
+		res := GrantListResult{Grants: make([]GrantView, 0, min(len(recs), limit))}
+		// Each view is measured as the IPC encoder writes it (no HTML
+		// escaping); the newline Encode adds stands for the comma.
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		size := 0
+		for i, r := range recs {
+			v := grantView(ctx, ps, r)
+			buf.Reset()
+			_ = enc.Encode(v)
+			if i == limit || (i > 0 && size+buf.Len() > grantListMaxBytes) {
+				res.NextCursor = capability.CursorOf(recs[i-1])
+				break
+			}
+			size += buf.Len()
+			res.Grants = append(res.Grants, v)
 		}
-		return map[string][]GrantView{"grants": views}, nil
+		return res, nil
 	})
 
 	srv.Handle("grant_show", func(ctx context.Context, params json.RawMessage) (any, error) {

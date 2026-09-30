@@ -97,7 +97,9 @@ the user's own actions can leave unprunable, and it grows only with the user's o
 `prune` is irreversible, and any local process that can call IPC can run it (an agent
 included, for example one misled by a brief it received). Its reach is bounded by the rules
 above: nothing unfinished, nothing younger than 35 days, never a Decision or the audit log,
-and every call is audited. No human approval is asked (OD-F13-8).
+and every call is audited. And no removal happens without a **human approval** in the
+approval window ([Approval](#approval), owner decision D57, OD-F13-8 = (b)), so an agent
+cannot delete history on its own.
 
 ### Why 35 days
 
@@ -143,9 +145,9 @@ new, so nothing is re-admitted after a prune:
 
 ## Migration
 
-Migration N (R55-F13; N is the next free version when it merges). Indexes and one column
-only, no data rewrite, so it runs in about the time of reading `requests` and `mail_inbox`
-once:
+Migration **24** `retention_caps` (R55-F13; 23 is reserved for R55-F24). Indexes and one
+column only, no data rewrite, so it runs in about the time of reading `requests` and
+`mail_inbox` once:
 
 ```sql
 CREATE INDEX requests_peer_state ON requests (direction, peer, state);        -- open cap
@@ -156,7 +158,14 @@ CREATE INDEX mail_inbox_received ON mail_inbox (received_at);                  -
 ```
 
 The `requests` column is added with `ALTER TABLE … ADD COLUMN`, so the requests table is not
-rebuilt and the rewind tests' DROP lists do not change (the indexes go with their tables).
+rebuilt. The rewind tests that go back past 24 without dropping `requests` and `mail_inbox`
+undo it explicitly (drop the four indexes and the column).
+
+Migration **25** `approval_kind_data_prune` rebuilds `approvals` (SQLite cannot alter a
+CHECK) so that its kind CHECK also allows `data_prune` ([Approval](#approval)). It lists
+R55-F24's kinds `peer_verify` and `team_invite` too, so the table ends the same whichever of
+the two tickets merges first; it copies every row with explicit column lists, as migration 19
+does.
 
 The database runs with `secure_delete` on, so blanked text and deleted rows are overwritten in
 the file. Neither blanking nor `prune` shrinks the database file: SQLite reuses the freed pages
@@ -170,16 +179,25 @@ first; the error is `io_error` and nothing is half-removed.
 
 ## IPC
 
-`data_prune {"older_than_s": N, "dry_run"?: bool}` → `{"cutoff": "<RFC 3339>", "dry_run":
-bool, "counts": {"requests", "work_sessions", "grants", "debates", "debate_entries",
-"debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"}, "more": bool}`.
+`data_prune {"older_than_s": N, "dry_run"?: bool, "approval"?: "a-…"}` → `{"cutoff": "<RFC
+3339>", "dry_run": bool, "counts": {"requests", "work_sessions", "grants", "debates",
+"debate_entries", "debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"},
+"more": bool, "approval"?: <approval view>}`.
 
-- `older_than_s` is an integer number of seconds, at least 3024000 (35 d). A smaller value,
-  or a missing or non-integer one, is `bad_request`.
+- Without `dry_run` and without `approval`, the call creates the [approval](#approval) and
+  returns it (`approval`, state `pending`) with the counts it shows and `more: true`; nothing is
+  removed. With `approval` (the same `older_than_s`), the call answers `approval` (still
+  `pending`) until the human decides, then removes one batch per call as described below.
+  A rejected approval is `approval_rejected`, an expired one `approval_expired`, and an id that
+  is not (or no longer) a running prune `unknown_approval`; a different `older_than_s` is
+  `bad_request`.
+
+- `older_than_s` is an integer number of seconds, at least 3024000 (35 d), written as a plain
+  JSON integer. A smaller value, or a missing, quoted or non-integer one, is `bad_request`.
 - `dry_run: true` counts what a full prune would remove (and the rows it would blank), in one
   read-only call using the indexes of [Migration](#migration), and removes nothing; `more` is
   `false`.
-- Otherwise one call works in one transaction, in this order, and returns what it removed:
+- Once approved, one call works in one transaction, in this order, and returns what it removed:
   1. finished requests, oldest `updated` first, each with everything that belongs to it: at
      most **500 requests**, and the call stops adding requests once the content of those
      already taken (the byte lengths of `requests.body`, `requests.result`, `last_reply`,
@@ -198,15 +216,44 @@ bool, "counts": {"requests", "work_sessions", "grants", "debates", "debate_entri
   calls, and bound the free disk space a call needs ([Full disk](#migration)). The daemon
   computes `cutoff` from its own clock at each call.
 - Errors: `bad_request`; `io_error` when the database write fails (for example a full disk:
-  a delete needs a little free space for its journal).
+  a delete needs a little free space for its journal); the approval errors of
+  [approval.md](approval.md#ipc-and-cli) (`approval_limit`, `approval_locked`,
+  `approval_unavailable`, `approval_expired`, `unknown_approval`) and `approval_rejected`.
+
+## Approval
+
+Owner decision D57 (OD-F13-8 = (b)): `data_prune` removes or blanks nothing until a human has
+approved it through [approval.md](approval.md), like every other approval: the approval
+window on a desktop, the daemon's terminal in [terminal mode](approval.md#headless-machines),
+and `approval_unavailable` where neither exists. The approval store, its limits (5 pending,
+20 an hour, 3 attempts, 10 wrong codes a day) and the one summary builder are reused; the
+kind is `data_prune`.
+
+- **Created by the first removing call.** `data_prune {"older_than_s"}` (no `dry_run`, no
+  `approval`) fixes the cutoff (`now − older_than`, from the daemon's clock), counts what a
+  prune at that cutoff removes (as a dry run), and creates the approval. When the count is
+  zero it creates nothing and returns the zero counts. The waiting object is kept in memory
+  only (like `debate_constraint`), under a subject `n-` + 32 hex: a restart, which expires
+  every pending approval, leaves nothing to remove.
+- **Summary** ([approval.md §Contents per kind](approval.md#contents-per-kind)): the minimum
+  age, the cutoff, and the counts, numbers only (never a peer, a request or any content).
+- **Precondition compares.** At confirm, the counts are taken again at the same cutoff and
+  the same instant; any difference (a request changed state, another prune ran) rejects the
+  approval (reason `precondition`), and the user runs the command again.
+- **Perform** removes nothing: it lets the calls that name the approval run for one hour.
+  Each such call removes one bounded batch against the **approved cutoff**, in its own
+  transaction, audited as below. The call that returns `more: false` ends the approval's
+  use; a later call with it is `unknown_approval`.
 
 ## Audit
 
 Every `data_prune` call that removed or blanked at least one row appends `data.prune` (actor `cli`) with
-`{"older_than_s", "cutoff", "requests", "work_sessions", "grants", "debates",
+`{"older_than_s", "cutoff", "approval", "requests", "work_sessions", "grants", "debates",
 "debate_entries", "debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"}`
+(`approval` is the id of the approval that allowed it)
 (written with `AppendTx` in the prune transaction, so the counts and the removals commit
 together): counts only,
-never ids, titles or content. A dry run writes no row. Audit rows that name a pruned request,
+never ids of what was removed, titles or content. A dry run writes no row; creating,
+approving or rejecting the approval writes the usual `approval.*` rows. Audit rows that name a pruned request,
 session or grant stay as they are: they hold only ids and enums, and the chain is never
 rewritten.

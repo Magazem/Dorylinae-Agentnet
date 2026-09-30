@@ -120,6 +120,23 @@ type Constraint struct {
 	Text    string
 }
 
+// Prune is the facts of a data_prune approval: the cutoff and what a prune
+// at it removes, counted when the command was run (Docs/protocol/retention.md
+// §Approval).
+type Prune struct {
+	OlderThan         time.Duration
+	Cutoff            time.Time
+	Requests          int64
+	WorkSessions      int64
+	Grants            int64
+	Debates           int64
+	DebateEntries     int64
+	DebateConstraints int64
+	ExperienceRecords int64
+	MailInbox         int64
+	InboxBlanked      int64
+}
+
 // q is displayQuote.
 func q(s string) string { return displaytext.Quote(s) }
 
@@ -360,4 +377,16 @@ func BuildConstraint(f Constraint) (string, error) {
 	}
 	return finish(fmt.Sprintf("Add a human constraint to the debate %s with %s: %s. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.",
 		plain(f.Session), who, q(f.Text)))
+}
+
+// BuildPrune is the data_prune template. The counts are numbers only: a
+// prune summary never names a peer, a request or any content.
+func BuildPrune(f Prune) (string, error) {
+	return finish(fmt.Sprintf("Remove for good the finished items older than %s, last changed before %s: "+
+		"%d request(s), %d work session(s), %d grant(s), %d debate(s) (%d entries, %d constraints), "+
+		"%d experience record(s) and %d inbox record(s), and blank %d old inbox copies. "+
+		"Anything still open, Decisions and the audit log are kept. This cannot be undone. "+
+		"Confirm only if you ran agentnet prune yourself.",
+		Dur(f.OlderThan), UTC(f.Cutoff), f.Requests, f.WorkSessions, f.Grants, f.Debates, f.DebateEntries,
+		f.DebateConstraints, f.ExperienceRecords, f.MailInbox, f.InboxBlanked))
 }

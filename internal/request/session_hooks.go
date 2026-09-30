@@ -94,6 +94,11 @@ type DebateHooks interface {
 	// request.cancel or an auto-decline closes both rows cancelled".
 	// direction is the request row's ("in" or "out").
 	EndedTx(ctx context.Context, tx *sql.Tx, direction, peer, id string, now time.Time) error
+	// HasDecisionTx reports whether the session derived for a debate request
+	// from `from` to `to` with id already has a stored Decision: its request
+	// was pruned and the id is being re-used (Docs/protocol/request.md
+	// §Receiving step 2, review 71b F8).
+	HasDecisionTx(ctx context.Context, tx *sql.Tx, from, to, id string) (bool, error)
 }
 
 // SessionHooks is the combination *worksession.Store implements.

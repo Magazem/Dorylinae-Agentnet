@@ -99,9 +99,45 @@ type opWindow struct {
 	n     int
 }
 
+// byteWindow is the sliding 24 h byte budget of one grant (R55-F13, review 55
+// R55-079): the bytes served per clock hour, for the current hour and the 24
+// before it, in a ring indexed by hour mod 25. A byte counts for between 24
+// and 25 hours.
 type byteWindow struct {
-	start time.Time
-	n     int64
+	hour int64 // clock hour (Unix hours) of the newest bucket
+	b    [byteBuckets]int64
+}
+
+const byteBuckets = 25
+
+func unixHour(t time.Time) int64 { return t.Unix() / 3600 }
+
+// bucket is hour's index in the ring (also for a clock before 1970).
+func bucket(hour int64) int { return int((hour%byteBuckets + byteBuckets) % byteBuckets) }
+
+// roll advances w to hour, zeroing the buckets that fell out of the window.
+func (w *byteWindow) roll(hour int64) {
+	if hour <= w.hour {
+		return
+	}
+	if hour-w.hour >= byteBuckets {
+		w.b = [byteBuckets]int64{}
+	} else {
+		for h := w.hour + 1; h <= hour; h++ {
+			w.b[bucket(h)] = 0
+		}
+	}
+	w.hour = hour
+}
+
+// sum returns the bytes served in the current hour and the 24 before it.
+func (w *byteWindow) sum(now time.Time) int64 {
+	w.roll(unixHour(now))
+	var n int64
+	for _, v := range w.b {
+		n += v
+	}
+	return n
 }
 
 type fetchJob struct {
@@ -310,7 +346,7 @@ func (s *FetchServer) Flush(ctx context.Context) {
 		}
 	}
 	for id, w := range s.served {
-		if now.Sub(w.start) > 24*time.Hour {
+		if unixHour(now)-w.hour >= byteBuckets {
 			delete(s.served, id)
 		}
 	}
@@ -636,7 +672,10 @@ func (s *FetchServer) admit(grant string, now time.Time) (func(), error) {
 	if w.n >= maxOpsPerSecond {
 		return nil, fetchErr(CodeRateLimited)
 	}
-	if b := s.served[grant]; b != nil && now.Sub(b.start) < 24*time.Hour && b.n >= s.cfg.BytesPer24h {
+	// Sliding window: refused once the bytes of the last 24-25 h reach the
+	// budget, so any 24 h serve at most the budget plus the one operation
+	// that crossed it (Docs/protocol/grant.md §Limits).
+	if b := s.served[grant]; b != nil && b.sum(now) >= s.cfg.BytesPer24h {
 		return nil, fetchErr(CodeRateLimited)
 	}
 	w.n++
@@ -654,11 +693,12 @@ func (s *FetchServer) addServed(grant string, n int64, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.served[grant]
-	if b == nil || now.Sub(b.start) >= 24*time.Hour {
-		b = &byteWindow{start: now}
+	if b == nil {
+		b = &byteWindow{hour: unixHour(now)}
 		s.served[grant] = b
 	}
-	b.n += n
+	b.roll(unixHour(now))
+	b.b[bucket(b.hour)] += n
 }
 
 // ---- audit -----------------------------------------------------------

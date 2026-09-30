@@ -3,7 +3,8 @@
 // Docs/protocol/mail.md (mailbox announcements, sealed mail), the grant
 // vector of Docs/protocol/grant.md, the audit chain of Docs/protocol/audit.md,
 // the debate commitment of Docs/protocol/debate.md, the Decision of
-// Docs/protocol/decision.md and relay auth v2 of Docs/protocol/envelope.md.
+// Docs/protocol/decision.md, relay auth v2 of Docs/protocol/envelope.md and
+// the Agent Card size vectors P2, N16 and N17 of Docs/protocol/agent-card.md.
 //
 // Pairing values are deterministic. HPKE sealing draws its ephemeral key from
 // crypto/rand, so every run prints a new mail payload; the published payload
@@ -301,6 +302,48 @@ func main() {
 	printDecisionVector(privI, privR, keyI, keyR)
 	fmt.Println("== relay auth v2 (4.0a, envelope.md §Relay auth v2 vector)")
 	printRelayAuthVector(privI, keyI)
+	fmt.Println("== agent card size vectors (R55-F13, agent-card.md §Size vectors)")
+	printCardSizeVectors(privI, cardI)
+}
+
+// printCardSizeVectors prints P2 (32 skills), N16 (P1, the Test vector card
+// cardI with a note of 16384 "a", over MaxCardBytes) and N17 (33 skills) of agent-card.md §Size vectors, each
+// as the {name, envelope, fails_at} case of tools/verifyvectors/vectors.json.
+// The cards are signed here with ed25519 directly: agentcard.New and Sign
+// refuse N17's 33 skills.
+func printCardSizeVectors(privI ed25519.PrivateKey, cardI []byte) {
+	card := func(n int) []byte {
+		skills := make([]any, n)
+		for i := range skills {
+			skills[i] = map[string]any{"id": fmt.Sprintf("s%02d", i+1), "name": fmt.Sprintf("Skill %02d", i+1), "description": ""}
+		}
+		return canonical(map[string]any{
+			"version": 1, "name": `Ada "test" <é>`, "harness": "custom", "created": "2026-01-02T03:04:05Z",
+			"public_key": b64u.EncodeToString(privI.Public().(ed25519.PublicKey)), "skills": skills,
+		})
+	}
+	sign := func(c []byte) string {
+		return b64u.EncodeToString(ed25519.Sign(privI, append([]byte("dorylinae-agent-card-v1\n"), c...)))
+	}
+	for _, c := range []struct {
+		name     string
+		envelope []byte
+		failsAt  int
+	}{
+		{"P2", canonical(map[string]any{"card": json.RawMessage(card(32)), "signature": sign(card(32))}), 0},
+		{"N16", bytes.Replace(cardI, []byte(`,"signature":`), []byte(`,"note":"`+strings.Repeat("a", 16384)+`","signature":`), 1), 1},
+		{"N17", canonical(map[string]any{"card": json.RawMessage(card(33)), "signature": sign(card(33))}), 5},
+	} {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(map[string]any{"name": c.name, "envelope": string(c.envelope), "fails_at": c.failsAt}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("len %s %d\n", c.name, len(c.envelope))
+		fmt.Print(buf.String())
+	}
+	fmt.Println("len P2 card", len(card(32)))
 }
 
 // printRelayAuthVector prints Docs/protocol/envelope.md §Relay auth v2

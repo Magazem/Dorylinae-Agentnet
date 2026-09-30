@@ -345,9 +345,10 @@ its after-commit step belongs to that one delivery and is discarded with it.
 A replay of a pruned id carries a `created` older than `now − 30 d + 10 min`, so step 11
 rejects it. Pruning can never re-admit a replay. A **re-used** id (a new mail from the same
 peer with a fresh `created`) is still a duplicate while its `mail_inbox` row exists. The two
-tables are one dedupe set: `mail_inbox` rows are kept today (retention is owner decision
-D12), and any future pruning of `mail_inbox` runs in the same pass as `mail_seen` with at
-least the same age, so an id never leaves one table while the other still holds it.
+tables are one dedupe set: `mail_inbox` rows are removed only by `agentnet prune`, which runs
+the `mail_seen` prune first in the same transaction with a cutoff of at least 35 days
+([Inbox rows](#inbox-rows-r55-f13)), so an id never leaves one table while the other still
+holds it.
 
 ## Ack
 

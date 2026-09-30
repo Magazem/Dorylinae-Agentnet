@@ -162,6 +162,21 @@ func (s *Store) EndedTx(ctx context.Context, tx *sql.Tx, direction, peer, id str
 	return setClosed(ctx, tx, r.session, OutcomeCancelled, ReasonCancelled, now)
 }
 
+// HasDecisionTx implements request.DebateHooks: whether the session derived
+// for a debate request from `from` to `to` already has a Decision, which only
+// happens when the id is re-used after prune (review 71b F8).
+func (s *Store) HasDecisionTx(ctx context.Context, tx *sql.Tx, from, to, id string) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM decisions WHERE session = ?`, worksession.DeriveID(from, to, id)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("debate: read decision: %w", err)
+	}
+	return true, nil
+}
+
 func setClosed(ctx context.Context, tx *sql.Tx, sid, outcome, reason string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE debates SET phase = ?, outcome = ?, reason = ?, turn_deadline = NULL, updated = ? WHERE session = ?`,
 		PhaseClosed, outcome, reason, storeTime(now), sid); err != nil {

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
@@ -64,6 +65,21 @@ const (
 // SIDSize is the length of a session ID.
 const SIDSize = 16
 
+// MaxPayload is the largest decoded session.* payload queued: the sid, the
+// 8-byte counter and one maximal 65535-byte Noise message. A longer one is
+// dropped before the queue (R55-F13, review 55 R55-052).
+const MaxPayload = SIDSize + 8 + 65535
+
+// Drop reasons of the session_drop log line.
+const (
+	DropOversize  = "oversize"
+	DropQueueFull = "queue_full"
+)
+
+// dropWindow is how often at most the dropped envelopes are logged: one
+// session_drop line per window (Docs/protocol/session.md §Rejection).
+var dropWindow = time.Minute
+
 const (
 	defaultWait        = time.Second
 	defaultPingTimeout = 10 * time.Second
@@ -77,6 +93,7 @@ const (
 	maxPings           = 1024
 	maxRefs            = 4096
 	inboxSize          = 256
+	inboxBytes         = 16 << 20 // decoded payload bytes in the inbox (R55-F13)
 	rejectsPerMinute   = 30
 	auditBudget        = 5 * time.Second
 	sendBudget         = 5 * time.Second
@@ -183,8 +200,12 @@ type Manager struct {
 	log  *slog.Logger
 
 	inbox chan envelope.Envelope
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	// queued is the decoded payload bytes in inbox: added before an envelope
+	// is queued, taken off when the worker receives it.
+	queued atomic.Int64
+	drops  dropCounts
+	stop   chan struct{}
+	wg     sync.WaitGroup
 
 	// sendMu serialises everything that sends, so counters leave in order.
 	// Lock order: sendMu, then mu.
@@ -302,18 +323,75 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	close(m.stop)
 	m.wg.Wait()
+	m.drops.flush(m.log)
 }
 
-// HandleEnvelope queues an envelope from the relay. It never blocks.
+// HandleEnvelope queues an envelope from the relay. It never blocks. An
+// envelope whose payload is longer than MaxPayload, or that would take the
+// inbox past 256 envelopes or 16 MiB, is dropped: it is counted into the
+// session_drop line, never audited (the sender is not known yet).
 func (m *Manager) HandleEnvelope(e envelope.Envelope) {
 	if !strings.HasPrefix(e.Type, "session.") {
+		return
+	}
+	n := int64(len(e.Payload))
+	if n > MaxPayload {
+		m.drops.add(m.log, DropOversize, n)
+		return
+	}
+	if m.queued.Add(n) > inboxBytes {
+		m.queued.Add(-n)
+		m.drops.add(m.log, DropQueueFull, n)
 		return
 	}
 	select {
 	case m.inbox <- e:
 	default:
-		m.log.Warn("session inbox full, dropping envelope", "event", "session_drop", "type", e.Type, "id", e.ID)
+		m.queued.Add(-n)
+		m.drops.add(m.log, DropQueueFull, n)
 	}
+}
+
+// dropCounts counts the envelopes HandleEnvelope dropped and logs them as one
+// session_drop line per dropWindow, and at Close.
+type dropCounts struct {
+	mu      sync.Mutex
+	reasons map[string]int
+	bytes   int64
+	timer   *time.Timer
+}
+
+func (d *dropCounts) add(log *slog.Logger, reason string, n int64) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.reasons == nil {
+		d.reasons = map[string]int{}
+	}
+	d.reasons[reason]++
+	d.bytes += n
+	if d.timer == nil {
+		d.timer = time.AfterFunc(dropWindow, func() { d.flush(log) })
+	}
+}
+
+// flush logs the drops counted so far, if any.
+func (d *dropCounts) flush(log *slog.Logger) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	count := 0
+	for _, c := range d.reasons {
+		count += c
+	}
+	if count == 0 {
+		return
+	}
+	log.Warn("session envelopes dropped before the queue", "event", "session_drop", "count", count,
+		"oversize", d.reasons[DropOversize], "queue_full", d.reasons[DropQueueFull], "bytes", d.bytes)
+	d.reasons, d.bytes = nil, 0
 }
 
 // HandleError fails the pings affected by a relay error frame (peer_offline, ...).
@@ -521,6 +599,7 @@ func (m *Manager) worker() {
 		case <-m.stop:
 			return
 		case e := <-m.inbox:
+			m.queued.Add(-int64(len(e.Payload)))
 			m.handle(e)
 		}
 	}

@@ -343,7 +343,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	if opts.Keystore != nil {
 		mailboxMode = "file"
 	}
-	mailboxKeys := mailbox.New(p.Dir, mailboxMode, idPub, relayclient.NewKeystoreSigner(ks, idPub).Sign, nil)
+	// The identity private key is read from the keystore once (R55-F13).
+	idKey := newIdentityKey(ks, idPub)
+	mailboxKeys := mailbox.New(p.Dir, mailboxMode, idPub, idKey.Sign, nil)
 	if err := mailboxKeys.Attach(ctx, st.DB(), log, opts.Logger); err != nil {
 		_ = ln.Close()
 		return err
@@ -360,13 +362,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		Logger:  opts.Logger,
 	})
 	defer pairs.Close()
-	sessions, err := newSessions(id, ks, log, peerStore, opts)
+	sessions, err := newSessions(id, ks, log, st.DB(), opts)
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
 	defer sessions.Close()
-	outbox := newOutbox(st.DB(), log, ks, opts.Logger)
+	outbox := newOutbox(st.DB(), log, idKey, opts.Logger)
 	teamStore := team.NewStore(st.DB(), peerStore, id.Card().Card.PublicKey)
 	teamStore.SetAudit(log)
 	teamStore.Outbox = outbox
@@ -378,7 +380,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	presenceStore := presence.NewStore(st.DB())
 	presenceSettings := presence.NewSettings(st.DB())
 	presenceSender := &presence.Sender{
-		Priv:             identityPriv(ks),
+		Priv:             idKey.Priv,
 		Self:             id.Card().Card.PublicKey,
 		Peers:            pdir,
 		Team:             teamStore,
@@ -574,7 +576,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	debates := &debate.Store{
 		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
 		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
-		Priv: identityPriv(ks), Log: opts.Logger,
+		Priv: idKey.Priv, Log: opts.Logger,
 	}
 	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates
@@ -617,7 +619,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	defer stopFetch()
 	fetchClient := startFetchClient(sessions, capStore, wsStore, id.Card().Card.PublicKey)
 	defer fetchClient.Close()
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, idKey, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -660,8 +662,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerSession(srv, wsStore, reqStore, peerStore, teamStore, apprStore, log)
 	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
 	registerApproval(srv, apprStore)
+	registerPrune(srv, st.DB(), apprStore, time.Now)
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
-		grantIdentity{Self: id.Card().Card.PublicKey, Priv: identityPriv(ks)}, p.Dir, nonLoopbackRelay)
+		grantIdentity{Self: id.Card().Card.PublicKey, Priv: idKey.Priv}, p.Dir, nonLoopbackRelay)
 	registerAudit(srv, log)
 	registerFetch(srv, fetchClient)
 	registerDevice(srv, devStore, apprStore, peerStore, outbox, log, nonLoopbackRelay, helper, scopeApprovalsPending, devHooks)
@@ -778,7 +781,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, idKey *identityKey, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -795,7 +798,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	var handleMail func(envelope.Envelope)
 	client, err = relayclient.New(relayclient.Config{
 		URL:     opts.RelayURL,
-		Signer:  relayclient.NewKeystoreSigner(ks, pub),
+		Signer:  idKey,
 		Logger:  opts.Logger,
 		RootCAs: opts.RelayRoots,
 
@@ -842,7 +845,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	sessions.SetSender(client)
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
-		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
+		rcv, pusher := newMailReceiver(db, alog, idKey, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

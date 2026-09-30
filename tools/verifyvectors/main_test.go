@@ -67,7 +67,10 @@ func TestDetectsAgentCardMismatch(t *testing.T) {
 	if n := run(&out, vectorsJSON); n != 0 || !strings.Contains(out.String(), "PASS agent_card P1 verifies") ||
 		!strings.Contains(out.String(), "PASS agent_card N1 fails at step 5") ||
 		!strings.Contains(out.String(), "PASS agent_card N14 fails at step 2") ||
-		!strings.Contains(out.String(), "PASS agent_card N15 fails at step 1") {
+		!strings.Contains(out.String(), "PASS agent_card N15 fails at step 1") ||
+		!strings.Contains(out.String(), "PASS agent_card P2 verifies") ||
+		!strings.Contains(out.String(), "PASS agent_card N16 fails at step 1") ||
+		!strings.Contains(out.String(), "PASS agent_card N17 fails at step 5") {
 		t.Fatalf("agent card checks did not run:\n%s", out.String())
 	}
 	var doc map[string]any
@@ -87,6 +90,18 @@ func TestDetectsAgentCardMismatch(t *testing.T) {
 	out.Reset()
 	if n := run(&out, bad); n != 1 || !strings.Contains(out.String(), "FAIL agent_card N1 fails at step 4") {
 		t.Fatalf("agent card mismatch not detected (%d failures):\n%s", n, out.String())
+	}
+}
+
+// R55-F13 A2: the size is checked before the parse, so a document one byte
+// over the limit is refused for its size even when it is not JSON at all.
+func TestCardSizeBeforeParse(t *testing.T) {
+	_, err := verifyCardEnvelope(bytes.Repeat([]byte{'{'}, maxCardBytes+1))
+	if err == nil || !strings.Contains(err.Error(), "step 1: 16385 bytes, over 16384") {
+		t.Fatalf("got %v, want a size refusal at step 1", err)
+	}
+	if _, err := verifyCardEnvelope(bytes.Repeat([]byte{'{'}, maxCardBytes)); err == nil || strings.Contains(err.Error(), "over") {
+		t.Fatalf("a document at the limit must reach the parse, got %v", err)
 	}
 }
 

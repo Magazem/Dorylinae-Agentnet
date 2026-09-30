@@ -111,6 +111,7 @@ func TestMigration19RebuildKeepsRows(t *testing.T) {
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
 		`DROP TABLE experience_records`,
+		`DROP INDEX mail_inbox_received`, // migration 24; requests is rebuilt by 19
 		`DELETE FROM migrations WHERE version > 18`,
 	}
 	for _, q := range rewind {
@@ -210,7 +211,14 @@ func TestMigration19RebuildKeepsRows(t *testing.T) {
 			t.Errorf("approval %s changed:\n before %s\n after  %s", k, v, afterAppr[k])
 		}
 	}
-	afterIdx := append(indexes(t, s, "requests"), indexes(t, s, "approvals")...)
+	var afterIdx []string
+	for _, idx := range append(indexes(t, s, "requests"), indexes(t, s, "approvals")...) {
+		// Migration 24 (R55-F13) adds these after 19 has run.
+		if strings.HasPrefix(idx, "requests_peer_state:") || strings.HasPrefix(idx, "requests_introducer_") {
+			continue
+		}
+		afterIdx = append(afterIdx, idx)
+	}
 	if strings.Join(afterIdx, "\n") != strings.Join(beforeIdx, "\n") {
 		t.Errorf("indexes changed:\n before %q\n after  %q", beforeIdx, afterIdx)
 	}

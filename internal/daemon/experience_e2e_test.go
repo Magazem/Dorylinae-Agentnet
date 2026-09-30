@@ -30,6 +30,7 @@ func TestExperienceRecordNotReferencedOutsideItsOwnPackages(t *testing.T) {
 		filepath.FromSlash("internal/worksession"): true,
 		filepath.FromSlash("internal/debate"):      true,
 		filepath.FromSlash("internal/store"):       true, // migration 21 and the rewind tests
+		filepath.FromSlash("internal/retention"):   true, // agentnet prune removes them with their session (R55-F13)
 	}
 	importRE := regexp.MustCompile(`"github\.com/Magazem/Dorylinae-Agentnet/internal/experience"`)
 	tableRE := regexp.MustCompile(`experience_records`)

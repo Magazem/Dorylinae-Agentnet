@@ -159,6 +159,10 @@ func (n *nopDebates) EndedTx(context.Context, *sql.Tx, string, string, string, t
 	return nil
 }
 
+func (n *nopDebates) HasDecisionTx(context.Context, *sql.Tx, string, string, string) (bool, error) {
+	return false, nil
+}
+
 // On receipt, a Phase 2-shaped debate body (type debate without the member,
 // or a stray member on another type) is bad_body and stores nothing; so is
 // any debate at a daemon without debates wired (what a Phase 2 daemon

@@ -113,6 +113,9 @@ Exit codes: 0 grant created (pending approval or issued), 1 error, 2 usage,
 	return exitOK
 }
 
+// grantListPage is the grant_list page size `grants` asks for (Docs/cli/grant.md).
+const grantListPage = 200
+
 func runGrants(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("agentnet grants", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -159,11 +162,20 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 	case *held:
 		params.Direction = "held"
 	}
-	var res struct {
-		Grants []daemon.GrantView `json:"grants"`
-	}
-	if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "grant_list", params, &res); code != exitOK {
-		return code
+	// Read every page (R55-F13): one grant_list reply is bounded, a list is not.
+	limit := grantListPage
+	params.Limit = &limit
+	var res daemon.GrantListResult
+	for {
+		var page daemon.GrantListResult
+		if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "grant_list", params, &page); code != exitOK {
+			return code
+		}
+		res.Grants = append(res.Grants, page.Grants...)
+		if page.NextCursor == "" || page.NextCursor == params.Cursor {
+			break
+		}
+		params.Cursor = page.NextCursor
 	}
 	if res.Grants == nil {
 		res.Grants = []daemon.GrantView{}
