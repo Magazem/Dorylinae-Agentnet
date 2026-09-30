@@ -77,33 +77,66 @@ func TestCloseConstraintListRules(t *testing.T) {
 	}
 }
 
-// Review 55 R55-070 (C24-02): a constraint for a debate still invited (before
-// the accept) is ignored with reason "state" on either side: not stored, so
-// it neither shows nor counts toward the limit.
-func TestConstraintWhileInvitedIgnored(t *testing.T) {
-	a, b := newDNode(t, keyA), newDNode(t, keyB)
-	reqID, sid := startDebate(t, a, b, 1)
-	fake := func(i int) sentMail {
+// Review 55 R55-070 (C24-02) and review 70 M1: a constraint for a debate
+// still invited is ignored with reason "state" on B (B has not accepted, so
+// no A constraint can be legitimate) and on A once its out request is gone.
+// On A with the request still pending, a B constraint that overtook B's
+// accept and slot-1 entry is stored and stays active once the debate opens.
+func TestConstraintWhileInvited(t *testing.T) {
+	fake := func(reqID, sid string, i int) sentMail {
 		return sentMail{kind: MailConstraint, body: map[string]any{
 			"at": "2026-09-25T10:00:00Z", "id": fmt.Sprintf("c-%032x", i), "request": reqID, "session": sid, "text": fmt.Sprintf("Early rule %d", i),
 		}}
 	}
-	for _, n := range []struct {
-		node *dnode
-		from string
-	}{{a, b.self}, {b, a.self}} {
-		if ph := phaseOf(t, n.node, sid); ph != PhaseInvited {
-			t.Fatalf("%s phase %s, want invited", n.node.name(), ph)
+	wantIgnored := func(t *testing.T, n *dnode, sid string) {
+		t.Helper()
+		if c := n.count(sid); c != 0 {
+			t.Fatalf("%s stored %d constraints while invited", n.name(), c)
 		}
-		mustDeliver(t, n.node, n.from, fake(1))
-		if c := n.node.count(sid); c != 0 {
-			t.Fatalf("%s stored %d constraints while invited", n.node.name(), c)
+		if !n.audit.has("debate.ignored", `"reason":"state"`) {
+			t.Fatalf("%s did not audit debate.ignored state", n.name())
 		}
-		if !n.node.audit.has("debate.ignored", `"reason":"state"`) {
-			t.Fatalf("%s did not audit debate.ignored state", n.node.name())
-		}
-		if n.node.events.count(EventConstraint) != 0 {
-			t.Fatalf("%s notified an ignored constraint", n.node.name())
+		if n.events.count(EventConstraint) != 0 {
+			t.Fatalf("%s notified an ignored constraint", n.name())
 		}
 	}
+
+	t.Run("B invited", func(t *testing.T) {
+		a, b := newDNode(t, keyA), newDNode(t, keyB)
+		reqID, sid := startDebate(t, a, b, 1)
+		if ph := phaseOf(t, b, sid); ph != PhaseInvited {
+			t.Fatalf("B phase %s, want invited", ph)
+		}
+		mustDeliver(t, b, a.self, fake(reqID, sid, 1))
+		wantIgnored(t, b, sid)
+	})
+
+	t.Run("A invited, B constraint overtakes the accept", func(t *testing.T) {
+		a, b := newDNode(t, keyA), newDNode(t, keyB)
+		_, sid := startDebate(t, a, b, 1)
+		submit(t, b, sid, KindPosition, testPosition("B: fixed retry"))
+		pc := constrain(t, b, sid, "Keep the retry cap")
+		pass(t, b, a, MailConstraint) // before the accept and the entry
+		if ph := phaseOf(t, a, sid); ph != PhaseInvited {
+			t.Fatalf("A phase %s, want invited", ph)
+		}
+		if got := constraintIDsIn(t, a, sid, ConstraintActive); len(got) != 1 || got[0] != pc.ID {
+			t.Fatalf("A active constraints %v, want [%s]", got, pc.ID)
+		}
+		pass(t, b, a, "request.accept")
+		pass(t, b, a, MailEntry)
+		if got := visibleActive(t, a, sid); len(got) != 1 || got[0] != pc.ID {
+			t.Fatalf("A shows %v after the accept, want [%s]", got, pc.ID)
+		}
+	})
+
+	t.Run("A invited, request gone", func(t *testing.T) {
+		a, b := newDNode(t, keyA), newDNode(t, keyB)
+		reqID, sid := startDebate(t, a, b, 1)
+		if _, err := a.db.Exec(`UPDATE requests SET state = 'declined' WHERE direction = 'out' AND id = ?`, reqID); err != nil {
+			t.Fatal(err)
+		}
+		mustDeliver(t, a, b.self, fake(reqID, sid, 1))
+		wantIgnored(t, a, sid)
+	})
 }
