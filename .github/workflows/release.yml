@@ -94,8 +94,15 @@ jobs:
           { echo "version=$version"; echo "tag=$tag"; echo "dry_run=$dry_run"; } >> "$GITHUB_OUTPUT"
           echo "version=$version tag=$tag dry_run=$dry_run"
 
+  # R55-202: all three OSes gate the draft (a Windows or macOS regression must
+  # not reach a release), as in ci.yml's test job.
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,9 +112,17 @@ jobs:
           go-version-file: go.mod
           cache: false
       - run: go vet ./...
+      # Same Windows temp-dir placement as ci.yml (slow C: fsyncs).
+      - name: Put test temp dirs on the work drive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       - run: go test ./... -count=1 -timeout 20m
       # Blocking (OD-R55F3-4): no release links a known reachable vulnerability.
       - name: govulncheck
+        if: runner.os == 'Linux'
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   build:
