@@ -177,10 +177,11 @@ func Run(ctx context.Context, spec RunSpec) RunResult {
 // time (review 40 L5): the working directory still resolves to itself, so a
 // repo replaced since by a symlink or junction to somewhere else is refused,
 // and the program is still a regular file that only this user or an
-// administrator can change (CheckProgramOwner, review 40 L11). The directory
-// is resolved with pathid.Resolve, which follows junctions too (review 55
-// C14-01), and a UNC or network path is refused without being opened.
-func CheckTarget(path, dir string) error {
+// administrator can change (CheckProgramOwnerEnv with env, the environment
+// the run gets, review 40 L11, D71). The directory is resolved with
+// pathid.Resolve, which follows junctions too (review 55 C14-01), and a UNC
+// or network path is refused without being opened.
+func CheckTarget(path, dir string, env []string) error {
 	if pathid.CheckLocal(path) != nil {
 		return errors.New("device: the program is not on a local path")
 	}
@@ -201,7 +202,7 @@ func CheckTarget(path, dir string) error {
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() { //nolint:gosec // the program the human approved in the scope, checked local above
 		return errors.New("device: the program is not a regular file")
 	}
-	return CheckProgramOwner(path)
+	return CheckProgramOwnerEnv(path, env)
 }
 
 // replacement stands in for a control character or an invalid byte. It is

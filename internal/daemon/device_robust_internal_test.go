@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,11 +19,13 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // Review 55 R55-098: a sweep that cannot re-check the running command (here
 // the scope table cannot be read) stops it, as a revocation would, instead
-// of letting it run to its timeout.
+// of letting it run to its timeout; the cause tells it apart from a
+// revocation (review 86 L5).
 func TestHelperSweepStopsRunWhenCheckFails(t *testing.T) {
 	e := newRouteEnv(t)
 	ctx := context.Background()
@@ -47,7 +50,7 @@ func TestHelperSweepStopsRunWhenCheckFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.r.sweep(ctx)
-	if !errors.Is(context.Cause(runCtx), errRunRevoked) {
+	if !errors.Is(context.Cause(runCtx), errRunCheckFailed) {
 		t.Fatalf("a sweep that could not check the run left it running: %v", context.Cause(runCtx))
 	}
 }
@@ -323,5 +326,72 @@ func TestDeviceLocalUnlinkMovesOfferWatermark(t *testing.T) {
 	deliver(d.ds.Time().Add(time.Second)) // made after it
 	if n := active(); n != 1 {
 		t.Fatal("an offer made after the local unlink did not complete the re-link")
+	}
+}
+
+// recordOutbox records the kinds submitted through it.
+type recordOutbox struct {
+	mu    sync.Mutex
+	kinds []string
+}
+
+func (o *recordOutbox) SubmitTx(_ context.Context, _ *sql.Tx, _, kind string, _ any) (mail.Submitted, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.kinds = append(o.kinds, kind)
+	return mail.Submitted{}, nil
+}
+
+func (o *recordOutbox) Wake() {}
+
+// Review 86 L2: a revocation that commits after take started a run, but
+// before execute registered it, found nothing to stop. execute checks once
+// more before anything starts, so the command never runs: it is reported
+// like a revoked run (ws.cancel, audit stop_reason "revoked").
+func TestHelperExecuteRechecksBeforeStart(t *testing.T) {
+	e := newRouteEnv(t)
+	ctx := context.Background()
+	if !e.route(t, "C", "r-1", "test") {
+		t.Fatal("not routed")
+	}
+	job, plan, err := e.r.take(ctx, true)
+	if err != nil || job == nil {
+		t.Fatalf("take: %v %v", job, err)
+	}
+	ob := &recordOutbox{}
+	e.r.ws = &worksession.Store{DB: e.db, Self: "H", Outbox: ob}
+	if _, err := e.db.Exec(`INSERT INTO work_sessions (id, role, peer, request_id, team_id, state, opened, state_at, updated)
+		VALUES (?, 'worker', 'C', ?, 't', 'open', 'o', 's', 'u')`, job.Session, job.Request); err != nil {
+		t.Fatal(err)
+	}
+	// The scope is cleared after take, before execute.
+	if _, err := e.db.Exec(`DELETE FROM device_scopes`); err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	e.r.exec = func(context.Context, device.RunSpec) device.RunResult {
+		ran = true
+		return device.RunResult{Started: true}
+	}
+	e.r.watchEvery = time.Hour
+	e.r.execute(ctx, *job, plan)
+	if ran {
+		t.Fatal("a run whose scope was cleared before it started ran")
+	}
+	var detail string
+	if err := e.db.QueryRow(`SELECT detail FROM audit_events WHERE action = 'device.run'`).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var d map[string]any
+	if err := json.Unmarshal([]byte(detail), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d["cancelled"] != true || d["stop_reason"] != "revoked" {
+		t.Fatalf("audit = %s, want cancelled with stop_reason revoked", detail)
+	}
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	if len(ob.kinds) != 1 {
+		t.Fatalf("submitted %v, want one ws.cancel", ob.kinds)
 	}
 }

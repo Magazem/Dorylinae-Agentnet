@@ -82,7 +82,14 @@ agentnet device link @laptop --as helper \                agentnet device link @
    older than the `at` of the last `device.unlink` received from that peer is ignored, so
    a delayed offer reordered after an unlink cannot revive the link. The receiver keeps,
    per peer, the latest `device.unlink` `at` it applied (the `settings` row
-   `device.unlinked`; no migration).
+   `device.unlinked`; no migration). A **local** unlink (`device_unlink`) moves the same
+   watermark to this device's own `now` (review 55 R55-161), so an offer the peer made
+   before it, delivered late, cannot complete a re-link started within its 10 minutes.
+   That watermark is this device's clock compared with the peer's `offer.at`, so it holds
+   only up to the skew between the two clocks (review 86 L3): with the peer's clock
+   behind by *s*, a fresh offer made within *s* after the unlink is ignored (the link is
+   then active on the peer only, until the user links again); with it ahead, an offer
+   made just before the unlink but dated after it still counts.
    **Notify (D22, review 36 L5):** on activation, on either path (the offer arriving, or
    the local approval finding a kept offer), the device shows the content-free desktop
    notification `device.linked` ([notify.md](notify.md#triggers)): `<peer name> is now
@@ -151,6 +158,29 @@ refused even when that directory is on neither the stored nor the fully resolved
 (review 41 M1; at most 40 links). The content is not pinned (no hash), so an upgrade of the
 toolchain by the same user or an administrator keeps working.
 
+**Interpreters (Unix, review 55 R55-097, D71).** A script's `#!` interpreter runs it, so
+the interpreter is checked the same way, and so is its own if it is a script too (at most
+4 nested interpreters). The check reads the first 256 bytes and splits the `#!` line on
+blanks and tabs, as the kernel does; only the first word is the interpreter, and it must
+be an absolute path (a relative one would be found from the working directory, the repo).
+A file that cannot be read (an execute-only binary, mode `0711`) is not read and counts as
+no script (review 86 L1).
+- **`#!/usr/bin/env X`** (or `#!/usr/bin/env -S X …`, as npm, npx, yarn and pnpm use):
+  `env` itself is checked and must not be a script; `X` is found as `env` finds it, on
+  the `PATH` of the environment the run gets (`PATH` is a base name, so it is the helper
+  daemon's), at `device_scope_set` and again at each start: an absolute `X` as it is,
+  otherwise the first `PATH` directory holding an executable regular file `X`. The
+  program found is checked like an interpreter, its own `#!` chain included, and every
+  existing `PATH` directory searched before it is checked like its directory, so nobody
+  else can put another `X` there. Refused, with an error naming `X` and the path found:
+  `X` not found, a relative `PATH` entry (the run's working directory) searched first, no
+  `PATH`, or the program found failing the check. Any other `env` option (`-i`, `-u`…), a
+  variable `env` would set first (`PATH=…` would move the search) and a quote, escape or
+  `${…}` that `-S` would expand are refused: the check cannot follow them.
+- **Not checked:** interpreter arguments, `argv[1..]` (a script passed as an argument,
+  as in `node /path/npm-cli.js`, is the interpreter's input, not a program), and
+  `binfmt_misc` handlers. Only the `argv[0]` chain is checked.
+
 - **Unix:** each file or directory must be owned by root or this user, must not be
   writable by every user (so a sticky world-writable directory such as `/tmp` is refused
   too), and may be group-writable only when the group is root's (gid 0), an admin group
@@ -217,10 +247,13 @@ above, and `check` names the first that failed.
   (Windows; without `LOCALAPPDATA` the example's `go test` fails with "GOCACHE is not
   defined") and the scope's `env` names, taken from the helper daemon's environment;
   everything else (tokens, `DORYLINAE_*`) is dropped;
-- first re-checks what the scope resolved: the repo path must still resolve to itself (a
+- first re-checks that the run is still allowed (link, scope, expiry), so a revocation
+  that committed after the run left the queue stops it before it starts (review 86 L2),
+  then what the scope resolved: the repo path must still resolve to itself (a
   directory replaced since by a symlink or junction is refused; a UNC or network path is
   refused without being opened) and `argv[0]` must still be
-  a regular file that others cannot change ([§Program ownership](#program-ownership));
+  a regular file that others cannot change ([§Program ownership](#program-ownership), an
+  `env` interpreter's program found on this run's `PATH`);
   otherwise the run is `"<name>: could not start"` (review 40 L5, L11);
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
   if the helper daemon dies mid-run, Windows ends the tree with the job; on Linux the program
@@ -380,7 +413,7 @@ counts, durations and sizes.
 | `device.unlink` | `{link, peer, side: "local"\|"remote"}` |
 | `device.scope_set` | `{link, types, commands: <count>, repos: <count>, expires_s, approval}` |
 | `device.scope_clear` | `{link}` |
-| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out, cancelled}` (`cancelled`: killed because it was no longer allowed; then `output_bytes` is 0) |
+| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out, cancelled}` (`cancelled`: killed because it was no longer allowed; then `output_bytes` is 0, and `stop_reason` says why: `revoked` when a check found it no longer allowed, `check_failed` when a check could not be made and the run was stopped to fail closed, review 86 L5) |
 | `device.out_of_scope` | `{request, peer, check}` (`check`: `link`, `scope`, `expired`, `type`, `command`, `created`, `queue`) |
 
 ## Tables
