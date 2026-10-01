@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"unicode/utf16"
 )
 
@@ -44,7 +45,11 @@ func showDesktop(ctx context.Context, title, body string) error {
 		"AGENTNET_N_BODY=" + utf16Base64(body),
 	}
 	args := []string{"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", windowsToastScript}
-	return run(ctx, "powershell.exe", args, env)
+	ps, err := powershellPath()
+	if err != nil {
+		return fmt.Errorf("locate powershell: %w", err)
+	}
+	return run(ctx, ps, args, env)
 }
 
 // utf16Base64 encodes s as UTF-16LE, then standard base64.

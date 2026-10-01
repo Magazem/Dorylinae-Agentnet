@@ -4,6 +4,7 @@ package notify
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -51,7 +52,11 @@ func showApproval(ctx context.Context, id string, expires time.Time, title, body
 		"AGENTNET_A_EXPIRES=" + expires.UTC().Format(time.RFC3339),
 	}
 	args := []string{"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", approvalToastScript}
-	return run(ctx, "powershell.exe", args, env)
+	ps, err := powershellPath()
+	if err != nil {
+		return fmt.Errorf("locate powershell: %w", err)
+	}
+	return run(ctx, ps, args, env)
 }
 
 func removeApproval(ctx context.Context, id string) {
@@ -60,5 +65,7 @@ func removeApproval(ctx context.Context, id string) {
 		"AGENTNET_A_GROUP=" + approvalGroup,
 	}
 	args := []string{"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", approvalRemoveScript}
-	_ = run(ctx, "powershell.exe", args, env)
+	if ps, err := powershellPath(); err == nil {
+		_ = run(ctx, ps, args, env)
+	}
 }

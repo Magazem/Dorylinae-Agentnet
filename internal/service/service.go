@@ -116,7 +116,11 @@ func (ExecRunner) Run(ctx context.Context, args []string) ([]byte, error) {
 	if len(args) == 0 {
 		return nil, errors.New("empty command")
 	}
-	return exec.CommandContext(ctx, args[0], args[1:]...).CombinedOutput() //nolint:gosec // args are built from fixed programs and validated paths
+	prog, err := systemTool(args[0])
+	if err != nil {
+		return nil, err
+	}
+	return exec.CommandContext(ctx, prog, args[1:]...).CombinedOutput() //nolint:gosec // args are built from fixed programs and validated paths
 }
 
 // Apply executes the plan. On the first failure it stops, still running

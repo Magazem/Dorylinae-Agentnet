@@ -27,6 +27,7 @@ agentnet doctor [--json]
 | id | What it checks | Needs the daemon? |
 |----|-----------------|--------------------|
 | `binary` | `agentnet` and `agentnetd` report the same version, and it is not older than the relay's `min_client` (4.4a; from the daemon's `status`, so only once it has connected). A dev build cannot be compared: `warn` | yes (`skip` otherwise) |
+| `program` | The `agentnetd` binary next to `agentnet`, and its folder, cannot be changed by other users (same check as `agentnetd install`, which refuses otherwise); `warn` with a fix when they can; skipped when no sibling binary exists | no |
 | `config` | The config directory exists and is owner-only (D24/L11); a drive-root ACL like `Authenticated Users:(M)` is a `warn` with a fix | no |
 | `keychain` | The identity key is readable, and from where (OS keychain or the owner-only file fallback) | no |
 | `service` | The per-user service (Task Scheduler task / systemd user unit / launchd agent) is installed and running | fails cleanly without it |
