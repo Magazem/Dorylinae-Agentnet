@@ -571,6 +571,18 @@ func pairing(c *checker, v *vectors) {
 			"Ed25519 verification failed")
 	}
 
+	// R55-180: the cards come from the production agentcard package, so check
+	// them here against agent-card.md (field set, version, created format,
+	// skills, signature) with this tool's own schema code (card.go).
+	for _, d := range docs[:2] {
+		_, err := verifyCardEnvelope([]byte(d.raw))
+		detail := "accepted"
+		if err != nil {
+			detail = err.Error()
+		}
+		c.ok(d.name+" passes the agent-card.md schema", err == nil, detail)
+	}
+
 	// The relay re-marshals with encoding/json, escaping < > & as six-character  escapes.
 	// Canonicalising must undo that.
 	esc := func(r string) string { return "\\" + "u" + r }
@@ -672,6 +684,28 @@ func mail(c *checker, v *vectors) {
 	c.eq("info", info, mustHex(c, "info", m.InfoHex))
 	c.eq("aad", aad, mustHex(c, "aad", m.AADHex))
 	c.eqs("msg id", msgEnv.Msg.ID, m.MsgID)
+
+	// R55-178: tie the mail vector to the pairing vector (mail.md: "using the
+	// recipient key above"): the mailbox key is key_R's mbox_R announcement,
+	// and the message runs from key_I to key_R.
+	var ann struct {
+		Announcement struct {
+			Identity string `json:"identity"`
+			KeyID    string `json:"key_id"`
+			Pub      string `json:"pub"`
+		} `json:"announcement"`
+	}
+	if err := json.Unmarshal([]byte(v.Pairing.MboxR), &ann); err != nil {
+		c.ok("pairing mbox_R parses", false, err.Error())
+	} else {
+		c.eqs("mail pub == pairing mbox_R pub", base64.RawURLEncoding.EncodeToString(pub), ann.Announcement.Pub)
+		c.eqs("mail key_id == pairing mbox_R key_id", m.KeyIDHex, ann.Announcement.KeyID)
+		c.eqs("pairing mbox_R identity is key_R", ann.Announcement.Identity, v.Pairing.KeyR)
+	}
+	c.eqs("mail plaintext from == pairing key_I", msgEnv.Msg.From, v.Pairing.KeyI)
+	c.eqs("mail plaintext to == pairing key_R", msgEnv.Msg.To, v.Pairing.KeyR)
+	pcreated, _ := generic.Msg["created"].(string)
+	c.eqs("mail.created == plaintext created", m.Created, pcreated)
 
 	// Payload layout: 0x01 ‖ key_id(8) ‖ enc(32) ‖ ct.
 	payload, err := base64.StdEncoding.DecodeString(m.PayloadB64)
