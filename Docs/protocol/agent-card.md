@@ -255,7 +255,7 @@ roster updates blocked. A daemon therefore checks text in two ways.
 - the daemon's own `agent-card.json`, re-verified at every start. Without this, a card named
   with a bidi control would stop the daemon from starting (the lifecycle table under
   [Key storage](#key-storage)). Such a card is kept and the daemon logs a warning once per
-  start. `agentnet identity` adds the line `note: this name holds characters that peers
+  start. `agentnet identity` adds the line `note: this Agent Card holds characters that peers
   refuse at pairing since R55-F10; to pair with them, start a new identity`;
 - every stored `peers.card` row: the OD-3 migration (`MigrateCards`, `RescueStored`) and
   `agentnet doctor`;
@@ -481,32 +481,35 @@ schema step refuses it.
 
 These three use the key and the skill of the Test vector. Each signature is a real signature
 by the seed over the canonical form of the card as shown, so steps 1-4 pass. In the canonical
-form the escaped characters are written literally, as UTF-8.
+form these characters are written literally, as UTF-8. The envelopes below write U+202E,
+U+2028 and P3's name as JSON escapes, so that this page holds no raw bidi control or line
+separator; [rule 7](#canonical-serialisation) accepts the escapes and the signature covers the
+canonical form, so the envelopes verify exactly as the literal ones do (review 82b).
 
-**N18: fails at 5. A name holding U+202E RIGHT-TO-LEFT OVERRIDE** (`"Ada ‮tset"`, shown
+**N18: fails at 5. A name holding U+202E RIGHT-TO-LEFT OVERRIDE** (`"Ada \u202Etset"` in JSON notation, shown
 by a bidi terminal as `Ada test`). This is the acceptance vector of ticket R55-F10. The
 canonical card is 217 bytes.
 
 ```
-{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada ‮tset","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"HufKwTnEGRZEvhvEm874U66Jpt_BxzOkPI9wi1IrZ9HwezQXVylvCFz045n8TPpGfKT35o3UAImuU1U720k8DA"}
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \u202etset","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"HufKwTnEGRZEvhvEm874U66Jpt_BxzOkPI9wi1IrZ9HwezQXVylvCFz045n8TPpGfKT35o3UAImuU1U720k8DA"}
 ```
 
-**N19: fails at 5. A skill description holding U+2028 LINE SEPARATOR** (`"a/b c"`).
+**N19: fails at 5. A skill description holding U+2028 LINE SEPARATOR** (`"a/b\u2028c"` in JSON notation).
 The canonical card is 223 bytes. The rule covers every text member, and `description` may be
 empty but never holds a line break.
 
 ```
-{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b c","id":"review","name":"Code review"}],"version":1},"signature":"xd-mXEG-KehZtTVaZ9vT-dGWLKDpTtLkCEv0yeyX5WhDTonzLoC4UgxD6yyYcDCKpSqZ2UNrJUggjWQfxSZKCw"}
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b\u2028c","id":"review","name":"Code review"}],"version":1},"signature":"xd-mXEG-KehZtTVaZ9vT-dGWLKDpTtLkCEv0yeyX5WhDTonzLoC4UgxD6yyYcDCKpSqZ2UNrJUggjWQfxSZKCw"}
 ```
 
 **P3: accepted.** A name holding an emoji ZWJ sequence and a variation selector
 (`Ada 👩‍💻 ❤️`: U+1F469 U+200D U+1F4BB, then U+2764 U+FE0F). Invisible characters that
 are not bidi controls or line separators stay allowed. The canonical card is 228 bytes.
-The envelope below writes the name with JSON escapes (a valid surrogate pair for each
-character above U+FFFF), so the line is ASCII apart from `é`.
+The envelope below writes every non-ASCII character of the name as a JSON escape (a valid
+surrogate pair for each character above U+FFFF), so the line is ASCII.
 
 ```
-{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada 👩‍💻 ❤️","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"PO0Kh7tfYN0cC5qJMOz6SYAkbfKJazGC6UyF3e_jz9a8nm0S0ClJiSlxSd-FzonDmxmcJH5iOydFvmIcYoS9Bg"}
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \ud83d\udc69\u200d\ud83d\udcbb \u2764\ufe0f","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"PO0Kh7tfYN0cC5qJMOz6SYAkbfKJazGC6UyF3e_jz9a8nm0S0ClJiSlxSd-FzonDmxmcJH5iOydFvmIcYoS9Bg"}
 ```
 
 `agentcard.VerifyStored` ([Cards stored before R55-F10](#cards-stored-before-r55-f10))

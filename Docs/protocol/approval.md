@@ -468,33 +468,51 @@ file names, artifact fields. It escapes and does not remove, so the value can st
 exactly. `--json` gives the raw value.
 1. Invalid UTF-8 decodes as U+FFFD.
 2. Every `hidden` rune, and U+FFFD, is replaced by the visible ASCII escape `\u{XXXX}` (the
-   code point in uppercase hex, 4 to 6 digits). This is `decision.Visible`'s escape and set.
+   code point in uppercase hex, 4 to 6 digits). This is `decision.Visible`'s escape and set,
+   plus U+FFFD, which `displayQuote` also escapes and `decision.Visible` keeps (review 82b).
 3. On one base character the first 2 combining marks (`Mn`, `Me`) are kept. Each further mark
    is escaped the same way, the stacked-marks rule of `displayQuote`.
 4. Everything else is kept, `\` included (OD-F10-6). Letters of right-to-left scripts are kept,
    with the residual described under `displayQuote`.
 
 The output is one line with no control, format, bidi or invisible character, so it cannot move
-the cursor, reorder a table column or start a new line. It is not cut: every such field is
-already bounded where the daemon accepts it.
+the cursor, reorder a table column with bidi, or start a line of its own. It is not cut: every
+such field is already bounded where the daemon accepts it.
+
+What `displayTerm` does not control is **display width** (review 82b, OD-F10-9). Go's
+`tabwriter` counts code points. A wide character (CJK, fullwidth forms, most emoji) takes two
+terminal columns, and each of up to 2 kept combining marks takes none. A peer's text can
+therefore shift the later columns of its own table row left or right. A long field that is
+padded with spaces can also soft-wrap, so that the text after the padding starts at column 0
+of the next screen row. On a terminal of the width the sender aimed at, it looks like a line of
+its own. Both stay within the sender's own row or field, and the text is still escaped. The CLI
+is not the trust channel: a fingerprint is checked through `agentnet peers verify` and its
+approval window, never by reading a table.
 
 **Block rendering, `displayBlock(s, indent)`**, for the few fields that are multi-line by
-design: a request's `reason` and result `output`, a debate `topic`, a session result
-`summary`.
+design: a request's `reason` and result `output`, and a debate `topic`. A result `summary` is
+one line, because its validation refuses every control character, so it uses `displayTerm`
+(review 82b).
 - The text is split at `\n`. One final `\n` is dropped.
 - Each line is rendered by `displayTerm`, except that a tab is kept.
 - Every line after the first is prefixed by `indent`, which the caller sets to at least the
   indentation of the field's label line plus two spaces.
 
-So a peer's text cannot produce a line that starts where a field label starts (a fake `state
-done` or `[3] respondent final`, R55-056). `\r` is a hidden rune and is escaped, so it cannot
-return to the start of a line either.
+So a peer's line break cannot produce a line that starts where a field label starts (a fake
+`state done` or `[3] respondent final`, R55-056). `\r` is a hidden rune and is escaped, so it
+cannot return to the start of a line either. The soft-wrap residual above still applies.
 
-**JSON output.** Every `--json` output of `agentnet` writes each non-ASCII `hidden` rune inside
-a JSON string as a `\uXXXX` escape: lowercase hex, and a surrogate pair above U+FFFF.
-`encoding/json` already escapes C0, U+2028 and U+2029. The decoded value is unchanged, so this
-is not a format change. The JSON is still exact, but `agentnet peers --json` printed on a
-terminal can no longer carry a C1 control or a bidi override (R55-056).
+**JSON output.** Every `--json` output of `agentnet` writes each `hidden` rune from U+007F up
+inside a JSON string as a `\uXXXX` escape: lowercase hex, and a surrogate pair above U+FFFF.
+`encoding/json` already escapes C0, U+2028 and U+2029, but it writes U+007F DELETE raw
+(review 82b). The decoded value is unchanged, so this is not a format change for a JSON
+parser. A consumer that searches the raw bytes for a value holding such a rune, for example an
+emoji with VS16, must decode first. The JSON is still exact, but `agentnet peers --json`
+printed on a terminal can no longer carry a C1 control or a bidi override (R55-056).
+`agentnet identity --json` is excluded (review 82b). Its documented use is as input to
+`tools/verifycard`, whose 16 KiB limit applies to the bytes as written. It holds only the
+user's own card and local fields. Since R55-F10, a new card cannot hold a bidi control or a line
+separator.
 
 **Which rendering where.** These five renderings over one `hidden` set are the whole API of
 `internal/displaytext`:
@@ -507,8 +525,8 @@ terminal can no longer carry a C1 control or a bidi override (R55-056).
 | `displayTerm` | `Term` | every other peer-chosen value an `agentnet` command prints, error messages from the daemon included |
 | `displayBlock` | `Block` | the multi-line fields listed above |
 
-`decision.Visible` (decision.md §Markdown) is `displayTerm` without step 3, with `\n` and `\t`
-kept in multi-line mode. That keeps the published Markdown format unchanged (OD-F10-8).
+`decision.Visible` (decision.md §Markdown) is `displayTerm` without step 3 and without the
+U+FFFD escape of step 2, with `\n` and `\t` kept in multi-line mode. That keeps the published Markdown format unchanged (OD-F10-8).
 The old `termSafe` of `agentnet fetch` (Go quoting of non-`IsPrint` text, review 55 R55-054)
 is removed.
 

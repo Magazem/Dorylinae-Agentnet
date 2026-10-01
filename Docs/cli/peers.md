@@ -48,7 +48,10 @@ owner (Phase 1, [../protocol/team.md](../protocol/team.md#introduced-peers)). Wi
 Every peer-chosen column (`NAME`, `HARNESS`, `SKILLS`) is printed through `displayTerm`
 ([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings),
 R55-F10). An invisible, bidi, control or format character is shown as a visible escape such as
-`\u{202E}`, so a name cannot move the `FINGERPRINT` column or hide part of itself. Skill ids
+`\u{202E}`, so a name cannot reorder its row with bidi or hide part of itself. Wide characters and
+combining marks can still shift the later columns of the peer's own row (display width,
+[approval.md](../protocol/approval.md#sanitising-one-character-rule-two-renderings), OD-F10-9).
+Check a fingerprint with `agentnet peers verify`, not by reading this table. Skill ids
 are joined with `, `. `--json` gives the exact values, with such characters as `\u` escapes.
 The same rule applies to every `agentnet` command that prints a peer, team or device name.
 
