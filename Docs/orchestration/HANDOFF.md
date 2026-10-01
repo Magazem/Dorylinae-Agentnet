@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Highs all merged; next wave = review-55 Mediums (D46). Older status below it is history.
+Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Medium wave (D46) DONE; next = owner's pick (F17b, Lows, follow-ups).
 
 ## 0. Status and next steps
 
@@ -31,20 +31,14 @@ Last updated: 2026-09-30, home PC. **Read §0 "START HERE" first.** Review 55 Hi
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
-**Wave R55-M live state (2026-09-30 ~19:30).** MERGED: F11 (#24), F12 (#26), F19 (#27), F23 (#28), F9 (#29), Dependabot #14/#15/#16. Specs approved + on main: F9, F2, F18, F23, F13, F14 (D52–D55, D57, D58).
-| Ticket | Slot | Worktree | State |
-|---|---|---|---|
-| F2 | R55-F2rebase-Lite `01a0f354-35be…` | r55-f2 | gated; rebased on F9 → test helper clash (fakeRelay redeclared) being fixed; then push + PR |
-| F18 | R55-F18-Opus `01a0f31a-6b76…` | r55-f18 | draft PR #30 green; review 78 PASS; fixing S1 (D59), S2, S3; then merge |
-| F24 | coder idle `01a0f292-d098…`; sec review R55-F24sec-Opus `01a0f33e-9304…` | r55-f24 | code b4c7b26 (migration 23 + PLACEHOLDER 22: replace with the real F18 migration 22 when rebasing after F18 merges); review 79 running |
-| F17 | R55-F17-Opus `01a0f292-d04a…` | r55-f17 | fixing review 77 (3 M: IPC slot lockout, panic leaves lock, pair_redeem KDF slots) |
-Follow-up ticket **R55-F17b** (from review 77b, Low): R1 evict the longest-idle IPC connection at the cap (keepalive squatter), R2 deferred cleanup of approval Create's slot reservation on panic, R3 refund the pairing-start token when a start fails locally; plus panic-safe locks on IPC-reachable paths (priority: session.Manager sendApp/SendData/send/Ping hold sendMu+mu during Noise work; then fetch_client, device_*, mailbox.Rotate); panic-log rate limit. Scope table in Docs/review/77b-r55-f17-rereview.md.
-**MAIN RED at f361793/840f5c4 (2026-09-30 ~21:40):** race job TestQueueRedeliveryFairOrderInPrefix (F2; possible real fairness bug) and ubuntu TestFailedRedeemsLeaveNoDerivations (F17; goroutine count). Investigators INV-FairOrder-Opus (worktree fix-fairorder) and INV-KDFGoroutine-Opus (worktree fix-kdfgoroutine) running; failed jobs rerun. Local full test run on main (Windows) was clean apart from the ACL list.
-**Update 2026-10-01 ~01:00:** main green again (test fixes #35, #36 merged). MERGED since: F24 (#34), F14 (#37). Remaining: F13 — reviews 81 (M1 → D62 fixed), 81b (M1 mirror `updated`, L1 → fixed); merge of main into p4/r55-f13 being resolved by R55-F13merge-Opus (11 conflicted files; placeholder 23 → F24's real 23; unify `limit` on mail.ReasonLimit); then gate → PR → merge = wave done.
-Watch: TestAuditInventory (Windows CI, main run 36791139449): `alice ws_request_changes: ipc: read response: i/o timeout` once; next run green. If it recurs, check F17's IPC deadlines and F18's work-session locking.
-Watch: TestConsultContextCapsIPC (internal/daemon) failed once in a local gate under load; TestPresenceAgentActiveEdge failed once on macOS CI (PR #28, "daemon not connected to the relay" at pair_redeem) and passed on rerun — possible startup race in the test.
-Daemon migrations: F18 = 22, F24 = 23, F13 = 24 (renumber at merge if the order changes). Next: F13 code after F18 merges (+ card limits after F23); F14 code after F9 and F2 merge. F15 deferred. Backlog noted: F12 review 70 L1 (only the first receive error per id is logged; R55-058 "mark bad after N failures" not done); F23 review 76 I2 (struct decodes after verification → F31/F34 sweep), I3 (F10 must rescue stored cards).
-Migrations: F18 = 22 (daemon), F23 maybe 23, F13 later. Next: F17 after F11 merges (ipc.go); F24 (D48) when a slot frees; F18 code after F12 merges; F14 code after F9 merges. F15 deferred (D46). Helper: `$TEMP/gate.sh <worktree>` runs the full gate → `$TEMP/gate-<worktree>.txt` (local daemon/device ACL failures are expected: TestHelper*, TestPhase2*, TestDeviceScopeSummary, TestAuditInventoryDevices, TestCheckProgramOwnerWindows, TestOwnerWalkJunction, TestCheckTarget, TestValidateScopeResolvesArgv0).
+**WAVE R55-M (review-55 Mediums, D46) — DONE 2026-10-01.** All 11 tickets merged, each with an Opus security review (and re-reviews where findings were fixed) and green CI on all three OSes + race: F11 (#24), F12 (#26), F19 (#27), F23 (#28), F9 (#29), F2 (#31, High per D47), F18 (#30), F17 (#33), F24 (#34), F14 (#37), F13 (#38). Also merged: relay eviction-log fix (#32), test fixes #35 (relay fairness settle) and #36 (KDF goroutine count), Dependabot #14/#15/#16. Decisions this wave: D47–D62. Daemon migrations now end at 25 (22 F18 runner/result_mail, 23 F24 approval kinds, 24 F13 retention caps, 25 F13 data_prune kind); relay migration R3 (F2). F15 stays deferred (accounts gate, D46).
+Reviews written: 66–81b in Docs/review/ (66–72 specs + adversarial reviews; 70, 73–81 security reviews; 74b, 77b, 79b/79c, 81b re-reviews/checks), verify/R55-009.md.
+
+**Next (owner picks):**
+- **R55-F17b** (Low, from review 77b): evict the longest-idle IPC connection at the cap; deferred cleanup of approval Create's slot on panic; refund the pairing-start token on local failure; panic-safe locks on IPC-reachable paths (priority session.Manager send paths), panic-log rate limit.
+- Backlog notes: F12 review 70 L1 (only the first receive error per id is logged; R55-058 "mark bad after N failures" not done); F23 review 76 I2 (struct decodes after verification → F31/F34 sweep) and I3 (F10 must rescue stored cards); F14: launchd's reopen of the rotated agentnetd.out.log not verified on a real Mac (owner manual check); F24/D61: full "invisible" hiding of mail delivery would need its own spec.
+- The remaining Low R55 tickets (F10, F16, F20–F22, F25–F34) and earlier follow-ups (F8c, F3c, F6b) below.
+- Watch: TestAuditInventory on Windows CI once failed with `alice ws_request_changes: ipc: read response: i/o timeout` (main run 36791139449; next run green) — if it recurs, look at F17's IPC deadlines and F18's work-session locking. TestConsultContextCapsIPC failed once in a loaded local gate.
 
 **How to run it (lessons from this wave, all binding):**
 - One worker per ticket, in its own worktree `AgentNet-wt/<name>` on branch `p4/r55-<ticket>`.
