@@ -145,8 +145,10 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
 6. **Sender-side urgency budget** ([Urgency guards](#urgency-guards-17)). This may downgrade
    `high` or `blocking` to `normal` and set `urgency_declared`.
 7. Build the object (`id` fresh, `created = now`). In **one SQLite transaction**, insert the
-   `out` row (`state = pending`) and the outbox row. A fresh `id` that any `requests` row
-   already has (either direction, any peer) is drawn again inside that transaction, so this
+   `out` row (`state = pending`) and the outbox row. If any `requests` row already has the
+   fresh `id` (either direction, any peer; checked in that transaction, before the outbox
+   row), the transaction is rolled back and the object is built again from a new `id`,
+   including everything derived from it (a debate's session id and commitment), so this
    daemon's `out` ids never collide with each other or with a stored `in` id
    ([Request ids and references](#request-ids-and-references-r55-f20)). That needs `Outbox.SubmitTx(tx, to,
    kind, body)`, added by 1.4c. Audit `request.submit`. If the insert hits the
@@ -854,7 +856,8 @@ match is `ambiguous_request`, never the first row found:
 | `request_cancel`, `request_resend` | `out` rows | cannot happen: `out` ids are unique here |
 | `ws_*` and `wait` with an `r-` id | `work_sessions` rows with that `request_id`, any role and peer | `ambiguous_request`: use the `s-` id |
 | `ws_result` one-step answer ([consult.md](consult.md)) with an `r-` id | `in` rows; the session check uses the exact `(worker, peer, id)` | `ambiguous_request` |
-| `audit_list {session: r-…}` ([audit.md](audit.md#agentnet-log)) | `work_sessions` rows with that `request_id`; with none, `requests` rows with that id | `ambiguous_request` when they belong to more than one `(role, peer)` or `(direction, peer)`: use the `s-` id |
+| `wait` with an `r-` id before a session exists | `request_show {id}` (row above) | `ambiguous_request` ends the wait with exit 1, never a silent poll until timeout: use the `s-` id |
+| `audit_list {session: r-…}` ([audit.md](audit.md#agentnet-log)) | `work_sessions` rows with that `request_id` **and** `requests` rows with that id, a session counting as its own request row (`requester` = `out`, `worker` = `in`) | `ambiguous_request` when they belong to more than one `(direction, peer)`, even if only one of them has a session: use the `s-` id |
 | `debate_*`, `decision_show` with an `r-` id | `debates` rows with that `request_id` | `ambiguous_request` (`decision_show` too, R55-128) |
 | Debate notification title | the request row of the debate's own direction (`out` on the initiator, `in` on the respondent) | — |
 

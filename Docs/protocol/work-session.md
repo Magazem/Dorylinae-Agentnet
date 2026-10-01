@@ -665,7 +665,11 @@ Per-command pages (`Docs/cli/session.md`) are written by ticket 2.1b.
 
 **`wait`** is the one command that deliberately blocks beyond 2 s; it is a CLI-side loop and
 every IPC call in it returns in under 2 s. It polls `ws_show` (or, before the session
-exists, `request_show` of the request the derived id belongs to) once per second until one of:
+exists, `request_show` of the request the derived id belongs to) once per second until one of
+the conditions below. An IPC error other than `unknown_session` from `ws_show`, or other than
+`unknown_request` from that `request_show` (for example `ambiguous_request` for an `r-` id
+shared by pre-R55-F20 rows), ends the wait at once with exit 1 and the error; it is never
+polled until the timeout (R55-F20). The conditions:
 
 | Condition (as seen by the caller's side) | Exit | `--json` `"wait"` |
 |---|---|---|
