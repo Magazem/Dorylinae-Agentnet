@@ -62,7 +62,9 @@ func setup(t *testing.T) (home string, r *recRunner, def string) {
 	newServiceDeps = func() (serviceDeps, error) {
 		return serviceDeps{platform: stubPlatform{file: def}, runner: r, exe: "/bin/agentnetd"}, nil
 	}
-	t.Cleanup(func() { newServiceDeps = old })
+	oldOwner := checkProgramOwner
+	checkProgramOwner = func(string) error { return nil }
+	t.Cleanup(func() { newServiceDeps = old; checkProgramOwner = oldOwner })
 	return home, r, def
 }
 
@@ -225,5 +227,22 @@ func TestRunLogFileFlag(t *testing.T) {
 func TestRunSubcommandStillParsesFlags(t *testing.T) {
 	if code, out, _ := invoke(t, "run", "--version"); code != 0 || !strings.HasPrefix(out, "agentnetd") {
 		t.Errorf("run --version: exit %d, %q", code, out)
+	}
+}
+
+// R55-094: install warns (but still installs) when the binary it bakes into
+// the service can be changed by others.
+func TestInstallWarnsOnWritableProgram(t *testing.T) {
+	home, r, _ := setup(t)
+	checkProgramOwner = func(string) error { return errors.New("writable by Everyone") }
+	code, _, errs := invoke(t, "install", "--home", home)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	if !strings.Contains(errs, "warning") || !strings.Contains(errs, "writable by Everyone") {
+		t.Errorf("no ownership warning on stderr: %q", errs)
+	}
+	if len(r.ran) == 0 {
+		t.Error("the install did not run")
 	}
 }

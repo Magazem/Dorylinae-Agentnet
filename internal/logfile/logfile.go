@@ -58,7 +58,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 	if w.size > 0 && w.size+int64(len(p)) > w.limit {
-		if err := w.rotate(); err != nil {
+		// A failed rotation leaves the file reopened for appending; keep
+		// logging into it and try to rotate again on the next write.
+		if err := w.rotate(); err != nil && w.f == nil {
 			return 0, err
 		}
 	}
@@ -67,11 +69,25 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// rotate renames the log to <path>.1 and starts a new file. If a step fails
+// (on Windows a log viewer without FILE_SHARE_DELETE makes the rename fail) it
+// reopens the current file in append mode, so one failed rotation does not end
+// logging for the process's lifetime (review 55 R55-093).
 func (w *Writer) rotate() error {
 	if err := w.f.Close(); err != nil {
 		return fmt.Errorf("close log file: %w", err)
 	}
 	w.f = nil
+	if err := w.moveAside(); err != nil {
+		if rerr := w.open(); rerr != nil {
+			return fmt.Errorf("%w (reopening the log failed: %w)", err, rerr)
+		}
+		return err
+	}
+	return w.open()
+}
+
+func (w *Writer) moveAside() error {
 	// Windows will not rename over an existing file on every filesystem.
 	if err := os.Remove(w.path + ".1"); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove old log: %w", err)
@@ -79,7 +95,7 @@ func (w *Writer) rotate() error {
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
 		return fmt.Errorf("rotate log file: %w", err)
 	}
-	return w.open()
+	return nil
 }
 
 // Close closes the file. Later writes fail with os.ErrClosed.

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
@@ -24,6 +25,9 @@ type serviceDeps struct {
 }
 
 var newServiceDeps = defaultServiceDeps
+
+// checkProgramOwner is device.CheckProgramOwner, replaceable in tests.
+var checkProgramOwner = device.CheckProgramOwner
 
 func defaultServiceDeps() (serviceDeps, error) {
 	pl, err := service.Current()
@@ -118,6 +122,14 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
+	}
+	if install {
+		// The service bakes in the binary's path (D24): warn when users
+		// other than this one can change it (review 55 R55-094). A warning,
+		// not a refusal: the folder is the owner's choice.
+		if err := checkProgramOwner(deps.exe); err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: warning: the service will run %s, which others may be able to change: %v\n", name, deps.exe, err)
+		}
 	}
 	spec := service.Spec{Executable: deps.exe, Home: p.Dir, Relay: relayURL}
 
