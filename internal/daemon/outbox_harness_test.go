@@ -81,6 +81,23 @@ type harnessRelay struct {
 	logs  *syncBuf
 	rs    *relay.Server
 	srv   *http.Server
+
+	// nodes are the harness daemons created on this relay, so that
+	// waitRelayConnected can ask each one for its own relay state.
+	nodesMu sync.Mutex
+	nodes   []*harnessNode
+}
+
+// node returns the harness daemon on r whose key is key, or nil.
+func (r *harnessRelay) node(key string) *harnessNode {
+	r.nodesMu.Lock()
+	defer r.nodesMu.Unlock()
+	for _, n := range r.nodes {
+		if n.key == key {
+			return n
+		}
+	}
+	return nil
 }
 
 func (r *harnessRelay) start() {
@@ -191,6 +208,9 @@ func newHarnessNode(t *testing.T, name string, r *harnessRelay) *harnessNode {
 	}
 	n := &harnessNode{t: t, name: name, p: p, relay: r, logs: &syncBuf{}}
 	t.Cleanup(n.stop)
+	r.nodesMu.Lock()
+	r.nodes = append(r.nodes, n)
+	r.nodesMu.Unlock()
 	return n
 }
 
@@ -357,17 +377,11 @@ func harnessWaitFor(t *testing.T, what string, timeout time.Duration, ok func() 
 
 func harnessPair(t *testing.T, a, b *harnessNode) {
 	t.Helper()
+	// pair_new and pair_redeem need each daemon's own connection, which the
+	// relay lists before that daemon has read its ready.
+	harnessWait(t, "both daemons' relay connections", func() bool { return a.relayConnected() && b.relayConnected() })
 	var issued daemon.PairStatus
-	// The relay lists a daemon slightly before the daemon sees its own ready.
-	harnessWait(t, "A's relay connection", func() bool {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := ipc.Call(ctx, a.p.Endpoint, "pair_new", nil, &issued)
-		if err != nil && !strings.Contains(err.Error(), daemon.CodeRelayUnavailable) {
-			t.Fatalf("pair_new: %v", err)
-		}
-		return err == nil
-	})
+	a.call("pair_new", nil, &issued)
 	harnessWait(t, "pairing code", func() bool {
 		a.call("pair_status", daemon.PairStatusParams{PairingID: issued.ID}, &issued)
 		return issued.Code != ""
@@ -420,11 +434,31 @@ func (n *harnessNode) submit(to, kind, text string) daemon.MailSubmitResult {
 	return res
 }
 
+// relayConnected reports whether the daemon itself holds an authenticated
+// relay connection (status relay.connected).
+func (n *harnessNode) relayConnected() bool {
+	n.t.Helper()
+	var st daemon.StatusResult
+	n.call("status", nil, &st)
+	return st.Relay != nil && st.Relay.Connected
+}
+
+// waitRelayConnected waits until the relay lists every key and every one of
+// those daemons reports its own connection as up. The relay registers a
+// connection before it sends ready, so its view alone runs ahead of the
+// daemon's: a pair_redeem or Send made in between fails with
+// relay_unavailable.
 func waitRelayConnected(t *testing.T, r *harnessRelay, keys ...string) {
 	t.Helper()
+	nodes := make([]*harnessNode, len(keys))
+	for i, k := range keys {
+		if nodes[i] = r.node(k); nodes[i] == nil {
+			t.Fatalf("waitRelayConnected: no harness daemon on this relay has key %.8s", k)
+		}
+	}
 	harnessWait(t, "daemons to connect to the relay", func() bool {
-		for _, k := range keys {
-			if !r.rs.Connected(k) {
+		for i, k := range keys {
+			if !r.rs.Connected(k) || !nodes[i].relayConnected() {
 				return false
 			}
 		}
