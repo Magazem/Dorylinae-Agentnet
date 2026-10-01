@@ -31,6 +31,20 @@ Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Me
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
+**WAVE R55-L (review-55 Lows, D63) — STARTED 2026-10-01, base main eb283bf.** Tickets: F10, F16, F17b, F20, F21, F22, F25–F34, F8c, F3c, F6b (F15 deferred). Owner decisions D64 (AppendTx for security actions, F31), D65 (document D20, F34), D66 (blanking needs a digit, F6b).
+Batch 1 (worktrees AgentNet-wt/r55-<x>, branches p4/r55-<x>):
+| Ticket | Slot | Model | State |
+|---|---|---|---|
+| F16 relay ops | R55-F16-Sonnet `01a0f89f-c0f4…` | Sonnet | coding |
+| F22 Windows hardening | R55-F22-Sonnet `01a0f89f-c393…` | Sonnet | coding |
+| F25 device runner | R55-F25-Opus `01a0f89f-c64b…` | Opus | coding (security review after) |
+| F32 CI coverage | R55-F32-Lite `01a0f89f-c8cd…` | Lite | coding |
+| F33 harness | R55-F33-Lite `01a0f89f-cb76…` | Lite | coding |
+| F10 spec | R55-F10spec-Opus `01a0f89f-cdf7…` | Opus | 82-r55-f10-spec.md |
+| F20 spec | R55-F20spec-Opus `01a0f89f-d0a3…` | Opus | 83-r55-f20-spec.md (+ R55-163 OD) |
+| F31 spec | R55-F31spec-Opus `01a0f89f-d28c…` | Opus | 84-r55-f31-spec.md (D64) |
+Batch 2 (when slots free; sequence by files): F21 keystore (Opus), F26 lifecycle (Sonnet), F27 fail-closed (Opus, approval/store.go with F17b), F28 clock steps (Opus), F17b (Opus), F8c, F3c, F6b (D66); then F10 code → F30 (both cmd/agentnet), F20 code → F29 (debate; spec, D14 R55-221), F31 code, F34 docs last (D65; D14 R55-201 OneDrive as OD). Next free review number: 85. Next daemon migration: 26.
+
 **WAVE R55-M (review-55 Mediums, D46) — DONE 2026-10-01.** All 11 tickets merged, each with an Opus security review (and re-reviews where findings were fixed) and green CI on all three OSes + race: F11 (#24), F12 (#26), F19 (#27), F23 (#28), F9 (#29), F2 (#31, High per D47), F18 (#30), F17 (#33), F24 (#34), F14 (#37), F13 (#38). Also merged: relay eviction-log fix (#32), test fixes #35 (relay fairness settle) and #36 (KDF goroutine count), Dependabot #14/#15/#16. Decisions this wave: D47–D62. Daemon migrations now end at 25 (22 F18 runner/result_mail, 23 F24 approval kinds, 24 F13 retention caps, 25 F13 data_prune kind); relay migration R3 (F2). F15 stays deferred (accounts gate, D46).
 Reviews written: 66–81b in Docs/review/ (66–72 specs + adversarial reviews; 70, 73–81 security reviews; 74b, 77b, 79b/79c, 81b re-reviews/checks), verify/R55-009.md.
 
