@@ -75,7 +75,7 @@ type pairings struct {
 	entries map[[sha256.Size]byte]*pairEntry
 
 	lim limiter
-	// newLim counts every v2 pair_new. Without it, pair_new plus pair_cancel is
+	// newLim counts every pair_new, v1 and v2. Without it, pair_new plus pair_cancel is
 	// a free existence oracle (pair_lookup_taken) that bypasses lim.
 	newLim limiter
 	v1     bool // v1 frames enabled
@@ -235,22 +235,22 @@ func (s *Server) pairNew(c *conn, ctl *envelope.Control) {
 		p.newLimAccount.fail(account, now)
 	}
 
-	if lookup != "" {
-		if !p.newLim.allow(c.key, now) {
-			p.limited.Add(1)
-			s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "peer", short(c.key))
-			s.reject(c, envelope.CodePairRateLimited, "too many pairing requests; try again later", ctl.Ref)
-			return
-		}
-		if !p.newLimPrefix.allow(c.prefix, now) {
-			p.limited.Add(1)
-			s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "scope", "prefix")
-			s.reject(c, envelope.CodePairRateLimited, "too many pairing requests from this network; try again later", ctl.Ref)
-			return
-		}
-		p.newLim.fail(c.key, now)
-		p.newLimPrefix.fail(c.prefix, now)
+	// Every pair_new, v1 or v2, is charged to the per-key and per-prefix
+	// limiters (pairing.md "Per-prefix limits"; R55-050).
+	if !p.newLim.allow(c.key, now) {
+		p.limited.Add(1)
+		s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "peer", short(c.key))
+		s.reject(c, envelope.CodePairRateLimited, "too many pairing requests; try again later", ctl.Ref)
+		return
 	}
+	if !p.newLimPrefix.allow(c.prefix, now) {
+		p.limited.Add(1)
+		s.log.Info("pairing issue refused", "event", pairEventFail, "reason", pairReasonRateLimited, "scope", "prefix")
+		s.reject(c, envelope.CodePairRateLimited, "too many pairing requests from this network; try again later", ctl.Ref)
+		return
+	}
+	p.newLim.fail(c.key, now)
+	p.newLimPrefix.fail(c.prefix, now)
 
 	p.mu.Lock()
 	outstanding, outstandingPrefix, outstandingAccount := 0, 0, 0

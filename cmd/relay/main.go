@@ -250,15 +250,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 func metricsHandler(rs *relay.Server) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
+		// Stats first: a failure must not be preceded by a 200 header and zero
+		// values a scraper would record as real (R55-037).
 		st, err := rs.Stats()
+		if err != nil {
+			http.Error(w, "relay stats unavailable", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = fmt.Fprintf(w, "# HELP relay_connections Authenticated connections currently open.\n# TYPE relay_connections gauge\nrelay_connections %d\n", st.Connections)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_rows Envelopes waiting in the offline queue.\n# TYPE relay_queue_rows gauge\nrelay_queue_rows %d\n", st.QueueRows)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_bytes Bytes waiting in the offline queue.\n# TYPE relay_queue_bytes gauge\nrelay_queue_bytes %d\n", st.QueueBytes)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_redelivered_bytes_total Queued bytes sent again to a recipient that had not acked them.\n# TYPE relay_queue_redelivered_bytes_total counter\nrelay_queue_redelivered_bytes_total %d\n", st.QueueRedeliveredBytes)
 		_, _ = fmt.Fprintf(w, "# HELP relay_queue_redeliveries_skipped_total Redeliveries skipped for want of redelivery budget.\n# TYPE relay_queue_redeliveries_skipped_total counter\nrelay_queue_redeliveries_skipped_total %d\n", st.QueueRedeliveriesSkipped)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, "# HELP relay_db_bytes Size of the relay database file.\n# TYPE relay_db_bytes gauge\nrelay_db_bytes %d\n", st.DBBytes)
+		if st.DiskFreeBytes >= 0 {
+			_, _ = fmt.Fprintf(w, "# HELP relay_disk_free_bytes Free space on the file system holding the relay database.\n# TYPE relay_disk_free_bytes gauge\nrelay_disk_free_bytes %d\n", st.DiskFreeBytes)
 		}
 	})
 	return mux
