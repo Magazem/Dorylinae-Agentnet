@@ -112,7 +112,7 @@ type SessionHooks interface {
 
 // SetOutContentTx replaces the note and result of the out request record
 // (peer, id) inside tx, if and only if it is completed, touching no state or
-// seq. A's session close writes its own view of the close with it
+// seq; updated becomes now (review 81b M1). A's session close writes its own view of the close with it
 // (Docs/protocol/work-session.md §Closing the request, review 69b F1).
 func (s *Store) SetOutContentTx(ctx context.Context, tx *sql.Tx, peer, id, note string, result *Result) error {
 	var noteArg, resultArg any
@@ -126,8 +126,8 @@ func (s *Store) SetOutContentTx(ctx context.Context, tx *sql.Tx, peer, id, note 
 		}
 		resultArg = string(canon)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE requests SET note = ?, result = ? WHERE direction = 'out' AND peer = ? AND id = ? AND state = ?`,
-		noteArg, resultArg, peer, id, StateCompleted); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE requests SET note = ?, result = ?, updated = ? WHERE direction = 'out' AND peer = ? AND id = ? AND state = ?`,
+		noteArg, resultArg, storeTime(s.now()), peer, id, StateCompleted); err != nil {
 		return fmt.Errorf("request: set out content: %w", err)
 	}
 	return nil

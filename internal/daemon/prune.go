@@ -50,14 +50,18 @@ type DataPruneResult struct {
 type pruneAuth struct {
 	olderThan time.Duration
 	cutoff    time.Time
+	counts    retention.Counts // what the approval shows
+	removed   retention.Counts // what the calls removed so far
 	approved  bool
 	until     time.Time // set on approval
 }
 
-// pruneAuths holds the prunes by approval id, in memory only.
+// pruneAuths holds the prunes by approval id, in memory only. run
+// serialises the batches, so each reads what the earlier ones removed.
 type pruneAuths struct {
-	mu sync.Mutex
-	m  map[string]*pruneAuth
+	mu  sync.Mutex
+	run sync.Mutex
+	m   map[string]*pruneAuth
 }
 
 func (a *pruneAuths) get(id string) (pruneAuth, bool) {
@@ -81,6 +85,14 @@ func (a *pruneAuths) approve(id string, until time.Time) {
 	defer a.mu.Unlock()
 	if p, ok := a.m[id]; ok {
 		p.approved, p.until = true, until
+	}
+}
+
+func (a *pruneAuths) addRemoved(id string, c retention.Counts) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p, ok := a.m[id]; ok {
+		p.removed = p.removed.Add(c)
 	}
 }
 
@@ -212,7 +224,8 @@ func createPruneApproval(ctx context.Context, db *sql.DB, apprStore *approval.St
 		// with the one shown. A change after counting can only take items
 		// out of the set: an item is in it only if its updated is before the
 		// fixed cutoff, and every change sets updated to now. Only mail_inbox
-		// rows whose mail_seen row ages out can join (retention.md §Approval).
+		// rows whose mail_seen row ages out can join, and the batches never
+		// remove more of a table than these counts (retention.md §Approval).
 		Rebuild: rebuildWith(facts, func(context.Context, *sql.Tx) (approvaltext.Prune, error) {
 			return facts, nil
 		}, approvaltext.BuildPrune),
@@ -233,7 +246,7 @@ func createPruneApproval(ctx context.Context, db *sql.DB, apprStore *approval.St
 	idMu.Lock()
 	approvalID = view.ID
 	idMu.Unlock()
-	auths.set(view.ID, &pruneAuth{olderThan: olderThan, cutoff: cutoff})
+	auths.set(view.ID, &pruneAuth{olderThan: olderThan, cutoff: cutoff, counts: c})
 	return DataPruneResult{Cutoff: wireTimeStr(cutoff), Counts: c, More: true, Approval: &view}, nil
 }
 
@@ -277,10 +290,16 @@ func runPrune(ctx context.Context, db *sql.DB, apprStore *approval.Store, auths 
 		auths.drop(id)
 		return nil, &ipc.Error{Code: "unknown_approval", Message: "the approved prune has lapsed; run agentnet prune again"}
 	}
+	auths.run.Lock()
+	defer auths.run.Unlock()
+	if auth, ok = auths.get(id); !ok {
+		return nil, &ipc.Error{Code: "unknown_approval", Message: "this prune is no longer running here (the daemon restarted or it finished); run agentnet prune again"}
+	}
 	c, more, err := pruneBatch(ctx, db, auth, id, t)
 	if err != nil {
 		return nil, err
 	}
+	auths.addRemoved(id, c)
 	if !more {
 		auths.drop(id)
 	}
@@ -288,14 +307,16 @@ func runPrune(ctx context.Context, db *sql.DB, apprStore *approval.Store, auths 
 }
 
 // pruneBatch removes one batch and audits it in the same transaction, so the
-// counts and the removals commit together (retention.md §Audit).
+// counts and the removals commit together (retention.md §Audit). It removes
+// no more of a table than the approved count less what the earlier batches
+// removed (retention.md §Approval).
 func pruneBatch(ctx context.Context, db *sql.DB, auth pruneAuth, id string, t time.Time) (retention.Counts, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return retention.Counts{}, false, pruneIOError(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	c, more, err := retention.PruneTx(ctx, tx, auth.cutoff, t)
+	c, more, err := retention.PruneTxWithin(ctx, tx, auth.cutoff, t, auth.counts.Sub(auth.removed))
 	if err != nil {
 		return retention.Counts{}, false, pruneIOError(err)
 	}

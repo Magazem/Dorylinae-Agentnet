@@ -157,3 +157,46 @@ func TestDataPruneNeedsApproval(t *testing.T) {
 		t.Fatalf("nothing to remove = %+v, %v", none, err)
 	}
 }
+
+// Retention.md §Approval: the batches never remove more than the approval
+// showed. A finished request that joins the set after the approval was
+// created is left for a new approval.
+func TestDataPruneRemovesNoMoreThanApproved(t *testing.T) {
+	e := newQEnv(t)
+	a := e.a
+	insert := func(id string, days int) {
+		t.Helper()
+		if err := a.exec(`INSERT INTO requests (direction, peer, id, team_id, type, urgency, urgency_declared, body, body_hash,
+			state, created, received_at, mail_id, updated) VALUES ('in', ?, ?, 't', 'task', 'normal', 'normal', '{}', 'h', 'completed', ?, ?, 'm', ?)`,
+			e.b.key, id, pruneDaysAgo(days), pruneDaysAgo(days), pruneDaysAgo(days)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("r-000000000000000000000000000000a0", 40)
+	const d35 = 3024000
+	first, err := pruneCall(a, map[string]any{"older_than_s": d35})
+	if err != nil || first.Approval == nil || first.Counts.Requests != 1 {
+		t.Fatalf("data_prune = %+v, %v; want an approval for 1 request", first, err)
+	}
+	// Joins after counting, older than the approved one.
+	insert("r-000000000000000000000000000000b0", 41)
+	e.approve(t, first.Approval.ID)
+	var total daemon.DataPruneResult
+	harnessWait(t, "the approved prune to finish", func() bool {
+		r, err := pruneCall(a, map[string]any{"older_than_s": d35, "approval": first.Approval.ID})
+		if err != nil {
+			t.Fatalf("approved data_prune: %v", err)
+		}
+		if r.Approval != nil {
+			return false
+		}
+		total.Counts = total.Counts.Add(r.Counts)
+		return !r.More
+	})
+	if total.Counts.Requests != 1 {
+		t.Fatalf("removed %d requests, the approval showed 1", total.Counts.Requests)
+	}
+	if n := a.count(`SELECT COUNT(*) FROM requests`); n != 1 {
+		t.Fatalf("requests left = %d, want 1 for a new approval", n)
+	}
+}

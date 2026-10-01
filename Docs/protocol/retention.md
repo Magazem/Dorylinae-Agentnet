@@ -59,12 +59,12 @@ it:
 |---|---|
 | `work_sessions` | its session row |
 | `grants` | every grant of that session, both directions |
-| `experience_records` | the records of that session (any role) |
+| `experience_records` | the records of that session (any role), and those of its debate (written under the debate's session, review 81b L1) |
 | `debates`, `debate_entries`, `debate_constraints` | its debate and all its entries and constraints |
 
 `prune` also removes rows whose request is already gone, when they are finished and older than
 the cutoff by the same rules: a `closed` work session (with its grants and experience records)
-and a `closed` or `broken` debate (with its entries and constraints). Grants outside those two
+and a `closed` or `broken` debate (with its entries, constraints and experience records). Grants outside those two
 cases follow their direction (review 71b F1):
 
 - a **`held`** grant whose `exp`, or whose `revoked_at` when it is `revoked`, is before the
@@ -251,9 +251,17 @@ kind is `data_prune`.
   shown, but does not count again inside its write transaction on the daemon's single
   connection (review 81 L1). A change after counting can only take items out of the set: an
   item is in it only if its `updated` is before the fixed cutoff, and every change sets
-  `updated` to now. So the shown counts are an upper bound on what the batches remove,
-  except `mail_inbox` rows whose `mail_seen` row ages out in the meantime (each batch uses
-  its own `now` for that rule).
+  `updated` to now, the local time of the change. This includes the sender mirror: a
+  lifecycle mail that finishes an `out` row sets its `updated` to the time it is applied,
+  never the peer's `at`, so a request sent long ago and finished today is not older than
+  the cutoff (review 81b M1). The only rows that can join are `mail_inbox` rows whose
+  `mail_seen` row ages out in the meantime (each batch uses its own `now` for that rule).
+- **Never more than shown.** The batches remove no more of each table than the approved
+  count: the daemon keeps what the earlier batches of the approval removed, and each batch
+  removes at most the approved count less that, table by table (review 81b). An item that no
+  longer fits (a request with its dependents, an orphan, an inbox row) ends the prune: it
+  and everything after it are left, and the call returns `more: false`. What is left needs
+  a new `agentnet prune` and a new approval.
 - **Perform** removes nothing: it lets the calls that name the approval run for one hour.
   Each such call removes one bounded batch against the **approved cutoff**, in its own
   transaction, audited as below. The call that returns `more: false` ends the approval's

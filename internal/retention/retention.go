@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -53,6 +52,17 @@ func (c Counts) Add(o Counts) Counts {
 	}
 }
 
+// Sub returns c less o, table by table.
+func (c Counts) Sub(o Counts) Counts {
+	return Counts{
+		Requests: c.Requests - o.Requests, WorkSessions: c.WorkSessions - o.WorkSessions,
+		Grants: c.Grants - o.Grants, Debates: c.Debates - o.Debates,
+		DebateEntries: c.DebateEntries - o.DebateEntries, DebateConstraints: c.DebateConstraints - o.DebateConstraints,
+		ExperienceRecords: c.ExperienceRecords - o.ExperienceRecords, MailInbox: c.MailInbox - o.MailInbox,
+		InboxBlanked: c.InboxBlanked - o.InboxBlanked,
+	}
+}
+
 // Zero reports whether nothing was counted.
 func (c Counts) Zero() bool { return c == Counts{} }
 
@@ -84,6 +94,132 @@ type plan struct {
 	inbox       []int64 // mail_inbox rowids to delete
 	blank       []int64 // mail_inbox rowids to blank
 	more        bool
+
+	// allow is what this call may still remove, table by table (the approved
+	// counts less what the earlier calls of the prune removed), or nil for no
+	// bound but the per-call ones. used is what the plan holds so far, and
+	// capped is set once an item did not fit (retention.md §Approval).
+	allow  *Counts
+	used   Counts
+	capped bool
+}
+
+// within reports whether every count of c is at most the one of a.
+func (c Counts) within(a Counts) bool {
+	return c.Requests <= a.Requests && c.WorkSessions <= a.WorkSessions && c.Grants <= a.Grants &&
+		c.Debates <= a.Debates && c.DebateEntries <= a.DebateEntries && c.DebateConstraints <= a.DebateConstraints &&
+		c.ExperienceRecords <= a.ExperienceRecords && c.MailInbox <= a.MailInbox && c.InboxBlanked <= a.InboxBlanked
+}
+
+// fits takes add into the plan's running counts if they stay within allow,
+// and otherwise marks the plan capped and reports false.
+func (p *plan) fits(add Counts) bool {
+	u := p.used.Add(add)
+	if p.allow != nil && !u.within(*p.allow) {
+		p.capped = true
+		return false
+	}
+	p.used = u
+	return true
+}
+
+// group is one item with everything removed with it, not yet in the plan.
+type group struct {
+	request     *reqKey
+	sessions    map[string]bool
+	debates     map[string]bool
+	grants      map[string]bool
+	experience  map[[2]string]bool
+	entries     int64
+	constraints int64
+}
+
+func newGroup() *group {
+	return &group{sessions: map[string]bool{}, debates: map[string]bool{}, grants: map[string]bool{}, experience: map[[2]string]bool{}}
+}
+
+func (g *group) counts() Counts {
+	c := Counts{WorkSessions: int64(len(g.sessions)), Debates: int64(len(g.debates)), Grants: int64(len(g.grants)),
+		ExperienceRecords: int64(len(g.experience)), DebateEntries: g.entries, DebateConstraints: g.constraints}
+	if g.request != nil {
+		c.Requests = 1
+	}
+	return c
+}
+
+// take adds g to the plan if it fits, and reports whether it did.
+func (p *plan) take(g *group) bool {
+	if !p.fits(g.counts()) {
+		return false
+	}
+	if g.request != nil {
+		p.requests = append(p.requests, *g.request)
+	}
+	for id := range g.sessions {
+		p.sessions[id] = true
+	}
+	for id := range g.debates {
+		p.debates[id] = true
+	}
+	for id := range g.grants {
+		p.grants[id] = true
+	}
+	for k := range g.experience {
+		p.experience[k] = true
+	}
+	p.entries += g.entries
+	p.constraints += g.constraints
+	return true
+}
+
+// addSession adds a work session to g with its grants and experience
+// records, leaving out what the plan already holds.
+func (p *plan) addSession(ctx context.Context, q queryer, g *group, sid string) error {
+	if p.sessions[sid] || g.sessions[sid] {
+		return nil
+	}
+	g.sessions[sid] = true
+	ids, err := listIDs(ctx, q, `SELECT id FROM grants WHERE session = ?`, sid)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if !p.grants[id] {
+			g.grants[id] = true
+		}
+	}
+	return p.addExperience(ctx, q, g, sid)
+}
+
+// addDebate adds a debate to g with its entries, constraints and experience
+// records (debate/experience.go writes them under the debate's session,
+// review 81b L1).
+func (p *plan) addDebate(ctx context.Context, q queryer, g *group, sid string) error {
+	if p.debates[sid] || g.debates[sid] {
+		return nil
+	}
+	g.debates[sid] = true
+	var n, c int64
+	if err := scanOne(ctx, q, `SELECT (SELECT COUNT(*) FROM debate_entries WHERE session = ?1), (SELECT COUNT(*) FROM debate_constraints WHERE session = ?1)`,
+		[]any{sid}, &n, &c); err != nil {
+		return err
+	}
+	g.entries += n
+	g.constraints += c
+	return p.addExperience(ctx, q, g, sid)
+}
+
+func (p *plan) addExperience(ctx context.Context, q queryer, g *group, sid string) error {
+	recs := map[[2]string]bool{}
+	if err := collectExperience(ctx, q, `SELECT session, role FROM experience_records WHERE session = ?`, []any{sid}, recs); err != nil {
+		return err
+	}
+	for k := range recs {
+		if !p.experience[k] {
+			g.experience[k] = true
+		}
+	}
+	return nil
 }
 
 // finishedRequests selects the finished requests of retention.md §Finished
@@ -112,113 +248,158 @@ WHERE r.state IN ('declined', 'completed', 'cancelled') AND r.updated < ?1
 ORDER BY r.updated, r.direction, r.peer, r.id`
 
 // makePlan reads what one call removes, within the per-call bounds of
-// retention.md §IPC. A dry run counts with countAll instead.
-func makePlan(ctx context.Context, q queryer, cutoff, now time.Time) (*plan, error) {
-	p := &plan{sessions: map[string]bool{}, debates: map[string]bool{}, grants: map[string]bool{}, experience: map[[2]string]bool{}}
+// retention.md §IPC and, when allow is not nil, within allow table by table
+// (retention.md §Approval). A dry run counts with countAll instead.
+func makePlan(ctx context.Context, q queryer, cutoff, now time.Time, allow *Counts) (*plan, error) {
+	p := &plan{sessions: map[string]bool{}, debates: map[string]bool{}, grants: map[string]bool{}, experience: map[[2]string]bool{}, allow: allow}
 	cut := cutoff.UTC().Format(storeTimeFmt)
 
 	// 1. Finished requests and what belongs to them.
 	query := finishedRequests + fmt.Sprintf(" LIMIT %d", MaxRequests+1)
 	var total int64
+	var reqs []reqKey
 	err := each(ctx, q, query, []any{cut}, func(rows *sql.Rows) error {
 		var k reqKey
 		var size int64
 		if err := rows.Scan(&k.direction, &k.peer, &k.id, &size); err != nil {
 			return err
 		}
-		if len(p.requests) == MaxRequests || (len(p.requests) > 0 && total >= MaxContentBytes) {
+		if len(reqs) == MaxRequests || (len(reqs) > 0 && total >= MaxContentBytes) {
 			p.more = true
 			return errStop
 		}
-		p.requests = append(p.requests, k)
+		reqs = append(reqs, k)
 		total += size
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("retention: select requests: %w", err)
 	}
-	for _, k := range p.requests {
+	for i := range reqs {
+		k := reqs[i]
 		wsRole, dRole := "worker", "respondent"
 		if k.direction == "out" {
 			wsRole, dRole = "requester", "initiator"
 		}
-		if err := collectIDs(ctx, q, `SELECT id FROM work_sessions WHERE peer = ? AND request_id = ? AND role = ?`,
-			[]any{k.peer, k.id, wsRole}, p.sessions); err != nil {
+		g := newGroup()
+		g.request = &k
+		sessions, err := listIDs(ctx, q, `SELECT id FROM work_sessions WHERE peer = ? AND request_id = ? AND role = ?`, k.peer, k.id, wsRole)
+		if err != nil {
 			return nil, err
 		}
-		if err := collectIDs(ctx, q, `SELECT session FROM debates WHERE peer = ? AND request_id = ? AND role = ?`,
-			[]any{k.peer, k.id, dRole}, p.debates); err != nil {
+		for _, sid := range sessions {
+			if err := p.addSession(ctx, q, g, sid); err != nil {
+				return nil, err
+			}
+		}
+		debates, err := listIDs(ctx, q, `SELECT session FROM debates WHERE peer = ? AND request_id = ? AND role = ?`, k.peer, k.id, dRole)
+		if err != nil {
 			return nil, err
+		}
+		for _, sid := range debates {
+			if err := p.addDebate(ctx, q, g, sid); err != nil {
+				return nil, err
+			}
+		}
+		if !p.take(g) {
+			break
 		}
 	}
 
 	// 2. Orphans: closed sessions and closed or broken debates whose request
-	// is gone, and grants by direction (review 71b F1).
+	// is gone (each with what belongs to it), and grants by direction
+	// (review 71b F1).
 	lim := fmt.Sprintf(" LIMIT %d", MaxRows+1)
-	orphanSessions := map[string]bool{}
-	if err := collectIDs(ctx, q, `SELECT w.id FROM work_sessions w
+	orphanSessions, err := listIDs(ctx, q, `SELECT w.id FROM work_sessions w
 WHERE w.state = 'closed' AND w.updated < ?
   AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.peer = w.peer AND r.id = w.request_id
 	AND r.direction = CASE w.role WHEN 'worker' THEN 'in' ELSE 'out' END)
-ORDER BY w.updated, w.id`+lim, []any{cut}, orphanSessions); err != nil {
+ORDER BY w.updated, w.id`+lim, cut)
+	if err != nil {
 		return nil, err
 	}
-	p.more = mergeBounded(p.sessions, orphanSessions) || p.more
-	orphanDebates := map[string]bool{}
-	if err := collectIDs(ctx, q, `SELECT d.session FROM debates d
+	for i, sid := range orphanSessions {
+		if i == MaxRows {
+			p.more = true
+			break
+		}
+		g := newGroup()
+		if err := p.addSession(ctx, q, g, sid); err != nil {
+			return nil, err
+		}
+		if !p.take(g) {
+			break
+		}
+	}
+	orphanDebates, err := listIDs(ctx, q, `SELECT d.session FROM debates d
 WHERE d.phase IN ('closed', 'broken') AND d.updated < ?
   AND NOT EXISTS (SELECT 1 FROM requests r WHERE r.peer = d.peer AND r.id = d.request_id
 	AND r.direction = CASE d.role WHEN 'respondent' THEN 'in' ELSE 'out' END)
-ORDER BY d.updated, d.session`+lim, []any{cut}, orphanDebates); err != nil {
+ORDER BY d.updated, d.session`+lim, cut)
+	if err != nil {
 		return nil, err
 	}
-	p.more = mergeBounded(p.debates, orphanDebates) || p.more
-	orphanGrants := map[string]bool{}
-	if err := collectIDs(ctx, q, `SELECT g.id FROM grants g
+	for i, sid := range orphanDebates {
+		if i == MaxRows {
+			p.more = true
+			break
+		}
+		g := newGroup()
+		if err := p.addDebate(ctx, q, g, sid); err != nil {
+			return nil, err
+		}
+		if !p.take(g) {
+			break
+		}
+	}
+	orphanGrants, err := listIDs(ctx, q, `SELECT g.id FROM grants g
 WHERE (g.direction = 'held' AND (g.exp < ?1 OR (g.state = 'revoked' AND g.revoked_at < ?1)))
    OR (g.direction = 'issued' AND g.exp < ?1 AND NOT EXISTS (SELECT 1 FROM work_sessions w WHERE w.id = g.session))
-ORDER BY g.exp, g.id`+lim, []any{cut}, orphanGrants); err != nil {
+ORDER BY g.exp, g.id`+lim, cut)
+	if err != nil {
 		return nil, err
 	}
-	p.more = mergeBounded(p.grants, orphanGrants) || p.more
-
-	// Everything in a removed session goes with it.
-	for sid := range p.sessions {
-		if err := collectIDs(ctx, q, `SELECT id FROM grants WHERE session = ?`, []any{sid}, p.grants); err != nil {
-			return nil, err
+	for i, id := range orphanGrants {
+		if i == MaxRows {
+			p.more = true
+			break
 		}
-		if err := collectExperience(ctx, q, `SELECT session, role FROM experience_records WHERE session = ?`, []any{sid}, p.experience); err != nil {
-			return nil, err
+		if p.grants[id] {
+			continue
 		}
+		if !p.fits(Counts{Grants: 1}) {
+			break
+		}
+		p.grants[id] = true
 	}
-	for sid := range p.debates {
-		var n, c int64
-		if err := scanOne(ctx, q, `SELECT (SELECT COUNT(*) FROM debate_entries WHERE session = ?1), (SELECT COUNT(*) FROM debate_constraints WHERE session = ?1)`,
-			[]any{sid}, &n, &c); err != nil {
-			return nil, err
-		}
-		p.entries += n
-		p.constraints += c
-	}
-	// Experience records left without a session (their session was removed
-	// earlier) go by the same age rule.
-	orphanExp := map[[2]string]bool{}
-	if err := collectExperience(ctx, q, `SELECT x.session, x.role FROM experience_records x
+	// Experience records left without a session or debate (theirs was
+	// removed earlier) go by the same age rule.
+	var orphanExp [][2]string
+	err = each(ctx, q, `SELECT x.session, x.role FROM experience_records x
 WHERE x.created < ? AND NOT EXISTS (SELECT 1 FROM work_sessions w WHERE w.id = x.session)
   AND NOT EXISTS (SELECT 1 FROM debates d WHERE d.session = x.session)
-ORDER BY x.created, x.session, x.role`+lim, []any{cut}, orphanExp); err != nil {
-		return nil, err
-	}
-	if len(orphanExp) > MaxRows {
-		p.more = true
-		n := 0
-		for k := range orphanExp {
-			if n++; n > MaxRows {
-				delete(orphanExp, k)
-			}
+ORDER BY x.created, x.session, x.role`+lim, []any{cut}, func(rows *sql.Rows) error {
+		var k [2]string
+		if err := rows.Scan(&k[0], &k[1]); err != nil {
+			return err
 		}
+		orphanExp = append(orphanExp, k)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("retention: select experience: %w", err)
 	}
-	for k := range orphanExp {
+	for i, k := range orphanExp {
+		if i == MaxRows {
+			p.more = true
+			break
+		}
+		if p.experience[k] {
+			continue
+		}
+		if !p.fits(Counts{ExperienceRecords: 1}) {
+			break
+		}
 		p.experience[k] = true
 	}
 
@@ -236,6 +417,9 @@ ORDER BY i.received_at, i.rowid`+lim, []any{cut, seenCut}, func(rows *sql.Rows) 
 		}
 		if len(p.inbox) == MaxRows {
 			p.more = true
+			return errStop
+		}
+		if !p.fits(Counts{MailInbox: 1}) {
 			return errStop
 		}
 		p.inbox = append(p.inbox, id)
@@ -260,6 +444,9 @@ ORDER BY i.rowid`, []any{cut, seenCut}, func(rows *sql.Rows) error {
 			p.more = true
 			return errStop
 		}
+		if !p.fits(Counts{InboxBlanked: 1}) {
+			return errStop
+		}
 		p.blank = append(p.blank, id)
 		blanked += size
 		return nil
@@ -268,24 +455,6 @@ ORDER BY i.rowid`, []any{cut, seenCut}, func(rows *sql.Rows) error {
 		return nil, fmt.Errorf("retention: select inbox copies: %w", err)
 	}
 	return p, nil
-}
-
-// mergeBounded adds the ids of add to into and reports whether add was cut to
-// MaxRows (more remain).
-func mergeBounded(into, add map[string]bool) bool {
-	ids := make([]string, 0, len(add))
-	for id := range add {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	more := false
-	if len(ids) > MaxRows {
-		ids, more = ids[:MaxRows], true
-	}
-	for _, id := range ids {
-		into[id] = true
-	}
-	return more
 }
 
 var errStop = errors.New("retention: stop")
@@ -311,19 +480,21 @@ func scanOne(ctx context.Context, q queryer, query string, args []any, dest ...a
 	return each(ctx, q, query, args, func(rows *sql.Rows) error { return rows.Scan(dest...) })
 }
 
-func collectIDs(ctx context.Context, q queryer, query string, args []any, into map[string]bool) error {
+// listIDs returns the one-column result of query, in its order.
+func listIDs(ctx context.Context, q queryer, query string, args ...any) ([]string, error) {
+	var ids []string
 	err := each(ctx, q, query, args, func(rows *sql.Rows) error {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
-		into[id] = true
+		ids = append(ids, id)
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("retention: select: %w", err)
+		return nil, fmt.Errorf("retention: select: %w", err)
 	}
-	return nil
+	return ids, nil
 }
 
 func collectExperience(ctx context.Context, q queryer, query string, args []any, into map[[2]string]bool) error {
@@ -386,6 +557,8 @@ gr(id) AS (
 ex(session, role) AS (
 	SELECT x.session, x.role FROM experience_records x JOIN ws ON x.session = ws.id
 	UNION
+	SELECT x.session, x.role FROM experience_records x JOIN db ON x.session = db.session
+	UNION
 	SELECT x.session, x.role FROM experience_records x
 	WHERE x.created < ?1 AND NOT EXISTS (SELECT 1 FROM work_sessions w WHERE w.id = x.session)
 	  AND NOT EXISTS (SELECT 1 FROM debates d WHERE d.session = x.session)
@@ -424,10 +597,22 @@ func DryRun(ctx context.Context, db *sql.DB, cutoff, now time.Time) (Counts, err
 // cutoff (retention.md §IPC, steps 1 to 3) and returns what it removed and
 // whether rows remain. The caller commits, together with its audit row.
 func PruneTx(ctx context.Context, tx *sql.Tx, cutoff, now time.Time) (Counts, bool, error) {
+	return pruneTx(ctx, tx, cutoff, now, nil)
+}
+
+// PruneTxWithin is PruneTx that removes no more than allow of each table
+// (the approved counts less what the prune's earlier calls removed,
+// retention.md §Approval). An item that does not fit ends the prune: it and
+// everything after it are left, and more is false.
+func PruneTxWithin(ctx context.Context, tx *sql.Tx, cutoff, now time.Time, allow Counts) (Counts, bool, error) {
+	return pruneTx(ctx, tx, cutoff, now, &allow)
+}
+
+func pruneTx(ctx context.Context, tx *sql.Tx, cutoff, now time.Time, allow *Counts) (Counts, bool, error) {
 	if cutoff.After(now.Add(-MinOlderThan)) {
 		return Counts{}, false, fmt.Errorf("retention: cutoff %s is less than 35 days old", cutoff.Format(time.RFC3339))
 	}
-	p, err := makePlan(ctx, tx, cutoff, now)
+	p, err := makePlan(ctx, tx, cutoff, now, allow)
 	if err != nil {
 		return Counts{}, false, err
 	}
@@ -489,5 +674,5 @@ func PruneTx(ctx context.Context, tx *sql.Tx, cutoff, now time.Time) (Counts, bo
 			return Counts{}, false, err
 		}
 	}
-	return c, p.more, nil
+	return c, p.more && !p.capped, nil
 }

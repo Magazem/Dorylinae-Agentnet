@@ -404,3 +404,106 @@ func TestPruneBatches(t *testing.T) {
 		t.Fatalf("calls = %d, rows left %d", calls, count(t, db2, `SELECT COUNT(*) FROM requests`))
 	}
 }
+
+// Review 81b L1: a debate's experience records (debate/experience.go writes
+// them under the debate's session) are counted with the debate and removed
+// with it, not left to a later batch as orphans.
+func TestPruneDebateExperienceWithDebate(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	// The oldest finished request, with a closed debate and its experience
+	// record; enough newer finished requests that the first call has more.
+	request(t, db, "in", "P", rid(1), "completed", 40, `{"b":1}`)
+	debate(t, db, sid(1), "in", "P", rid(1), "closed", 40, 1, 0)
+	experience(t, db, sid(1), "respondent", 40)
+	for i := 2; i <= MaxRequests+1; i++ {
+		request(t, db, "in", "P", rid(i), "completed", 36, `{}`)
+	}
+	cutoff := Cutoff(now, MinOlderThan)
+	dry, err := DryRun(ctx, db, cutoff, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dry.ExperienceRecords != 1 {
+		t.Fatalf("dry run experience_records = %d, want 1 (the debate's)", dry.ExperienceRecords)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, more, err := PruneTx(ctx, tx, cutoff, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if !more || first.Debates != 1 || first.ExperienceRecords != 1 {
+		t.Fatalf("first call = %+v (more %v), want the debate and its record together", first, more)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM experience_records`); n != 0 {
+		t.Fatalf("%d experience records left after their debate went", n)
+	}
+}
+
+// Retention.md §Approval: PruneTxWithin never removes more of a table than
+// allowed, even when an item joined the set after counting; an item that
+// does not fit ends the prune (more false).
+func TestPruneWithinApproved(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	fixtures(t, db)
+	cutoff := Cutoff(now, MinOlderThan)
+	approved, err := DryRun(ctx, db, cutoff, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After counting: a finished request (its updated before the cutoff)
+	// and an old inbox row join.
+	request(t, db, "in", "Z", rid(20), "completed", 36, `{"b":20}`)
+	mustExec(t, db, `INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES ('P', 'm-9', 'request', 'c', ?, '')`, ago(37))
+	var total Counts
+	for i := 0; ; i++ {
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, more, err := PruneTxWithin(ctx, tx, cutoff, now, approved.Sub(total))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		total = total.Add(c)
+		if !more {
+			break
+		}
+		if i > 3 {
+			t.Fatal("prune did not finish")
+		}
+	}
+	if !total.within(approved) {
+		t.Fatalf("removed %+v, more than approved %+v", total, approved)
+	}
+	if total.Requests != approved.Requests || total.MailInbox != approved.MailInbox {
+		t.Fatalf("removed %+v, want the approved number of requests and inbox rows %+v", total, approved)
+	}
+	left, err := DryRun(ctx, db, cutoff, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Requests != 1 || left.MailInbox != 1 {
+		t.Fatalf("left %+v, want one request and one inbox row for a new approval", left)
+	}
+	// Nothing allowed: nothing removed, and the prune ends.
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	c, more, err := PruneTxWithin(ctx, tx, cutoff, now, Counts{})
+	if err != nil || !c.Zero() || more {
+		t.Fatalf("with nothing allowed: %+v, more %v, %v", c, more, err)
+	}
+}
