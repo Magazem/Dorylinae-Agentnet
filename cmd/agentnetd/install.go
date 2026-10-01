@@ -66,7 +66,9 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 	home := fs.String("home", "", "config directory (default: $"+paths.HomeEnv+" or the user config dir)")
 	dryRun := fs.Bool("dry-run", false, "print what would be written and run, then exit without changing anything")
 	relayURL, relayCA := "", ""
+	allowWritable := false
 	if install {
+		fs.BoolVar(&allowWritable, "allow-writable-program", false, "install even though users other than you (or Administrators/root) can change the agentnetd binary or its folder; the service runs it at every login")
 		fs.StringVar(&relayURL, "relay", os.Getenv(RelayEnv), "relay WebSocket URL baked into the service, e.g. ws://127.0.0.1:8787 (default: $"+RelayEnv+"; empty = no relay)")
 		fs.StringVar(&relayCA, "relay-ca", "", "PEM CA certificate(s) for a wss:// relay with a private or self-signed certificate; copied to "+relayCAFile+" in the config directory")
 	}
@@ -78,7 +80,7 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		}
 		usage := "[--home DIR] [--dry-run]"
 		if install {
-			usage = "[--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]"
+			usage = "[--home DIR] [--relay URL] [--relay-ca FILE] [--allow-writable-program] [--dry-run]"
 		}
 		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  agentnetd %s %s\n\nFlags:\n", what, verb, usage)
 		fs.SetOutput(stdout)
@@ -124,11 +126,22 @@ func runService(ctx context.Context, verb string, args []string, stdout, stderr 
 		return 1
 	}
 	if install {
-		// The service bakes in the binary's path (D24): warn when users
-		// other than this one can change it (review 55 R55-094). A warning,
-		// not a refusal: the folder is the owner's choice.
+		// The service runs the binary at every login (D24), so one that
+		// other users can swap is code execution as the owner: refuse unless
+		// overridden (review 85 F3, D69). Only a real "others can change it"
+		// verdict refuses; a check that could not run is reported as such.
 		if err := checkProgramOwner(deps.exe); err != nil {
-			_, _ = fmt.Fprintf(stderr, "%s: warning: the service will run %s, which others may be able to change: %v\n", name, deps.exe, err)
+			var we *device.WritableError
+			switch {
+			case errors.As(err, &we) && !allowWritable:
+				_, _ = fmt.Fprintf(stderr, "%s: refusing to install: %s can be changed by %s, and the service would run %s at every login.\n"+
+					"Move agentnetd to a folder only you (and Administrators/root) can write to, or pass --allow-writable-program to install anyway.\n", name, we.Path, we.Who, deps.exe)
+				return 1
+			case errors.As(err, &we):
+				_, _ = fmt.Fprintf(stderr, "%s: warning: --allow-writable-program: %s can be changed by %s; the service will run %s\n", name, we.Path, we.Who, deps.exe)
+			default:
+				_, _ = fmt.Fprintf(stderr, "%s: warning: could not check whether others can change %s: %v\n", name, deps.exe, err)
+			}
 		}
 	}
 	spec := service.Spec{Executable: deps.exe, Home: p.Dir, Relay: relayURL}

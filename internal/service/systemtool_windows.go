@@ -2,19 +2,24 @@
 
 package service
 
-import "golang.org/x/sys/windows"
+import (
+	"fmt"
+
+	"golang.org/x/sys/windows"
+)
 
 // systemTool resolves a bare Windows system tool name (schtasks.exe) to its
 // absolute path under GetSystemDirectory, so a PATH entry or the working
 // directory cannot substitute another binary (review 55 R55-090). Any other
-// name, and any name when the system directory is unknown, is returned as is.
-func systemTool(name string) string {
+// name is returned as is. When the system directory is unknown it fails
+// closed with an error rather than falling back to a PATH lookup.
+func systemTool(name string) (string, error) {
 	if name != "schtasks.exe" {
-		return name
+		return name, nil
 	}
 	dir, err := windows.GetSystemDirectory()
 	if err != nil {
-		return name
+		return "", fmt.Errorf("locate the Windows system directory for %s: %w", name, err)
 	}
-	return dir + `\` + name
+	return dir + `\` + name, nil
 }

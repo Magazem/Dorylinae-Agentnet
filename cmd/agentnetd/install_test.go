@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
@@ -176,7 +177,7 @@ func TestInstallHelpAndUsage(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("--help exit %d", code)
 	}
-	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]", "--relay", "--relay-ca", "--dry-run", "--home"} {
+	for _, want := range []string{"Usage:\n  agentnetd install [--home DIR] [--relay URL] [--relay-ca FILE] [--allow-writable-program] [--dry-run]", "--relay", "--relay-ca", "--dry-run", "--home"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("help missing %q:\n%s", want, out)
 		}
@@ -230,17 +231,49 @@ func TestRunSubcommandStillParsesFlags(t *testing.T) {
 	}
 }
 
-// R55-094: install warns (but still installs) when the binary it bakes into
-// the service can be changed by others.
-func TestInstallWarnsOnWritableProgram(t *testing.T) {
+// R55-094, review 85 F3 (D69): install refuses a binary others can change,
+// unless --allow-writable-program is given (then it warns and installs).
+func TestInstallRefusesWritableProgram(t *testing.T) {
 	home, r, _ := setup(t)
-	checkProgramOwner = func(string) error { return errors.New("writable by Everyone") }
+	checkProgramOwner = func(string) error { return &device.WritableError{Path: `C:	ools`, Who: "Everyone"} }
+	code, _, errs := invoke(t, "install", "--home", home)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: %s", code, errs)
+	}
+	if !strings.Contains(errs, "refusing") || !strings.Contains(errs, "Everyone") || !strings.Contains(errs, "--allow-writable-program") {
+		t.Errorf("refusal does not explain itself: %q", errs)
+	}
+	if len(r.ran) != 0 {
+		t.Error("the install ran despite the refusal")
+	}
+}
+
+func TestInstallAllowWritableProgramWarnsAndInstalls(t *testing.T) {
+	home, r, _ := setup(t)
+	checkProgramOwner = func(string) error { return &device.WritableError{Path: `C:	ools`, Who: "Everyone"} }
+	code, _, errs := invoke(t, "install", "--home", home, "--allow-writable-program")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+	if !strings.Contains(errs, "warning") || !strings.Contains(errs, "Everyone") {
+		t.Errorf("no ownership warning on stderr: %q", errs)
+	}
+	if len(r.ran) == 0 {
+		t.Error("the install did not run")
+	}
+}
+
+// A check that could not run is not a verdict: it warns with its own reason,
+// not the "others may change it" wording.
+func TestInstallUnverifiableProgramWarnsOnly(t *testing.T) {
+	home, r, _ := setup(t)
+	checkProgramOwner = func(string) error { return errors.New("read the access list failed") }
 	code, _, errs := invoke(t, "install", "--home", home)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errs)
 	}
-	if !strings.Contains(errs, "warning") || !strings.Contains(errs, "writable by Everyone") {
-		t.Errorf("no ownership warning on stderr: %q", errs)
+	if !strings.Contains(errs, "could not check") || strings.Contains(errs, "can be changed by") {
+		t.Errorf("wrong warning wording: %q", errs)
 	}
 	if len(r.ran) == 0 {
 		t.Error("the install did not run")

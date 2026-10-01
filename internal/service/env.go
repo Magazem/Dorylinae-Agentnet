@@ -28,7 +28,6 @@ func DefaultEnv() (Env, error) {
 	}, nil
 }
 
-// checkUnix validates the inputs shared by the launchd and systemd backends.
 // checkSpecText rejects control characters (a newline would start a new
 // line of a unit file or task definition) in the owner-chosen strings that
 // end up in a service definition (review 55 R55-095). pct also rejects '%',
@@ -44,6 +43,7 @@ func checkSpecText(spec Spec, pct bool) error {
 	return nil
 }
 
+// checkUnix validates the inputs shared by the launchd and systemd backends.
 func checkUnix(spec Spec, env Env) error {
 	if err := checkSpecText(spec, false); err != nil {
 		return err

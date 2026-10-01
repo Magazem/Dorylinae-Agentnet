@@ -5,7 +5,9 @@
 package logfile
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"sync"
 )
@@ -21,6 +23,9 @@ type Writer struct {
 	mu   sync.Mutex
 	f    *os.File
 	size int64
+	// stuck is set after a failed rotation: further writes append to the
+	// current file without retrying until the hard cap truncates it.
+	stuck bool
 }
 
 // Open opens (creating if needed) the log at path for appending and rotates it
@@ -58,10 +63,24 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 	if w.size > 0 && w.size+int64(len(p)) > w.limit {
-		// A failed rotation leaves the file reopened for appending; keep
-		// logging into it and try to rotate again on the next write.
-		if err := w.rotate(); err != nil && w.f == nil {
-			return 0, err
+		switch {
+		case !w.stuck:
+			// A failed rotation leaves the file reopened for appending; keep
+			// logging into it and do not retry until the cap is reached.
+			if err := w.rotate(); err != nil {
+				if w.f == nil {
+					return 0, err
+				}
+				w.stuck = true
+			}
+		case w.size+int64(len(p)) > 2*w.limit:
+			// Rotation keeps failing (a viewer holds the log): enforce the
+			// size cap by truncating in place, keeping the previous generation. The append handle
+			// cannot truncate on Windows, so go through the path.
+			if err := os.Truncate(w.path, 0); err == nil {
+				w.size = 0
+				w.stuck = false
+			}
 		}
 	}
 	n, err := w.f.Write(p)
@@ -88,9 +107,16 @@ func (w *Writer) rotate() error {
 }
 
 func (w *Writer) moveAside() error {
-	// Windows will not rename over an existing file on every filesystem.
-	if err := os.Remove(w.path + ".1"); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove old log: %w", err)
+	// Rename first: it replaces an existing .1 on Windows and POSIX, so a
+	// failure (a viewer holds the log) leaves the previous generation intact.
+	// Only if it fails with "exists" is the old .1 removed and the rename
+	// retried, for filesystems that will not rename over an existing file.
+	err := os.Rename(w.path, w.path+".1")
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, fs.ErrExist) || os.Remove(w.path+".1") != nil {
+		return fmt.Errorf("rotate log file: %w", err)
 	}
 	if err := os.Rename(w.path, w.path+".1"); err != nil {
 		return fmt.Errorf("rotate log file: %w", err)
