@@ -235,6 +235,30 @@ a display is set, without opening a window. That way the user learns about it be
 first grant. The `approval_unavailable` message and `status` name the fix in plain words:
 "install zenity (or kdialog)", "no desktop session", or "PowerShell/WinForms blocked by policy".
 
+**How the check works (R55-125, R55-F31).** `approval.WindowRunner` gains `Check(ctx)
+(ok bool, fix string)`. It opens no window, spawns no process and reads no peer data. It is
+cached for 60 s and re-run on `status` once the cache is older:
+
+| OS | `missing` when | `fix` |
+|---|---|---|
+| Linux | `findDialogProgram` finds neither zenity nor kdialog | `install zenity (or kdialog)` |
+| Linux | neither `DISPLAY` nor `WAYLAND_DISPLAY` is set in the daemon's environment or in the systemd user manager's (the same lookup as an opening) | `no desktop session` |
+| Windows | `ProcessIdToSessionId` is 0, or the window station is not `WinSta0` | `no desktop session` |
+| Windows | `powershell.exe` is missing from `GetSystemDirectory` | `PowerShell is missing` |
+| macOS | `/usr/bin/osascript` is missing | `osascript is missing` |
+
+Constrained Language Mode cannot be seen without starting PowerShell (OD-F31-6). So `Check`
+does not report it. When an opening fails on Windows and the window process wrote the CLM
+error, the error is `approval_unavailable` with "PowerShell/WinForms blocked by policy".
+Every other `approval_unavailable` names the last `Check` fix if there is one, and otherwise
+says "the approval window could not be shown". The old "the desktop notifier is unavailable"
+is kept only for a failing notifier.
+
+`status` reports `approval_window: "ok"|"missing"` and, when it is `missing`,
+`approval_window_fix` (the text above). Both are absent in terminal mode
+([ipc.md §status](ipc.md#status)). `agentnet status` prints `approval window: missing
+(<fix>)` only when the window is missing.
+
 The window also says where the code is: "The code is in the AgentNet notification for
 a-012345. If notifications are silenced (Do Not Disturb, Focus Assist), open the
 notification centre." (review 29, L5)
@@ -638,13 +662,32 @@ reported in the window or on the terminal.
 ## Audit
 
 `approval.create {id, kind, subject}`, `approval.approve {id, kind, subject}`,
-`approval.reject {id, kind, subject, reason: "user"|"attempts"|"expired"|"locked"|"precondition"}`,
+`approval.reject {id, kind, subject, reason: "user"|"attempts"|"expired"|"locked"|"precondition"|"superseded"|"unlinked"|"scope_cleared"}`,
 `approval.bad_code {id, attempts_left, via: "window"|"terminal"}`, `approval.locked {wrong_codes}`, `approval.mode
 {mode}`, `approval.open {id}` (2.2d: a window reopened through `approval_open`, so repeated
 reopening by an agent is visible). The window's first opening, a dismiss and a malformed
 answer are not audited. `approval.approve` and `approval.reject` record whether the answer
 came from the window, the terminal or IPC (reject only) as `via`. `subject` is the id of the waiting object (`g-…` grant, `p-…` policy, `s-…`
 session, `i-…` device-link intent, `l-…` link for a scope, `n-…` a prune). Never the code or its MAC.
+
+**Who rejected (R55-123, R55-F31).** A human's rejection is `reason: "user"`, actor `cli`,
+with `via` (`window`, `terminal` or `ipc`). The daemon also rejects approvals itself: a link
+intent or scope replaced by a newer one (`superseded`), a link or peer removed while its
+approval waited (`unlinked`), a scope cleared while a scope approval waited
+(`scope_cleared`), plus the existing `attempts`, `expired`, `locked` and `precondition`.
+Those rows have actor `daemon` and no `via`. In code, the daemon's callers use
+`Store.RejectFor(ctx, id, reason)` and no longer pass their cause as `via` to `Reject`.
+
+**When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+`approval.create` and `approval.approve` are class S. The row is written in the transaction
+that inserts the approval or marks it approved, so an approval that has no row was never
+created or approved. If `approval.approve` cannot be written, Confirm fails as when `Perform`
+fails: the approval stays `pending` and its timer restarts. `approval.reject`,
+`approval.bad_code` and `approval.locked` are class S-. They are written in the transaction
+of their state change (`bad_code` together with the attempts counter and the daily
+wrong-code count, the one transaction that R55-F27 introduces for R55-147). A failed row is logged and the state change
+still commits. `approval.open` and `approval.limit` record no state change and are class N.
+`approval.mode` is class L.
 
 ## Tables
 

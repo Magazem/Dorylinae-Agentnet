@@ -461,12 +461,25 @@ sizes.
 | `grant.auto` | grantor / `daemon` | `{grant, policy}` |
 | `grant.issue` | grantor / `daemon` | `{grant, peer, mail}` (on approval) |
 | `grant.in` | holder / `daemon` | `{grant, session, peer, action, sensitive}` |
-| `grant.revoke` | grantor / `cli` or `daemon` | `{grant, peer, reason}` |
+| `grant.revoke` | grantor / `cli` (`reason: "user"`); either side / `daemon` (`reason: "session_closed"` or `"peer_removed"`) | `{grant, peer, reason}`. One row per grant the revocation ended, written in its transaction: `grant_revoke`, the session close (A's `closeSessionTx`, B's `ws.state closed` mirror) and the peer removal (`OnRemovedTx`). Before R55-F31 only `grant_revoke` wrote it (R55-124) |
 | `grant.revoked_in` | holder / `daemon` | `{grant, peer}` |
 | `grant.fetch` | grantor / `daemon` | `{grant, peer, op, bytes, result}` where `result` is `ok` or the error code. **Rate-limited** to 60 rows per grant per minute; the rest are counted and summarised once a minute as `grant.fetch_summary {grant, ops, bytes, errors}` |
-| `grant.policy_add`, `grant.policy_remove` | grantor / `cli` | `{policy, peer, action}` |
+| `grant.policy_add`, `grant.policy_remove` | grantor / `cli` | `{policy, peer, action}`. `policy_add` is written by the approval's `Perform`. `policy_remove` reads the policy's peer and action in the transaction that deletes it. Both shapes were drifted in code until R55-F31 (R55-160) |
 | `grant.orphan`, `grant.conflict` | holder / `daemon` | `{grant, peer}` |
 | `grant.refused` | grantor / `cli` (or `daemon` on the policy path) | `{session, peer, action, reason, policy?}`: a sensitive grant refused `debate_open` ([debate.md §Quarantine interplay](debate.md#quarantine-interplay)) |
+
+**When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+Rows that make a grant or a policy active are class S, written in the activating
+transaction: `grant.issue`, `grant.policy_add`, and on the policy path `grant.create` and
+`grant.auto`. Those two move from after the commit into the transaction that inserts the
+active row and submits the `grant` mail. If they fail, no grant, no mail and no row. Rows
+that end a grant or a policy are class S-: `grant.revoke`, `grant.revoked_in`,
+`grant.policy_remove`. `grant.create` on the approval path (a pending row, which grants
+nothing until `grant.issue`), `grant.in`, `grant.orphan`, `grant.conflict`, `grant.refused`
+and `grant.fetch`/`grant.fetch_summary` are class N (OD-F31-2 for `grant.fetch`). The fetch
+server's `Close` writes the pending `grant.fetch_summary` rows of every window, however
+young, before the daemon closes the store (R55-078). Without that, up to about 70 s of
+reads went unrecorded at each stop.
 
 ## Tables
 

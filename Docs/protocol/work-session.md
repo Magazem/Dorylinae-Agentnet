@@ -709,10 +709,10 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 
 | Action | Side / actor | Detail |
 |---|---|---|
-| `ws.open` | both / `daemon` (B: `cli`) | `{session, request, peer, role}` |
+| `ws.open` | both / `daemon` (B: `cli`) | `{session, request, peer, role}`. Written by `OpenSession` only when it inserts the row (not for an `INSERT OR IGNORE` that found one), through `audit.AppendTxSoft` in the opening transaction (class N: a failed row is logged, the session still opens). Actor `cli` on B (the human's accept), `daemon` on A (the accept mirror) and for a debate session opened by `debate.entry`. Missing until R55-F31 (R55-121) |
 | `ws.result` | B / `cli` | `{session, peer, round, result_bytes, output_bytes, artifacts, verification}` |
 | `ws.result_in` | A / `daemon` | `{session, peer, round, result_bytes, output_bytes, artifacts, quarantined}` |
-| `ws.release` | A / `cli` | `{session, peer, round, approval}` |
+| `ws.release` | A / `cli` | `{session, peer, round, approval}`. Class S: written by the release approval's `Perform` in its transaction, not after the commit. A release with no row did not happen |
 | `ws.accept_result` | A / `cli` | `{session, peer, round, verification}` |
 | `ws.request_changes` | A / `cli` | `{session, peer, round, from?}` (`from: "quarantined"` when it left `quarantined` without a release, OD-P2-6 (c)) |
 | `ws.discard` | A / `cli` | `{session, peer, round}` (no content; OD-P2-6 (c)) |

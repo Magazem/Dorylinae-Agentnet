@@ -123,6 +123,11 @@ Result:
 | `outbox` | object | `{queued, relayed, expired, pending, delivered, failed}`: sender outbox rows in each state (`pending` = `queued` + `relayed`) ([mail.md](mail.md#outbox)) |
 | `presence` | object | Phase 1 (1.2c): `{"mode": "visible"\|"invisible"\|"only_team", "team"?: {"id","name"}, "relay": "connected"\|"disconnected"\|"unsupported"\|"none", "agent_active": bool, "human_present": bool\|null}`. The last two are this machine's own values, detected locally, even when not shared |
 | `team` | object | Only with the param `team` (Phase 1, 1.2c), see below |
+| `relay` | object | Omitted when no relay is configured ([../cli/status.md](../cli/status.md)) |
+| `approval` | string | `desktop`, `terminal` or `terminal-debug` ([approval.md §Headless machines](approval.md#headless-machines)) |
+| `approval_window` | string | Desktop mode only: `ok` or `missing`, from a check that opens no window ([approval.md](approval.md#the-approval-window), R55-125) |
+| `approval_window_fix` | string | Only when `approval_window` is `missing`: the fix in plain words, e.g. `install zenity (or kdialog)` |
+| `git` | string | `ok`, or `unsupported: <reason>` (D23, [grant.md §Serving git](grant.md#serving-git)) |
 
 Params (Phase 1): `{"team"?: "<team ref>"}`. A team ref is a team id or a unique name of a
 team on this daemon ([team.md](team.md#local-names)). Without `team`, the result is as above.

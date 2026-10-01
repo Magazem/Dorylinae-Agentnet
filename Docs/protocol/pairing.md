@@ -500,7 +500,11 @@ because only the first 20 characters (100 of 256 bits) are used.
   Counters (`Server.PairStats`): issued, redeemed, invalid, rate-limited, plus a new one,
   lookup-taken.
 - Daemon audit (`audit_events`): `pair.start` (actor `cli`; `{id, role, version}`),
-  `pair.complete` (actor `daemon`; `{id, role, peer, trust}`), `pair.fail` (actor `daemon`;
+  `pair.complete` (actor `daemon`; `{id, role, peer, trust}`; class S since R55-F31: written in
+  the transaction that stores the peer (`AddTrusted`), with `trust` read back from the stored
+  row, so a peer is never stored without its row. If that row fails, the peer is not stored
+  and the pairing fails `internal`. A failure of the same pairing after the peer was stored
+  still adds `pair.fail`), `pair.fail` (actor `daemon`;
   `{id, role, code, reason}`; for a relay error these are the converted `code` and `message`
   of [envelope.md](envelope.md#error-frame-relay---daemon): a known code or `relay_error`,
   and a one-line message of at most 200 bytes, R55-F9). The audit `reason` is the only place
