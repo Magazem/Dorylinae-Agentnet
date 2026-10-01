@@ -184,7 +184,7 @@ audit `team.leave_ignored {team, peer}`.
 | Operation | Who | Effect | IPC |
 |---|---|---|---|
 | Create | anyone | New id, `epoch = 1`, `state = active`, `members = [self]`, owner = self. Local name must not equal the name of another `active` team on this daemon (`team_exists`). Nothing is sent | `team_create` |
-| Invite | owner | Starts a pairing v2 issuer ([pairing.md](pairing.md#issuer-agentnet-pair---new)) tagged with the team. On `pair.complete` the daemon writes `team_invites` (`lookup`, `team_id`, `pairing_id`, `peer_key` = the paired key, `expires = now + 24 h`). An invite code expires like any pairing code (10 min) | `team_invite` |
+| Invite | owner | Starts a pairing v2 issuer ([pairing.md](pairing.md#issuer-agentnet-pair---new)) tagged with the team. On `pair.complete` the daemon writes `team_invites` (`lookup`, `team_id`, `pairing_id`, `peer_key` = the paired key, `expires = now + 24 h`). An invite code expires like any pairing code (10 min). The owner's human approves the invite first (`team_invite` approval, [approval.md](approval.md#trust-changes-peer_verify-and-team_invite), D48, R55-084); no code exists before that | `team_invite` |
 | Join | invitee | Redeems the code as pairing v2 ([pairing.md](pairing.md#redeemer-agentnet-pair-code)). On `complete`: write `team_pending_joins (owner_key = peer, lookup, expires = now + 24 h)`, then submit `team.join {lookup}` to the owner. The roster that follows is accepted by rule 4 above | `team_join` |
 | Remove member | owner | `epoch += 1`, member dropped, roster sent to remaining members **and** the removed one | `team_remove` |
 | Rename | owner | `epoch += 1`, new name, roster sent to all | `team_rename` |
@@ -325,6 +325,7 @@ cards, announcements or codes.
 | Action | Detail |
 |---|---|
 | `team.create` | `{team, name}` |
+| `team.invite_issued` | `{team, approval, pairing_id}` (owner, when an approved `team_invite` releases its code; ids only, never the code) |
 | `team.invite` | `{team, pairing_id}` |
 | `team.join` | `{pairing_id, owner}` (joiner, on sending `team.join`) |
 | `team.member_add` | `{team, peer, epoch}` |

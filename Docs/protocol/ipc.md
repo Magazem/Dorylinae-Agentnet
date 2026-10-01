@@ -213,9 +213,13 @@ Params: none. Result: `{"peers": [{"public_key", "name", "harness", "skills",
 
 Params: `{"peer": "<name or public key>", "fingerprint": "<as typed>"}`. The
 fingerprint is normalised and compared in constant time with `fp(peer key)`. On
-a match the peer's trust becomes `fingerprint`; result `{"peer": {...}}`. Errors:
+a match the method creates a `peer_verify` approval (D48, R55-082,
+[approval.md](approval.md#trust-changes-peer_verify-and-team_invite)); result
+`{"approval": <approval view>}`. The peer's trust becomes `fingerprint` only when a human
+approves it in the approval window (or the daemon's terminal). Errors:
 `bad_fingerprint` (not 20 characters of the alphabet), `fingerprint_mismatch`
-(nothing changed), `unknown_peer`, `ambiguous_peer`, `bad_request`.
+(nothing changed, no approval), `unknown_peer`, `ambiguous_peer`, `bad_request`, and the
+approval limits of [approval.md](approval.md#ipc-and-cli).
 
 ### `peers_remove`
 
@@ -285,7 +289,8 @@ a kind the daemon owns (above).
 These are specified in [team.md](team.md), [presence.md](presence.md),
 [request.md](request.md) and [notify.md](notify.md). Every method below returns within 2 s
 and never waits for the relay or a peer, except `team_invite` and `team_join`, which wait at
-most 1 s like `pair_new` and `pair_redeem`.
+most 1 s like `pair_new` and `pair_redeem`. `team_invite` first needs a human's approval
+(see its row), which is not waited for: the first call returns at once.
 
 **Agent activity.** The IPC server records the time of **every** request it dispatches (any
 method, including `status`), before the handler runs. This time drives *agent active*
@@ -326,7 +331,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `team_create` | `{"name"}` | `{"team": <team summary>}` |
 | `team_list` | `{"all"?: bool}` | `{"teams": [<team summary>]}`: `active` teams only unless `all`. Sorted by name, then id |
 | `team_show` | `{"team"}` | `{"team": <team summary> + "members": [{<peer ref>, "added", "owner": bool, "self": bool}]}`. Here `members` is the list, replacing the count |
-| `team_invite` | `{"team"}` | A pairing status ([pair_new](#pair_new)) plus `"team": {"id","name"}`. Owner only (`not_owner`). Errors as for `pair_new`, plus `team_full` and `team_inactive` |
+| `team_invite` | `{"team", "approval"?}` | Without `approval`: validates the team, creates a `team_invite` approval (D48, R55-084) and returns `{"team": {"id","name"}, "approval": <approval view>}`, with no code. With the `approval` id from that call: while it is `pending`, the same result again; once a human approved it, a pairing status ([pair_new](#pair_new)) plus `"team": {"id","name"}`, and the id is spent. A rejected or expired approval, an id this daemon did not issue for this team, or a spent one is `bad_state`. Owner only (`not_owner`). Errors as for `pair_new`, plus `team_full` and `team_inactive` |
 | `team_join` | `{"code"}` | A pairing status ([pair_redeem](#pair_redeem)). v2 codes only (`bad_code` for 10-character codes). On `complete`, the daemon writes the pending join and submits `team.join` |
 | `team_remove` | `{"team", "peer"}` | `{"team": <team summary>}`. Owner only. `not_member`, `bad_request` (removing self) |
 | `team_rename` | `{"team", "name"}` | `{"team": <team summary>}`. Owner only. `team_exists`, `bad_team_name` |
@@ -340,7 +345,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | Method | Params | Result |
 |---|---|---|
 | `presence_get` | none | `{"mode", "team"?: {"id","name"}, "human_share": bool}` |
-| `presence_set` | `{"mode": "visible"\|"invisible"\|"only_team", "team"?: "<team ref>", "human_share"?: bool}` | Same as `presence_get`. `team` is required with `only_team` and forbidden otherwise (`bad_request`). The team must be `active`. Setting only `human_share` is allowed (`mode` may be omitted) |
+| `presence_set` | `{"mode": "visible"\|"invisible"\|"only_team", "team"?: "<team ref>", "human_share"?: bool}` | Same as `presence_get`. `team` is required with `only_team` and forbidden otherwise (`bad_request`). The team must be `active`. Setting only `human_share` is allowed (`mode` may be omitted). At least one of `mode` and `human_share` is required, and a member not listed here is refused with `bad_request` (R55-112) |
 
 ### Requests
 
@@ -487,8 +492,8 @@ the public key and key backend, never the private key.
 Pairing records `pair.start`, `pair.complete` and `pair.fail`; details are in
 [pairing.md](pairing.md#daemon-side-ticket-05b).
 
-`agentnet peers verify` records `peer.verify` (or `peer.verify_fail` on a wrong
-fingerprint) and `peers remove` records `peer.remove`, all with `actor = "cli"`
+`agentnet peers verify` records `peer.verify` when the human approves it (or
+`peer.verify_fail` at once on a wrong fingerprint) and `peers remove` records `peer.remove`, all with `actor = "cli"`
 and detail `{"peer": "<public key>", "name", "fingerprint", "trust"?}`.
 
 Sessions record `session.open`. Rejected session envelopes (tampered, replayed,

@@ -102,7 +102,7 @@ type Opened struct {
 func (o *Opener) Open(env envelope.Envelope) (*Opened, error) {
 	op, err := o.open(env)
 	if err != nil && o.Audit != nil {
-		o.Audit.Report(env.From, env.ID, ReasonOf(err))
+		o.Audit.Report(env.From, env.ID, err)
 	}
 	return op, err
 }

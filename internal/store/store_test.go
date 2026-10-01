@@ -242,9 +242,11 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 		}
 		for _, q := range []string{
 			// Back to schema 17: undo migrations 24 (request caps indexes and
-			// requests.introducer; 25 and 23 replay over any approvals form),
-			// 22 (work_sessions.runner), 21 (experience_records), 20
-			// (decisions) and 19 (debates, which alters work_sessions).
+			// requests.introducer), 22 (work_sessions.runner), 21
+			// (experience_records), 20 (decisions) and 19 (debates, which
+			// alters work_sessions). Migrations 23 (R55-F24) and 25 (R55-F13)
+			// only rebuild approvals with a wider kind CHECK and add no table
+			// or column: nothing to undo, they replay over any approvals form.
 			`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 			`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
 			`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`,

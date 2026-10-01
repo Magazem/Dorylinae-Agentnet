@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,13 +11,16 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/idle"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/logfile"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/service"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
@@ -85,6 +89,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
 		return 1
 	}
+	rotateOutLog(stderr, p.Dir)
 	roots, err := relayRoots(p.Dir, *relayCA)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s: %v\n", name, err)
@@ -111,7 +116,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "%s: %s\n", name, warning)
 		logger.Warn(warning, "event", "relay_insecure")
 	}
-	if err := daemon.RunWithOptions(ctx, p, ready, daemon.Options{RelayURL: *relayURL, RelayRoots: roots, Logger: logger}); err != nil {
+	if err := daemon.RunWithOptions(ctx, p, ready, daemonOptions(*relayURL, roots, logger)); err != nil {
 		if errors.Is(err, ipc.ErrAlreadyRunning) {
 			if pid := runningPID(p.Endpoint); pid > 0 {
 				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s (pid %d)\n", name, p.Dir, pid)
@@ -127,6 +132,39 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// rotateOutLog bounds launchd's stdout/stderr file (OD-F14-3 (e), R55-F14):
+// when stderr is <dir>/agentnetd.out.log and it is over logfile.MaxSize, it
+// is renamed to agentnetd.out.log.1, replacing an older one. launchd opens a
+// fresh file at the next start; this run keeps writing to the renamed one,
+// so the latest crash report is kept. Best effort: errors are ignored. No
+// other platform uses that name, so elsewhere this does nothing.
+func rotateOutLog(stderr io.Writer, dir string) {
+	f, ok := stderr.(*os.File)
+	if !ok {
+		return
+	}
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() <= logfile.MaxSize {
+		return
+	}
+	path := filepath.Join(dir, service.LaunchdOutFileName)
+	pi, err := os.Stat(path)
+	if err != nil || !os.SameFile(fi, pi) {
+		return
+	}
+	_ = os.Rename(path, path+".1") // replaces an older .1
+}
+
+// daemonOptions is the production daemon.Options. Idle is the OS input-idle
+// probe behind a 5 s cache, for the human-present level (R55-033,
+// Docs/protocol/presence.md Idle detection).
+func daemonOptions(relayURL string, roots *x509.CertPool, logger *slog.Logger) daemon.Options {
+	return daemon.Options{
+		RelayURL: relayURL, RelayRoots: roots, Logger: logger,
+		Idle: idle.Cached(idle.CacheTTL, time.Now, idle.Idle),
+	}
 }
 
 // runningPID asks the daemon already listening on endpoint for its PID, so

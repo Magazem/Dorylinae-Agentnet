@@ -538,11 +538,28 @@ CREATE TABLE experience_records (
 ALTER TABLE work_sessions ADD COLUMN runner INTEGER NOT NULL DEFAULT 0 CHECK (runner IN (0, 1));
 ALTER TABLE work_sessions ADD COLUMN result_mail TEXT;
 `},
-	// PLACEHOLDER, replaced at merge: version 23 is reserved for R55-F24's
-	// approval_kinds_peer_team (the approvals kind CHECK gains 'peer_verify'
-	// and 'team_invite'). It exists only so versions stay consecutive until
-	// F24 merges; it changes nothing.
-	{23, "reserved_r55_f24", `SELECT 1;`},
+	// Human approval of peers verify and of the owner's team invite (D48,
+	// R55-F24, Docs/protocol/approval.md): the approvals kind CHECK gains
+	// 'peer_verify' and 'team_invite'. Rebuilt with explicit column lists, as
+	// migration 19 did; no table references approvals and it has no trigger.
+	{23, "approval_kinds_peer_team", `
+CREATE TABLE approvals_new (
+    id        TEXT PRIMARY KEY,
+    kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope','debate_constraint','peer_verify','team_invite')),
+    subject   TEXT NOT NULL,
+    summary   TEXT NOT NULL,
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    state     TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','expired')),
+    decided   TEXT
+);
+INSERT INTO approvals_new (id, kind, subject, summary, created, expires, attempts, state, decided)
+SELECT id, kind, subject, summary, created, expires, attempts, state, decided FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_state ON approvals (state, expires);
+`},
 	// Per-peer caps and prune (Docs/protocol/retention.md §Migration,
 	// R55-F13). Indexes and one column only, no data rewrite: the old
 	// mail_inbox copies are blanked by agentnet prune, never here (review 71b
@@ -559,11 +576,10 @@ CREATE INDEX requests_introducer_time ON requests (direction, introducer, introd
 CREATE INDEX mail_inbox_received ON mail_inbox (received_at);
 `},
 	// agentnet prune --yes needs a human approval (owner decision D57,
-	// OD-F13-8 = (b)): the approvals kind CHECK gains 'data_prune'. It also
-	// carries R55-F24's 'peer_verify' and 'team_invite' (migration 23), so
-	// the result is the same whichever of the two tickets merges first.
-	// Rebuilt with explicit column lists, as migrations 19 and 23 do; no
-	// table references approvals and it has no trigger.
+	// OD-F13-8 = (b)): the approvals kind CHECK gains 'data_prune', keeping
+	// every kind of migration 23 (R55-F24). Rebuilt with explicit column
+	// lists, as migrations 19 and 23 do; no table references approvals and it
+	// has no trigger.
 	{25, "approval_kind_data_prune", `
 CREATE TABLE approvals_new (
     id        TEXT PRIMARY KEY,

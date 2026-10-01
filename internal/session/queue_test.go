@@ -62,9 +62,6 @@ func (q *queueNode) asked() []string {
 
 func newQueueNode(t *testing.T, gate <-chan struct{}) *queueNode {
 	t.Helper()
-	old := dropWindow
-	dropWindow = 100 * time.Millisecond
-	t.Cleanup(func() { dropWindow = old })
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	st, err := noise.NewStatic(pub, func(m []byte) ([]byte, error) { return ed25519.Sign(priv, m), nil })
 	if err != nil {
@@ -106,34 +103,36 @@ func waitUntil(t *testing.T, what string, cond func() bool) {
 }
 
 // R55-F13 (review 55 R55-052): a session.* payload over 65559 bytes is dropped
-// before the queue and not audited; 65559 bytes is queued.
+// before the queue and not audited; 65559 bytes is queued. Both lines go
+// through the R55-F14 limiter, so the test flushes it.
 func TestSessionOversizePayloadDroppedBeforeQueue(t *testing.T) {
 	gate := make(chan struct{})
 	close(gate)
 	q := newQueueNode(t, gate)
 	q.m.HandleEnvelope(dataEnv("oversize-peer", MaxPayload+1))
 	q.m.HandleEnvelope(dataEnv("fits-peer", MaxPayload))
-	waitUntil(t, "the 65559-byte envelope to reach the worker", func() bool { return len(q.asked()) > 0 })
-	waitUntil(t, "the session_drop line", func() bool { return len(q.out.lines("session_drop")) == 1 })
+	// The queued one is rejected (unpaired, logged only since R55-F14): a
+	// session_reject and a session_drop line are pending.
+	waitUntil(t, "the reject of the 65559-byte envelope", func() bool { return q.m.lines.Pending() == 2 })
 	if got := q.asked(); len(got) != 1 || got[0] != "fits-peer" {
 		t.Fatalf("worker saw %v, want only fits-peer", got)
 	}
-	ln := q.out.lines("session_drop")[0]
-	if !strings.Contains(ln, " count=1 ") || !strings.Contains(ln, " oversize=1 ") || !strings.Contains(ln, " bytes=65560") {
-		t.Fatalf("drop line %q", ln)
+	q.m.lines.Flush()
+	drops := q.out.lines("session_drop")
+	if len(drops) != 1 || !strings.Contains(drops[0], " count=1 ") || !strings.Contains(drops[0], "oversize=1") {
+		t.Fatalf("drop lines %q", drops)
 	}
-	// The queued one is rejected (unpaired) and audited; the dropped one is not.
-	waitUntil(t, "the reject audit row", func() bool {
-		evs, err := q.log.List(context.Background())
-		return err == nil && len(evs) > 0
-	})
+	if rej := q.out.lines("session_reject"); len(rej) != 1 || !strings.Contains(rej[0], "peer=fits-peer") {
+		t.Fatalf("reject lines %q", rej)
+	}
+	// Neither envelope is audited.
 	evs, err := q.log.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range evs {
-		if strings.Contains(string(e.Detail), "oversize-peer") {
-			t.Fatalf("the oversize envelope was audited: %s %s", e.Action, e.Detail)
+		if strings.Contains(string(e.Detail), "oversize-peer") || strings.Contains(string(e.Detail), "fits-peer") {
+			t.Fatalf("an envelope was audited: %s %s", e.Action, e.Detail)
 		}
 	}
 }
@@ -167,9 +166,9 @@ func TestSessionQueueByteBound(t *testing.T) {
 	if d := check(64<<10, 300); d != 300-inboxSize {
 		t.Fatalf("64 KiB frames: %d dropped, want %d", d, 300-inboxSize)
 	}
-	waitUntil(t, "the first session_drop line", func() bool { return len(q.out.lines("session_drop")) == 1 })
-	if ln := q.out.lines("session_drop")[0]; !strings.Contains(ln, " count=44 ") || !strings.Contains(ln, " queue_full=44 ") {
-		t.Fatalf("drop line %q, want the 44 drops in one line", ln)
+	q.m.lines.Flush()
+	if lns := q.out.lines("session_drop"); len(lns) != 1 || !strings.Contains(lns[0], " count=44 ") || !strings.Contains(lns[0], "queue_full=44") {
+		t.Fatalf("drop lines %q, want the 44 drops in one line", lns)
 	}
 	if n := q.m.queued.Load(); n != inboxBytes {
 		t.Fatalf("inbox holds %d bytes, want %d", n, inboxBytes)

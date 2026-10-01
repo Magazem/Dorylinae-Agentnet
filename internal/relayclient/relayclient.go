@@ -26,6 +26,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/lograte"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/version"
 )
 
@@ -107,6 +108,11 @@ type Client struct {
 	conn *websocket.Conn // non-nil only while authenticated
 	seen *seenSet        // envelopes already handed to OnEnvelope
 	bad  badFrames       // frames from the relay that could not be parsed
+	// lines limits the other relay-driven lines (relay_misrouted,
+	// relay_error_frame, relay_ack_failed) to one a minute per event,
+	// flushed at connection end like bad (Docs/protocol/envelope.md
+	// §Relay-driven log lines (daemon), R55-F14).
+	lines *lograte.Limiter
 
 	features []string // from the latest ready frame; guarded by mu
 	// minClient is ready.min_client from the latest ready frame ("" for
@@ -181,6 +187,7 @@ func New(cfg Config) (*Client, error) {
 		c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	c.bad.log = c.log
+	c.lines = lograte.New(c.log, 0)
 	return c, nil
 }
 
@@ -360,6 +367,7 @@ func (c *Client) session(ctx context.Context) (readyAt time.Time, err error) {
 		}
 	}
 	defer c.bad.flush()
+	defer c.lines.Flush()
 	defer func() {
 		c.mu.Lock()
 		c.conn = nil
@@ -540,7 +548,7 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 		case f.Control.Op == envelope.OpError:
 			ef := errorFrame(*f.Control)
 			// The relay's message is shown nowhere else (OD-R55F9-10).
-			c.log.Debug("relay error frame", "event", "relay_error_frame", "code", ef.Code, "ref", ef.Ref, "message", ef.Message)
+			c.lines.Note(slog.LevelDebug, "relay_error_frame", "relay error frames", "", "code", ef.Code, "ref", ef.Ref, "message", ef.Message)
 			if c.cfg.OnError != nil {
 				c.cfg.OnError(ef)
 			}
@@ -563,7 +571,7 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 	// ephemeral one is never acked (Docs/protocol/envelope.md §Client
 	// behaviour, R55-F9).
 	if e.To != envelope.KeyString(c.pub) {
-		c.log.Debug("dropping envelope addressed to another key", "event", "relay_misrouted", "type", e.Type, "id", e.ID)
+		c.lines.Note(slog.LevelDebug, "relay_misrouted", "dropped envelopes addressed to another key", "", "type", e.Type, "id", e.ID)
 		if !envelope.IsEphemeral(e.Type) {
 			c.ack(ctx, e)
 		}
@@ -594,7 +602,7 @@ func (c *Client) dispatch(ctx context.Context, frame []byte) {
 // harmless: the relay redelivers and dispatch drops the duplicate.
 func (c *Client) ack(ctx context.Context, e envelope.Envelope) {
 	if err := c.SendControl(ctx, envelope.Control{Op: envelope.OpAck, From: e.From, Ref: e.ID}); err != nil {
-		c.log.Warn("could not ack envelope", "event", "relay_ack_failed", "id", e.ID, "error", err)
+		c.lines.Note(slog.LevelWarn, "relay_ack_failed", "could not ack envelopes", "", "id", e.ID, "error", err)
 	}
 }
 

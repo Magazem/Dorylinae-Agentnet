@@ -232,8 +232,8 @@ in order. The first failure rejects the envelope. Nothing is stored and no ack i
 with any `from`, including the key of a paired peer, and it can replay any envelope it has
 carried. So a reject is audited only if a relay alone could not have caused it:
 
-- **Audited** as `mail.reject {peer, id?, reason}`: steps 8, 9, 10 and 12, and `bad_body`
-  ([Dedupe and inbox](#dedupe-and-inbox)), except the step 12 case below. From step 8 on,
+- **Audited** as `mail.reject {peer, id?, reason}`: steps 8, 9, 10 and 12, `bad_body`
+  ([Dedupe and inbox](#dedupe-and-inbox)) and `limit` (R55-F13), except the step 12 case below. From step 8 on,
   `msg` carries the peer's verified signature, and the checks judge content the peer signed
   (step 4 binds the envelope `id` and `to` into the HPKE open, so the relay cannot re-address
   or re-id a genuine mail either). These are the only rejects that name the peer as a fact.
@@ -390,7 +390,8 @@ is accepted before the first release (OD-F18-1 in
   (error `unsupported_kind`) and `rejected` rows to `failed` (error `rejected`). Ids that are
   unknown or already final are ignored.
 - If the sender has no mailbox key for the acking peer, the ack cannot be sealed. It is
-  dropped and logged (`event=ack_no_mailbox_key`).
+  dropped and counted in the limited `event=mail_ack_failed` line, reason `no_mailbox_key`
+  ([envelope.md](envelope.md#relay-driven-log-lines-daemon), R55-F14).
 
 ## Kinds
 

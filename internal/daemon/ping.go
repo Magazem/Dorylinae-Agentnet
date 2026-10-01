@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
@@ -43,7 +44,7 @@ type PingStatusParams struct {
 
 // newSessions binds a fresh Noise static key to the identity and returns the
 // session manager (Docs/protocol/session.md). Only paired peers may talk to it.
-func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, db *sql.DB, opts Options) (*session.Manager, error) {
+func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, db *sql.DB, opts Options, countReject func(reason string)) (*session.Manager, error) {
 	pub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("agent card public key: %w", err)
@@ -58,7 +59,8 @@ func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, db *
 		IsPaired: func(ctx context.Context, key string) (bool, error) {
 			return isPairedCtx(ctx, db, key)
 		},
-		Logger: opts.Logger,
+		Logger:      opts.Logger,
+		CountReject: countReject,
 	}), nil
 }
 
@@ -149,4 +151,19 @@ func pingError(err error) error {
 	default:
 		return err
 	}
+}
+
+// peerHasLiveTies reports whether peer holds an active, unexpired grant we
+// issued or shares a work session with us that is not closed: such a peer may
+// open a session even while we are invisible. A database error answers false
+// (fail closed).
+func peerHasLiveTies(ctx context.Context, db *sql.DB, peer string) bool {
+	var n int
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	if err := db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) FROM grants WHERE direction = 'issued' AND peer = ? AND state = 'active' AND exp > ?) +
+		(SELECT COUNT(*) FROM work_sessions WHERE peer = ? AND state <> 'closed')`, peer, now, peer).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }

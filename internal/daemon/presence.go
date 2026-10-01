@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 
@@ -16,14 +17,14 @@ type PresenceGetResult struct {
 	HumanShare bool     `json:"human_share"`
 }
 
-// PresenceSetParams are the params of "presence_set", Docs/cli/presence.md:
-// exactly one of Visible/Invisible/OnlyTeam may be set (a usage error
-// otherwise), and Human may be combined with any of them, or sent alone.
+// PresenceSetParams are the params of "presence_set", Docs/protocol/ipc.md
+// (Presence): Mode is visible, invisible or only_team and may be omitted when
+// only HumanShare is set; Team is required with only_team and forbidden
+// otherwise. Unknown fields are refused.
 type PresenceSetParams struct {
-	Visible   bool    `json:"visible,omitempty"`
-	Invisible bool    `json:"invisible,omitempty"`
-	OnlyTeam  string  `json:"only_team,omitempty"`
-	Human     *string `json:"human,omitempty"` // "on" or "off"
+	Mode       string `json:"mode,omitempty"`
+	Team       string `json:"team,omitempty"`
+	HumanShare *bool  `json:"human_share,omitempty"`
 }
 
 func registerPresence(srv *ipc.Server, sender *presence.Sender, ts *team.Store) {
@@ -34,61 +35,52 @@ func registerPresence(srv *ipc.Server, sender *presence.Sender, ts *team.Store) 
 	srv.Handle("presence_set", func(ctx context.Context, params json.RawMessage) (any, error) {
 		var p PresenceSetParams
 		if len(params) > 0 {
-			if err := json.Unmarshal(params, &p); err != nil {
-				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
+			dec := json.NewDecoder(bytes.NewReader(params))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&p); err != nil {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params: " + err.Error()}
 			}
 		}
-		modeCount := 0
-		if p.Visible {
-			modeCount++
+		if p.Mode == "" && p.HumanShare == nil {
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "presence_set needs mode or human_share"}
 		}
-		if p.Invisible {
-			modeCount++
-		}
-		if p.OnlyTeam != "" {
-			modeCount++
-		}
-		if modeCount > 1 {
-			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "--visible, --invisible and --only-team are mutually exclusive"}
+		var vm presence.VisibilityMode
+		switch p.Mode {
+		case "":
+			if p.Team != "" {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "team is only allowed with mode only_team"}
+			}
+		case presence.ModeVisible, presence.ModeInvisible:
+			if p.Team != "" {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "team is only allowed with mode only_team"}
+			}
+			vm = presence.VisibilityMode{Mode: p.Mode}
+		case presence.ModeOnlyTeam:
+			if p.Team == "" {
+				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "mode only_team needs team"}
+			}
+			t, err := resolveTeam(ctx, ts, p.Team)
+			if err != nil {
+				return nil, err
+			}
+			if err := requireActive(t); err != nil {
+				return nil, err
+			}
+			vm = presence.VisibilityMode{Mode: presence.ModeOnlyTeam, Team: t.ID}
+		default:
+			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: `mode must be "visible", "invisible" or "only_team"`}
 		}
 
-		if modeCount == 1 {
-			var vm presence.VisibilityMode
-			switch {
-			case p.Visible:
-				vm = presence.VisibilityMode{Mode: presence.ModeVisible}
-			case p.Invisible:
-				vm = presence.VisibilityMode{Mode: presence.ModeInvisible}
-			case p.OnlyTeam != "":
-				t, err := resolveTeam(ctx, ts, p.OnlyTeam)
-				if err != nil {
-					return nil, err
-				}
-				if err := requireActive(t); err != nil {
-					return nil, err
-				}
-				vm = presence.VisibilityMode{Mode: presence.ModeOnlyTeam, Team: t.ID}
-			}
+		if vm.Mode != "" {
 			if err := sender.SetMode(ctx, vm); err != nil {
 				return nil, err
 			}
 		}
-
-		if p.Human != nil {
-			switch *p.Human {
-			case "on":
-				if err := sender.SetHumanShare(ctx, true); err != nil {
-					return nil, err
-				}
-			case "off":
-				if err := sender.SetHumanShare(ctx, false); err != nil {
-					return nil, err
-				}
-			default:
-				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: `human must be "on" or "off"`}
+		if p.HumanShare != nil {
+			if err := sender.SetHumanShare(ctx, *p.HumanShare); err != nil {
+				return nil, err
 			}
 		}
-
 		return presenceGetResult(ctx, sender, ts)
 	})
 }

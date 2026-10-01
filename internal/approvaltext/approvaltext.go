@@ -120,6 +120,18 @@ type Constraint struct {
 	Text    string
 }
 
+// PeerVerify is the facts of a peer_verify approval.
+type PeerVerify struct {
+	Peer Peer
+}
+
+// TeamInvite is the facts of a team_invite approval: the team the owner
+// would invite a new member to.
+type TeamInvite struct {
+	TeamID   string
+	TeamName string
+}
+
 // Prune is the facts of a data_prune approval: the cutoff and what a prune
 // at it removes, counted when the command was run (Docs/protocol/retention.md
 // §Approval).
@@ -377,6 +389,25 @@ func BuildConstraint(f Constraint) (string, error) {
 	}
 	return finish(fmt.Sprintf("Add a human constraint to the debate %s with %s: %s. It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.",
 		plain(f.Session), who, q(f.Text)))
+}
+
+// BuildPeerVerify is the peer_verify template: the fingerprint is grouped and
+// shown in full by the shared peer renderer (D9).
+func BuildPeerVerify(f PeerVerify) (string, error) {
+	who, err := peer(f.Peer)
+	if err != nil {
+		return "", err
+	}
+	if !f.Peer.Paired {
+		return "", errors.New("approvaltext: peer_verify needs a paired peer")
+	}
+	return finish(fmt.Sprintf("Mark %s as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.", who))
+}
+
+// BuildTeamInvite is the team_invite template.
+func BuildTeamInvite(f TeamInvite) (string, error) {
+	return finish(fmt.Sprintf("Create a one-time invite code for the team %s (%s). Whoever redeems it joins the team, and every member's daemon will then trust them as a team member. Confirm only if you asked for this invite yourself.",
+		plain(f.TeamName), plain(f.TeamID)))
 }
 
 // BuildPrune is the data_prune template. The counts are numbers only: a

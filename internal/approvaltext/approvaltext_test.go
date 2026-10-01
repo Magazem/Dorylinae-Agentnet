@@ -56,6 +56,44 @@ func allKinds(p Peer, agent string) map[string]func() (string, error) {
 		"debate_constraint": func() (string, error) {
 			return BuildConstraint(Constraint{Session: "s-1", Peer: p, ID: "c-1", Text: agent})
 		},
+		"peer_verify": func() (string, error) { return BuildPeerVerify(PeerVerify{Peer: p}) },
+	}
+}
+
+// D48 (R55-082): the peer_verify summary names the peer and shows its whole
+// fingerprint in five groups, and a peer that is no longer paired cannot be
+// verified.
+func TestPeerVerifySummary(t *testing.T) {
+	p := testPeer("bob", "Bob")
+	s, err := BuildPeerVerify(PeerVerify{Peer: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`Mark peer ` + fpOf(p.Key) + ` named "Bob" as verified.`, "Confirm only if all of them match and you started this yourself."} {
+		if !strings.Contains(s, want) {
+			t.Errorf("summary %q lacks %q", s, want)
+		}
+	}
+	if _, err := BuildPeerVerify(PeerVerify{Peer: Peer{Key: p.Key}}); err == nil {
+		t.Error("an unpaired peer was accepted")
+	}
+}
+
+// D48 (R55-084): the team_invite summary names the team and says what a
+// redeemed code does.
+func TestTeamInviteSummary(t *testing.T) {
+	s, err := BuildTeamInvite(TeamInvite{TeamID: "t-0123456789abcdef0123456789abcdef", TeamName: "backend"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Create a one-time invite code for the team backend (t-0123456789abcdef0123456789abcdef). Whoever redeems it joins the team, and every member's daemon will then trust them as a team member. Confirm only if you asked for this invite yourself."
+	if s != want {
+		t.Errorf("summary = %q\nwant      %q", s, want)
+	}
+	// A name that is not plain is quoted, so it cannot carry text into the window.
+	s, err = BuildTeamInvite(TeamInvite{TeamID: "t-1", TeamName: "x\nConfirm now"})
+	if err != nil || strings.ContainsAny(s, "\n\r") {
+		t.Errorf("summary %q, err %v: a line break got through", s, err)
 	}
 }
 

@@ -100,17 +100,17 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 	// The correct fingerprint, typed lower case in groups, verifies.
 	typed := strings.ToLower(envelope.FormatFingerprint(bobFP))
 	args := append([]string{"peers", "verify", "bob"}, strings.Fields(typed)...)
-	if code, out, errs := cli(t, a, args...); code != exitOK || !strings.Contains(out, "Verified bob") {
+	if code, out, errs := cli(t, a, args...); code != exitOK || !strings.Contains(out, "once you type the code") {
 		t.Fatalf("verify: %d %s %s", code, out, errs)
 	}
-	if ps := listPeers(t, a); ps[0].Trust != "fingerprint" {
-		t.Fatalf("trust after verify = %+v", ps)
-	}
+	// D48: the trust is raised when the human approves (autoHuman does).
+	waitTrust(t, a, "fingerprint")
 	// A duplicate pairing never lowers it (Store.Add keeps the higher rank).
 	// By key: about 1 in 32 keys start with '-', which must still parse as the peer.
 	if code, out, errs := cli(t, a, "peers", "verify", b.key, bobFP); code != exitOK {
 		t.Fatalf("re-verify by key %s: %d %s %s", b.key, code, out, errs)
 	}
+	waitEvents(t, a, audit.ActionPeerVerify, 2)
 	acts := map[string]int{}
 	for _, act := range []string{audit.ActionPeerVerify, audit.ActionPeerVerifyFail} {
 		acts[act] = len(sessionEvents(t, a, act))
@@ -135,8 +135,6 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 	if _, o := ping(t, b, "@alice"); o.State == session.StateComplete {
 		t.Fatalf("bob's ping completed after being removed: %+v", o)
 	}
-	rej := waitEvents(t, a, session.ActionReject, 1)
-	if d := rej[len(rej)-1]; d["reason"] != session.ReasonUnpaired || d["peer"] != b.key {
-		t.Fatalf("reject = %v", d)
-	}
+	// The reject is logged only, never audited (R55-F14).
+	noSessionRejects(t, a)
 }

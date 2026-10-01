@@ -81,9 +81,18 @@ func runPresence(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 	} else {
-		p := daemon.PresenceSetParams{Visible: *visible, Invisible: *invisible, OnlyTeam: *onlyTeam}
+		var p daemon.PresenceSetParams
+		switch {
+		case *visible:
+			p.Mode = "visible"
+		case *invisible:
+			p.Mode = "invisible"
+		case *onlyTeam != "":
+			p.Mode, p.Team = "only_team", *onlyTeam
+		}
 		if *human != "" {
-			p.Human = human
+			share := *human == "on"
+			p.HumanShare = &share
 		}
 		if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "presence_set", p, &res); code != exitOK {
 			return code

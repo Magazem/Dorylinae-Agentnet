@@ -240,11 +240,34 @@ Acceptance (1.3): with B `invisible`, A's `status --team x` shows B with
 the time of B's goodbye. It never shows B online while B stays invisible, because B sends
 A nothing.
 
+**Pings.** An invisible daemon does not answer session `ping`s either (R55-077): a paired
+peer would otherwise get an on-demand liveness check that the mode is meant to remove. In
+mode `only_team`, only members of that team get a `pong`; in mode `visible`, every paired
+peer does (ping is a paired-peer tool, not team-scoped). The daemon applies the same rule
+to the session handshake `init` (review 79 M1): a refused `init` gets no `resp`, no error
+and no audit row, so the ping fails with `timeout` on the sender's side and opens no session,
+exactly like a ping to an offline peer. One exception: a peer that holds an active,
+unexpired grant this daemon issued, or shares a work session with it that is not closed, may
+still open a session (granted fetches keep working while invisible). The rule also covers
+sessions that are already open: requests on them from a refused peer (for example `fetch.req`)
+get no answer, and when the mode changes the daemon closes the open sessions of the peers the
+new mode turns away, without telling them (review 79b M1b). Answers to what this daemon sent
+itself (`pong`, `*.resp`) are still accepted.
+
+**What invisible does not hide (D61).** Invisible hides presence heartbeats, pongs, and new
+or stale sessions from the peers it blocks. It does **not** make the daemon unreachable: a
+paired peer that sends **mail** can still infer that the daemon is online, from the delivery
+ack, from the relay's `queued` answer (sent only when the recipient is offline), and from a
+roster resync an invisible team owner sends to a member that reports a stale epoch. Invisible
+hides you from teammates' status views; it is not a way to hide from a peer you allow to send
+you mail.
+
 ### Human sharing
 
 Pending OD-P1-6. `agentnet presence --human off|on` stores `presence.human` =
 `{"share": false|true}` (default `true`). With `false`, heartbeats always carry `human: 2`.
-Local `status` still shows the user their own detected value.
+Local `status` still shows the user their own detected value (R55-109): the idle time is
+read whether or not it is shared, and sharing decides only what a heartbeat carries.
 
 ## Idle detection
 
@@ -312,3 +335,8 @@ Heartbeats, rejects and state changes are not audited.
 `status` with `team` shows members with all three levels: [ipc.md](ipc.md#status) and
 [../cli/status.md](../cli/status.md). The visibility command is
 [../cli/presence.md](../cli/presence.md), backed by the IPC methods `presence_get` and `presence_set`.
+`presence_set` takes `{"mode": "visible"|"invisible"|"only_team", "team"?, "human_share"?}`,
+the shape of [ipc.md](ipc.md#phase-1-methods) (the CLI flags map to it: `--invisible` is
+`{"mode": "invisible"}`, `--only-team x` is `{"mode": "only_team", "team": "x"}`, `--human
+off` is `{"human_share": false}`), and refuses members it does not know, so a call in another
+shape is `bad_request`, never a silent no-op (R55-112).

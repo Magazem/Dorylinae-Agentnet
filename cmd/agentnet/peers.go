@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
@@ -17,6 +18,12 @@ import (
 type peerBody struct {
 	OK bool `json:"ok"`
 	daemon.PeerResult
+}
+
+// peerVerifyBody is the machine-readable success output of `peers verify --json`.
+type peerVerifyBody struct {
+	OK       bool          `json:"ok"`
+	Approval approval.View `json:"approval"`
 }
 
 func runPeers(args []string, stdout, stderr io.Writer) int {
@@ -109,13 +116,16 @@ Compare the fingerprint shown by 'agentnet identity' on the peer's machine
 key or a unique peer name. The fingerprint may be written with or without
 spaces or dashes, in any case.
 
-A match sets the peer's trust to "fingerprint". A mismatch exits 1 with error
-code "fingerprint_mismatch" and changes nothing.
+A match creates an approval (kind peer_verify): the trust is raised to
+"fingerprint" only once you type the code into the AgentNet approval window
+(or, on a headless machine, into the daemon's terminal). The window shows the
+peer's name and fingerprint. A mismatch exits 1 with error code
+"fingerprint_mismatch" and changes nothing.
 
 Flags:
-  --json    print {"ok":true,"peer":{...}} (or {"ok":false,"error":{...}})
+  --json    print {"ok":true,"approval":{...}} (or {"ok":false,"error":{...}})
 
-Exit codes: 0 verified, 1 error or mismatch, 2 usage, 3 daemon not running.
+Exit codes: 0 approval created, 1 error or mismatch, 2 usage, 3 daemon not running.
 `)
 	}
 	pos, err := parseInterspersed(fs, args)
@@ -130,15 +140,15 @@ Exit codes: 0 verified, 1 error or mismatch, 2 usage, 3 daemon not running.
 	}
 	// A fingerprint typed with spaces arrives as several arguments.
 	params := daemon.PeerVerifyParams{Peer: pos[0], Fingerprint: strings.Join(pos[1:], " ")}
-	var res daemon.PeerResult
-	if code := callDaemon(*asJSON, stdout, stderr, statusTimeout, "peers_verify", params, &res); code != exitOK {
+	var res daemon.PeerVerifyResult
+	if code := callDaemon(*asJSON, stdout, stderr, approveTimeout, "peers_verify", params, &res); code != exitOK {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(peerBody{OK: true, PeerResult: res})
+		_ = json.NewEncoder(stdout).Encode(peerVerifyBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Verified %s (%s): trust is now %s\n", res.Peer.Name, envelope.FormatFingerprint(res.Peer.Fingerprint), res.Peer.Trust)
+	_, _ = fmt.Fprintf(stdout, "Approval %s: the peer is marked verified once you type the code into the AgentNet approval window.\n", res.Approval.ID)
 	return exitOK
 }
 

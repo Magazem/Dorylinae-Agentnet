@@ -73,15 +73,18 @@ func startNode(t *testing.T, name, relayURL string) *testNode {
 		t.Fatal(err)
 	}
 	w := &connectWatcher{ch: make(chan struct{})}
+	human := &autoHuman{} // approves peers verify and team invite (D48)
 	ctx, cancel := context.WithCancel(context.Background())
 	ready := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		done <- daemon.RunWithOptions(ctx, p, ready, daemon.Options{
-			Logger:   slog.New(slog.NewTextHandler(w, nil)),
-			Keystore: ks,
-			Identity: &identity.Options{Name: name, Harness: "test-harness"},
-			RelayURL: relayURL,
+			Logger:         slog.New(slog.NewTextHandler(w, nil)),
+			Keystore:       ks,
+			Identity:       &identity.Options{Name: name, Harness: "test-harness"},
+			RelayURL:       relayURL,
+			ApprovalNotify: human,
+			ApprovalWindow: human,
 		})
 	}()
 	t.Cleanup(func() { cancel(); <-done })

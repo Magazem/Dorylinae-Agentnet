@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"math"
 	mrand "math/rand/v2"
@@ -61,6 +62,11 @@ type Sender struct {
 	Now  func() time.Time
 	Log  *slog.Logger
 
+	// ModeChanged, if set, is called after SetMode applied a new mode, before
+	// the goodbye/online diff (the daemon closes sessions of peers the new
+	// mode turns away, review 79b M1b).
+	ModeChanged func(context.Context)
+
 	// PresenceInterval overrides the visible-set interval formula when set,
 	// the test option of Docs/protocol/presence.md §Body.
 	PresenceInterval time.Duration
@@ -72,7 +78,11 @@ type Sender struct {
 	seqs         map[string]int64
 	lastActivity time.Time
 	visible      map[string]bool
-	lastResync   map[string]time.Time
+	// visiblePubs is the mailbox key each visible peer had when it entered the
+	// set, so a goodbye can still be sealed after a leave garbage-collected
+	// the peer (R55-069).
+	visiblePubs map[string][]byte
+	lastResync  map[string]time.Time
 	// mode is the visibility mode ("" behaves like ModeVisible, the 1.2c
 	// default); onlyTeam is the team id for ModeOnlyTeam. Loaded from
 	// Settings by LoadSettings and updated by SetMode.
@@ -118,7 +128,9 @@ func (s *Sender) AgentActive() bool { return s.agentFlag(s.now()) == 1 }
 // HumanPresent reports this daemon's own human-present value, detected
 // locally; nil when unknown or not shared (1.2c always shares).
 func (s *Sender) HumanPresent(ctx context.Context) *bool {
-	switch s.humanFlag(ctx) {
+	// Detected locally whether or not it is shared: sharing only decides what
+	// the wire carries (R55-109, Docs/protocol/presence.md §Human sharing).
+	switch s.detectedHuman(ctx) {
 	case 1:
 		v := true
 		return &v
@@ -198,10 +210,17 @@ func (s *Sender) agentFlag(now time.Time) int {
 	return 0
 }
 
+// humanFlag is the human level a heartbeat carries: 2 (unknown) when the
+// user does not share it, else the detected value.
 func (s *Sender) humanFlag(ctx context.Context) int {
 	if !s.humanShareEnabled() {
 		return 2
 	}
+	return s.detectedHuman(ctx)
+}
+
+// detectedHuman is the locally detected human level: 1, 0, or 2 when unknown.
+func (s *Sender) detectedHuman(ctx context.Context) int {
 	if s.Idle == nil {
 		return 2
 	}
@@ -287,6 +306,35 @@ func (s *Sender) visibleSet(ctx context.Context) ([]string, error) {
 	}
 }
 
+// PingAllowed reports whether a session ping from a paired peer is answered:
+// never in mode invisible, only for members of the target team in only_team,
+// and for every paired peer otherwise (ping is a paired-peer tool, not
+// team-scoped). Docs/protocol/presence.md §Visibility, R55-077.
+func (s *Sender) PingAllowed(ctx context.Context, peer string) bool {
+	s.checkTeamGone(ctx)
+	vm := s.Mode()
+	switch vm.Mode {
+	case ModeInvisible:
+		return false
+	case ModeOnlyTeam:
+		if s.Team == nil {
+			return false
+		}
+		members, err := s.Team.Members(ctx, vm.Team)
+		if err != nil {
+			return false
+		}
+		for _, m := range members {
+			if m.Key == peer {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
 // checkTeamGone auto-degrades an only_team mode to invisible when the target
 // team is no longer active on this daemon (left, removed or dissolved),
 // Docs/protocol/presence.md §Sending "only_team": persists the change,
@@ -298,10 +346,17 @@ func (s *Sender) checkTeamGone(ctx context.Context) {
 	if mode.Mode != ModeOnlyTeam {
 		return
 	}
+	// Only a team that is not found or not active degrades the mode; any
+	// other error (a busy database, say) leaves it alone (R55-106).
 	gone := true
 	if s.Team != nil {
-		if t, err := s.Team.Get(ctx, mode.Team); err == nil && t.State == team.StateActive {
-			gone = false
+		t, err := s.Team.Get(ctx, mode.Team)
+		switch {
+		case err == nil:
+			gone = t.State != team.StateActive
+		case !errors.Is(err, team.ErrNotFound):
+			s.log().Warn("presence: read only_team team", "event", "presence_error", "error", err)
+			return
 		}
 	}
 	if !gone {
@@ -369,17 +424,22 @@ func (s *Sender) SetMode(ctx context.Context, mode VisibilityMode) error {
 	s.mu.Lock()
 	s.mode, s.onlyTeam = mode.Mode, mode.Team
 	s.mu.Unlock()
+	if s.ModeChanged != nil {
+		s.ModeChanged(ctx)
+	}
+	// The mode is applied now, so the goodbye/online diff goes out even if
+	// the audit row cannot be written; the audit error is still returned
+	// (R55-107).
+	var auditErr error
 	if s.Audit != nil {
 		detail := map[string]any{"mode": mode.Mode}
 		if mode.Mode == ModeOnlyTeam {
 			detail["team"] = mode.Team
 		}
-		if err := s.Audit.Append(ctx, audit.ActorCLI, ActionMode, detail); err != nil {
-			return err
-		}
+		auditErr = s.Audit.Append(ctx, audit.ActorCLI, ActionMode, detail)
 	}
 	s.SyncVisibility(ctx)
-	return nil
+	return auditErr
 }
 
 // HumanShare reports the current presence.human share flag.
@@ -462,6 +522,11 @@ func (s *Sender) sendOne(ctx context.Context, peer, state string) {
 		return
 	}
 	pub, ok := s.Peers.MailboxPub(peer)
+	if !ok && state == "offline" {
+		s.mu.Lock()
+		pub, ok = s.visiblePubs[peer]
+		s.mu.Unlock()
+	}
 	if !ok {
 		return
 	}
@@ -536,9 +601,24 @@ func (s *Sender) SyncVisibility(ctx context.Context) {
 	for _, p := range list {
 		next[p] = true
 	}
+	pubs := make(map[string][]byte, len(next))
+	for p := range next {
+		if pub, ok := s.Peers.MailboxPub(p); ok {
+			pubs[p] = pub
+		}
+	}
 	s.mu.Lock()
 	old := s.visible
-	s.visible = next
+	// Keep the key of a peer leaving the set: its goodbye is sent below,
+	// possibly after its mailbox row is gone.
+	for p := range old {
+		if !next[p] {
+			if pub, ok := s.visiblePubs[p]; ok {
+				pubs[p] = pub
+			}
+		}
+	}
+	s.visible, s.visiblePubs = next, pubs
 	s.mu.Unlock()
 	for p := range next {
 		if !old[p] {

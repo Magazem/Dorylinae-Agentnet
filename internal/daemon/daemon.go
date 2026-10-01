@@ -362,7 +362,14 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		Logger:  opts.Logger,
 	})
 	defer pairs.Close()
-	sessions, err := newSessions(id, ks, log, st.DB(), opts)
+	// Counts of the relay-causable rejects that are logged only (OD-F14-7
+	// (b), R55-F14). Its stop is deferred before sessions.Close, so it runs
+	// after the relay, the mail receiver and the session manager have
+	// stopped, and before daemon.stop.
+	rejects := newRejectSummary(log, opts.Logger, nil)
+	rejects.start(ctx)
+	defer rejects.stop(ctx)
+	sessions, err := newSessions(id, ks, log, st.DB(), opts, rejects.countSession)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -392,6 +399,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		PresenceInterval: opts.PresenceInterval,
 		AgentWindow:      opts.AgentWindow,
 	}
+	// An invisible daemon does not answer session pings (R55-077).
+	sessions.SetPingGate(presenceSender.PingAllowed)
+	// An invisible daemon also refuses the handshake, so a ping cannot tell it
+	// from an offline one, unless the peer holds a grant from us or shares an
+	// open work session with us (granted fetches keep working, review 79 M1).
+	sessions.SetInitGate(func(ctx context.Context, peer string) bool {
+		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer)
+	})
+	presenceSender.ModeChanged = sessions.DropGatedSessions
 	if err := presenceSender.LoadSettings(ctx); err != nil {
 		_ = ln.Close()
 		return err
@@ -619,7 +635,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	defer stopFetch()
 	fetchClient := startFetchClient(sessions, capStore, wsStore, id.Card().Card.PublicKey)
 	defer fetchClient.Close()
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, idKey, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, idKey, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore, rejects)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -653,8 +669,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	srv.Logger = opts.Logger // handler panics and failing Accept calls (review 77)
 	registerPairing(srv, pairs)
 	registerPing(srv, sessions, peerStore)
-	registerTrust(srv, peerStore, log, teamStore)
-	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name)
+	registerTrust(srv, peerStore, log, teamStore, apprStore, st.DB())
+	registerTeam(srv, teamStore, peerStore, pairs, log, id.Card().Card.Name, apprStore)
 	registerPresence(srv, presenceSender, teamStore)
 	registerMail(srv, outbox, peerStore)
 	registerRequest(srv, presenceStore, reqStore, peerStore, teamStore, log, nonLoopbackRelay)
@@ -781,7 +797,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, idKey *identityKey, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, idKey *identityKey, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store, rejects *rejectSummary) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -846,6 +862,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
 		rcv, pusher := newMailReceiver(db, alog, idKey, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
+		rcv.Opener.Audit.CountLogged = rejects.countMail
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

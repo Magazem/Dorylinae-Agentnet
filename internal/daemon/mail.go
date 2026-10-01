@@ -123,11 +123,13 @@ func newMailReceiver(db *sql.DB, log *audit.Log, idKey *identityKey, self ed2551
 	selfKey := envelope.KeyString(self)
 	priv := idKey.Priv
 	pusher := &mail.Pusher{Priv: priv, Peers: dir, List: dir.PeersWithKeys, Log: lg}
+	rejects := mail.NewRejectAudit(log, lg)
 	rcv := &mail.Receiver{
 		Opener: &mail.Opener{
 			Self: selfKey, Peers: dir, Keys: keys,
-			Audit: mail.NewRejectAudit(log, lg),
+			Audit: rejects,
 		},
+		Lines: rejects.Lines(), // one limiter for the mail layer's relay-driven lines
 		DB:    db,
 		Peers: dir,
 		Audit: log,
@@ -190,6 +192,7 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 		cancel()
 		<-done
 		q.flush()
+		rcv.Flush() // the pending mail_reject and mail_ack_failed lines
 	}
 }
 

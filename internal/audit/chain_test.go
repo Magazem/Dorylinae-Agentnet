@@ -63,7 +63,9 @@ func legacyStore(t *testing.T, rows ...string) (*store.Store, string) {
 	// Back to schema 17: undo migrations 24 (request caps indexes and
 	// requests.introducer), 22 (work_sessions.runner), 21
 	// (experience_records), 20 (decisions) and 19 (debates) too; 19, 22 and
-	// 24 alter tables and would fail when replayed (23 and 25 replay as is).
+	// 24 alter tables and would fail when replayed. Migrations 23 (R55-F24)
+	// and 25 (R55-F13) widen the approvals kind CHECK and add no table or
+	// column, so they need no undo and replay as is.
 	exec(t, s.DB(), `DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
 		`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`, `DROP TABLE experience_records`,

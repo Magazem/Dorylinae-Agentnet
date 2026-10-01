@@ -320,6 +320,8 @@ func TestQueueRedeliveryFairOrderInPrefix(t *testing.T) {
 	vc.SetReadLimit(2 << 20)
 	var vmu sync.Mutex
 	var vIDs []string
+	var vRead atomic.Int64 // frames V has read, control frames included
+	vRead.Store(1)         // the ready frame
 	vDone := make(chan struct{})
 	go func() {
 		defer close(vDone)
@@ -333,6 +335,7 @@ func TestQueueRedeliveryFairOrderInPrefix(t *testing.T) {
 				vIDs = append(vIDs, h.ID)
 				vmu.Unlock()
 			}
+			vRead.Add(1) // after its id is recorded
 		}
 	}()
 	vGot := func() int {
@@ -358,8 +361,12 @@ func TestQueueRedeliveryFairOrderInPrefix(t *testing.T) {
 			}
 		}
 		e.s.RetrySkipped()
-		waitUntil(t, wait, "V's retry to settle", func() bool { return !e.s.Draining(v.key) && e.s.Buffered(v.key) == 0 })
-		time.Sleep(20 * time.Millisecond) // frames written are read by now
+		// Settled, and V has read every frame the relay wrote to it: once
+		// the relay is done with V, the attackers may be served, so a frame
+		// V has not read yet must not count as one V still waits for.
+		waitUntil(t, wait, "V's retry to settle", func() bool {
+			return !e.s.Draining(v.key) && e.s.Buffered(v.key) == 0 && vRead.Load() >= e.s.Written(v.key)
+		})
 		if doneAt < 0 && vGot() == n {
 			doneAt = elapsed
 		}

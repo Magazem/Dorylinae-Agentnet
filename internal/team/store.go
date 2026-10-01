@@ -25,6 +25,14 @@ type Outbox interface {
 	Submit(ctx context.Context, to, kind string, body any) (mail.Submitted, error)
 }
 
+// TxOutbox is an Outbox that can also store its mail inside the caller's
+// transaction (satisfied by *mail.Outbox). Wake is called after the commit.
+type TxOutbox interface {
+	Outbox
+	SubmitTx(ctx context.Context, tx *sql.Tx, to, kind string, body any) (mail.Submitted, error)
+	Wake()
+}
+
 // Actors, mirroring internal/audit.
 const (
 	ActorDaemon = "daemon"
@@ -34,6 +42,7 @@ const (
 // Audit actions, Docs/protocol/team.md §Audit.
 const (
 	ActionCreate        = "team.create"
+	ActionInviteIssued  = "team.invite_issued"
 	ActionMemberAdd     = "team.member_add"
 	ActionMemberRemove  = "team.member_remove"
 	ActionMemberLeave   = "team.member_leave"
@@ -415,6 +424,18 @@ func (s *Store) Delete(ctx context.Context, teamID string, now time.Time) (Team,
 // It does not send team.leave; the caller (1.1c) does that through the
 // outbox after this returns. ErrOwnerCannotLeave if self owns the team.
 func (s *Store) Leave(ctx context.Context, teamID string, now time.Time) (Team, []peers.Removed, error) {
+	return s.leave(ctx, teamID, now, false)
+}
+
+// LeaveNotify is Leave that also queues the team.leave mail to the owner in
+// the same transaction, so a leave that cannot be queued is not committed and
+// can be retried (R55-113). Without a transactional Outbox it falls back to
+// submitting after the commit.
+func (s *Store) LeaveNotify(ctx context.Context, teamID string, now time.Time) (Team, []peers.Removed, error) {
+	return s.leave(ctx, teamID, now, true)
+}
+
+func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify bool) (Team, []peers.Removed, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
@@ -433,12 +454,39 @@ func (s *Store) Leave(ctx context.Context, teamID string, now time.Time) (Team, 
 		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
 	}
 	t.Updated = ts
+	// The mail is queued before GC: the owner may be an introduced peer whose
+	// row GC would delete.
+	txo, inTx := s.Outbox.(TxOutbox)
+	queued := true
+	if notify && inTx {
+		if _, err := txo.SubmitTx(ctx, tx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
+			// A permanent "cannot send" (the owner is no longer paired or has no
+			// mailbox key) must not make leaving impossible: leave locally and
+			// warn (review 79 L3). Any other error rolls back and can be retried.
+			if !errors.Is(err, mail.ErrUnpaired) && !errors.Is(err, mail.ErrNoMailboxKey) {
+				return Team{}, nil, err
+			}
+			s.log().Warn("team: leave without team.leave mail", "event", "team_error", "error", err)
+			queued = false
+		}
+	}
 	removed, err := s.peers.GCIntroduced(ctx, tx)
 	if err != nil {
 		return Team{}, nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
+	}
+	if notify {
+		if inTx {
+			if queued {
+				txo.Wake()
+			}
+		} else if s.Outbox != nil {
+			if _, err := s.Outbox.Submit(ctx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
+				return t, removed, err
+			}
+		}
 	}
 	s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": teamID})
 	s.auditRemoved(ctx, removed)

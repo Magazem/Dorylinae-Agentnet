@@ -19,6 +19,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/lograte"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/noise"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 )
@@ -31,11 +32,9 @@ const (
 	TypeData = "session.data"
 )
 
-// Audit actions.
-const (
-	ActionOpen   = "session.open"
-	ActionReject = "session.reject"
-)
+// ActionOpen is the audit action for an opened session. Rejects are logged
+// only, never audited (Docs/protocol/session.md §Rejection, R55-F14).
+const ActionOpen = "session.open"
 
 // Reject reasons, see Docs/protocol/session.md.
 const (
@@ -76,10 +75,6 @@ const (
 	DropQueueFull = "queue_full"
 )
 
-// dropWindow is how often at most the dropped envelopes are logged: one
-// session_drop line per window (Docs/protocol/session.md §Rejection).
-var dropWindow = time.Minute
-
 const (
 	defaultWait        = time.Second
 	defaultPingTimeout = 10 * time.Second
@@ -94,7 +89,6 @@ const (
 	maxRefs            = 4096
 	inboxSize          = 256
 	inboxBytes         = 16 << 20 // decoded payload bytes in the inbox (R55-F13)
-	rejectsPerMinute   = 30
 	auditBudget        = 5 * time.Second
 	sendBudget         = 5 * time.Second
 
@@ -130,6 +124,9 @@ type Config struct {
 	// PingTimeout fails a ping with no answer. Default 10s.
 	PingTimeout time.Duration
 	Logger      *slog.Logger
+	// CountReject, if set, is called with the reason of every reject except
+	// unpaired, for the daily relay.reject_summary audit row (OD-F14-7).
+	CountReject func(reason string)
 }
 
 // Failure is why a ping failed.
@@ -199,11 +196,13 @@ type Manager struct {
 	self string
 	log  *slog.Logger
 
+	pingGate func(ctx context.Context, peer string) bool // guarded by mu
+	initGate func(ctx context.Context, peer string) bool // guarded by mu
+
 	inbox chan envelope.Envelope
 	// queued is the decoded payload bytes in inbox: added before an envelope
 	// is queued, taken off when the worker receives it.
 	queued atomic.Int64
-	drops  dropCounts
 	stop   chan struct{}
 	wg     sync.WaitGroup
 
@@ -222,10 +221,31 @@ type Manager struct {
 	handlers map[string]DataHandler
 	closed   bool
 
-	rejMu      sync.Mutex
-	rejWindow  time.Time
-	rejCount   int
-	suppressed int
+	// lines limits the relay-driven log lines session_reject, session_drop
+	// and session_send_failed (Docs/protocol/envelope.md §Relay-driven log
+	// lines (daemon)).
+	lines *lograte.Limiter
+}
+
+// SetPingGate sets a check that decides whether a ping from a paired peer is
+// answered; an unanswered ping simply times out on the peer's side. Nil (the
+// default) answers every ping. The daemon uses it so an invisible daemon is
+// not a liveness oracle (R55-077, Docs/protocol/presence.md §Visibility).
+func (m *Manager) SetPingGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.pingGate = gate
+	m.mu.Unlock()
+}
+
+// SetInitGate sets a check that decides whether a handshake Init from a paired
+// peer is answered. A refused Init is dropped without a Resp, an error or an
+// audit row, so the peer sees what it sees for an offline daemon. Nil (the
+// default) answers every Init. Together with SetPingGate it keeps an invisible
+// daemon from being probed by a ping (R55-077, review 79 M1).
+func (m *Manager) SetInitGate(gate func(ctx context.Context, peer string) bool) {
+	m.mu.Lock()
+	m.initGate = gate
+	m.mu.Unlock()
 }
 
 // NewManager returns a running Manager; call Close to stop it.
@@ -246,6 +266,7 @@ func NewManager(cfg Config) *Manager {
 	if m.log == nil {
 		m.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	m.lines = lograte.New(m.log, 0)
 	m.wg.Add(2)
 	go m.worker()
 	go m.sweeper()
@@ -307,7 +328,8 @@ func (m *Manager) SetSender(s Sender) {
 	m.mu.Unlock()
 }
 
-// Close stops the manager. Pending pings stay pending.
+// Close stops the manager and writes its pending log lines. Pending pings
+// stay pending.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {
@@ -323,75 +345,39 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	close(m.stop)
 	m.wg.Wait()
-	m.drops.flush(m.log)
+	m.lines.Flush()
 }
 
 // HandleEnvelope queues an envelope from the relay. It never blocks. An
 // envelope whose payload is longer than MaxPayload, or that would take the
 // inbox past 256 envelopes or 16 MiB, is dropped: it is counted into the
-// session_drop line, never audited (the sender is not known yet).
+// limited session_drop line, never audited (the sender is not known yet).
 func (m *Manager) HandleEnvelope(e envelope.Envelope) {
 	if !strings.HasPrefix(e.Type, "session.") {
 		return
 	}
 	n := int64(len(e.Payload))
 	if n > MaxPayload {
-		m.drops.add(m.log, DropOversize, n)
+		m.drop(e, DropOversize)
 		return
 	}
 	if m.queued.Add(n) > inboxBytes {
 		m.queued.Add(-n)
-		m.drops.add(m.log, DropQueueFull, n)
+		m.drop(e, DropQueueFull)
 		return
 	}
 	select {
 	case m.inbox <- e:
 	default:
 		m.queued.Add(-n)
-		m.drops.add(m.log, DropQueueFull, n)
+		m.drop(e, DropQueueFull)
 	}
 }
 
-// dropCounts counts the envelopes HandleEnvelope dropped and logs them as one
-// session_drop line per dropWindow, and at Close.
-type dropCounts struct {
-	mu      sync.Mutex
-	reasons map[string]int
-	bytes   int64
-	timer   *time.Timer
-}
-
-func (d *dropCounts) add(log *slog.Logger, reason string, n int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.reasons == nil {
-		d.reasons = map[string]int{}
-	}
-	d.reasons[reason]++
-	d.bytes += n
-	if d.timer == nil {
-		d.timer = time.AfterFunc(dropWindow, func() { d.flush(log) })
-	}
-}
-
-// flush logs the drops counted so far, if any.
-func (d *dropCounts) flush(log *slog.Logger) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.timer != nil {
-		d.timer.Stop()
-		d.timer = nil
-	}
-	count := 0
-	for _, c := range d.reasons {
-		count += c
-	}
-	if count == 0 {
-		return
-	}
-	log.Warn("session envelopes dropped before the queue", "event", "session_drop", "count", count,
-		"oversize", d.reasons[DropOversize], "queue_full", d.reasons[DropQueueFull], "bytes", d.bytes)
-	d.reasons, d.bytes = nil, 0
+// drop counts a dropped envelope into the limited session_drop line, by
+// reason (Docs/protocol/session.md §Rejection). Never the envelope id.
+func (m *Manager) drop(e envelope.Envelope, reason string) {
+	m.lines.Note(slog.LevelWarn, "session_drop", "session envelopes dropped before the queue", reason, "type", e.Type)
 }
 
 // HandleError fails the pings affected by a relay error frame (peer_offline, ...).
@@ -587,7 +573,7 @@ func (m *Manager) send(ctx context.Context, env envelope.Envelope) error {
 	defer cancel()
 	err := snd.Send(sctx, env)
 	if err != nil {
-		m.log.Warn("session send failed", "event", "session_send_failed", "type", env.Type, "error", err)
+		m.lines.Note(slog.LevelWarn, "session_send_failed", "session sends failed", "", "type", env.Type, "error", err)
 	}
 	return err
 }
@@ -648,6 +634,12 @@ func (m *Manager) handle(e envelope.Envelope) {
 }
 
 func (m *Manager) onInit(ctx context.Context, from string, sid, body []byte) string {
+	m.mu.Lock()
+	gate := m.initGate
+	m.mu.Unlock()
+	if gate != nil && !gate(ctx, from) {
+		return "" // look offline: no Resp, no reject, no audit
+	}
 	m.mu.Lock()
 	if _, dup := m.sessions[string(sid)]; dup {
 		m.mu.Unlock()
@@ -745,15 +737,60 @@ func (m *Manager) onFin(ctx context.Context, from string, sid, body []byte) stri
 	return ""
 }
 
+// refuses reports whether the init gate turns peer away now (review 79b M1b).
+// The gate reads the database, so it runs without the lock.
+func (m *Manager) refuses(ctx context.Context, peer string) bool {
+	m.mu.Lock()
+	gate := m.initGate
+	m.mu.Unlock()
+	return gate != nil && !gate(ctx, peer)
+}
+
+// DropGatedSessions closes every open session whose peer the init gate now
+// refuses. The daemon calls it when the presence mode changes, so a session
+// opened while it was visible does not outlive that (review 79b M1b). The
+// peer is not told: its next message is dropped without an answer.
+func (m *Manager) DropGatedSessions(ctx context.Context) {
+	m.mu.Lock()
+	peers := map[string]bool{}
+	for _, s := range m.sessions {
+		peers[s.peer] = true
+	}
+	m.mu.Unlock()
+	refused := map[string]bool{}
+	for p := range peers {
+		if m.refuses(ctx, p) {
+			refused[p] = true
+		}
+	}
+	if len(refused) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for sid, s := range m.sessions {
+		if refused[s.peer] {
+			m.dropLocked(sid)
+		}
+	}
+}
+
 func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) string {
 	if len(body) < noise.CounterSize {
 		return ReasonMalformed
 	}
+	// From a peer the init gate refuses, data gets no answer and no error,
+	// whether or not the session is known (review 79b M1b); the exemption for
+	// responses is below, after decryption.
+	gated := m.refuses(ctx, from)
 	n := noise.Counter(body[:noise.CounterSize])
 	m.mu.Lock()
 	s, ok := m.sessions[string(sid)]
 	if !ok || s.peer != from || s.tr == nil {
 		m.mu.Unlock()
+		if gated {
+			return ""
+		}
 		return ReasonUnknownSession
 	}
 	pt, err := s.tr.Open(n, m.dataAD(from, m.self, s.sid, n), body[noise.CounterSize:])
@@ -771,6 +808,19 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 	}
 	switch msg.Type {
 	case "ping":
+		gate := m.pingGate
+		if gate != nil {
+			// The gate reads the database: ask it without the lock (R55-077).
+			m.mu.Unlock()
+			if !gate(ctx, from) {
+				return ""
+			}
+			m.mu.Lock()
+			if cur, ok := m.sessions[string(sid)]; !ok || cur != s || s.tr == nil {
+				m.mu.Unlock()
+				return ""
+			}
+		}
 		reply, _ := json.Marshal(message{Type: "pong", ID: msg.ID})
 		env, err := m.sealLocked(s, reply, "")
 		m.mu.Unlock()
@@ -785,6 +835,12 @@ func (m *Manager) onData(ctx context.Context, from string, sid, body []byte) str
 			m.finishLocked(p, nil)
 		}
 	default:
+		// Requests from a gated peer are dropped; a ".resp" answers something
+		// we sent, so it is let through.
+		if gated && !strings.HasSuffix(msg.Type, ".resp") {
+			m.mu.Unlock()
+			return ""
+		}
 		if h := m.handlers[msg.Type]; h != nil {
 			m.mu.Unlock()
 			h(from, bytes.Clone(pt))
@@ -969,35 +1025,18 @@ func (m *Manager) auditOpen(ctx context.Context, s *sess) {
 	}
 }
 
-// reject audits a dropped envelope, rate limited. Never logs payload bytes.
+// reject counts a dropped envelope into the limited session_reject log line.
+// Every reason can be caused by the relay alone, so none is audited
+// (Docs/protocol/session.md §Rejection, R55-F14). Never logs the envelope id
+// or payload bytes.
 func (m *Manager) reject(e envelope.Envelope, sidTag, reason string) {
-	m.log.Info("session envelope rejected", "event", "session_reject", "reason", reason, "type", e.Type, "id", e.ID)
-	now := time.Now()
-	m.rejMu.Lock()
-	if now.Sub(m.rejWindow) >= time.Minute {
-		if m.suppressed > 0 {
-			m.log.Warn("session rejects not audited", "event", "session_reject_suppressed", "count", m.suppressed)
-		}
-		m.rejWindow, m.rejCount, m.suppressed = now, 0, 0
-	}
-	allowed := m.rejCount < rejectsPerMinute
-	if allowed {
-		m.rejCount++
-	} else {
-		m.suppressed++
-	}
-	m.rejMu.Unlock()
-	if !allowed {
-		return
-	}
-	detail := map[string]string{"peer": e.From, "type": e.Type, "reason": reason}
+	args := []any{"reason", reason, "type", e.Type, "peer", e.From}
 	if sidTag != "" {
-		detail["session"] = sidTag
+		args = append(args, "session", sidTag)
 	}
-	actx, cancel := context.WithTimeout(context.Background(), auditBudget)
-	defer cancel()
-	if err := m.cfg.Audit.Append(actx, audit.ActorDaemon, ActionReject, detail); err != nil {
-		m.log.Warn("session: audit failed", "event", "session_error", "error", err)
+	m.lines.Note(slog.LevelInfo, "session_reject", "session envelopes rejected", reason, args...)
+	if reason != ReasonUnpaired && m.cfg.CountReject != nil {
+		m.cfg.CountReject(reason)
 	}
 }
 

@@ -195,8 +195,8 @@ owner picks OD-F14-7 (b) ([audit.md](audit.md#who-may-cause-a-row-r55-f14)).
 **65559 bytes** (the 16-byte `sid`, the 8-byte `counter` and one maximal 65535-byte Noise
 message, the largest any honest `session.*` payload can be) is dropped. So is an envelope that
 would exceed either queue bound. These drops happen before the sender is known to be a paired
-peer, so they are **not audited**. They are counted in one log line per minute
-(`event=session_drop`, with counts by reason `oversize` or `queue_full` and bytes). Before
+peer, so they are **not audited**. They are counted in the limited log line `event=session_drop` (one per minute, with `reasons`
+counting `oversize` and `queue_full`, see [Rejection](#rejection)). Before
 R55-F13 the queue was bounded by count only, and a relay could pin about 190 MiB of 1 MiB
 frames in it while the worker was slow.
 
