@@ -68,6 +68,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+$env:DORYLINAE_KEYSTORE = 'file'
 $scriptStart = Get-Date
 
 # $PSScriptRoot can be empty under Windows PowerShell 5.1 (e.g. `powershell -File`
@@ -160,9 +162,13 @@ function Invoke-CliJson {
     $psi.UseShellExecute = $false
     $psi.Environment["DORYLINAE_HOME"] = $HomeDir
     $p = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $p.StandardOutput.ReadToEnd()
-    $stderr = $p.StandardError.ReadToEnd()
+    # Async reads: a synchronous ReadToEnd() would block on a hung child before the timeout applies.
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit($TimeoutMs)) { Stop-ProcessTree -Process $p; throw "agentnet $($CliArgs -join ' ') timed out" }
+    $p.WaitForExit()
+    $stdout = $outTask.Result
+    $stderr = $errTask.Result
     $obj = $null
     if ($stdout.Trim().Length -gt 0) {
         try { $obj = $stdout | ConvertFrom-Json } catch { }
@@ -272,7 +278,7 @@ function Start-Agent {
             if (-not (Test-Path $exe)) { $exe = "$env:APPDATA/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe" }  # npm install: Get-Command finds a .cmd/.ps1 shim that cannot be started directly
             if (-not (Test-Path $exe)) { $cmd = Get-Command claude -ErrorAction SilentlyContinue; if ($cmd -and $cmd.Source -like "*.exe") { $exe = $cmd.Source } }
             if (-not (Test-Path $exe)) { return @{ Ran = $false; Reason = "claude executable not found" } }
-            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell,Write,Skill", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)", "PowerShell(Get-Content *)", "Write",
+            $argList = @($Prompt, "-p", "--restricted", "--tools", "PowerShell,Write,Skill", "--allowedTools", "PowerShell(agentnet *)", "PowerShell(Start-Sleep *)", "PowerShell(Get-Content NOTES.md)", "Write",
                 "--model", "claude-opus-5-5",
                 "--permission-prompts", "none", "--output-format", "json",
                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "project")
@@ -526,6 +532,7 @@ func Debounce(fn func(), delay time.Duration) func() {
             $bPsi.RedirectStandardOutput = $true; $bPsi.RedirectStandardError = $true; $bPsi.UseShellExecute = $false
             $aProc = [System.Diagnostics.Process]::Start($aPsi)
             $bProc = [System.Diagnostics.Process]::Start($bPsi)
+            $handles.standinA = $aProc; $handles.standinB = $bProc
             $aOut = $aProc.StandardOutput.ReadToEndAsync(); $aErr = $aProc.StandardError.ReadToEndAsync()
             $bOut = $bProc.StandardOutput.ReadToEndAsync(); $bErr = $bProc.StandardError.ReadToEndAsync()
 
@@ -547,12 +554,13 @@ func Debounce(fn func(), delay time.Duration) func() {
 
             $aFinished = $aProc.WaitForExit($AgentTimeoutSeconds * 1000)
             $bFinished = $bProc.WaitForExit($AgentTimeoutSeconds * 1000)
+            # Kill a hung stand-in first: .Result blocks until the child's stdout closes.
+            if (-not $aFinished) { Stop-ProcessTree -Process $aProc }
+            if (-not $bFinished) { Stop-ProcessTree -Process $bProc }
             Set-Content -Path (Join-Path $RunDir "standin-a.stdout.log") -Value $aOut.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-a.stderr.log") -Value $aErr.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-b.stdout.log") -Value $bOut.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-b.stderr.log") -Value $bErr.Result -Encoding utf8
-            if (-not $aFinished) { Stop-ProcessTree -Process $aProc }
-            if (-not $bFinished) { Stop-ProcessTree -Process $bProc }
             if (-not $aFinished -or -not $bFinished) { $result.Reason = "stand-in timed out (a finished=$aFinished, b finished=$bFinished)"; return [pscustomobject]$result }
             if ($aProc.ExitCode -ne 0) { $result.Reason = "stand-in A exited $($aProc.ExitCode): $($aErr.Result)"; return [pscustomobject]$result }
             if ($bProc.ExitCode -ne 0) { $result.Reason = "stand-in B exited $($bProc.ExitCode): $($bErr.Result)"; return [pscustomobject]$result }
@@ -679,6 +687,8 @@ func Debounce(fn func(), delay time.Duration) func() {
         $result.Outcome = $outcome
         if ($phase -ne "closed") { $result.Reason = "debate ended phase $phase, not closed"; return [pscustomobject]$result }
         if (@("agreed", "escalated") -notcontains $outcome) { $result.Reason = "unexpected outcome $outcome"; return [pscustomobject]$result }
+        # The stand-in scenarios are deterministic (R55-137): require the exact outcome.
+        if ($InitiatorTool -eq "standin" -and $outcome -ne $Scenario) { $result.Reason = "stand-in scenario $Scenario closed with outcome $outcome"; return [pscustomobject]$result }
         if ($finalA.Json.debate.rounds.current -gt 2) { $result.Reason = "rounds.current $($finalA.Json.debate.rounds.current) exceeds 2"; return [pscustomobject]$result }
 
         Wait-Until -What "debate closed on B" -TimeoutSeconds 60 -Cond {
@@ -738,6 +748,7 @@ func Debounce(fn func(), delay time.Duration) func() {
         $result.DurationSeconds = [Math]::Round(((Get-Date) - $roundStart).TotalSeconds, 1)
         return [pscustomobject]$result
     } finally {
+        foreach ($sp in @($handles.standinA, $handles.standinB)) { try { if ($sp -and -not $sp.HasExited) { Stop-ProcessTree -Process $sp } } catch {} }
         Stop-PipedProc -Process $handles.daemonA
         Stop-PipedProc -Process $handles.daemonB
         try { if (-not $handles.relay.HasExited) { Stop-ProcessTree -Process $handles.relay } } catch {}
@@ -800,8 +811,13 @@ foreach ($r in $rounds) {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $runDir = Join-Path $rootRun "round$($r.Num)-attempt$attempt"
         New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-        $res = Invoke-Round -RoundNum $r.Num -InitiatorTool $r.Initiator -RespondentTool $r.Respondent -Scenario $r.Scenario `
-            -AgentnetExe $agentnetExe -StandinExe $standinExe -RunDir $runDir -RelayPort $port -Python $python
+        # A Wait-Until timeout throws; treat it as a failed attempt so -MaxAttempts still applies (R55-187).
+        try {
+            $res = Invoke-Round -RoundNum $r.Num -InitiatorTool $r.Initiator -RespondentTool $r.Respondent -Scenario $r.Scenario `
+                -AgentnetExe $agentnetExe -StandinExe $standinExe -RunDir $runDir -RelayPort $port -Python $python
+        } catch {
+            $res = [pscustomobject]@{ Pass = $false; Reason = "round threw: $($_.Exception.Message)"; RequestId = ""; Outcome = ""; DurationSeconds = 0 }
+        }
         $attemptLog += [pscustomobject]@{ Round = $r.Num; Attempt = $attempt; Pass = $res.Pass; Reason = $res.Reason }
         if ($res.Pass) { Write-Ok "round $($r.Num) attempt $attempt ($($r.Initiator) -> $($r.Respondent), $($r.Scenario)): PASS (outcome=$($res.Outcome), $($res.DurationSeconds)s)"; break }
         else { Write-Fail "round $($r.Num) attempt $attempt ($($r.Initiator) -> $($r.Respondent), $($r.Scenario)): $($res.Reason)" }

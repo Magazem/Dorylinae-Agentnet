@@ -376,7 +376,7 @@ removes the debate it came from ([retention.md](retention.md#finished-items), OD
 | Method | Params | Result / errors |
 |---|---|---|
 | `decision_list` | `{"state"?, "peer"?}` | `{"decisions": [{"id", "session", "peer", "outcome", "state", "created", "title"}]}` |
-| `decision_show` | `{"id"}` (`d-`, `s-` or `r-`) | the [signed file](#signed-file-third-party-verification) plus `{"state", "peer_names"}`. `unknown_decision` |
+| `decision_show` | `{"id"}` (`d-`, `s-` or `r-`) | the [signed file](#signed-file-third-party-verification) plus `{"state", "peer_names"}`. `unknown_decision` (also for an unknown `s-` or `r-` id); `ambiguous_request` when an `r-` id matches debates with more than one peer (R55-128) |
 
 | Command | Notes |
 |---|---|
@@ -392,6 +392,12 @@ removes the debate it came from ([retention.md](retention.md#finished-items), OD
 | `decision.create` | both / `daemon` | `{id, session, peer, outcome, hash, bytes, signed_by}` |
 | `decision.sign_in` | A / `daemon` | `{id, session, peer}` |
 | `decision.refuse` | either / `daemon` | `{id, session, peer, reason}` |
+
+**When the row fails** (R55-F31, [audit.md](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+`decision.create` and `decision.sign_in` are class S. They are written in the transaction
+that stores or completes the Decision (`decideTx` inside `closeTx` on A, the close or sign
+apply on B), not by the debate store's after-commit hooks. A Decision with no row was not
+created or signed. `decision.refuse` is class S-.
 
 Exporting a Decision (`agentnet decision <id> --md|--json`, `--out`) is **not audited** (D33): it is a local read of a record the daemon already holds, like `agentnet log`. Revisit in the next large security review.
 

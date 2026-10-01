@@ -145,7 +145,12 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
 6. **Sender-side urgency budget** ([Urgency guards](#urgency-guards-17)). This may downgrade
    `high` or `blocking` to `normal` and set `urgency_declared`.
 7. Build the object (`id` fresh, `created = now`). In **one SQLite transaction**, insert the
-   `out` row (`state = pending`) and the outbox row. That needs `Outbox.SubmitTx(tx, to,
+   `out` row (`state = pending`) and the outbox row. If any `requests` row already has the
+   fresh `id` (either direction, any peer; checked in that transaction, before the outbox
+   row), the transaction is rolled back and the object is built again from a new `id`,
+   including everything derived from it (a debate's session id and commitment), so this
+   daemon's `out` ids never collide with each other or with a stored `in` id
+   ([Request ids and references](#request-ids-and-references-r55-f20)). That needs `Outbox.SubmitTx(tx, to,
    kind, body)`, added by 1.4c. Audit `request.submit`. If the insert hits the
    `requests_idem` unique index (a concurrent submit with the same key won the race), roll
    back and answer as step 4 against the winning row.
@@ -207,6 +212,14 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
    - with no row, `type = debate`, and a `decisions` row for the derived session id: [invalid](#invalid-bodies)
      (a request id re-used after [`prune`](retention.md#why-35-days) removed its debate but
      kept its Decision; review 71b F8).
+   - with no row, and **another `requests` row here has the same id** (an `out` row to any
+     peer, or an `in` row from another peer): [invalid](#invalid-bodies) (R55-F20, review 55
+     R55-063). Each sender draws its ids at random (128 bits), so an honest sender never
+     collides. A peer that reuses an id it has seen (one of ours it received, or one printed
+     in a [Decision](decision.md) file someone shared) would otherwise make one by-id
+     reference name two rows ([Request ids and references](#request-ids-and-references-r55-f20)).
+     The check comes before the caps and the tombstone: the mail is not counted, and a
+     tombstone for `(msg.from, id)` stays in place until it is pruned.
    - with no row, and the sender is **over a daily cap** ([Per-peer caps](#per-peer-caps-r55-f13)):
      it already has 200 `in` rows whose `received_at` falls in the last 24 h, or it is a peer
      introduced in the last 7 days and the keys introduced by the same owner in the last 7 days
@@ -217,6 +230,12 @@ is stored once, in `requests.body`. `Apply` runs inside the mail dedupe transact
      tombstone, and
      `last_reply` = the `request.cancelled` with `seq = 1` that the tombstone already sent
      (it is **not** submitted again). Delete the tombstone. No notification. Skip steps 3–5.
+     If the trust and team checks of step 3 (`unverified_peer`, `unknown_team`,
+     `not_team_member`, evaluated as there) would decline the request, the row keeps **no
+     content**: `body = {}` (with the received request's `body_hash`), as for an auto-declined
+     row; the state, `seq` and `last_reply` are unchanged (R55-163, OD-F20-4). A peer that D5
+     or the team rules would refuse thus cannot place a title in `inbox --all` by sending
+     its cancel first. `inbox_full` is not applied here: a cancelled row is not open.
 3. **Policy auto-decline.** The row is stored with `state = declined`, `decline_code`,
    `state_seq = 1` and `first_response` NULL. In the **same transaction**, the
    `request.decline` with that `code` and `seq = 1` is stored as `last_reply` and submitted
@@ -819,5 +838,29 @@ deleted automatically (owner decision D50). The user removes finished rows older
 with [`agentnet prune`](../cli/prune.md) ([retention.md](retention.md)). `peers remove` does not
 delete them.
 
-A request id is unique per sender, not globally. A CLI or IPC reference by id alone that
-matches `in` rows from several peers is `ambiguous_request`, and the caller passes `from`.
+### Request ids and references (R55-F20)
+
+The wire key is `(from, id)`: a request id is chosen by its sender and unique per sender,
+not globally. Since R55-F20 a daemon stores no new row whose id another `requests` row
+already has ([Submitting](#submitting) step 7, [Receiving](#receiving) step 2), so a new
+collision cannot arise. Rows stored before R55-F20 may still collide (an `out` row and an
+`in` row, or `in` rows from several peers), and no migration renames them. So every
+reference by id alone resolves against **every** row it could mean, and more than one
+match is `ambiguous_request`, never the first row found:
+
+| Reference | Rows it looks at | More than one match |
+|---|---|---|
+| `request_show {id}` | every `requests` row with that id | `ambiguous_request`: pass `from` for an incoming request. An outgoing request in a pre-R55-F20 collision is still listed by `request_list`, and its session reached by its `s-` id |
+| `request_show {id, from}` | only the `in` row `(from, id)`; never an `out` row | — |
+| `request_accept`, `_decline`, `_defer`, `_complete` | `in` rows (`from` narrows) | `ambiguous_request` (unchanged) |
+| `request_cancel`, `request_resend` | `out` rows | cannot happen: `out` ids are unique here |
+| `ws_*` and `wait` with an `r-` id | `work_sessions` rows with that `request_id`, any role and peer | `ambiguous_request`: use the `s-` id |
+| `ws_result` one-step answer ([consult.md](consult.md)) with an `r-` id | `in` rows; the session check uses the exact `(worker, peer, id)` | `ambiguous_request` |
+| `wait` with an `r-` id before a session exists | `request_show {id}` (row above) | `ambiguous_request` ends the wait with exit 1, never a silent poll until timeout: use the `s-` id |
+| `audit_list {session: r-…}` ([audit.md](audit.md#agentnet-log)) | `work_sessions` rows with that `request_id` **and** `requests` rows with that id, a session counting as its own request row (`requester` = `out`, `worker` = `in`) | `ambiguous_request` when they belong to more than one `(direction, peer)`, even if only one of them has a session: use the `s-` id |
+| `debate_*`, `decision_show` with an `r-` id | `debates` rows with that `request_id` | `ambiguous_request` (`decision_show` too, R55-128) |
+| Debate notification title | the request row of the debate's own direction (`out` on the initiator, `in` on the respondent) | — |
+
+`agentnet debate <id> --cancel` in phase `invited` sends `request_cancel` only on the
+initiator, which owns the `out` row; the respondent declines instead
+([debate.md §Cancel and abandon](debate.md#cancel-and-abandon)).

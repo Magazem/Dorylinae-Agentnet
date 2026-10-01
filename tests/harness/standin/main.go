@@ -420,6 +420,11 @@ func handleReview(c *client, requestID string, timeout, poll time.Duration) (str
 	if fileName == "" {
 		return "", fmt.Errorf("granted directory listing has no file")
 	}
+	// call appends --json, so a "--" separator cannot be used; refuse a peer-supplied
+	// name that fetch would parse as a flag instead.
+	if strings.HasPrefix(fileName, "-") {
+		return "", fmt.Errorf("granted file name %q looks like a flag", fileName)
+	}
 	if _, err := c.call("", "fetch", grantID, fileName); err != nil {
 		return "", fmt.Errorf("fetch %s: %w", fileName, err)
 	}
