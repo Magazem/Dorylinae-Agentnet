@@ -58,6 +58,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+$env:DORYLINAE_KEYSTORE = 'file'
 $scriptStart = Get-Date
 
 function Write-Step($msg) { Write-Host "[1.H] $msg" -ForegroundColor Cyan }
@@ -146,9 +148,13 @@ function Invoke-CliJson {
     $psi.UseShellExecute = $false
     $psi.Environment["DORYLINAE_HOME"] = $HomeDir
     $p = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $p.StandardOutput.ReadToEnd()
-    $stderr = $p.StandardError.ReadToEnd()
+    # Async reads: a synchronous ReadToEnd() would block on a hung child before the timeout applies.
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit($TimeoutMs)) { Stop-ProcessTree -Process $p; throw "agentnet $($CliArgs -join ' ') timed out" }
+    $p.WaitForExit()
+    $stdout = $outTask.Result
+    $stderr = $errTask.Result
     $obj = $null
     if ($stdout.Trim().Length -gt 0) {
         try { $obj = $stdout | ConvertFrom-Json } catch { }
@@ -568,8 +574,13 @@ foreach ($r in $rounds) {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $runDir = Join-Path $rootRun "round$($r.Num)-attempt$attempt"
         New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-        $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
-            -AgentnetExe $agentnetExe -RunDir $runDir -RelayPort $port -Python $python
+        # A Wait-Until timeout throws; treat it as a failed attempt so -MaxAttempts still applies (R55-187).
+        try {
+            $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
+                -AgentnetExe $agentnetExe -RunDir $runDir -RelayPort $port -Python $python
+        } catch {
+            $res = [pscustomobject]@{ Pass = $false; Reason = "round threw: $($_.Exception.Message)"; RequestId = ""; Outcome = ""; DurationSeconds = 0 }
+        }
         $attemptLog += [pscustomobject]@{ Round = $r.Num; Attempt = $attempt; Pass = $res.Pass; Reason = $res.Reason }
         if ($res.Pass) { $passCount++; Write-Ok "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): PASS ($($res.RequestId))"; break }
         else { Write-Fail "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): $($res.Reason)" }
