@@ -132,6 +132,14 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 		if haveCard {
 			return nil, Report{}, fmt.Errorf("%w (%w); restore it or delete %s to start a new identity", ErrKeyLost, err, cardPath)
 		}
+	case errors.Is(err, keystore.ErrUnavailable):
+		// The keychain may hold the key but cannot be read now (locked, timed
+		// out): that is not a lost key (review 55 R55-092). Without a card
+		// there is no identity yet, so a new one is created as on a machine
+		// without a keychain.
+		if haveCard {
+			return nil, Report{}, fmt.Errorf("identity: the private key could not be read, nothing was changed (%w); unlock the keychain and start again", err)
+		}
 	default:
 		return nil, Report{}, err
 	}

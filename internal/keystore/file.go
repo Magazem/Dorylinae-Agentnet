@@ -21,8 +21,9 @@ func NewFile(path string) *File { return &File{Path: path} }
 // Name implements Backend.
 func (*File) Name() string { return "file" }
 
-// Get implements Backend. A file readable by anyone but the owner is refused
-// on Unix, like ssh does for private keys.
+// Get implements Backend. A file accessible by anyone but the owner is
+// refused, like ssh does for private keys (on Windows also one owned by
+// another user; review 55 R55-089).
 func (f *File) Get() ([]byte, error) {
 	if err := checkOwnerOnly(f.Path); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -49,10 +50,12 @@ func (f *File) Set(secret []byte) error {
 	return WriteOwnerOnly(f.Path, []byte(base64.RawURLEncoding.EncodeToString(secret)+"\n"))
 }
 
-// WriteOwnerOnly atomically writes data to path, readable only by the current
-// user (mode 0600, or an owner-only DACL on Windows).
+// WriteOwnerOnly atomically and durably writes data to path, readable only by
+// the current user (mode 0600, or an owner-only DACL on Windows).
 func WriteOwnerOnly(path string, data []byte) (err error) {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".secret-*.tmp") // 0600 on Unix
+	dir := filepath.Dir(path)
+	// Restricted from creation, before any secret byte is written.
+	tmp, err := createPrivateTemp(dir)
 	if err != nil {
 		return err
 	}
@@ -63,10 +66,6 @@ func WriteOwnerOnly(path string, data []byte) (err error) {
 			_ = os.Remove(name)
 		}
 	}()
-	// Restrict before any secret byte is written.
-	if err = restrictToOwner(name); err != nil {
-		return err
-	}
 	if _, err = tmp.Write(data); err != nil {
 		return err
 	}
@@ -76,7 +75,10 @@ func WriteOwnerOnly(path string, data []byte) (err error) {
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	return syncDir(dir)
 }
 
 // Delete removes the file. A missing file is not an error.

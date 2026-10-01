@@ -232,15 +232,38 @@ Order of preference, per config directory:
    `identity-<id>` where `<id>` is the first 8 bytes (hex) of SHA-256 of the
    config directory path, so separate `DORYLINAE_HOME`s get separate keys.
 2. File `<config dir>/identity.key` containing the seed as base64url text.
-   Created atomically with owner-only permissions: mode `0600` on Linux and
-   macOS (a wider mode is refused on load), and on Windows a protected DACL
-   (inheritance disabled) with a single allow entry for the current user.
+   Created atomically and durably (the directory is synced after the rename
+   on Linux and macOS) with owner-only permissions: mode `0600` on Linux and
+   macOS, and on Windows a protected DACL (inheritance disabled) with a single
+   allow entry for the current user, set when the file is created, which is
+   opened exclusively while it is written. On load, a key file that is not
+   private is refused: a group or other mode bit on Linux and macOS; on
+   Windows an owner other than the current user, SYSTEM or Administrators, or
+   an allow entry giving anyone else more than reading its attributes or
+   access list.
+
+The config directory itself is made owner-only when the daemon starts (and
+by `agentnetd install`): mode `0700`, or on Windows, when anyone other than
+the current user, SYSTEM or Administrators has access, a protected DACL with
+a single inherited allow entry for the current user. A config directory owned
+by another user is refused. `agentnet doctor` warns when someone else can read
+it.
 
 Setting `DORYLINAE_KEYSTORE=file` skips the keychain (headless servers, CI,
 tests). The default is `auto`. The keychain is tried first; if it is
 unavailable or errors, the file is used and the reason is recorded in the
-audit event. Loading tries the keychain, then the file. A key found only in the
-file is not migrated automatically.
+audit event. Saving to one backend removes the copies in the others; a copy
+in a keychain that is unavailable at that moment cannot be removed, so on
+load, when the keychain and the file hold different keys, the file's (the
+newer) wins. A key found only in the file is not migrated automatically.
+
+An *unavailable* keychain (no keychain service, locked, a call timing out
+after 5 s) is not the same as a *missing* key: the key may be in it. When no
+backend holds the key and the keychain was unavailable, loading reports the
+keychain as unavailable, not the key as lost. Deleting skips an unavailable
+keychain (on a machine without one nothing can be stored there). These rules
+apply to every secret kept this way (the mailbox keys and the webhook secret
+too).
 
 The signed card is cached at `<config dir>/agent-card.json`. Lifecycle on
 daemon start:
@@ -252,6 +275,8 @@ daemon start:
 | present | missing | Re-create the card for the same key, audit `identity.create` |
 | present | invalid or for another key | Daemon fails to start; nothing is overwritten |
 | missing | present | Daemon fails to start (key lost; silently rotating the identity would break peers). Delete `agent-card.json` to start a new identity |
+| keychain unavailable, file has none | present | Daemon fails to start; nothing is changed. The error says the keychain could not be read, not that the key is lost |
+| keychain unavailable, file has none | missing | First run, as above: the new key goes to the file |
 
 Name and harness for a new card come from `DORYLINAE_AGENT_NAME` and
 `DORYLINAE_HARNESS` when set at creation time. A card is immutable once

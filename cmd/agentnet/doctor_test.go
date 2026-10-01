@@ -78,14 +78,14 @@ func TestCheckBinaryMinClient(t *testing.T) {
 
 func TestCheckConfigPass(t *testing.T) {
 	dir := t.TempDir()
-	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil })
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil }, func(string) error { return nil })
 	if got.State != doctorOK {
 		t.Fatalf("state = %q, want ok: %+v", got.State, got)
 	}
 }
 
 func TestCheckConfigFailMissing(t *testing.T) {
-	got := checkConfigWith(paths.Paths{Dir: filepath.Join(t.TempDir(), "missing")}, func(string) error { return nil })
+	got := checkConfigWith(paths.Paths{Dir: filepath.Join(t.TempDir(), "missing")}, func(string) error { return nil }, func(string) error { return nil })
 	if got.State != doctorFail {
 		t.Fatalf("state = %q, want fail: %+v", got.State, got)
 	}
@@ -94,8 +94,19 @@ func TestCheckConfigFailMissing(t *testing.T) {
 func TestCheckConfigWarnOnWritableByOthers(t *testing.T) {
 	dir := t.TempDir()
 	we := &device.WritableError{Path: dir, Who: "Everyone"}
-	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return we })
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return we }, func(string) error { return nil })
 	if got.State != doctorWarn || got.Fix == "" {
+		t.Fatalf("got = %+v, want warn with a fix", got)
+	}
+}
+
+// Review 55 R55-089: a directory others can read is not reported as
+// owner-only.
+func TestCheckConfigWarnOnReadableByOthers(t *testing.T) {
+	dir := t.TempDir()
+	np := &paths.NotPrivateError{Path: dir, Who: "Users"}
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil }, func(string) error { return np })
+	if got.State != doctorWarn || got.Fix == "" || strings.Contains(got.Detail, "owner-only") {
 		t.Fatalf("got = %+v, want warn with a fix", got)
 	}
 }

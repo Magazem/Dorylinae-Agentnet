@@ -104,7 +104,9 @@ func (k *Keychain) Set(secret []byte) error {
 }
 
 // Delete removes the entry, under its current and legacy accounts. It
-// returns ErrNotFound when none held it.
+// returns ErrNotFound when none held it. Other failures wrap ErrUnavailable,
+// like Get's: a machine without a keychain service fails every call
+// (review 55 R55-092).
 func (k *Keychain) Delete() error {
 	found := false
 	var errs []error
@@ -118,7 +120,7 @@ func (k *Keychain) Delete() error {
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	if !found {
 		return ErrNotFound

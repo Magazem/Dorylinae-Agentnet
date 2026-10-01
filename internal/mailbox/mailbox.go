@@ -237,6 +237,10 @@ func (k *Keys) Announcement() ([]byte, error) {
 // usable reports whether r is not about to expire and its private key is in
 // the keystore and matches. A keystore failure other than "not found" is an
 // error: rotating then would orphan a key that may still be there (review L5).
+// An unavailable keystore (a locked keychain) counts as usable: the key is
+// most likely still there, and a needless rotation would announce a new key
+// to every peer (review 55 R55-092). A key that is really gone is then
+// replaced at the latest by the scheduled rotation.
 func (k *Keys) usable(r *row, now time.Time) (bool, error) {
 	if !r.notAfter.After(now.Add(renewBefore)) {
 		return false, nil
@@ -245,6 +249,9 @@ func (k *Keys) usable(r *row, now time.Time) (bool, error) {
 	switch {
 	case errors.Is(err, keystore.ErrNotFound):
 		return false, nil
+	case errors.Is(err, keystore.ErrUnavailable):
+		k.log.Warn("mailbox: keystore unavailable, keeping the current key", "event", "mailbox_error", "key_id", r.keyID, "error", err)
+		return true, nil
 	case err != nil:
 		return false, err
 	}

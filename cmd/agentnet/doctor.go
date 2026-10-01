@@ -274,17 +274,19 @@ func checkBinaryFor(cliVersion string, daemonUp bool, daemonVersion, minClient s
 }
 
 // checkConfig is the existing D24/L11 owner-only check (internal/device),
-// reused here; a drive-root ACL like "Authenticated Users:(M)" is a warn with
-// a fix, not a hard failure. Paths are printed relative to ~ (never a bare
-// absolute path outside it).
+// reused here, followed by a check that nobody else can read the directory
+// (review 55 R55-089: checking writers only said "owner-only" of a directory
+// others could read); either finding is a warn with a fix, not a hard
+// failure. Paths are printed relative to ~ (never a bare absolute path
+// outside it).
 func checkConfig(p paths.Paths) doctorCheck {
-	return checkConfigWith(p, device.CheckProgramOwner)
+	return checkConfigWith(p, device.CheckProgramOwner, paths.CheckPrivate)
 }
 
-// checkConfigWith is checkConfig with the ownership check injected, so a test
-// can exercise the warn branch without building a real writable-by-others
-// directory (OS-specific ACLs).
-func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
+// checkConfigWith is checkConfig with the ownership and privacy checks
+// injected, so a test can exercise the warn branches without building a
+// real directory others can access (OS-specific ACLs).
+func checkConfigWith(p paths.Paths, checkOwner, checkPrivate func(string) error) doctorCheck {
 	if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
 		return doctorCheck{ID: "config", State: doctorFail,
 			Detail: "the config directory does not exist",
@@ -298,6 +300,15 @@ func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
 				Fix:    "restrict the directory to your own user (and Administrators/root)"}
 		}
 		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check the config directory's owner"}
+	}
+	if err := checkPrivate(p.Dir); err != nil {
+		var np *paths.NotPrivateError
+		if errors.As(err, &np) {
+			return doctorCheck{ID: "config", State: doctorWarn,
+				Detail: displayRelHome(p.Dir) + " can be read by someone other than you",
+				Fix:    "restrict the directory to your own user (agentnetd does this on start unless another user owns it)"}
+		}
+		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check who can read the config directory"}
 	}
 	return doctorCheck{ID: "config", State: doctorOK, Detail: displayRelHome(p.Dir) + " exists and is owner-only"}
 }
@@ -341,6 +352,10 @@ func checkKeychain(p paths.Paths) doctorCheck {
 		return doctorCheck{ID: "keychain", State: doctorWarn,
 			Detail: "no identity key yet",
 			Fix:    "run `agentnetd install` (or start `agentnetd`) to create one"}
+	case errors.Is(err, keystore.ErrUnavailable):
+		return doctorCheck{ID: "keychain", State: doctorWarn,
+			Detail: "the keychain is unavailable and no key file holds the identity key",
+			Fix:    "unlock the keychain (or check that its service is running) and run doctor again"}
 	default:
 		return doctorCheck{ID: "keychain", State: doctorFail,
 			Detail: "the identity key is not readable",

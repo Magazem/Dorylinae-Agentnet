@@ -56,6 +56,9 @@ For a key created at time `t`:
   key's `created ≤ now − 7 d`, it creates a new key, retires the previous current key, audits
   `mailbox.rotate {key_id, retired}`, and pushes the new announcement to every peer with a
   non-empty `mailbox_keys` as a [`keys` mail](#kind-keys) (outboxed and acked like any mail).
+  A current key whose private half is missing from the keystore is replaced at once; one that
+  cannot be read because the keychain is unavailable (locked, timed out) is kept, and is
+  replaced at the latest by the 7-day rotation (review 55 R55-092).
 - In the same job, every key with `not_after + 7 d ≤ now` is deleted from the keystore, and
   its row gets `deleted` set. The row itself is kept for audit.
 - A key is **live** when it is not deleted. This schedule never has more than **3 live keys**

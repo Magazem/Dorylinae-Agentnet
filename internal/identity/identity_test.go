@@ -160,6 +160,40 @@ func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
 	}
 }
 
+// Review 55 R55-092: a keychain that holds the key but cannot be read now
+// (locked, timed out) is not a lost key: start-up fails without advising to
+// delete the card, and nothing is created or changed.
+func TestKeychainOutageIsNotKeyLost(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	ks, err := identity.NewKeystore(dir, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); err != nil {
+		t.Fatal(err)
+	}
+	card, err := os.ReadFile(filepath.Join(dir, identity.CardFile)) //nolint:gosec // test reads its own temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	defer keyring.MockInit()
+	_, _, err = identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err == nil || errors.Is(err, identity.ErrKeyLost) || !errors.Is(err, keystore.ErrUnavailable) {
+		t.Fatalf("want an unavailable error, not ErrKeyLost: %v", err)
+	}
+	if strings.Contains(err.Error(), "delete") {
+		t.Fatalf("the error advises deleting the card: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, identity.CardFile)); err != nil || string(got) != string(card) { //nolint:gosec // test reads its own temp dir
+		t.Fatalf("card changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, identity.KeyFile)); !os.IsNotExist(err) {
+		t.Fatal("a key must not be created during an outage")
+	}
+}
+
 func TestMissingCardIsRecreatedForSameKey(t *testing.T) {
 	dir := testutil.TempDir(t)
 	ks := fileStore(t, dir)

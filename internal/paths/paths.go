@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // HomeEnv overrides the config directory when set.
@@ -85,16 +84,27 @@ func Canonical(dir string) string {
 	}
 }
 
-// Ensure creates the config directory with owner-only permissions.
+// Ensure creates the config directory with owner-only permissions: mode 0700,
+// or on Windows a protected DACL for the current user when anyone else had
+// access. A directory owned by another user is refused (review 55 R55-089).
 func (p Paths) Ensure() error {
 	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		// Directory needs the x bit; 0700 is owner-only.
-		if err := os.Chmod(p.Dir, 0o700); err != nil { //nolint:gosec // see above
-			return fmt.Errorf("secure config dir: %w", err)
-		}
+	if err := secureDir(p.Dir); err != nil {
+		return fmt.Errorf("secure config dir: %w", err)
 	}
 	return nil
+}
+
+// NotPrivateError means a path that must be private to the current user is
+// not: Who can read or change it, or (Owner) it belongs to someone else.
+type NotPrivateError struct {
+	Path  string
+	Who   string
+	Owner bool
+}
+
+func (e *NotPrivateError) Error() string {
+	return e.Path + " is not private to the current user: accessible by " + e.Who
 }
