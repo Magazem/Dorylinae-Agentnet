@@ -57,8 +57,11 @@ One line per row, `TIME ACTOR ACTION key=value …`, keys sorted, values as JSON
 2026-10-01T09:00:05.6Z daemon daemon.start pid=4242 version="0.3.0"
 ```
 
-Every part goes through the control-character cleaner used for notifications, so a key or
-name that came from a peer cannot inject terminal escapes.
+Every part goes through `displayTerm`
+([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings),
+R55-F10). It replaced the notification control-character cleaner, which let bidi and
+zero-width characters through. A key or name that came from a peer can then neither inject
+terminal escapes nor reorder the line; such characters show as `\u{XXXX}`.
 
 `--verify`:
 

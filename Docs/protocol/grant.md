@@ -66,7 +66,13 @@ Canonical JSON ([agent-card.md](agent-card.md#canonical-serialisation)), parsed 
 the local path, lowercased and cleaned, plus `-` and 4 hex characters). **The local path is
 never sent**: the token names the resource only by label, and the grantor maps label → path
 locally. `branch` follows the request artifact `branch` rules and must be a valid
-`refs/heads/<branch>` name.
+`refs/heads/<branch>` name. It also must not contain a `hidden` rune of
+[approval.md §Sanitising](approval.md#sanitising-one-character-rule-two-renderings): no C1
+control, bidi control, zero-width or other format character, line separator, variation
+selector, Hangul filler, non-ASCII space or U+2800 (review 55 R55-056, ticket R55-F10). Git
+allows such a branch name, but nobody could compare it by eye. The rule is checked at
+issuance, on a received token, and when a stored grant is served. A grant on such a branch
+issued before R55-F10 fails as `not_found` at its next use; re-issue it on a renamed branch.
 
 ### Token
 

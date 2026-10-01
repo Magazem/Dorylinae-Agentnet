@@ -381,8 +381,8 @@ summary.
 
 ### Sanitising: one character rule, two renderings
 
-One predicate, `hidden(r)`, shared by the builder, `device.DisplayQuote` and
-`decision.Visible`. The decision output does not change: this is exactly its set, and review 46
+One predicate, `hidden(r)`, shared by the builder, `device.DisplayQuote`,
+`decision.Visible` and every `agentnet` print site (R55-F10, `displayTerm` below). The decision output does not change: this is exactly its set, and review 46
 H1's. It is true for:
 
 - C0 and C1 controls (U+0000–U+001F, U+007F–U+009F);
@@ -460,6 +460,57 @@ on one line after a fixed prefix (`agentnet: pairing failed:`, `last error:`), s
 pose as a separate line. An empty result stays empty. It is `displaytext.Line` in code; the
 CLI applies it again at every print site listed there (defence in depth: an older daemon may
 serve raw text).
+
+**Terminal rendering, `displayTerm(s)`** (R55-F10; not an approval rendering). This is the
+**one** rule for every `agentnet` print site that shows text a peer, a grantor, a team owner,
+a Decision file or an audit row chose: names, titles, topics, reasons, summaries, branches,
+file names, artifact fields. It escapes and does not remove, so the value can still be read
+exactly. `--json` gives the raw value.
+1. Invalid UTF-8 decodes as U+FFFD.
+2. Every `hidden` rune, and U+FFFD, is replaced by the visible ASCII escape `\u{XXXX}` (the
+   code point in uppercase hex, 4 to 6 digits). This is `decision.Visible`'s escape and set.
+3. On one base character the first 2 combining marks (`Mn`, `Me`) are kept. Each further mark
+   is escaped the same way, the stacked-marks rule of `displayQuote`.
+4. Everything else is kept, `\` included (OD-F10-6). Letters of right-to-left scripts are kept,
+   with the residual described under `displayQuote`.
+
+The output is one line with no control, format, bidi or invisible character, so it cannot move
+the cursor, reorder a table column or start a new line. It is not cut: every such field is
+already bounded where the daemon accepts it.
+
+**Block rendering, `displayBlock(s, indent)`**, for the few fields that are multi-line by
+design: a request's `reason` and result `output`, a debate `topic`, a session result
+`summary`.
+- The text is split at `\n`. One final `\n` is dropped.
+- Each line is rendered by `displayTerm`, except that a tab is kept.
+- Every line after the first is prefixed by `indent`, which the caller sets to at least the
+  indentation of the field's label line plus two spaces.
+
+So a peer's text cannot produce a line that starts where a field label starts (a fake `state
+done` or `[3] respondent final`, R55-056). `\r` is a hidden rune and is escaped, so it cannot
+return to the start of a line either.
+
+**JSON output.** Every `--json` output of `agentnet` writes each non-ASCII `hidden` rune inside
+a JSON string as a `\uXXXX` escape: lowercase hex, and a surrogate pair above U+FFFF.
+`encoding/json` already escapes C0, U+2028 and U+2029. The decoded value is unchanged, so this
+is not a format change. The JSON is still exact, but `agentnet peers --json` printed on a
+terminal can no longer carry a C1 control or a bidi override (R55-056).
+
+**Which rendering where.** These five renderings over one `hidden` set are the whole API of
+`internal/displaytext`:
+
+| Rendering | Function | Used for |
+|---|---|---|
+| `displayName` | `Name` | identifying text in approval summaries (peer, team name) |
+| `displayQuote` | `Quote` | exact values in approval summaries, and `device scope` paths and argv |
+| `displayLine` | `Line` | relay and connection diagnostics (R55-F9), cut to a byte limit |
+| `displayTerm` | `Term` | every other peer-chosen value an `agentnet` command prints, error messages from the daemon included |
+| `displayBlock` | `Block` | the multi-line fields listed above |
+
+`decision.Visible` (decision.md §Markdown) is `displayTerm` without step 3, with `\n` and `\t`
+kept in multi-line mode. That keeps the published Markdown format unchanged (OD-F10-8).
+The old `termSafe` of `agentnet fetch` (Go quoting of non-`IsPrint` text, review 55 R55-054)
+is removed.
 
 **The fingerprint** is `fp(key)` of [pairing.md](pairing.md#fingerprints), computed by the
 daemon from the key the action binds to. It is never taken from an IPC parameter or a card.

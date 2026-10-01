@@ -1,7 +1,8 @@
 # Agent Card (identity)
 
 Status: v1, introduced by ticket 0.3; parsing and schema rules made exact by
-review 55 ticket R55-F23. Implemented in `internal/agentcard` (sign, verify)
+review 55 ticket R55-F23; text rule extended (bidi controls, line separators) by
+ticket R55-F10. Implemented in `internal/agentcard` (sign, verify)
 and `internal/identity` (key + card lifecycle). An independent verifier lives
 in `tools/verifycard`; it shares no code with the daemon and performs every
 step of [Verification](#verification), the schema step included.
@@ -37,10 +38,27 @@ signature did not bind under that name (review 55 R55-019).
 | `created` | string | Creation time, RFC 3339 UTC with `Z` and whole seconds, e.g. `2026-01-02T03:04:05Z`: exactly `YYYY-MM-DDThh:mm:ssZ`, a real calendar date, hour 00-23, minute and second 00-59 (no leap second) |
 
 **Text** (every string member except `public_key` and `created`, skill members
-included): a count of Unicode code points within the stated range, with no code
-point of general category Cc (U+0000-U+001F and U+007F-U+009F) and no U+FFFD
-REPLACEMENT CHARACTER. This is what `internal/agentcard` has enforced since
-ticket 0.3, so every existing card satisfies it (review 68b).
+included): a count of Unicode code points within the stated range, with none of:
+
+- a code point of general category Cc (U+0000-U+001F and U+007F-U+009F);
+- U+FFFD REPLACEMENT CHARACTER;
+- a bidi control (the Unicode property `Bidi_Control`): U+061C, U+200E, U+200F,
+  U+202A-U+202E and U+2066-U+2069 (review 55 R55-055, ticket R55-F10);
+- U+2028 LINE SEPARATOR or U+2029 PARAGRAPH SEPARATOR.
+
+The first two items are what `internal/agentcard` has enforced since ticket 0.3 (review 68b).
+The last two were added by R55-F10. A bidi control can reorder the text around a card value
+wherever it is shown: the fingerprint column of `agentnet peers`, or a log line. U+2028 and
+U+2029 break the line. Neither has a use in a name, a harness or a skill.
+
+Other invisible characters are **allowed**. These include the zero-width joiner U+200D and the
+variation selectors, which emoji need (`👩‍💻`, `❤️`), and the tag characters of subdivision
+flags. Every program that prints card text must still escape them. In Dorylinae that is the
+terminal rendering of [approval.md §Sanitising](approval.md#sanitising-one-character-rule-two-renderings).
+The two rule sets are named here because [Cards stored before R55-F10](#cards-stored-before-r55-f10)
+uses them:
+- the **legacy text rule** is the first two items only;
+- the **text rule** is all four items.
 
 Skill object: **exactly** these three members, matched by exact name as above.
 All three are required; `description` may be `""` but must be present (a
@@ -219,6 +237,44 @@ A card received through a v1 pairing (`trust=relay`) is only as trustworthy as
 the relay that carried it. A hostile relay can substitute its own key. See
 [pairing.md §Storage and trust states](pairing.md#storage-and-trust-states).
 
+### Cards stored before R55-F10
+
+R55-F10 added two items to the [text rule](#card). A card created before then can break
+them and still carry a valid signature. A card cannot be edited without its key, so a daemon
+cannot rewrite such a card; it can only decide where to accept it. Review 76 I3 explains the
+risk: if every stored card were checked under the new rule, honest teams would find their
+roster updates blocked. A daemon therefore checks text in two ways.
+
+**[Verification](#verification) step 5 with the text rule** (`agentcard.Verify`) applies to:
+- every card received at pairing (v1 and v2), team join included;
+- every card `internal/agentcard` creates or signs (`New`, `Sign`), so a new card can never
+  break the rule;
+- `tools/verifycard` and the [test vectors](#negative-test-vectors-review-55-r55-f23).
+
+**The same steps, with the legacy text rule in step 5** (`agentcard.VerifyStored`), apply to:
+- the daemon's own `agent-card.json`, re-verified at every start. Without this, a card named
+  with a bidi control would stop the daemon from starting (the lifecycle table under
+  [Key storage](#key-storage)). Such a card is kept and the daemon logs a warning once per
+  start. `agentnet identity` adds the line `note: this name holds characters that peers
+  refuse at pairing since R55-F10; to pair with them, start a new identity`;
+- every stored `peers.card` row: the OD-3 migration (`MigrateCards`, `RescueStored`) and
+  `agentnet doctor`;
+- a card the daemon forwards in a team roster (`forwardCard`);
+- a member card inside a roster received from the owner of a team (`parseRosterMember`).
+  The owner is already trusted to introduce keys. With the full rule here, one pre-R55-F10
+  member would make every new member refuse every roster from that owner.
+
+The legacy rule never accepts a card that the full rule refuses for any other reason. The
+members, sizes, signature and key all stay under the full rules. Only the two R55-F10 items
+are left out.
+
+A stored card that passes only under the legacy rule is **not** a bad card in the sense of
+[Size](#size) and review 68 OD-3:
+- the daemon keeps it and forwards it;
+- `agentnet doctor` shows it as `ok`, with the count in the row's detail;
+- every program shows its text escaped, like any card text;
+- a daemon running R55-F10 refuses the same card at a new pairing.
+
 ## Key storage
 
 The private key is a 32-byte Ed25519 seed, generated with `crypto/rand` on the
@@ -307,7 +363,7 @@ canonical form of the card as shown, so step 4 passes. These vectors check
 that the schema step, not the signature, refuses them. `internal/agentcard`
 (`Verify`, and `ParseStrict` itself for N6-N10), `tools/verifycard` and
 `tools/verifyvectors` must all refuse every one of them at that step. They
-must also accept P1 and P2.
+must also accept P1, P2 and P3.
 
 **P1: accepted.** A valid surrogate pair in an ignored top-level member. The
 verified card is exactly the card of [Test vector](#test-vector), and `name` is
@@ -421,7 +477,42 @@ schema step refuses it.
 {"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"","id":"s01","name":"Skill 01"},{"description":"","id":"s02","name":"Skill 02"},{"description":"","id":"s03","name":"Skill 03"},{"description":"","id":"s04","name":"Skill 04"},{"description":"","id":"s05","name":"Skill 05"},{"description":"","id":"s06","name":"Skill 06"},{"description":"","id":"s07","name":"Skill 07"},{"description":"","id":"s08","name":"Skill 08"},{"description":"","id":"s09","name":"Skill 09"},{"description":"","id":"s10","name":"Skill 10"},{"description":"","id":"s11","name":"Skill 11"},{"description":"","id":"s12","name":"Skill 12"},{"description":"","id":"s13","name":"Skill 13"},{"description":"","id":"s14","name":"Skill 14"},{"description":"","id":"s15","name":"Skill 15"},{"description":"","id":"s16","name":"Skill 16"},{"description":"","id":"s17","name":"Skill 17"},{"description":"","id":"s18","name":"Skill 18"},{"description":"","id":"s19","name":"Skill 19"},{"description":"","id":"s20","name":"Skill 20"},{"description":"","id":"s21","name":"Skill 21"},{"description":"","id":"s22","name":"Skill 22"},{"description":"","id":"s23","name":"Skill 23"},{"description":"","id":"s24","name":"Skill 24"},{"description":"","id":"s25","name":"Skill 25"},{"description":"","id":"s26","name":"Skill 26"},{"description":"","id":"s27","name":"Skill 27"},{"description":"","id":"s28","name":"Skill 28"},{"description":"","id":"s29","name":"Skill 29"},{"description":"","id":"s30","name":"Skill 30"},{"description":"","id":"s31","name":"Skill 31"},{"description":"","id":"s32","name":"Skill 32"},{"description":"","id":"s33","name":"Skill 33"}],"version":1},"signature":"0ouqXvsFbA9vVXVDizSQktby6mS3VqQfi2dIAq_2yrY1BgC0KRSJylOdSTYH3XKHjfg6Wo4QyK3C8Sp-xA7oBw"}
 ```
 
+### Charset vectors (R55-F10)
+
+These three use the key and the skill of the Test vector. Each signature is a real signature
+by the seed over the canonical form of the card as shown, so steps 1-4 pass. In the canonical
+form the escaped characters are written literally, as UTF-8.
+
+**N18: fails at 5. A name holding U+202E RIGHT-TO-LEFT OVERRIDE** (`"Ada ‮tset"`, shown
+by a bidi terminal as `Ada test`). This is the acceptance vector of ticket R55-F10. The
+canonical card is 217 bytes.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada ‮tset","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"HufKwTnEGRZEvhvEm874U66Jpt_BxzOkPI9wi1IrZ9HwezQXVylvCFz045n8TPpGfKT35o3UAImuU1U720k8DA"}
+```
+
+**N19: fails at 5. A skill description holding U+2028 LINE SEPARATOR** (`"a/b c"`).
+The canonical card is 223 bytes. The rule covers every text member, and `description` may be
+empty but never holds a line break.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada \"test\" <é>","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b c","id":"review","name":"Code review"}],"version":1},"signature":"xd-mXEG-KehZtTVaZ9vT-dGWLKDpTtLkCEv0yeyX5WhDTonzLoC4UgxD6yyYcDCKpSqZ2UNrJUggjWQfxSZKCw"}
+```
+
+**P3: accepted.** A name holding an emoji ZWJ sequence and a variation selector
+(`Ada 👩‍💻 ❤️`: U+1F469 U+200D U+1F4BB, then U+2764 U+FE0F). Invisible characters that
+are not bidi controls or line separators stay allowed. The canonical card is 228 bytes.
+The envelope below writes the name with JSON escapes (a valid surrogate pair for each
+character above U+FFFF), so the line is ASCII apart from `é`.
+
+```
+{"card":{"created":"2026-01-02T03:04:05Z","harness":"custom","name":"Ada 👩‍💻 ❤️","public_key":"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg","skills":[{"description":"a/b & c","id":"review","name":"Code review"}],"version":1},"signature":"PO0Kh7tfYN0cC5qJMOz6SYAkbfKJazGC6UyF3e_jz9a8nm0S0ClJiSlxSd-FzonDmxmcJH5iOydFvmIcYoS9Bg"}
+```
+
+`agentcard.VerifyStored` ([Cards stored before R55-F10](#cards-stored-before-r55-f10))
+accepts N18, N19 and P3. It refuses N1-N17 at the same steps as `Verify`.
+
 `<canonical card of the Test vector>` in P1, N12 and N14 stands for the canonical
 card line of [Test vector](#test-vector), inserted verbatim. `tools/verifyvectors/vectors.json` carries
-every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1
-and P2); N16 is generated by `tools/specvectors` rather than typed.
+every envelope in full, under `agent_card.cases` as `{name, envelope, fails_at}` (0 for P1,
+P2 and P3); N16 is generated by `tools/specvectors` rather than typed.

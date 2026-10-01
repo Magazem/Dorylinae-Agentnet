@@ -35,6 +35,15 @@ signature:   <base64url>
 key storage: keychain
 ```
 
+`name`, `harness` and the skill ids are printed through `displayTerm`
+([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings)).
+A card created before R55-F10 whose text holds a bidi control or a line separator still
+works locally ([agent-card.md](../protocol/agent-card.md#cards-stored-before-r55-f10)).
+Its human output ends with
+`note: this name holds characters that peers refuse at pairing since R55-F10; to pair with them, start a new identity`.
+A new card cannot hold such characters: `DORYLINAE_AGENT_NAME` or `DORYLINAE_HARNESS` with one
+of them fails card creation, with an error naming the field.
+
 ## `--json` output
 
 ```json
