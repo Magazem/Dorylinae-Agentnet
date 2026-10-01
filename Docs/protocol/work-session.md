@@ -630,7 +630,7 @@ session before releasing it can then see which sensitive grants caused the quara
 | Method | Params | Result / errors |
 |---|---|---|
 | `ws_list` | `{"state"?, "role"?, "peer"?, "team"?}` | `{"sessions": [<list view>]}`, newest `state_at` first |
-| `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session` |
+| `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session`; `ambiguous_request` when the `r-` id belongs to more than one session (any role or peer, rows from before R55-F20): use the `s-` id. Every `ws_*` method and `wait` resolve an `r-` id the same way |
 | `ws_result` | `{"id", "result", "notes"?}` (B only) | `{"session": <view>, "mail_id"}`. `bad_state` unless B's mirror is `open` (and `cancel` not requested) **and no result was submitted yet for the current round** (message: "a result for round N was already submitted; wait for the requester or cancel"; R55-F18), or the id names a `pending`/`deferred` request of type `question`, which is accepted in the same call ([consult.md §Answering](consult.md#answering)); `bad_state` on a [run session](#run-sessions); `bad_request` naming the field; `result_too_large`; `not_worker` |
 | `ws_accept_result` | `{"id", "human"?: bool}` (A only) | `{"session": <view>, "mail_id"}` or, with `human`, `{"approval": <approval view>}` ([approval.md](approval.md)). `bad_state`, `not_requester` |
 | `ws_request_changes` | `{"id", "changes"}` (A only) | `{"session", "mail_id"}`. `bad_state` unless `awaiting_result` or `quarantined` (from `quarantined`, no approval, per OD-P2-6 (c)); `bad_request`, `not_requester` |

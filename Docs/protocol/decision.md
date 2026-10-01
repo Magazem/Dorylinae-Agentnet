@@ -376,7 +376,7 @@ removes the debate it came from ([retention.md](retention.md#finished-items), OD
 | Method | Params | Result / errors |
 |---|---|---|
 | `decision_list` | `{"state"?, "peer"?}` | `{"decisions": [{"id", "session", "peer", "outcome", "state", "created", "title"}]}` |
-| `decision_show` | `{"id"}` (`d-`, `s-` or `r-`) | the [signed file](#signed-file-third-party-verification) plus `{"state", "peer_names"}`. `unknown_decision` |
+| `decision_show` | `{"id"}` (`d-`, `s-` or `r-`) | the [signed file](#signed-file-third-party-verification) plus `{"state", "peer_names"}`. `unknown_decision` (also for an unknown `s-` or `r-` id); `ambiguous_request` when an `r-` id matches debates with more than one peer (R55-128) |
 
 | Command | Notes |
 |---|---|

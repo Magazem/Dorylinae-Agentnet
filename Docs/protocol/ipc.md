@@ -317,7 +317,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `team_full` | The team already has 32 members (`team_invite`) |
 | `no_shared_team`, `not_team_member` | `request_submit` team resolution |
 | `unverified_peer` | D5: `trust=relay` peer on a non-loopback relay |
-| `unknown_request`, `ambiguous_request` | Request reference not found, or it matches `in` rows from several peers (pass `from`) |
+| `unknown_request`, `ambiguous_request` | Request reference not found, or an id alone matches more than one row (pass `from`, or use the `s-` id; [request.md §Request ids and references](request.md#request-ids-and-references-r55-f20)) |
 | `bad_state` | Lifecycle transition, `request_resend` or `request_cancel` is not allowed in the current state (the message names the state) |
 | `request_too_large` | `request_submit`: the canonical request object is over 65536 bytes ([request.md §Size limits](request.md#size-limits)) |
 | `result_too_large` | `request_complete`: the canonical `request.complete` body is over 65536 bytes ([request.md §Result payload](request.md#result-payload-d14)) |
@@ -397,7 +397,7 @@ row, with no paging; review 55 R55-023): in a list view `brief` is the empty str
 
 | Method | Params | Result |
 |---|---|---|
-| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup). A `result` is shown in full, with `output` |
+| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Without `from`, looks at every row with that id: one match is shown, more is `ambiguous_request`. With `from`, only the `in` row from that peer (R55-F20, [request.md §Request ids and references](request.md#request-ids-and-references-r55-f20)). A `result` is shown in full, with `output` |
 | `request_list` | `{"state"?, "team"?, "peer"?}` (`state` includes `cancelled`) | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first. A `result` omits `output` |
 | `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` with no `cancel`, its mail is `expired` or `failed`, and the request is under 21 d old |
 | `request_cancel` | `{"id", "reason"?}` | `{"request": <out view>, "mail_id": "<cancel mail>"\|null, "duplicate": bool}`. Sender only (`out` rows; `unknown_request` otherwise). Allowed while the mirror state is `pending` or `deferred`. `bad_state` when it is `accepted`, `declined` or `completed`. Idempotent: an already `cancelled` row, or a cancel still in flight, returns `duplicate: true` and sends nothing. `reason`: 1–500 code points. Returns at once; the state becomes `cancelled` when the recipient confirms |

@@ -37,7 +37,7 @@ A fourth type, `debate`, exists (Phase 3) but is not submitted through this comm
 | `--run NAME` | For your own helper device ([device.md](device.md)): the name of a command its owner allowed with `agentnet device scope`. A name only, 1–64 characters of `[a-z0-9._-]`; no arguments, paths or environment. If the request is in the helper's scope it runs at once and the result comes back through `agentnet wait`; otherwise it lands in the helper's normal inbox |
 | `--state S` | `list`: `pending`, `accepted`, `declined`, `deferred`, `completed` or `cancelled` |
 | `--reason R` | `cancel`: optional, 1–500 characters, shown to the recipient |
-| `--from <peer>` | `show`: pick the sender when the id matches requests from several peers |
+| `--from <peer>` | `show`: show the request received from that peer (never your own outgoing one); needed when the id matches more than one request |
 | `--json` | Machine-readable output on stdout |
 
 ## The brief

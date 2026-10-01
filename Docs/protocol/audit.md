@@ -250,7 +250,9 @@ All three only read. `audit_verify` is exempt from the IPC 2-second rule; `audit
   grants (`detail.grant` in the session's grant ids), its decision (`detail.id` = the
   derived `d-` id) and its approvals (`detail.subject` = the session or one of its grant
   ids). An `r-` id resolves to its session. A request without a session shows its request
-  rows.
+  rows, with its peer. An `r-` id that matches sessions or requests of more than one
+  `(role, peer)` is `ambiguous_request`: use the `s-` id (R55-F20). Only when no row has the
+  id any more (pruned) are the rows naming `detail.request` shown for any peer.
 - `--action` filters by prefix (`grant.`).
 - Human output: one line per row, `ts actor action key=value …` with detail values printed
   as JSON scalars (detail is content-free by construction, but values still go through the

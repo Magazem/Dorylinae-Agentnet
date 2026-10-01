@@ -15,7 +15,7 @@ agentnet log --head [--json]
 |------|---------|
 | `--since D\|T` | only rows at or after this time: a duration back from now (`24h`, `90m`, `7d`) or an RFC 3339 time |
 | `--until T` | only rows at or before this RFC 3339 time |
-| `--session ID` | only the rows of one work session (`s-…`) or request (`r-…`): the rows that name the session, its request (with its peer), its grants, its approvals and its decision. Rows of another session are not shown. An `r-` id resolves to its session; a request without one shows its request rows |
+| `--session ID` | only the rows of one work session (`s-…`) or request (`r-…`): the rows that name the session, its request (with its peer), its grants, its approvals and its decision. Rows of another session are not shown. An `r-` id resolves to its session; a request without one shows its request rows. An `r-` id shared by more than one session or peer (`ambiguous_request`, exit 1): use the `s-` id |
 | `--action PREFIX` | only actions starting with `PREFIX` (`grant.`) |
 | `--limit N` | print at most `N` rows. Default: every match (the CLI pages through the daemon, 1000 rows a call) |
 | `--verify` | check the whole hash chain (it takes no filters: they are views, `--verify` always checks everything) |
