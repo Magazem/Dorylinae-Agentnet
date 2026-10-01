@@ -38,6 +38,7 @@ Reviews written: 66–81b in Docs/review/ (66–72 specs + adversarial reviews; 
 - **R55-F17b** (Low, from review 77b): evict the longest-idle IPC connection at the cap; deferred cleanup of approval Create's slot on panic; refund the pairing-start token on local failure; panic-safe locks on IPC-reachable paths (priority session.Manager send paths), panic-log rate limit.
 - Backlog notes: F12 review 70 L1 (only the first receive error per id is logged; R55-058 "mark bad after N failures" not done); F23 review 76 I2 (struct decodes after verification → F31/F34 sweep) and I3 (F10 must rescue stored cards); F14: launchd's reopen of the rotated agentnetd.out.log not verified on a real Mac (owner manual check); F24/D61: full "invisible" hiding of mail delivery would need its own spec.
 - The remaining Low R55 tickets (F10, F16, F20–F22, F25–F34) and earlier follow-ups (F8c, F3c, F6b) below.
+- **Investigating (2026-10-01):** recurring daemon e2e flake `bob pair_redeem: relay_unavailable: the daemon is not connected to the relay` (TestLifecycleBadStateIPC ubuntu main run 36800360025; TestPresenceAgentActiveEdge macOS on PR #28) — INV-RelayReady-Opus, worktree fix-relay-ready, branch fix/relay-ready-race.
 - Watch: TestAuditInventory on Windows CI once failed with `alice ws_request_changes: ipc: read response: i/o timeout` (main run 36791139449; next run green) — if it recurs, look at F17's IPC deadlines and F18's work-session locking. TestConsultContextCapsIPC failed once in a loaded local gate.
 
 **How to run it (lessons from this wave, all binding):**
