@@ -32,17 +32,18 @@ Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Me
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
 **WAVE R55-L (review-55 Lows, D63) — STARTED 2026-10-01, base main eb283bf.** Tickets: F10, F16, F17b, F20, F21, F22, F25–F34, F8c, F3c, F6b (F15 deferred). Owner decisions D64 (AppendTx for security actions, F31), D65 (document D20, F34), D66 (blanking needs a digit, F6b).
-Batch 1 (worktrees AgentNet-wt/r55-<x>, branches p4/r55-<x>):
-| Ticket | Slot | Model | State |
-|---|---|---|---|
-| F16 relay ops | R55-F16-Sonnet `01a0f89f-c0f4…` | Sonnet | coding |
-| F22 Windows hardening | R55-F22-Sonnet `01a0f89f-c393…` | Sonnet | coding |
-| F25 device runner | R55-F25-Opus `01a0f89f-c64b…` | Opus | coding (security review after) |
-| F32 CI coverage | R55-F32-Lite `01a0f89f-c8cd…` | Lite | coding |
-| F33 harness | R55-F33-Lite `01a0f89f-cb76…` | Lite | coding |
-| F10 spec | R55-F10spec-Opus `01a0f89f-cdf7…` | Opus | 82-r55-f10-spec.md |
-| F20 spec | R55-F20spec-Opus `01a0f89f-d0a3…` | Opus | 83-r55-f20-spec.md (+ R55-163 OD) |
-| F31 spec | R55-F31spec-Opus `01a0f89f-d28c…` | Opus | 84-r55-f31-spec.md (D64) |
+Live state (2026-10-02). Specs approved + on main: F20 (D67), F31 (D68), F10 (D70). Owner: D69 (install refuses writable program), D71 (env shebang resolved on PATH). Merged: #42 (TestQueryFilters date time bomb — main red on 2026-10-01).
+| Ticket | Slot | State |
+|---|---|---|
+| F32 CI coverage | (retired) | PR #40 — rerunning after main merge |
+| F33 harness | (retired) | PR #41 — rerunning after main merge |
+| F22 Windows hardening | (retired) | review 85 approve + fixes (D69); PR #43 in CI |
+| F16 relay ops | R55-F16fix-Sonnet `01a0f987-9db8…` | gate clean; review 88 fixes (F1 setup.sh, F2 restore chown, F3, F5) |
+| F21 keystore | R55-F21fix-Opus `01a0f987-9c16…` | review 87 changes requested (M1 newer-wins substitution, M2 locked delete) → fixing |
+| F25 device runner | R55-F25fix-Opus `01a0f987-9c7f…` | review 86 pass; fixing M1 (D71), L1–L5 |
+| F20 code | R55-F20-Opus `01a0f987-9f2c…` | coding |
+| F10 code | R55-F10-Opus `01a0f987-a069…` | coding (then F30) |
+Remaining: F26, F27, F28, F17b, F8c, F3c, F6b (D66), F29 (spec; after F20), F30 (after F10), F31 code (after F27 for approval/store.go), F34 docs last (D65; R55-179 doc from F32; R55-201 OD), SMOKE-refresh. Watch: relay TestQueueSweepTickBudget once failed under load (Close during sweep 1.25 s vs 1 s). Time-bomb candidates listed by the fixer: daemon/reject_summary_internal_test.go:67,80; cmd/agentnet/prune_test.go:104; approvaltext_test.go:112,139 — check in F34/F33 follow-up.
 Added tickets: **SMOKE-refresh** (Sonnet; tests/phase1-smoke.ps1/.sh stale vs current behaviour — relay output file name, `peers verify` approval (D48), team invite/join flow; 42 failures found by F33's run), **FIX-audit-timebomb** (TestQueryFilters hard-coded 2026-10-01 dates vs a row written now — fails on main from 2026-10-01; FIX-AuditTimebomb-Lite running). F33 → PR #41; F32 → PR #40.
 Batch 2 (when slots free; sequence by files): F21 keystore (Opus), F26 lifecycle (Sonnet), F27 fail-closed (Opus, approval/store.go with F17b), F28 clock steps (Opus), F17b (Opus), F8c, F3c, F6b (D66); then F10 code → F30 (both cmd/agentnet), F20 code → F29 (debate; spec, D14 R55-221), F31 code, F34 docs last (D65; D14 R55-201 OneDrive as OD). Next free review number: 85. Next daemon migration: 26.
 
