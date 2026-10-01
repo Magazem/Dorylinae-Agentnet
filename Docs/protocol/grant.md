@@ -66,7 +66,16 @@ Canonical JSON ([agent-card.md](agent-card.md#canonical-serialisation)), parsed 
 the local path, lowercased and cleaned, plus `-` and 4 hex characters). **The local path is
 never sent**: the token names the resource only by label, and the grantor maps label → path
 locally. `branch` follows the request artifact `branch` rules and must be a valid
-`refs/heads/<branch>` name.
+`refs/heads/<branch>` name. It also must not contain a `hidden` rune of
+[approval.md §Sanitising](approval.md#sanitising-one-character-rule-two-renderings): no C1
+control, bidi control, zero-width or other format character, line separator, variation
+selector, Hangul filler, non-ASCII space or U+2800 (review 55 R55-056, ticket R55-F10). Git
+allows such a branch name, but nobody could compare it by eye. The rule is checked at
+issuance, on a received token ([Verification](#verification) step 2, `malformed`), and when a
+stored grant is served (`not_found`). A grant on such a branch issued before R55-F10 fails at
+its next use: the grantor refuses the presented token at step 2 as `malformed`. A holder that
+runs R55-F10 refuses such a token from an older grantor when it receives it. Re-issue the
+grant on a renamed branch (review 82b).
 
 ### Token
 
@@ -461,12 +470,25 @@ sizes.
 | `grant.auto` | grantor / `daemon` | `{grant, policy}` |
 | `grant.issue` | grantor / `daemon` | `{grant, peer, mail}` (on approval) |
 | `grant.in` | holder / `daemon` | `{grant, session, peer, action, sensitive}` |
-| `grant.revoke` | grantor / `cli` or `daemon` | `{grant, peer, reason}` |
+| `grant.revoke` | grantor / `cli` (`reason: "user"`); either side / `daemon` (`reason: "session_closed"` or `"peer_removed"`) | `{grant, peer, reason}`. One row per grant the revocation ended, written in its transaction: `grant_revoke`, the session close (A's `closeSessionTx`, B's `ws.state closed` mirror) and the peer removal (`OnRemovedTx`). Before R55-F31 only `grant_revoke` wrote it (R55-124) |
 | `grant.revoked_in` | holder / `daemon` | `{grant, peer}` |
 | `grant.fetch` | grantor / `daemon` | `{grant, peer, op, bytes, result}` where `result` is `ok` or the error code. **Rate-limited** to 60 rows per grant per minute; the rest are counted and summarised once a minute as `grant.fetch_summary {grant, ops, bytes, errors}` |
-| `grant.policy_add`, `grant.policy_remove` | grantor / `cli` | `{policy, peer, action}` |
+| `grant.policy_add`, `grant.policy_remove` | grantor / `cli` | `{policy, peer, action}`. `policy_add` is written by the approval's `Perform`. `policy_remove` reads the policy's peer and action in the transaction that deletes it. Both shapes were drifted in code until R55-F31 (R55-160). A peer removal also deletes that peer's policies (`OnRemovedTx`); since R55-F31 each deleted policy gets a `grant.policy_remove` row too, actor `daemon`, in the removal's transaction (review 84b F6) |
 | `grant.orphan`, `grant.conflict` | holder / `daemon` | `{grant, peer}` |
 | `grant.refused` | grantor / `cli` (or `daemon` on the policy path) | `{session, peer, action, reason, policy?}`: a sensitive grant refused `debate_open` ([debate.md §Quarantine interplay](debate.md#quarantine-interplay)) |
+
+**When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+Rows that make a grant or a policy active are class S, written in the activating
+transaction: `grant.issue`, `grant.policy_add`, and on the policy path `grant.create` and
+`grant.auto`. Those two move from after the commit into the transaction that inserts the
+active row and submits the `grant` mail. If they fail, no grant, no mail and no row. Rows
+that end a grant or a policy are class S-: `grant.revoke`, `grant.revoked_in`,
+`grant.policy_remove`. `grant.create` on the approval path (a pending row, which grants
+nothing until `grant.issue`), `grant.in`, `grant.orphan`, `grant.conflict`, `grant.refused`
+and `grant.fetch`/`grant.fetch_summary` are class N (OD-F31-2 for `grant.fetch`). The fetch
+server's `Close` writes the pending `grant.fetch_summary` rows of every window, however
+young, before the daemon closes the store (R55-078). Without that, up to about 70 s of
+reads went unrecorded at each stop.
 
 ## Tables
 

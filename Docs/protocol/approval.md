@@ -235,6 +235,34 @@ a display is set, without opening a window. That way the user learns about it be
 first grant. The `approval_unavailable` message and `status` name the fix in plain words:
 "install zenity (or kdialog)", "no desktop session", or "PowerShell/WinForms blocked by policy".
 
+**How the check works (R55-125, R55-F31).** `approval.WindowRunner` gains `Check(ctx)
+(ok bool, fix string)`. It opens no window, spawns no process and reads no peer data. Its
+result is cached for 60 s. `status` never waits for it: it returns the cached value and,
+when that is older than 60 s, starts one refresh in the background (at most one at a time,
+with a 1 s budget, because the Linux lookup is a D-Bus call). The first check runs at
+daemon start. `fix` is always one of the fixed strings below, never OS or D-Bus error text
+(review 84b F9):
+
+| OS | `missing` when | `fix` |
+|---|---|---|
+| Linux | `findDialogProgram` finds neither zenity nor kdialog | `install zenity (or kdialog)` |
+| Linux | neither `DISPLAY` nor `WAYLAND_DISPLAY` is set in the daemon's environment or in the systemd user manager's (the same lookup as an opening) | `no desktop session` |
+| Windows | `ProcessIdToSessionId` is 0, or the window station is not `WinSta0` | `no desktop session` |
+| Windows | `powershell.exe` is missing from `GetSystemDirectory` | `PowerShell is missing` |
+| macOS | `/usr/bin/osascript` is missing | `osascript is missing` |
+
+Constrained Language Mode cannot be seen without starting PowerShell (OD-F31-6). So `Check`
+does not report it. When an opening fails on Windows and the window process wrote the CLM
+error, the error is `approval_unavailable` with "PowerShell/WinForms blocked by policy".
+Every other `approval_unavailable` names the last `Check` fix if there is one, and otherwise
+says "the approval window could not be shown". The old "the desktop notifier is unavailable"
+is kept only for a failing notifier.
+
+`status` reports `approval_window: "ok"|"missing"` and, when it is `missing`,
+`approval_window_fix` (the text above). Both are absent in terminal mode
+([ipc.md §status](ipc.md#status)). `agentnet status` prints `approval window: missing
+(<fix>)` only when the window is missing.
+
 The window also says where the code is: "The code is in the AgentNet notification for
 a-012345. If notifications are silenced (Do Not Disturb, Focus Assist), open the
 notification centre." (review 29, L5)
@@ -353,8 +381,8 @@ summary.
 
 ### Sanitising: one character rule, two renderings
 
-One predicate, `hidden(r)`, shared by the builder, `device.DisplayQuote` and
-`decision.Visible`. The decision output does not change: this is exactly its set, and review 46
+One predicate, `hidden(r)`, shared by the builder, `device.DisplayQuote`,
+`decision.Visible` and every `agentnet` print site (R55-F10, `displayTerm` below). The decision output does not change: this is exactly its set, and review 46
 H1's. It is true for:
 
 - C0 and C1 controls (U+0000–U+001F, U+007F–U+009F);
@@ -432,6 +460,75 @@ on one line after a fixed prefix (`agentnet: pairing failed:`, `last error:`), s
 pose as a separate line. An empty result stays empty. It is `displaytext.Line` in code; the
 CLI applies it again at every print site listed there (defence in depth: an older daemon may
 serve raw text).
+
+**Terminal rendering, `displayTerm(s)`** (R55-F10; not an approval rendering). This is the
+**one** rule for every `agentnet` print site that shows text a peer, a grantor, a team owner,
+a Decision file or an audit row chose: names, titles, topics, reasons, summaries, branches,
+file names, artifact fields. It escapes and does not remove, so the value can still be read
+exactly. `--json` gives the raw value.
+1. Invalid UTF-8 decodes as U+FFFD.
+2. Every `hidden` rune, and U+FFFD, is replaced by the visible ASCII escape `\u{XXXX}` (the
+   code point in uppercase hex, 4 to 6 digits). This is `decision.Visible`'s escape and set,
+   plus U+FFFD, which `displayQuote` also escapes and `decision.Visible` keeps (review 82b).
+3. On one base character the first 2 combining marks (`Mn`, `Me`) are kept. Each further mark
+   is escaped the same way, the stacked-marks rule of `displayQuote`.
+4. Everything else is kept, `\` included (OD-F10-6). Letters of right-to-left scripts are kept,
+   with the residual described under `displayQuote`.
+
+The output is one line with no control, format, bidi or invisible character, so it cannot move
+the cursor, reorder a table column with bidi, or start a line of its own. It is not cut: every
+such field is already bounded where the daemon accepts it.
+
+What `displayTerm` does not control is **display width** (review 82b, OD-F10-9). Go's
+`tabwriter` counts code points. A wide character (CJK, fullwidth forms, most emoji) takes two
+terminal columns, and each of up to 2 kept combining marks takes none. A peer's text can
+therefore shift the later columns of its own table row left or right. A long field that is
+padded with spaces can also soft-wrap, so that the text after the padding starts at column 0
+of the next screen row. On a terminal of the width the sender aimed at, it looks like a line of
+its own. Both stay within the sender's own row or field, and the text is still escaped. The CLI
+is not the trust channel: a fingerprint is checked through `agentnet peers verify` and its
+approval window, never by reading a table.
+
+**Block rendering, `displayBlock(s, indent)`**, for the few fields that are multi-line by
+design: a request's `reason` and result `output`, and a debate `topic`. A result `summary` is
+one line, because its validation refuses every control character, so it uses `displayTerm`
+(review 82b).
+- The text is split at `\n`. One final `\n` is dropped.
+- Each line is rendered by `displayTerm`, except that a tab is kept.
+- Every line after the first is prefixed by `indent`, which the caller sets to at least the
+  indentation of the field's label line plus two spaces.
+
+So a peer's line break cannot produce a line that starts where a field label starts (a fake
+`state done` or `[3] respondent final`, R55-056). `\r` is a hidden rune and is escaped, so it
+cannot return to the start of a line either. The soft-wrap residual above still applies.
+
+**JSON output.** Every `--json` output of `agentnet` writes each `hidden` rune from U+007F up
+inside a JSON string as a `\uXXXX` escape: lowercase hex, and a surrogate pair above U+FFFF.
+`encoding/json` already escapes C0, U+2028 and U+2029, but it writes U+007F DELETE raw
+(review 82b). The decoded value is unchanged, so this is not a format change for a JSON
+parser. A consumer that searches the raw bytes for a value holding such a rune, for example an
+emoji with VS16, must decode first. The JSON is still exact, but `agentnet peers --json`
+printed on a terminal can no longer carry a C1 control or a bidi override (R55-056).
+`agentnet identity --json` is excluded (review 82b). Its documented use is as input to
+`tools/verifycard`, whose 16 KiB limit applies to the bytes as written. It holds only the
+user's own card and local fields. Since R55-F10, a new card cannot hold a bidi control or a line
+separator.
+
+**Which rendering where.** These five renderings over one `hidden` set are the whole API of
+`internal/displaytext`:
+
+| Rendering | Function | Used for |
+|---|---|---|
+| `displayName` | `Name` | identifying text in approval summaries (peer, team name) |
+| `displayQuote` | `Quote` | exact values in approval summaries, and `device scope` paths and argv |
+| `displayLine` | `Line` | relay and connection diagnostics (R55-F9), cut to a byte limit |
+| `displayTerm` | `Term` | every other peer-chosen value an `agentnet` command prints, error messages from the daemon included |
+| `displayBlock` | `Block` | the multi-line fields listed above |
+
+`decision.Visible` (decision.md §Markdown) is `displayTerm` without step 3 and without the
+U+FFFD escape of step 2, with `\n` and `\t` kept in multi-line mode. That keeps the published Markdown format unchanged (OD-F10-8).
+The old `termSafe` of `agentnet fetch` (Go quoting of non-`IsPrint` text, review 55 R55-054)
+is removed.
 
 **The fingerprint** is `fp(key)` of [pairing.md](pairing.md#fingerprints), computed by the
 daemon from the key the action binds to. It is never taken from an IPC parameter or a card.
@@ -638,13 +735,35 @@ reported in the window or on the terminal.
 ## Audit
 
 `approval.create {id, kind, subject}`, `approval.approve {id, kind, subject}`,
-`approval.reject {id, kind, subject, reason: "user"|"attempts"|"expired"|"locked"|"precondition"}`,
+`approval.reject {id, kind, subject, reason: "user"|"attempts"|"expired"|"locked"|"precondition"|"superseded"|"unlinked"|"scope_cleared"}`,
 `approval.bad_code {id, attempts_left, via: "window"|"terminal"}`, `approval.locked {wrong_codes}`, `approval.mode
 {mode}`, `approval.open {id}` (2.2d: a window reopened through `approval_open`, so repeated
 reopening by an agent is visible). The window's first opening, a dismiss and a malformed
 answer are not audited. `approval.approve` and `approval.reject` record whether the answer
 came from the window, the terminal or IPC (reject only) as `via`. `subject` is the id of the waiting object (`g-…` grant, `p-…` policy, `s-…`
 session, `i-…` device-link intent, `l-…` link for a scope, `n-…` a prune). Never the code or its MAC.
+
+**Who rejected (R55-123, R55-F31).** A human's rejection is `reason: "user"`, actor `cli`,
+with `via` (`window`, `terminal` or `ipc`). The daemon also rejects approvals itself: a link
+intent or scope replaced by a newer one (`superseded`), a link or peer removed while its
+approval waited (`unlinked`), a scope cleared while a scope approval waited
+(`scope_cleared`), plus the existing `attempts`, `expired`, `locked` and `precondition`.
+Those rows have actor `daemon` and no `via`. In code, the daemon's callers use
+`Store.RejectFor(ctx, id, reason)` and no longer pass their cause as `via` to `Reject`.
+
+**When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+`approval.create` and `approval.approve` are class S. The row is written in the transaction
+that inserts the approval or marks it approved, so an approval that has no row was never
+created or approved. If `approval.approve` cannot be written, Confirm fails as when `Perform`
+fails: the approval stays `pending` and its timer restarts. The row is written after the
+precondition and rebuild checks and before `Perform`, so the chain reads `approval.approve`
+before the rows `Perform` writes (`grant.issue`, `peer.verify`, …), as today. `approval.reject`,
+`approval.bad_code` and `approval.locked` are class S-. They are written in the transaction
+of their state change (`bad_code` together with the attempts counter and the daily
+wrong-code count in one transaction: R55-F27 needs that transaction for R55-147, and
+whichever ticket lands first builds it). A failed row is logged and the state change
+still commits (within the limit in audit.md, "What S- really guarantees"). `approval.open` and `approval.limit` record no state change and are class N.
+`approval.mode` is class L.
 
 ## Tables
 

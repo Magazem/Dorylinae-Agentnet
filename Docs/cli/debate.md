@@ -166,6 +166,8 @@ agentnet debate <id> --cancel [--reason R]
 ```
 
 - **Before the peer accepts** (`invited`): a Phase 1 `request.cancel` (there is no session yet).
+  Only the initiator can do this. Invited to a debate, you decline it instead
+  (`agentnet decline <r-id>`); `--cancel` then fails with `bad_state` (R55-F20).
 - **After accept, while open**: closes your own debate `cancelled`, no Decision. On the
   initiator this refuses further entries and completes the request on both sides. On the
   respondent, since a debate carries no `ws.state`, **the same command also closes your own

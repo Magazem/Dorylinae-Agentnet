@@ -15,7 +15,7 @@ agentnet log --head [--json]
 |------|---------|
 | `--since D\|T` | only rows at or after this time: a duration back from now (`24h`, `90m`, `7d`) or an RFC 3339 time |
 | `--until T` | only rows at or before this RFC 3339 time |
-| `--session ID` | only the rows of one work session (`s-…`) or request (`r-…`): the rows that name the session, its request (with its peer), its grants, its approvals and its decision. Rows of another session are not shown. An `r-` id resolves to its session; a request without one shows its request rows |
+| `--session ID` | only the rows of one work session (`s-…`) or request (`r-…`): the rows that name the session, its request (with its peer), its grants, its approvals and its decision. Rows of another session are not shown. An `r-` id resolves to its session; a request without one shows its request rows. An `r-` id shared by requests of more than one peer or direction, with or without sessions (`ambiguous_request`, exit 1): use the `s-` id |
 | `--action PREFIX` | only actions starting with `PREFIX` (`grant.`) |
 | `--limit N` | print at most `N` rows. Default: every match (the CLI pages through the daemon, 1000 rows a call) |
 | `--verify` | check the whole hash chain (it takes no filters: they are views, `--verify` always checks everything) |
@@ -57,8 +57,11 @@ One line per row, `TIME ACTOR ACTION key=value …`, keys sorted, values as JSON
 2026-10-01T09:00:05.6Z daemon daemon.start pid=4242 version="0.3.0"
 ```
 
-Every part goes through the control-character cleaner used for notifications, so a key or
-name that came from a peer cannot inject terminal escapes.
+Every part goes through `displayTerm`
+([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings),
+R55-F10). It replaced the notification control-character cleaner, which let bidi and
+zero-width characters through. A key or name that came from a peer can then neither inject
+terminal escapes nor reorder the line; such characters show as `\u{XXXX}`.
 
 `--verify`:
 

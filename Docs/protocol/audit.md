@@ -250,7 +250,11 @@ All three only read. `audit_verify` is exempt from the IPC 2-second rule; `audit
   grants (`detail.grant` in the session's grant ids), its decision (`detail.id` = the
   derived `d-` id) and its approvals (`detail.subject` = the session or one of its grant
   ids). An `r-` id resolves to its session. A request without a session shows its request
-  rows.
+  rows, with its peer. An `r-` id whose sessions and request rows, taken together, belong to
+  more than one `(direction, peer)` (a `requester` session counts as `out`, a `worker`
+  session as `in`) is `ambiguous_request`, even when only one of them has a session: use the
+  `s-` id (R55-F20). Only when no row has the
+  id any more (pruned) are the rows naming `detail.request` shown for any peer.
 - `--action` filters by prefix (`grant.`).
 - Human output: one line per row, `ts actor action key=value …` with detail values printed
   as JSON scalars (detail is content-free by construction, but values still go through the
@@ -281,6 +285,98 @@ without an entry fails the build of the test suite. Gaps found while writing thi
   changed}` ([agentnetd-install.md](../cli/agentnetd-install.md)); the install test asserts no
   path separator in it, and `TestAuditInventory` asserts none in any row of either daemon's
   log.
+
+Gaps closed by R55-F31 ([review 84](../review/84-r55-f31-spec.md)):
+
+- The source scan saw only kinds registered by a string literal (`kinds["team.roster"]`). The
+  five debate kinds are registered by constant (`kinds[debate.MailEntry]`), so the test could
+  not see them (R55-135). The scan now also reads the `Mail… = "debate.…"` constants of
+  `internal/debate`. The table maps `debate.entry` → `debate.entry_in`, `debate.reveal` →
+  `debate.reveal_in`, `debate.close` → `debate.close_in`, `debate.constraint` →
+  `debate.constraint_in` and `debate.sign` → `decision.sign_in`.
+- `ws.open` was never written (R55-121). It is now written whenever a session row is created
+  ([work-session.md §Audit](work-session.md#audit)), and the inventory expects it for
+  `request_accept` on B and for the `request.accept` kind on A.
+- Grants ended by a session close or a peer removal now get their own `grant.revoke` row,
+  with `reason` `session_closed` or `peer_removed` and actor `daemon` (R55-124,
+  [grant.md §Audit](grant.md#audit)).
+- Approvals rejected by the daemon now name the cause in `reason`, not in `via`, with actor
+  `daemon` (R55-123, [approval.md §Audit](approval.md#audit)).
+
+## When the row cannot be written (R55-F31, D64)
+
+Before R55-F31, no rule said what an action does when its audit row fails. Most sites
+appended after their commit and ignored the error. A few returned the error after
+committing, so the caller saw a failure for an action that had happened (review 55
+R55-142). Owner decision D64 sets the rule: **security-relevant actions write their row with
+`AppendTx` in the action's own transaction, so no row means no action. Every other action
+logs the failure and reports success.**
+
+An append fails when the database cannot be written (disk full, I/O error, a lock held by
+another process past `busy_timeout`) or when the chain refuses the row (an unchained row was
+planted, [Migration 18](#migration-18)). It never fails because of what the detail holds.
+
+### Classes
+
+| Class | Actions | How the row is written | If the row fails |
+|---|---|---|---|
+| **S: grants access or trust** | `approval.create`, `approval.approve`; `grant.create` and `grant.auto` on the policy path, `grant.issue`, `grant.policy_add`; `ws.release`; `peer.verify`, `pair.complete`, `team.roster_apply`, `team.invite_issued` (no transaction, see below); `device.link_intent`, `device.link_active`, `device.scope_set`; `debate.constraint`; `data.prune`; `decision.create`, `decision.sign_in` | `audit.AppendTx` inside the transaction that makes the change | The transaction rolls back and the action fails. The caller gets the error (IPC `internal`), and nothing changed: no state, no outbox mail, no row |
+| **S-: removes access or trust** | `approval.reject` (every reason), `approval.bad_code`, `approval.locked`; `grant.revoke` (every reason), `grant.revoked_in`, `grant.policy_remove`; `peer.remove` (also the team GC's `reason: "team"` rows); `device.unlink`, `device.scope_clear`; `decision.refuse` | The same transaction, through `audit.AppendTxSoft` (OD-F31-1 (b), recommended) | The row alone is rolled back to a savepoint, the failure is logged, and the change commits |
+| **L: lifecycle** | `daemon.start`, `daemon.stop`, `daemon.stop_requested`, `approval.mode`, `identity.create`, `service.install`, `service.uninstall`, `audit.chain_start` | Before the action, or as its condition, as today | The action does not happen (the daemon does not start; `shutdown` is refused). Unchanged |
+| **N: everything else** | Every other action (requests, work sessions apart from `ws.release`, debates apart from the rows above, experience, mail, mailbox, sessions, pairing apart from `pair.complete`, teams apart from the rows above, presence, notify, `grant.in`/`orphan`/`conflict`/`refused`/`fetch`, `grant.create` on the approval path, `peer.verify_fail`, `approval.open`, `approval.limit`, `device.run`, `device.out_of_scope`, `relay.reject_summary`) | `Log.Append` after the commit, as today. A new N row written where a transaction is already open uses `audit.AppendTxSoft` (`ws.open`) | The failure is logged and the action reports success. An N site **never** returns an audit error to its caller |
+
+**Why S- differs (OD-F31-1).** Rolling back a revocation, a rejection or a wrong-code count
+because its row failed would keep access open: a grant would stay active, an approval would
+stay confirmable, a wrong code would not count. The chain refusing rows is exactly the state
+an attacker who planted a row would want. So a narrowing change never waits for its row
+(within the limit of "What S- really guarantees" below). If
+the owner picks (a) instead, S- joins S, and the S- column of this table is dropped.
+
+`team.invite_issued` (S) has no transaction: the approved invite starts a pairing in memory.
+It is written right after `StartTagged`, and if that append fails the daemon cancels the
+pairing it just started before it returns the error. So no code is ever released without
+its row. The cancel is a new `peers.Manager.Cancel(id)`: it ends the session as failed with
+the new code `cancelled` (which writes the usual `pair.fail {id, role, code: "cancelled"}`
+row, class N) and withdraws the lookup from the relay as any issuer failure does. The code
+was never returned to anyone, so nobody can redeem it in between. The approval stays spent
+(the existing rule); the user asks for a new one.
+
+### Mechanics
+
+- `audit.AppendTx(ctx, tx, …)` is unchanged: its error is the caller's, and the caller
+  returns it, which rolls back the transaction. It wraps the error as `*audit.WriteError{Action}`,
+  so callers and tests can tell a failed row from a failed change.
+- `audit.AppendTxSoft(ctx, tx, …)` runs `SAVEPOINT audit_row`, the same insert, and on
+  failure `ROLLBACK TO audit_row` and `RELEASE audit_row`. It logs the failure and returns nil.
+  A failure of the savepoint statements themselves is returned, because then the transaction
+  is unusable.
+- **What S- really guarantees (review 84b F1).** SQLite rolls back the *whole* transaction
+  itself on some errors (`SQLITE_FULL`, `SQLITE_IOERR`, `SQLITE_NOMEM`, a `RAISE(ROLLBACK)`),
+  and then `ROLLBACK TO` fails too. So the savepoint saves the change only from a failure
+  that ends the statement alone: the chain refusing the row (Go error before the insert), a
+  constraint, a `RAISE(ABORT)`. That is the case S- exists for (a planted row). After a
+  transaction-killing error, `AppendTxSoft` returns `*audit.TxLostError`, and the S- caller
+  runs its change **once more in a new transaction without the row** (the row's failure is
+  already logged). If that also fails, the action fails as any database error of the change
+  does. The retry never applies to S rows.
+- **Reads inside the new transactions go through the transaction.** The daemon has one SQLite
+  connection (`SetMaxOpenConns(1)`). A read on `*sql.DB` (for example `approval.Store.kindSubject`)
+  while that connection holds the transaction waits for it forever. Every read that moves
+  into a transaction with its row (Confirm, expiry, attempts, lock, reject) uses `tx`.
+- Every failed append is logged once, inside `internal/audit`, through the logger the daemon
+  installs at start (`audit.SetErrorLog`): `level=ERROR msg="audit write failed"
+  event=audit_error action=<action> error=<driver error>`. The action is a fixed name and the
+  driver error is SQLite's text. The detail is never logged. Sites that log their own audit
+  failure today (`mail`, `mailbox`, `session`, `presence`, `peers`, the reject summary) drop
+  their line, so each failure is logged once.
+- An S row and its change share one transaction. So a row that is written always matches a
+  change that committed, and a crash between them cannot leave one without the other.
+  `approval.approve` therefore moves into Confirm's transaction, after the precondition
+  check and before `Perform`, so it still precedes the rows `Perform` writes. If that row fails, Confirm behaves as for a failing `Perform`: the
+  approval stays `pending` and its timer restarts.
+
+New audit actions must name their class in their spec. The review of each spec checks it,
+together with the relay bound of [Who may cause a row](#who-may-cause-a-row-r55-f14).
 
 ## No content, still
 

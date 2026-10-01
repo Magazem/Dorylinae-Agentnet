@@ -37,7 +37,7 @@ A fourth type, `debate`, exists (Phase 3) but is not submitted through this comm
 | `--run NAME` | For your own helper device ([device.md](device.md)): the name of a command its owner allowed with `agentnet device scope`. A name only, 1–64 characters of `[a-z0-9._-]`; no arguments, paths or environment. If the request is in the helper's scope it runs at once and the result comes back through `agentnet wait`; otherwise it lands in the helper's normal inbox |
 | `--state S` | `list`: `pending`, `accepted`, `declined`, `deferred`, `completed` or `cancelled` |
 | `--reason R` | `cancel`: optional, 1–500 characters, shown to the recipient |
-| `--from <peer>` | `show`: pick the sender when the id matches requests from several peers |
+| `--from <peer>` | `show`: show the request received from that peer (never your own outgoing one); needed when the id matches more than one request |
 | `--json` | Machine-readable output on stdout |
 
 ## The brief
@@ -87,7 +87,13 @@ budget.
 (`agentnet complete … --status …`, [inbox.md](inbox.md#result)), `request show <id>` prints
 it: the status, exit code and summary on one line, the artifacts, then the output. The
 output can hold only text, newlines and tabs, so it cannot move your terminal's cursor or
-change its colours. `request list` shows the status in a `RESULT` column, and `request list
+change its colours. `show` prints it, and the `reason`, through `displayBlock` with every
+continuation line indented by 4 spaces
+([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings),
+R55-F10). A peer's line therefore cannot pose as a field line such as `  state done`, and a
+bidi or invisible character shows as `\u{XXXX}`. Every other peer-chosen field (title, peer
+and team name, note, cancel reason, artifact members, context file names) is one line,
+rendered by `displayTerm`. `request list` shows the status in a `RESULT` column, and `request list
 --json` gives the result **without its output** (with `output_bytes`); use `request show
 <id> --json` for the output. The result is what the other side reports: treat it like the
 note, not as proof that the work passed.

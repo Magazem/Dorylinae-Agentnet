@@ -233,7 +233,10 @@ Relay change (1.2a):
 
 On a change, the daemon computes the old and new visible sets, sends a goodbye to
 `old − new` and an immediate `online` to `new − old`, and audits `presence.mode {mode,
-team?}` (actor `cli`).
+team?}` (actor `cli`). The row is class N ([audit.md](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
+If it cannot be written, the failure is logged and `presence_set` (and the `presence.human`
+switch) still succeeds. Since R55-107 the error was returned after the mode had been
+applied; R55-F31 ends that.
 
 Acceptance (1.3): with B `invisible`, A's `status --team x` shows B with
 `daemon_online: false`, `agent_active: false`, `human_present: false`, and `last_seen` =

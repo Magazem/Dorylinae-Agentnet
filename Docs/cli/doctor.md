@@ -36,7 +36,7 @@ agentnet doctor [--json]
 | `account` | Not implemented yet: always `skip`. Added by ticket 4.2c (bound/unbound/suspended, quota group, quota state) | — |
 | `git` | Git is at least 2.32 (D23); older is a `warn`, not a `fail` (`git.read` grants are refused, but `fs` grants and everything else still works) | no |
 | `clock` | The local clock is within 2 minutes of the relay's (estimated from the challenge's `expires`) | no (probes directly) |
-| `peers` | Every stored peer Agent Card still verifies under the current card rules (review 68 OD-3). The daemon keeps a card that does not at start and logs it; this row names it by public key as `warn`, with the fix: re-pair, `agentnet peers remove <key>`, or `agentnet team remove <team> <key>`. No database yet: `skip` | no (reads the database read-only) |
+| `peers` | Every stored peer Agent Card still verifies under the current card rules (review 68 OD-3). The daemon keeps a card that does not at start and logs it; this row names it by public key as `warn`, with the fix: re-pair, `agentnet peers remove <key>`, or `agentnet team remove <team> <key>`. A card that verifies only under the legacy text rule (a bidi control or a line separator in a text member, allowed before R55-F10, [agent-card.md](../protocol/agent-card.md#cards-stored-before-r55-f10)) is not a failure: the row stays `ok` with the detail `every stored peer card verifies (N with characters refused at new pairings since R55-F10; shown escaped)`. No database yet: `skip` | no (reads the database read-only) |
 
 `relay` and `clock` never authenticate to the relay with the identity key: the relay keeps
 one connection per key and replaces the older one, so a doctor login would kick the running
