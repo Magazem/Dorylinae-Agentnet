@@ -69,7 +69,7 @@ func vacuumInto(dbPath, outPath string) error {
 // dbPath, synced, opened to run PRAGMA integrity_check and apply any pending
 // relay migrations, and only then moved over dbPath, so a bad backup leaves
 // the existing database untouched (Docs/protocol/relay-hosted.md §3, R55-039).
-// The relay must be stopped: Restore does not detect a running one.
+// Restore refuses while the relay holds <db>.lock, i.e. while it runs.
 func Restore(fromPath, dbPath string, force bool) error {
 	if info, err := os.Stat(dbPath); err == nil {
 		if info.Size() > 0 && !force {
@@ -81,6 +81,13 @@ func Restore(fromPath, dbPath string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
+	// The relay holds <db>.lock while it runs (review 88 F5).
+	lock, err := lockDB(dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Close() }()
+	matchOwner(dbPath+".lock", dbPath) // so the relay's service user can lock it later
 	tmp := dbPath + ".restoring"
 	cleanup := func() {
 		for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -95,6 +102,7 @@ func Restore(fromPath, dbPath string, force bool) error {
 	if err := checkRestored(tmp); err != nil {
 		return err
 	}
+	matchOwner(tmp, dbPath) // checkRestored may have created -wal/-shm; they are removed by now
 	// A restore target's stale WAL/SHM files must not mix with the copied
 	// file's own state.
 	for _, suffix := range []string{"-wal", "-shm"} {

@@ -19,19 +19,27 @@ die() { printf 'setup.sh: %s\n' "$*" >&2; exit 1; }
 # inside systemd values such as User=).
 put() { tr -d '\r' <"$1" >"$2.tmp" && chmod 0644 "$2.tmp" && mv "$2.tmp" "$2"; }
 
+# Refuse to turn off SSH passwords unless root can already log in with a key,
+# so this script cannot lock you out. Only a line that starts directly with a
+# key type counts. Any option prefix (command=, from=, expiry-time=, restrict,
+# no-pty, ... in any letter case, which sshd also accepts) means the key may not
+# give a shell, so it does not count (R55-196, review 88 F1). ssh-dss is not
+# accepted by Debian 12's sshd, and sk-* keys need a hardware token.
+unrestricted_key_present() {
+	grep -qiE '^[[:space:]]*(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521))[[:space:]]+AAAA' "$1" 2>/dev/null
+}
+# Sourced by tests/early-setup-keyfilter.sh to test the function above only.
+[ "${SETUP_SH_SOURCE_ONLY:-}" = 1 ] && return 0
+
 [ "$(id -u)" -eq 0 ] || die "run as root"
 [ -r /etc/debian_version ] || die "this script expects Debian (or Ubuntu)"
 for f in Caddyfile agentnet-relay.service; do
 	[ -r "$here/$f" ] || die "missing $here/$f"
 done
 
-# Refuse to turn off SSH passwords unless root can already log in with a key,
-# so this script cannot lock you out. A key restricted with command= does not
-# give a shell, so it does not count (R55-196).
-if ! grep -vE '^[[:space:]]*(#|$)' /root/.ssh/authorized_keys 2>/dev/null |
-	grep -vE '(^|[[:space:],])command=' |
-	grep -qE '(ssh|ecdsa|sk)-[A-Za-z0-9@.-]+ AAAA'; then
-	die "no unrestricted SSH key (one without command=) in /root/.ssh/authorized_keys; add your key before running this"
+# Refuse to turn off SSH passwords unless root already has a usable key.
+if ! unrestricted_key_present /root/.ssh/authorized_keys; then
+	die "no unrestricted SSH key (a plain ssh-ed25519/ssh-rsa/ecdsa line with no options such as command= or from=) in /root/.ssh/authorized_keys; add your key before running this"
 fi
 
 step "Packages"

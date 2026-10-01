@@ -795,8 +795,10 @@ refuses to **restart**: upgrade the relay binary and `relay` admin tool together
 - `relay restore --from FILE --db PATH` refuses to overwrite a non-empty database without
   `--force`, checks `PRAGMA integrity_check` and the migration table, then starts normally.
   The copy is made beside `--db`, synced and checked first, and only then moved over `--db`,
-  so a corrupt backup leaves the existing database untouched. Stop the relay first: restore
-  does not detect a running one (R55-039).
+  so a corrupt backup leaves the existing database untouched. Stop the relay first: a running
+  relay holds an exclusive lock on `<db>.lock` and restore refuses while it is held (R55-039,
+  review 88 F5). A restore run as root gives the new file the owner of the existing database,
+  or of its directory (review 88 F2).
 - `relay backup` opens `--db` read-only and refuses a missing database and an existing
   `--out`; the output file is created mode 0600 before it is filled (R55-040, R55-199).
 - What a restore loses: envelopes queued and acks received after the backup. Acked-but-restored
@@ -831,7 +833,9 @@ SIGTERM waits up to 10 s for writes, and `Close` waits for connection goroutines
 before closing the database; a test kills and restarts the `relay` binary mid-traffic.
 `Close` disconnects every peer, then waits up to 4 s for the read loops to finish the frame
 each is handling (direct frames such as `pair.confirm` and `session.*` in flight at a restart
-are routed or queued, not lost), and only then closes the database; a connection that
+are routed or queued, not lost: `Close` first marks every connection draining, so a frame
+routed to a peer that is already closing is queued and acknowledged `queued`, review 88 F3),
+and only then closes the database; a connection that
 authenticates after `Close` has begun is refused. The early relay's `TimeoutStopSec=20`
 covers the 5 s HTTP shutdown, this wait and the 10 s drain wait (R55-036).
 

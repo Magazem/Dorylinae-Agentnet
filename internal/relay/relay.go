@@ -228,6 +228,7 @@ type Server struct {
 	now    func() time.Time
 	pairs  *pairings
 	q      *queue
+	dbLock *os.File // run lock on <db>.lock; nil for an in-memory queue
 	eph    *ephemeralLimiter
 	ephMax int
 
@@ -409,8 +410,22 @@ func Open(opts Options) (*Server, error) {
 	s.led = newLedger(inflight, inflight, ephemeral, s.now)
 	s.led.hit = s.lim.hit
 	s.frameTimeout = orDefault(opts.FrameReadTimeout, defaultFrameReadTimeout)
+	if opts.QueuePath != "" {
+		// Held until Close, so relay restore can tell the relay is running (review 88 F5).
+		lock, lerr := lockDB(opts.QueuePath)
+		if lerr != nil {
+			return nil, lerr
+		}
+		s.dbLock = lock
+	}
+	releaseLock := func() {
+		if s.dbLock != nil {
+			_ = s.dbLock.Close()
+		}
+	}
 	q, err := openQueue(opts.QueuePath, opts.QueueTTL, opts.QueueMaxEnvelopes, opts.QueueMaxBytes, s.now)
 	if err != nil {
+		releaseLock()
 		return nil, err
 	}
 	q.lim = queueLimits{
@@ -429,6 +444,7 @@ func Open(opts Options) (*Server, error) {
 	if opts.Accounts != "" && opts.Accounts != AccountsOff {
 		if s.acct, err = newAccounts(opts, q, opts.Journal, s.now); err != nil {
 			_ = q.close()
+			releaseLock()
 			return nil, err
 		}
 		s.acct.stop, s.acct.done = make(chan struct{}), make(chan struct{})
@@ -529,7 +545,20 @@ func (s *Server) Close() {
 		case <-time.After(drainWaitTimeout):
 		}
 		s.mu.Lock()
+		conns := make([]*conn, 0, len(s.conns))
 		for _, c := range s.conns {
+			conns = append(conns, c)
+		}
+		s.mu.Unlock()
+		// Mark every connection draining before any drainClose starts, so a
+		// frame routed to a peer whose buffer has already flushed is queued
+		// and acknowledged "queued", not sent into a dead buffer (review 88 F3).
+		for _, c := range conns {
+			c.mu.Lock()
+			c.draining = true
+			c.mu.Unlock()
+		}
+		for _, c := range conns {
 			// The close handshake itself (coder/websocket waits up to 5s to
 			// write it and 5s for the peer's reply) runs in the background,
 			// as before: Close must not block on a peer that stopped
@@ -537,7 +566,6 @@ func (s *Server) Close() {
 			// outbound buffer to flush first.
 			go func(c *conn) { c.drainClose("relay shutting down") }(c)
 		}
-		s.mu.Unlock()
 		// A frame a read loop is handling when the peer is closed must reach
 		// the queue before it is closed (R55-036): wait for the loops, bounded
 		// so a peer that never completes the close handshake cannot hold the
@@ -549,6 +577,9 @@ func (s *Server) Close() {
 		case <-time.After(serveWaitTimeout):
 		}
 		_ = s.q.close()
+		if s.dbLock != nil {
+			_ = s.dbLock.Close()
+		}
 	})
 }
 

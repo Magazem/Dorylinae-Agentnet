@@ -271,7 +271,10 @@ journalctl -u agentnet-relay -n 5 --no-pager
 A restart is graceful: on SIGTERM the relay flushes each connection's pending frames, waits
 up to 4 s for the frames its connection handlers are processing, then closes the queue, all
 inside the unit's `TimeoutStopSec=20`. A daemon in the middle of `pair.confirm` or a work
-session sees at worst a reconnect, not a lost frame.
+session sees at worst a reconnect. Once the stop begins, every connection is marked as
+draining, so a direct frame sent to a peer that is already closing is queued (the sender gets
+`queued`) and delivered after the restart; only a frame already in a peer's buffer when the
+close starts relies on the 5 s flush, and the 4 s read-loop wait is shorter than that flush.
 
 Relay migrations are forward-only. With no backup, a bad release means a fresh database, so
 the queue is lost. Before a release that adds a relay migration, take a manual copy:
@@ -281,6 +284,21 @@ runuser -u agentnet-relay -- /opt/agentnet-relay/relay backup --db /var/lib/agen
 ```
 
 Delete the copy once the new release runs.
+
+**Restoring a backup.** The relay holds a lock on `relay.db.lock` while it runs, and
+`relay restore` refuses to start while that lock is held. Stop the relay, restore as the
+service user, then start it:
+
+```
+systemctl stop agentnet-relay
+runuser -u agentnet-relay -- /opt/agentnet-relay/relay restore --from /var/lib/agentnet-relay/pre-upgrade.db --db /var/lib/agentnet-relay/relay.db --force
+systemctl start agentnet-relay
+```
+
+If you run restore as root instead, it gives the restored file (and the lock file) the owner
+of the existing `relay.db`, or of its directory, so the relay can still open it; check with
+`ls -l /var/lib/agentnet-relay/`. On Windows the lock is a mandatory `LockFileEx` lock, with
+the same refusal.
 
 **R3 (R55-F2) and rolling it back.** The R55-F2 release adds relay migration R3 (the table
 `queue_delivered`). A relay binary older than it **refuses to start** on the migrated
