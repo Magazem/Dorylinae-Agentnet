@@ -630,7 +630,7 @@ session before releasing it can then see which sensitive grants caused the quara
 | Method | Params | Result / errors |
 |---|---|---|
 | `ws_list` | `{"state"?, "role"?, "peer"?, "team"?}` | `{"sessions": [<list view>]}`, newest `state_at` first |
-| `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session` |
+| `ws_show` | `{"id"}` (an `s-` id, or an `r-` id resolved through its session) | `{"session": <view>}`. `unknown_session`; `ambiguous_request` when the `r-` id belongs to more than one session (any role or peer, rows from before R55-F20): use the `s-` id. Every `ws_*` method and `wait` resolve an `r-` id the same way |
 | `ws_result` | `{"id", "result", "notes"?}` (B only) | `{"session": <view>, "mail_id"}`. `bad_state` unless B's mirror is `open` (and `cancel` not requested) **and no result was submitted yet for the current round** (message: "a result for round N was already submitted; wait for the requester or cancel"; R55-F18), or the id names a `pending`/`deferred` request of type `question`, which is accepted in the same call ([consult.md §Answering](consult.md#answering)); `bad_state` on a [run session](#run-sessions); `bad_request` naming the field; `result_too_large`; `not_worker` |
 | `ws_accept_result` | `{"id", "human"?: bool}` (A only) | `{"session": <view>, "mail_id"}` or, with `human`, `{"approval": <approval view>}` ([approval.md](approval.md)). `bad_state`, `not_requester` |
 | `ws_request_changes` | `{"id", "changes"}` (A only) | `{"session", "mail_id"}`. `bad_state` unless `awaiting_result` or `quarantined` (from `quarantined`, no approval, per OD-P2-6 (c)); `bad_request`, `not_requester` |
@@ -665,7 +665,11 @@ Per-command pages (`Docs/cli/session.md`) are written by ticket 2.1b.
 
 **`wait`** is the one command that deliberately blocks beyond 2 s; it is a CLI-side loop and
 every IPC call in it returns in under 2 s. It polls `ws_show` (or, before the session
-exists, `request_show` of the request the derived id belongs to) once per second until one of:
+exists, `request_show` of the request the derived id belongs to) once per second until one of
+the conditions below. An IPC error other than `unknown_session` from `ws_show`, or other than
+`unknown_request` from that `request_show` (for example `ambiguous_request` for an `r-` id
+shared by pre-R55-F20 rows), ends the wait at once with exit 1 and the error; it is never
+polled until the timeout (R55-F20). The conditions:
 
 | Condition (as seen by the caller's side) | Exit | `--json` `"wait"` |
 |---|---|---|
@@ -705,10 +709,10 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 
 | Action | Side / actor | Detail |
 |---|---|---|
-| `ws.open` | both / `daemon` (B: `cli`) | `{session, request, peer, role}` |
+| `ws.open` | both / `daemon` (B: `cli`) | `{session, request, peer, role}`. Written wherever a session row is inserted, through `audit.AppendTxSoft` in that transaction (class N: a failed row is logged, the session still opens): by `OpenSession` only when its `INSERT OR IGNORE` inserted the row, and by A's `ws.result` receive when the result overtook the accept and creates the row (`worksession/receive.go`, actor `daemon`). The later accept mirror then finds the row and writes nothing, so each session has one `ws.open` per side. Actor: on B, the actor of the accept (`cli` for `request_accept`, `daemon` for a device helper's auto-accept); on A, `daemon` (the accept mirror, the overtaking result, and a debate session opened by `debate.entry`). Missing until R55-F31 (R55-121) |
 | `ws.result` | B / `cli` | `{session, peer, round, result_bytes, output_bytes, artifacts, verification}` |
 | `ws.result_in` | A / `daemon` | `{session, peer, round, result_bytes, output_bytes, artifacts, quarantined}` |
-| `ws.release` | A / `cli` | `{session, peer, round, approval}` |
+| `ws.release` | A / `cli` | `{session, peer, round, approval}`. Class S: written by the release approval's `Perform` in its transaction, not after the commit. A release with no row did not happen |
 | `ws.accept_result` | A / `cli` | `{session, peer, round, verification}` |
 | `ws.request_changes` | A / `cli` | `{session, peer, round, from?}` (`from: "quarantined"` when it left `quarantined` without a release, OD-P2-6 (c)) |
 | `ws.discard` | A / `cli` | `{session, peer, round}` (no content; OD-P2-6 (c)) |

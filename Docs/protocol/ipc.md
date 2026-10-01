@@ -123,6 +123,11 @@ Result:
 | `outbox` | object | `{queued, relayed, expired, pending, delivered, failed}`: sender outbox rows in each state (`pending` = `queued` + `relayed`) ([mail.md](mail.md#outbox)) |
 | `presence` | object | Phase 1 (1.2c): `{"mode": "visible"\|"invisible"\|"only_team", "team"?: {"id","name"}, "relay": "connected"\|"disconnected"\|"unsupported"\|"none", "agent_active": bool, "human_present": bool\|null}`. The last two are this machine's own values, detected locally, even when not shared |
 | `team` | object | Only with the param `team` (Phase 1, 1.2c), see below |
+| `relay` | object | Omitted when no relay is configured ([../cli/status.md](../cli/status.md)) |
+| `approval` | string | `desktop`, `terminal` or `terminal-debug` ([approval.md §Headless machines](approval.md#headless-machines)) |
+| `approval_window` | string | Desktop mode only: `ok` or `missing`, from a check that opens no window ([approval.md](approval.md#the-approval-window), R55-125) |
+| `approval_window_fix` | string | Only when `approval_window` is `missing`: the fix in plain words, e.g. `install zenity (or kdialog)` |
+| `git` | string | `ok`, or `unsupported: <reason>` (D23, [grant.md §Serving git](grant.md#serving-git)) |
 
 Params (Phase 1): `{"team"?: "<team ref>"}`. A team ref is a team id or a unique name of a
 team on this daemon ([team.md](team.md#local-names)). Without `team`, the result is as above.
@@ -317,7 +322,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `team_full` | The team already has 32 members (`team_invite`) |
 | `no_shared_team`, `not_team_member` | `request_submit` team resolution |
 | `unverified_peer` | D5: `trust=relay` peer on a non-loopback relay |
-| `unknown_request`, `ambiguous_request` | Request reference not found, or it matches `in` rows from several peers (pass `from`) |
+| `unknown_request`, `ambiguous_request` | Request reference not found, or an id alone matches more than one row (pass `from`, or use the `s-` id; [request.md §Request ids and references](request.md#request-ids-and-references-r55-f20)) |
 | `bad_state` | Lifecycle transition, `request_resend` or `request_cancel` is not allowed in the current state (the message names the state) |
 | `request_too_large` | `request_submit`: the canonical request object is over 65536 bytes ([request.md §Size limits](request.md#size-limits)) |
 | `result_too_large` | `request_complete`: the canonical `request.complete` body is over 65536 bytes ([request.md §Result payload](request.md#result-payload-d14)) |
@@ -397,7 +402,7 @@ row, with no paging; review 55 R55-023): in a list view `brief` is the empty str
 
 | Method | Params | Result |
 |---|---|---|
-| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Looks up `out` rows first, then `in` rows (`from` narrows the `in` lookup). A `result` is shown in full, with `output` |
+| `request_show` | `{"id", "from"?: "<peer>"}` | `{"request": <view>}`. Without `from`, looks at every row with that id: one match is shown, more is `ambiguous_request`. With `from`, only the `in` row from that peer (R55-F20, [request.md §Request ids and references](request.md#request-ids-and-references-r55-f20)). A `result` is shown in full, with `output` |
 | `request_list` | `{"state"?, "team"?, "peer"?}` (`state` includes `cancelled`) | `{"requests": [<out view>]}`: the sender's own requests, newest `created` first. A `result` omits `output` |
 | `request_resend` | `{"id"}` | `{"id", "mail_id", "status": "queued"}`. `bad_state` unless the row is `pending` with no `cancel`, its mail is `expired` or `failed`, and the request is under 21 d old |
 | `request_cancel` | `{"id", "reason"?}` | `{"request": <out view>, "mail_id": "<cancel mail>"\|null, "duplicate": bool}`. Sender only (`out` rows; `unknown_request` otherwise). Allowed while the mirror state is `pending` or `deferred`. `bad_state` when it is `accepted`, `declined` or `completed`. Idempotent: an already `cancelled` row, or a cancel still in flight, returns `duplicate: true` and sends nothing. `reason`: 1–500 code points. Returns at once; the state becomes `cancelled` when the recipient confirms |
