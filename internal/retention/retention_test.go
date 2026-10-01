@@ -350,7 +350,8 @@ func TestPruneBatches(t *testing.T) {
 		if err := tx.Commit(); err != nil {
 			t.Fatal(err)
 		}
-		if d := time.Since(start); d > 2*time.Second {
+		// The wall-clock bound does not hold under the race detector's slowdown.
+		if d := time.Since(start); !raceEnabled && d > 2*time.Second {
 			t.Errorf("call %d took %v, want under 2 s", len(mores)+1, d)
 		}
 		if c.Requests > MaxRequests {
