@@ -49,10 +49,12 @@ served; the grantor's limits (two reads in flight per holder, 20 operations per 
 | `--list` | a table `NAME TYPE SIZE` | `{"ok":true,"path","entries":[{"name","type","size"?}],"commit"?}` |
 | `--stat` | `name<TAB>type<TAB>size` | `{"ok":true,"path","entry":{"name","type","size"?},"commit"?}` |
 
-`type` is `file`, `dir`, `symlink` or `other`. In the human output a name with a
-non-printable character (a control or format character) is shown quoted with Go escapes
-(`"a\x1bb"`), so that a name chosen by the grantor cannot drive the terminal; `--json`
-carries the names unchanged. `commit` (the branch tip the answer was
+`type` is `file`, `dir`, `symlink` or `other`. In the human output, names and types go
+through `displayTerm` ([approval.md §Sanitising](../protocol/approval.md#sanitising-one-character-rule-two-renderings),
+R55-F10). Every control, format, bidi or invisible character, such as ESC, U+202E, U+3164,
+a variation selector or U+2800, is shown as a visible escape, for example `a\u{1B}b`. A name
+chosen by the grantor can then neither drive the terminal nor look like another name.
+`--json` carries the names unchanged, with such characters as `\u` escapes. `commit` (the branch tip the answer was
 served from) appears for `git.read` grants only. Failures print
 `{"ok":false,"error":{"code","message"}}` under `--json`, and `agentnet: <message>` on
 stderr otherwise.

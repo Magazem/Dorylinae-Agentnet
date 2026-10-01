@@ -42,6 +42,17 @@ The `relay:` line is omitted when no relay is configured; `presence`'s own `rela
 [../protocol/grant.md](../protocol/grant.md#serving-git)); `fs` grants are unaffected either
 way.
 
+In desktop approval mode, when no approval window can be shown (no zenity or kdialog, no
+desktop session, …), a line names the fix before the first approval would fail (R55-125,
+[../protocol/approval.md](../protocol/approval.md#the-approval-window)):
+
+```
+  approval window: missing (install zenity (or kdialog))
+```
+
+It is printed only when the window is missing. `--json` carries `approval_window`
+(`ok`/`missing`) and, when it is missing, `approval_window_fix`.
+
 With `--team backend` (Phase 1), a member table follows:
 
 ```

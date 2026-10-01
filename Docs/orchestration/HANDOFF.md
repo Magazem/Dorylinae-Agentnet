@@ -31,6 +31,21 @@ Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Me
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
+**WAVE R55-L (review-55 Lows, D63) — STARTED 2026-10-01, base main eb283bf.** Tickets: F10, F16, F17b, F20, F21, F22, F25–F34, F8c, F3c, F6b (F15 deferred). Owner decisions D64 (AppendTx for security actions, F31), D65 (document D20, F34), D66 (blanking needs a digit, F6b).
+Batch 1 (worktrees AgentNet-wt/r55-<x>, branches p4/r55-<x>):
+| Ticket | Slot | Model | State |
+|---|---|---|---|
+| F16 relay ops | R55-F16-Sonnet `01a0f89f-c0f4…` | Sonnet | coding |
+| F22 Windows hardening | R55-F22-Sonnet `01a0f89f-c393…` | Sonnet | coding |
+| F25 device runner | R55-F25-Opus `01a0f89f-c64b…` | Opus | coding (security review after) |
+| F32 CI coverage | R55-F32-Lite `01a0f89f-c8cd…` | Lite | coding |
+| F33 harness | R55-F33-Lite `01a0f89f-cb76…` | Lite | coding |
+| F10 spec | R55-F10spec-Opus `01a0f89f-cdf7…` | Opus | 82-r55-f10-spec.md |
+| F20 spec | R55-F20spec-Opus `01a0f89f-d0a3…` | Opus | 83-r55-f20-spec.md (+ R55-163 OD) |
+| F31 spec | R55-F31spec-Opus `01a0f89f-d28c…` | Opus | 84-r55-f31-spec.md (D64) |
+Added tickets: **SMOKE-refresh** (Sonnet; tests/phase1-smoke.ps1/.sh stale vs current behaviour — relay output file name, `peers verify` approval (D48), team invite/join flow; 42 failures found by F33's run), **FIX-audit-timebomb** (TestQueryFilters hard-coded 2026-10-01 dates vs a row written now — fails on main from 2026-10-01; FIX-AuditTimebomb-Lite running). F33 → PR #41; F32 → PR #40.
+Batch 2 (when slots free; sequence by files): F21 keystore (Opus), F26 lifecycle (Sonnet), F27 fail-closed (Opus, approval/store.go with F17b), F28 clock steps (Opus), F17b (Opus), F8c, F3c, F6b (D66); then F10 code → F30 (both cmd/agentnet), F20 code → F29 (debate; spec, D14 R55-221), F31 code, F34 docs last (D65; D14 R55-201 OneDrive as OD). Next free review number: 85. Next daemon migration: 26.
+
 **WAVE R55-M (review-55 Mediums, D46) — DONE 2026-10-01.** All 11 tickets merged, each with an Opus security review (and re-reviews where findings were fixed) and green CI on all three OSes + race: F11 (#24), F12 (#26), F19 (#27), F23 (#28), F9 (#29), F2 (#31, High per D47), F18 (#30), F17 (#33), F24 (#34), F14 (#37), F13 (#38). Also merged: relay eviction-log fix (#32), test fixes #35 (relay fairness settle) and #36 (KDF goroutine count), Dependabot #14/#15/#16. Decisions this wave: D47–D62. Daemon migrations now end at 25 (22 F18 runner/result_mail, 23 F24 approval kinds, 24 F13 retention caps, 25 F13 data_prune kind); relay migration R3 (F2). F15 stays deferred (accounts gate, D46).
 Reviews written: 66–81b in Docs/review/ (66–72 specs + adversarial reviews; 70, 73–81 security reviews; 74b, 77b, 79b/79c, 81b re-reviews/checks), verify/R55-009.md.
 
@@ -310,6 +325,11 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D64 | 2026-10-01 (review 55 D11, R55-142): **post-commit audit rule = AppendTx for security-relevant actions** (grants, approvals, trust, device scope/link, prune, decisions): the audit row is written in the same transaction, so no row means no action; other actions log the failure and report success. Ticket F31. |
 | D65 | 2026-10-01 (review 55 D13, R55-216): **document D20's Linux argv exposure now** (approval.md + approve CLI docs: other local users can see the window summary via ps, never the code; hidepid=2 mitigation). Ticket F34. |
 | D66 | 2026-10-01 (review 65 F6S-3): **fingerprint-shaped name blanking requires at least one digit** across a 2–3 group chain, so ordinary names like "Mary & Jake" show again. Ticket F6b. |
+| D67 | 2026-10-01: **R55-F20 spec approved** (Docs/review/83-r55-f20-spec.md + review 83b): OD-F20-1..3, 5..7 (a), **OD-F20-4 (b)** (R55-163: tombstone keeps cancelled/seq 1 but stores body {} when D5/team checks would decline). No wire change, no migration. |
+| D68 | 2026-10-01: **R55-F31 spec approved** (Docs/review/84-r55-f31-spec.md + review 84b): **OD-F31-1 (b)** — removals of access (revoke, reject, expiry, bad_code lockout, unlink, scope clear, peer.remove, decision.refuse) always commit even if their audit row fails (logged; AppendTxSoft, retry once without the row if SQLite rolled back the tx); grants of access/trust follow D64 strictly. OD-2, 3, 5, 6, 7 (a); OD-4 (b) (code follows the spec on policy drift). |
+| D69 | 2026-10-01 (review 85 F3): **`agentnetd install` refuses a daemon binary (or folder) writable by other users**, with an explicit override flag (e.g. `--allow-writable-program`); `doctor` also reports it. Ticket F22. |
+| D70 | 2026-10-01: **R55-F10 spec approved** (Docs/review/82-r55-f10-spec.md + review 82b): OD-F10-1..9 all (a) — new cards refuse bidi controls + U+2028/2029 (emoji allowed); Verify at pairing/creation, VerifyStored for stored cards/rosters; one CLI renderer (displayTerm); --json escapes hidden runes (identity --json excluded); grant branch refuses hidden runes; multi-line fields as indented blocks; column-width shifts accepted and documented. Vectors N18, N19, P3. |
+| D71 | 2026-10-02 (review 86 M1): **helper scripts with `#!/usr/bin/env X`: resolve X on the run's PATH and apply the same ownership check to the program found** (npm/npx/yarn/pnpm keep working; the interpreter is still checked). Ticket F25. |
 | D53 | 2026-09-30: **R55-F2 spec approved** (Docs/review/66-r55-f2-spec.md + review 66b): OD-R55F2-1..8 (a), **OD-9 (c)** (no relay-wide redelivery ceiling now; add with accounts or IPv6), OD-10 (a) (per-prefix wait list). Takes migration R3; the Phase 4 plan's R3–R6 become R4–R7. |
 | D54 | 2026-09-30: **R55-F18 spec approved** (Docs/review/69-r55-f18-spec.md + review 69b): OD-F18-1..9 all (a). New ack member `rejected` (sent alone); migration 22 `work_sessions.runner` (also undo it in internal/audit/chain_test.go rewind, not only store_test.go). Code after F12. |
 | D55 | 2026-09-30: **R55-F23 spec approved** (Docs/review/68-r55-f23-spec.md + review 68b): OD-1..6 all (a). Vectors P1, N1–N15. |
