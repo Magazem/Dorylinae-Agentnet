@@ -18,6 +18,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/lograte"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/noise"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
 )
@@ -30,11 +31,9 @@ const (
 	TypeData = "session.data"
 )
 
-// Audit actions.
-const (
-	ActionOpen   = "session.open"
-	ActionReject = "session.reject"
-)
+// ActionOpen is the audit action for an opened session. Rejects are logged
+// only, never audited (Docs/protocol/session.md §Rejection, R55-F14).
+const ActionOpen = "session.open"
 
 // Reject reasons, see Docs/protocol/session.md.
 const (
@@ -77,7 +76,6 @@ const (
 	maxPings           = 1024
 	maxRefs            = 4096
 	inboxSize          = 256
-	rejectsPerMinute   = 30
 	auditBudget        = 5 * time.Second
 	sendBudget         = 5 * time.Second
 
@@ -113,6 +111,9 @@ type Config struct {
 	// PingTimeout fails a ping with no answer. Default 10s.
 	PingTimeout time.Duration
 	Logger      *slog.Logger
+	// CountReject, if set, is called with the reason of every reject except
+	// unpaired, for the daily relay.reject_summary audit row (OD-F14-7).
+	CountReject func(reason string)
 }
 
 // Failure is why a ping failed.
@@ -204,10 +205,10 @@ type Manager struct {
 	handlers map[string]DataHandler
 	closed   bool
 
-	rejMu      sync.Mutex
-	rejWindow  time.Time
-	rejCount   int
-	suppressed int
+	// lines limits the relay-driven log lines session_reject, session_drop
+	// and session_send_failed (Docs/protocol/envelope.md §Relay-driven log
+	// lines (daemon)).
+	lines *lograte.Limiter
 }
 
 // SetPingGate sets a check that decides whether a ping from a paired peer is
@@ -249,6 +250,7 @@ func NewManager(cfg Config) *Manager {
 	if m.log == nil {
 		m.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	m.lines = lograte.New(m.log, 0)
 	m.wg.Add(2)
 	go m.worker()
 	go m.sweeper()
@@ -310,7 +312,8 @@ func (m *Manager) SetSender(s Sender) {
 	m.mu.Unlock()
 }
 
-// Close stops the manager. Pending pings stay pending.
+// Close stops the manager and writes its pending log lines. Pending pings
+// stay pending.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	if m.closed {
@@ -326,6 +329,7 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	close(m.stop)
 	m.wg.Wait()
+	m.lines.Flush()
 }
 
 // HandleEnvelope queues an envelope from the relay. It never blocks.
@@ -336,7 +340,7 @@ func (m *Manager) HandleEnvelope(e envelope.Envelope) {
 	select {
 	case m.inbox <- e:
 	default:
-		m.log.Warn("session inbox full, dropping envelope", "event", "session_drop", "type", e.Type, "id", e.ID)
+		m.lines.Note(slog.LevelWarn, "session_drop", "session inbox full, dropped envelopes", "", "type", e.Type)
 	}
 }
 
@@ -533,7 +537,7 @@ func (m *Manager) send(ctx context.Context, env envelope.Envelope) error {
 	defer cancel()
 	err := snd.Send(sctx, env)
 	if err != nil {
-		m.log.Warn("session send failed", "event", "session_send_failed", "type", env.Type, "error", err)
+		m.lines.Note(slog.LevelWarn, "session_send_failed", "session sends failed", "", "type", env.Type, "error", err)
 	}
 	return err
 }
@@ -984,35 +988,18 @@ func (m *Manager) auditOpen(ctx context.Context, s *sess) {
 	}
 }
 
-// reject audits a dropped envelope, rate limited. Never logs payload bytes.
+// reject counts a dropped envelope into the limited session_reject log line.
+// Every reason can be caused by the relay alone, so none is audited
+// (Docs/protocol/session.md §Rejection, R55-F14). Never logs the envelope id
+// or payload bytes.
 func (m *Manager) reject(e envelope.Envelope, sidTag, reason string) {
-	m.log.Info("session envelope rejected", "event", "session_reject", "reason", reason, "type", e.Type, "id", e.ID)
-	now := time.Now()
-	m.rejMu.Lock()
-	if now.Sub(m.rejWindow) >= time.Minute {
-		if m.suppressed > 0 {
-			m.log.Warn("session rejects not audited", "event", "session_reject_suppressed", "count", m.suppressed)
-		}
-		m.rejWindow, m.rejCount, m.suppressed = now, 0, 0
-	}
-	allowed := m.rejCount < rejectsPerMinute
-	if allowed {
-		m.rejCount++
-	} else {
-		m.suppressed++
-	}
-	m.rejMu.Unlock()
-	if !allowed {
-		return
-	}
-	detail := map[string]string{"peer": e.From, "type": e.Type, "reason": reason}
+	args := []any{"reason", reason, "type", e.Type, "peer", e.From}
 	if sidTag != "" {
-		detail["session"] = sidTag
+		args = append(args, "session", sidTag)
 	}
-	actx, cancel := context.WithTimeout(context.Background(), auditBudget)
-	defer cancel()
-	if err := m.cfg.Audit.Append(actx, audit.ActorDaemon, ActionReject, detail); err != nil {
-		m.log.Warn("session: audit failed", "event", "session_error", "error", err)
+	m.lines.Note(slog.LevelInfo, "session_reject", "session envelopes rejected", reason, args...)
+	if reason != ReasonUnpaired && m.cfg.CountReject != nil {
+		m.cfg.CountReject(reason)
 	}
 }
 

@@ -331,7 +331,8 @@ func (d *detailRec) Append(_ context.Context, _, action string, detail any) erro
 }
 
 // D10: mail older than ReceiveMaxAge is not stored, deduped or applied; it is
-// audited as stale and acked as rejected (R55-F18), alone.
+// acked as rejected (R55-F18), alone. The stale reject is logged only, never
+// audited: a relay can replay old mail (R55-F14).
 func TestReceiveMaxAge(t *testing.T) {
 	if ReceiveMaxAge != 14*24*time.Hour {
 		t.Fatal("ReceiveMaxAge must be 14 days")
@@ -369,9 +370,8 @@ func TestReceiveMaxAge(t *testing.T) {
 	if n := f.count(`SELECT COUNT(*) FROM mail_seen`); n != 1 {
 		t.Errorf("15 d: mail_seen rows = %d, stale mail was deduped", n)
 	}
-	want := map[string]string{"action": ActionReject, "peer": f.sender.key, "id": "m-00000000000000000000000000000015", "reason": "stale"}
-	if len(rec.events) != 1 || !reflect.DeepEqual(rec.events[0], want) {
-		t.Errorf("audit = %v, want [%v]", rec.events, want)
+	if len(rec.events) != 0 {
+		t.Errorf("stale reject audited: %v", rec.events)
 	}
 	if len(f.audits.events) != 1 {
 		t.Errorf("only the 13 d mail is mail.in audited, got %v", f.audits.events)

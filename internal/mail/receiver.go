@@ -14,6 +14,7 @@ import (
 	"modernc.org/sqlite"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/lograte"
 )
 
 // Receiver side of Docs/protocol/mail.md §Dedupe and inbox and §Ack.
@@ -86,7 +87,12 @@ type Receiver struct {
 	// OnAck receives each verified ack mail. Acks are never stored or acked.
 	OnAck func(op *Opened)
 	Log   *slog.Logger
+	// Lines limits the receiver's relay-driven log lines (mail_ack_failed);
+	// nil means one of its own. The daemon shares the RejectAudit's.
+	Lines *lograte.Limiter
 	Now   func() time.Time // defaults to time.Now
+
+	linesOnce sync.Once
 
 	commit    func(*sql.Tx) error // test hook; defaults to tx.Commit
 	beforeBad func()              // test hook; runs between the two bad-body transactions
@@ -156,11 +162,12 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 	// given up on it, so do not store, dedupe or apply it. Ack it as rejected
 	// so a late resend stops (Docs/protocol/mail.md §Receive age limit).
 	if kind != "keys" && r.now().Sub(op.Msg.Created) > ReceiveMaxAge {
+		rerr := reject(11, ReasonStale, nil)
 		if r.Opener.Audit != nil {
-			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonStale)
+			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, rerr) // logged only: a relay can replay old mail
 		}
 		r.ack(ctx, op.Msg.From, op.Msg.ID, AckRejected)
-		return reject(11, ReasonStale, nil)
+		return rerr
 	}
 
 	res, err := r.store(ctx, op, k, known)
@@ -169,15 +176,22 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		return err
 	}
 	if res == seenBad || res == seenDupBad {
+		rerr := reject(11, ReasonBadBody, nil)
 		if res == seenBad && r.Opener.Audit != nil {
-			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, ReasonBadBody)
+			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, rerr)
 		}
 		r.ack(ctx, op.Msg.From, op.Msg.ID, AckRejected)
-		return reject(11, ReasonBadBody, nil)
+		return rerr
 	}
 	dup := res == seenDup
 	if !dup && kind != "keys" && r.Audit != nil {
-		detail := map[string]string{"peer": op.Msg.From, "id": op.Msg.ID, "kind": kind}
+		// A kind this daemon does not register is peer-chosen text: audited
+		// as "unknown" (Docs/protocol/mail.md §Audit, R55-F14).
+		auditKind := kind
+		if !known {
+			auditKind = "unknown"
+		}
+		detail := map[string]string{"peer": op.Msg.From, "id": op.Msg.ID, "kind": auditKind}
 		if aerr := r.Audit.Append(ctx, actorDaemon, ActionIn, detail); aerr != nil {
 			r.log().Warn("mail: audit failed", "event", "mail_error", "error", aerr)
 		}
@@ -392,16 +406,18 @@ const (
 // outboxed). A rejected ack is always sent alone: a pre-F18 sender refuses a
 // whole ack with an unknown member, so any future batching must keep it
 // separate (review 69b F3). Failures are logged: the sender resends and
-// dedupe re-acks.
+// dedupe re-acks. A relay replaying a genuine mail makes one ack attempt per
+// replay, so the failures go to the limited event=mail_ack_failed line
+// (Docs/protocol/envelope.md §Relay-driven log lines (daemon), R55-F14).
 func (r *Receiver) ack(ctx context.Context, peer, id, member string) {
 	pub, ok := r.Peers.MailboxPub(peer)
 	if !ok {
-		r.log().Warn("mail: cannot ack, no mailbox key for peer", "event", "ack_no_mailbox_key", "id", id)
+		r.ackFailed("no_mailbox_key", id, nil)
 		return
 	}
 	priv, err := r.Priv()
 	if err != nil {
-		r.log().Warn("mail: cannot load identity key for ack", "event", "ack_seal_failed", "id", id, "error", err)
+		r.ackFailed("seal_failed", id, err)
 		return
 	}
 	defer clear(priv)
@@ -410,7 +426,7 @@ func (r *Receiver) ack(ctx context.Context, peer, id, member string) {
 		Body: map[string]any{member: []string{id}}, Created: r.now(),
 	})
 	if err != nil {
-		r.log().Warn("mail: cannot seal ack", "event", "ack_seal_failed", "id", id, "error", err)
+		r.ackFailed("seal_failed", id, err)
 		return
 	}
 	e := envelope.Envelope{
@@ -418,7 +434,37 @@ func (r *Receiver) ack(ctx context.Context, peer, id, member string) {
 		Type: "mail", ID: sl.ID, TS: r.now().UTC().Format(time.RFC3339), Payload: sl.Payload,
 	}
 	if err := r.Sender.Send(ctx, e); err != nil {
-		r.log().Warn("mail: ack not sent", "event", "ack_send_failed", "id", id, "error", err)
+		r.ackFailed("send_failed", id, err)
+	}
+}
+
+// ackFailed counts one failed ack into the limited mail_ack_failed line.
+// reason is one of the constants no_mailbox_key, seal_failed, send_failed.
+func (r *Receiver) ackFailed(reason, id string, err error) {
+	args := []any{"reason", reason, "id", id}
+	if err != nil {
+		args = append(args, "error", err)
+	}
+	r.lines().Note(slog.LevelWarn, "mail_ack_failed", "mail: acks not sent", reason, args...)
+}
+
+// lines returns the limiter of the receiver's relay-driven log lines: Lines
+// if set, else one of its own.
+func (r *Receiver) lines() *lograte.Limiter {
+	r.linesOnce.Do(func() {
+		if r.Lines == nil {
+			r.Lines = lograte.New(r.log(), 0)
+		}
+	})
+	return r.Lines
+}
+
+// Flush writes the pending relay-driven log lines of the receiver and its
+// Opener's RejectAudit (daemon stop).
+func (r *Receiver) Flush() {
+	r.lines().Flush()
+	if r.Opener != nil && r.Opener.Audit != nil {
+		r.Opener.Audit.Flush()
 	}
 }
 

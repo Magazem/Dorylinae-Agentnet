@@ -185,6 +185,11 @@ func TestAuditInventoryIsComplete(t *testing.T) {
 		kinds[k] = true
 	}
 	kinds["request"] = true // request.Kind() is registered as kinds["request"]
+	// mail.in audits an unregistered kind as "unknown" (R55-F14), so no kind
+	// may be registered under that name.
+	if kinds["unknown"] {
+		t.Error(`a mail kind is registered as "unknown", the name mail.in uses for an unregistered kind`)
+	}
 	compare := func(what string, code map[string]bool, inv map[string]invEntry) {
 		for name := range code {
 			if _, ok := inv[name]; !ok {

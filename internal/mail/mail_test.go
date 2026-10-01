@@ -458,6 +458,8 @@ func (r *recSink) Append(_ context.Context, actor, action string, _ any) error {
 	return nil
 }
 
+// R55-F14: 50 distinct genuine envelopes failing step 8 give 30 rows, one
+// more after the minute; 50 unpaired rejects give none.
 func TestRejectAuditRateLimit(t *testing.T) {
 	s, r, o := fixture(t)
 	sink := &recSink{}
@@ -465,10 +467,10 @@ func TestRejectAuditRateLimit(t *testing.T) {
 	a := NewRejectAudit(sink, slog.New(slog.DiscardHandler))
 	a.now = func() time.Time { return now }
 	o.Audit = a
-	o.Peers = fakePeers{}
-	e := env(s, r, sealTo(t, s, r, "", "request", nil, vectorNow))
+	third := newParty(t, 0xa0, 0xb0)
+	wrong := func() envelope.Envelope { return env(s, r, sealForged(t, s.key, r, s.priv, third.key, vectorNow)) }
 	for i := 0; i < 50; i++ {
-		if _, err := o.Open(e); err == nil {
+		if _, err := o.Open(wrong()); err == nil {
 			t.Fatal("want reject")
 		}
 	}
@@ -476,8 +478,16 @@ func TestRejectAuditRateLimit(t *testing.T) {
 		t.Fatalf("audited %d, want 30", sink.n)
 	}
 	now = now.Add(time.Minute)
-	_, _ = o.Open(e)
+	_, _ = o.Open(wrong())
 	if sink.n != 31 {
 		t.Fatalf("audited %d after window, want 31", sink.n)
+	}
+	o.Peers = fakePeers{}
+	now = now.Add(time.Minute)
+	for i := 0; i < 50; i++ {
+		_, _ = o.Open(env(s, r, sealTo(t, s, r, "", "request", nil, vectorNow)))
+	}
+	if sink.n != 31 {
+		t.Fatalf("audited %d after unpaired rejects, want 31", sink.n)
 	}
 }

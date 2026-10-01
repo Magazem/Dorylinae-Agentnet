@@ -44,7 +44,7 @@ type PingStatusParams struct {
 
 // newSessions binds a fresh Noise static key to the identity and returns the
 // session manager (Docs/protocol/session.md). Only paired peers may talk to it.
-func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, ps *peers.Store, opts Options) (*session.Manager, error) {
+func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, ps *peers.Store, opts Options, countReject func(reason string)) (*session.Manager, error) {
 	pub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("agent card public key: %w", err)
@@ -68,7 +68,8 @@ func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, ps *
 			}
 			return false, nil
 		},
-		Logger: opts.Logger,
+		Logger:      opts.Logger,
+		CountReject: countReject,
 	}), nil
 }
 

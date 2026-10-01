@@ -23,6 +23,12 @@ var errBadAnnouncement = errors.New("bad mailbox announcement")
 // errors.Is; kind keys itself treats it the same as any other bad_body.
 var ErrAnnouncementExpired = errors.New("mail: mailbox announcement validity window is out of range")
 
+// errAnnouncementPast marks the one validity failure a replay of a genuine
+// announcement causes (not_after <= now). The other window failures (created
+// in the future, created >= not_after, lifetime over 30 days) are signed by the
+// peer itself and stay auditable, so the audit rule matches only this.
+var errAnnouncementPast = errors.New("mail: mailbox announcement has expired")
+
 // checkIDList validates an optional 1-256 element list of mail ids.
 func checkIDList(name string, v any) error {
 	list, ok := v.([]any)
@@ -141,7 +147,13 @@ func verifyAnnouncement(v any, identity string, now time.Time) error {
 	}
 	if created.After(now.Add(MaxSkew)) || !created.Before(notAfter) ||
 		notAfter.After(created.Add(30*24*time.Hour)) || !notAfter.After(now) {
-		return ErrAnnouncementExpired
+		if created.After(now.Add(MaxSkew)) || !created.Before(notAfter) ||
+			notAfter.After(created.Add(30*24*time.Hour)) {
+			return ErrAnnouncementExpired
+		}
+		// Only not_after <= now is left: a replay of a genuine announcement
+		// causes exactly this.
+		return fmt.Errorf("%w: %w", ErrAnnouncementExpired, errAnnouncementPast)
 	}
 	return nil
 }

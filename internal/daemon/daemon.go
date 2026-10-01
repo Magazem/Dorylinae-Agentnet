@@ -360,7 +360,14 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		Logger:  opts.Logger,
 	})
 	defer pairs.Close()
-	sessions, err := newSessions(id, ks, log, peerStore, opts)
+	// Counts of the relay-causable rejects that are logged only (OD-F14-7
+	// (b), R55-F14). Its stop is deferred before sessions.Close, so it runs
+	// after the relay, the mail receiver and the session manager have
+	// stopped, and before daemon.stop.
+	rejects := newRejectSummary(log, opts.Logger, nil)
+	rejects.start(ctx)
+	defer rejects.stop(ctx)
+	sessions, err := newSessions(id, ks, log, peerStore, opts, rejects.countSession)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -626,7 +633,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	defer stopFetch()
 	fetchClient := startFetchClient(sessions, capStore, wsStore, id.Card().Card.PublicKey)
 	defer fetchClient.Close()
-	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore)
+	relayClient, stopRelay, err := startRelay(ctx, st.DB(), log, id, ks, pairs, sessions, outbox, opts, teamStore, presenceSender, presenceReceiver, reqStore, wsStore, capStore, rejects)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -787,7 +794,7 @@ func webhookKeystore(dir, mode string) *keystore.Store {
 // startRelay connects to opts.RelayURL in the background, if set. The returned
 // function stops the client and waits for it to exit. The returned *Client is
 // nil when there is no relay (RelayURL empty).
-func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store) (client *relayclient.Client, stop func(), err error) {
+func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.Identity, ks *keystore.Store, pairs *peers.Manager, sessions *session.Manager, outbox *mail.Outbox, opts Options, ts *team.Store, psender *presence.Sender, precv *presence.Receiver, rs *request.Store, ws *worksession.Store, caps *capability.Store, rejects *rejectSummary) (client *relayclient.Client, stop func(), err error) {
 	if opts.RelayURL == "" {
 		return nil, func() {}, nil
 	}
@@ -852,6 +859,7 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	stopMail := func() {}
 	if opts.MailboxKeys != nil {
 		rcv, pusher := newMailReceiver(db, alog, ks, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
+		rcv.Opener.Audit.CountLogged = rejects.countMail
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

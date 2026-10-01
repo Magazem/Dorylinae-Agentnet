@@ -135,8 +135,6 @@ func TestPeersVerifyAndRemove(t *testing.T) {
 	if _, o := ping(t, b, "@alice"); o.State == session.StateComplete {
 		t.Fatalf("bob's ping completed after being removed: %+v", o)
 	}
-	rej := waitEvents(t, a, session.ActionReject, 1)
-	if d := rej[len(rej)-1]; d["reason"] != session.ReasonUnpaired || d["peer"] != b.key {
-		t.Fatalf("reject = %v", d)
-	}
+	// The reject is logged only, never audited (R55-F14).
+	noSessionRejects(t, a)
 }

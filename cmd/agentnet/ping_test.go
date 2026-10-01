@@ -187,6 +187,7 @@ func sessionEvents(t *testing.T, n *testNode, action string) []map[string]string
 	return out
 }
 
+// waitEvents polls n's audit log until it holds at least want rows of action.
 func waitEvents(t *testing.T, n *testNode, action string, want int) []map[string]string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -199,6 +200,24 @@ func waitEvents(t *testing.T, n *testNode, action string, want int) []map[string
 			t.Fatalf("%s events = %v, want %d", action, evs, want)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// noSessionRejects asserts that n writes no session.reject row: session
+// rejects are logged, never audited (R55-F14, Docs/protocol/session.md
+// §Rejection). The reject is handled asynchronously, so it keeps checking for
+// a while.
+func noSessionRejects(t *testing.T, n *testNode) {
+	t.Helper()
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if evs := sessionEvents(t, n, "session.reject"); len(evs) != 0 {
+			t.Fatalf("session.reject rows = %v", evs)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -261,7 +280,7 @@ func TestPingEncryptedThroughRelay(t *testing.T) {
 		t.Errorf("relay log leaks plaintext or lacks routing events:\n%s", l)
 	}
 
-	// Flip one ciphertext byte of the next A -> B message: B rejects and audits it.
+	// Flip one ciphertext byte of the next A -> B message: B rejects it (logged, not audited).
 	var original envelope.Envelope
 	proxy.setTamper(func(e *envelope.Envelope) bool {
 		if e.Type != session.TypeData || original.ID != "" {
@@ -275,16 +294,14 @@ func TestPingEncryptedThroughRelay(t *testing.T) {
 	if code, o := ping(t, a, "@bob"); code != exitOK || o.State != session.StatePending || o.PingID == "" {
 		t.Fatalf("tampered ping = %d %+v (want pending)", code, o)
 	}
-	rej := waitEvents(t, b, session.ActionReject, 1)
-	if rej[0]["reason"] != session.ReasonDecrypt || rej[0]["peer"] != a.key || rej[0]["type"] != session.TypeData {
-		t.Fatalf("reject = %v", rej[0])
-	}
 	proxy.setTamper(nil)
 
-	// The session keeps working for valid messages.
+	// The session keeps working for valid messages. B's session worker is
+	// FIFO, so the tampered message has been handled by now.
 	if code, o := ping(t, a, "@bob"); code != exitOK || o.State != session.StateComplete || o.Handshake {
 		t.Fatalf("ping after tamper = %d %+v", code, o)
 	}
+	noSessionRejects(t, b)
 
 	// Replaying an envelope B already accepted, and the untampered original, are rejected.
 	proxy.mu.Lock()
@@ -300,22 +317,12 @@ func TestPingEncryptedThroughRelay(t *testing.T) {
 	accepted.ID, original.ID = "replay-accepted", "replay-original"
 	proxy.inject(t, accepted)
 	proxy.inject(t, original)
-	rej = waitEvents(t, b, session.ActionReject, 3)
-	for _, d := range rej[1:] {
-		if d["reason"] != session.ReasonReplay {
-			t.Fatalf("replay reject = %v", d)
-		}
-	}
 	if code, o := ping(t, a, "@bob"); code != exitOK || o.State != session.StateComplete {
 		t.Fatalf("ping after replay = %d %+v", code, o)
 	}
+	noSessionRejects(t, b)
 	if n := len(sessionEvents(t, a, session.ActionOpen)); n != 1 {
 		t.Errorf("alice opened %d sessions, want 1", n)
-	}
-	for _, d := range sessionEvents(t, b, session.ActionReject) {
-		if len(d) > 4 {
-			t.Errorf("reject detail has unexpected fields: %v", d)
-		}
 	}
 
 	// A handshake from a key B never paired with is refused without an answer.
@@ -342,15 +349,15 @@ func TestPingEncryptedThroughRelay(t *testing.T) {
 	if err := mc.Send(ctx, env); err != nil {
 		t.Fatal(err)
 	}
-	rej = waitEvents(t, b, session.ActionReject, 4)
-	if d := rej[3]; d["reason"] != session.ReasonUnpaired || d["peer"] != mkey || d["type"] != session.TypeInit {
-		t.Fatalf("unpaired reject = %v", d)
-	}
 	select {
 	case typ := <-got:
 		t.Fatalf("B answered the unpaired key with %s", typ)
 	case <-time.After(300 * time.Millisecond):
 	}
+	if code, o := ping(t, a, "@bob"); code != exitOK || o.State != session.StateComplete {
+		t.Fatalf("ping after the unpaired handshake = %d %+v", code, o)
+	}
+	noSessionRejects(t, b)
 	if n := len(sessionEvents(t, b, session.ActionOpen)); n != 1 {
 		t.Errorf("bob opened %d sessions, want 1", n)
 	}
