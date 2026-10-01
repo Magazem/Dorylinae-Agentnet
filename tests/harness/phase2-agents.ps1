@@ -68,6 +68,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+$env:DORYLINAE_KEYSTORE = 'file'
 $scriptStart = Get-Date
 
 # $PSScriptRoot can be empty under Windows PowerShell 5.1 (e.g. `powershell -File`
@@ -160,9 +162,13 @@ function Invoke-CliJson {
     $psi.UseShellExecute = $false
     $psi.Environment["DORYLINAE_HOME"] = $HomeDir
     $p = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $p.StandardOutput.ReadToEnd()
-    $stderr = $p.StandardError.ReadToEnd()
+    # Async reads: a synchronous ReadToEnd() would block on a hung child before the timeout applies.
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
     if (-not $p.WaitForExit($TimeoutMs)) { Stop-ProcessTree -Process $p; throw "agentnet $($CliArgs -join ' ') timed out" }
+    $p.WaitForExit()
+    $stdout = $outTask.Result
+    $stderr = $errTask.Result
     $obj = $null
     if ($stdout.Trim().Length -gt 0) {
         try { $obj = $stdout | ConvertFrom-Json } catch { }
@@ -358,16 +364,18 @@ function Invoke-Round {
             $bPsi.RedirectStandardOutput = $true; $bPsi.RedirectStandardError = $true; $bPsi.UseShellExecute = $false
             $aProc = [System.Diagnostics.Process]::Start($aPsi)
             $bProc = [System.Diagnostics.Process]::Start($bPsi)
+            $handles.standinA = $aProc; $handles.standinB = $bProc
             $aOut = $aProc.StandardOutput.ReadToEndAsync(); $aErr = $aProc.StandardError.ReadToEndAsync()
             $bOut = $bProc.StandardOutput.ReadToEndAsync(); $bErr = $bProc.StandardError.ReadToEndAsync()
             $aFinished = $aProc.WaitForExit($AgentTimeoutSeconds * 1000)
             $bFinished = $bProc.WaitForExit($AgentTimeoutSeconds * 1000)
+            # Kill a hung stand-in first: .Result blocks until the child's stdout closes.
+            if (-not $aFinished) { Stop-ProcessTree -Process $aProc }
+            if (-not $bFinished) { Stop-ProcessTree -Process $bProc }
             Set-Content -Path (Join-Path $RunDir "standin-a.stdout.log") -Value $aOut.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-a.stderr.log") -Value $aErr.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-b.stdout.log") -Value $bOut.Result -Encoding utf8
             Set-Content -Path (Join-Path $RunDir "standin-b.stderr.log") -Value $bErr.Result -Encoding utf8
-            if (-not $aFinished) { Stop-ProcessTree -Process $aProc }
-            if (-not $bFinished) { Stop-ProcessTree -Process $bProc }
             if (-not $aFinished -or -not $bFinished) { $result.Reason = "stand-in timed out (a finished=$aFinished, b finished=$bFinished)"; return [pscustomobject]$result }
             if ($aProc.ExitCode -ne 0) { $result.Reason = "stand-in A exited $($aProc.ExitCode): $($aErr.Result)"; return [pscustomobject]$result }
             if ($bProc.ExitCode -ne 0) { $result.Reason = "stand-in B exited $($bProc.ExitCode): $($bErr.Result)"; return [pscustomobject]$result }
@@ -439,6 +447,14 @@ other command.
         $grants = Invoke-CliJson -AgentnetExe $AgentnetExe -HomeDir $aHome -CliArgs @("grants", "--issued")
         $reviewGrants = @($grants.Json.grants)
         if ($reviewGrants.Count -lt 1) { $result.Reason = "expected at least 1 issued grant on A, found $($reviewGrants.Count)"; return [pscustomobject]$result }
+        # The approval pump approves everything, so assert the agent granted the fixture directory and nothing wider (R55-188).
+        $fixtureFull = [System.IO.Path]::GetFullPath($fixtureDir).TrimEnd([char]92, '/')
+        foreach ($g in $reviewGrants) {
+            $gp = [string]$g.resource.path
+            $gpFull = if ($gp) { [System.IO.Path]::GetFullPath($gp).TrimEnd([char]92, '/') } else { "" }
+            $isFixture = ($gpFull -ieq $fixtureFull) -or ($gpFull -and ((Split-Path -Leaf $gpFull) -ieq "fixture"))
+            if (-not $isFixture) { $result.Reason = "issued grant path '$gp' is not the fixture directory '$fixtureDir'"; return [pscustomobject]$result }
+        }
         Wait-Until -What "the grant to be revoked after session close" -TimeoutSeconds 30 -Cond {
             $g = Invoke-CliJson -AgentnetExe $AgentnetExe -HomeDir $aHome -CliArgs @("grants", "--issued")
             @($g.Json.grants | Where-Object { $_.state -eq "revoked" }).Count -ge 1
@@ -455,7 +471,8 @@ other command.
         $result.Reason = "ok"
         return [pscustomobject]$result
     } finally {
-                Stop-PipedProc -Process $handles.daemonA
+        foreach ($sp in @($handles.standinA, $handles.standinB)) { try { if ($sp -and -not $sp.HasExited) { Stop-ProcessTree -Process $sp } } catch {} }
+        Stop-PipedProc -Process $handles.daemonA
         Stop-PipedProc -Process $handles.daemonB
         try { if (-not $handles.relay.HasExited) { Stop-ProcessTree -Process $handles.relay } } catch {}
     }
@@ -594,8 +611,13 @@ foreach ($r in $rounds) {
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         $runDir = Join-Path $rootRun "round$($r.Num)-attempt$attempt"
         New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-        $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
-            -AgentnetExe $agentnetExe -StandinExe $standinExe -RunDir $runDir -RelayPort $port -Python $python
+        # A Wait-Until timeout throws; treat it as a failed attempt so -MaxAttempts still applies (R55-187).
+        try {
+            $res = Invoke-Round -RoundNum $r.Num -SenderTool $r.Sender -RecipientTool $r.Recipient `
+                -AgentnetExe $agentnetExe -StandinExe $standinExe -RunDir $runDir -RelayPort $port -Python $python
+        } catch {
+            $res = [pscustomobject]@{ Pass = $false; Reason = "round threw: $($_.Exception.Message)"; RequestId = ""; Outcome = ""; DurationSeconds = 0 }
+        }
         $attemptLog += [pscustomobject]@{ Round = $r.Num; Attempt = $attempt; Pass = $res.Pass; Reason = $res.Reason }
         if ($res.Pass) { $passCount++; Write-Ok "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): PASS"; break }
         else { Write-Fail "round $($r.Num) attempt $attempt ($($r.Sender) -> $($r.Recipient)): $($res.Reason)" }
