@@ -114,7 +114,7 @@ web terminal still works (Server → Console), and `ufw allow 22/tcp` there undo
 - installs `ufw`, `fail2ban`, `unattended-upgrades` and `caddy`, all from Debian's own
   archive. It downloads nothing else;
 - SSH: passwords off, root by key only. It refuses to run if `/root/.ssh/authorized_keys`
-  holds no key;
+  holds no key, and a key restricted with `command=` does not count (it gives no shell);
 - fail2ban's `sshd` jail, reading the journal;
 - firewall: inbound 22/tcp (only from `SSH_ALLOW_FROM` if set) and 443/tcp **over IPv4
   only**, nothing else. IPv6 443 is dropped even if the VM has an IPv6 address (step 1.4);
@@ -267,6 +267,11 @@ install -m 0755 /root/relay /opt/agentnet-relay/relay   # on the VM
 systemctl restart agentnet-relay
 journalctl -u agentnet-relay -n 5 --no-pager
 ```
+
+A restart is graceful: on SIGTERM the relay flushes each connection's pending frames, waits
+up to 4 s for the frames its connection handlers are processing, then closes the queue, all
+inside the unit's `TimeoutStopSec=20`. A daemon in the middle of `pair.confirm` or a work
+session sees at worst a reconnect, not a lost frame.
 
 Relay migrations are forward-only. With no backup, a bad release means a fresh database, so
 the queue is lost. Before a release that adds a relay migration, take a manual copy:

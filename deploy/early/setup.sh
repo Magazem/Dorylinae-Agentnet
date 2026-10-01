@@ -26,9 +26,12 @@ for f in Caddyfile agentnet-relay.service; do
 done
 
 # Refuse to turn off SSH passwords unless root can already log in with a key,
-# so this script cannot lock you out.
-if ! grep -qsE '(ssh|ecdsa|sk)-[A-Za-z0-9@.-]+ AAAA' /root/.ssh/authorized_keys; then
-	die "no SSH key in /root/.ssh/authorized_keys; add your key before running this"
+# so this script cannot lock you out. A key restricted with command= does not
+# give a shell, so it does not count (R55-196).
+if ! grep -vE '^[[:space:]]*(#|$)' /root/.ssh/authorized_keys 2>/dev/null |
+	grep -vE '(^|[[:space:],])command=' |
+	grep -qE '(ssh|ecdsa|sk)-[A-Za-z0-9@.-]+ AAAA'; then
+	die "no unrestricted SSH key (one without command=) in /root/.ssh/authorized_keys; add your key before running this"
 fi
 
 step "Packages"
