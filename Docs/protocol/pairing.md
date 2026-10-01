@@ -399,7 +399,8 @@ pairings (`pair --new`, `pair <code>`, team invites and joins together) at once 
 These appear in `pair.fail` audit rows and in the pairing status `error.code`, alongside
 the relay codes above: `bad_card`, `bad_mbox` (new), `bad_confirm` (new), `confirm_timeout`
 (new), `relay_v1` (new), `code_used` (new), `pair_lookup_taken`, `store_error`, `timeout`,
-`expired`.
+`expired`, `cancelled` (R55-F31: an owner-side team invite whose `team.invite_issued` row
+could not be written, [audit.md](audit.md#classes)).
 
 ### Storage and trust states
 
@@ -503,7 +504,8 @@ because only the first 20 characters (100 of 256 bits) are used.
   `pair.complete` (actor `daemon`; `{id, role, peer, trust}`; class S since R55-F31: written in
   the transaction that stores the peer (`AddTrusted`), with `trust` read back from the stored
   row, so a peer is never stored without its row. If that row fails, the peer is not stored
-  and the pairing fails `internal`. A failure of the same pairing after the peer was stored
+  and the pairing fails `store_error` (the existing code for a peer that could not be stored;
+the other side may already have stored us, as for any `store_error`). A failure of the same pairing after the peer was stored
   still adds `pair.fail`), `pair.fail` (actor `daemon`;
   `{id, role, code, reason}`; for a relay error these are the converted `code` and `message`
   of [envelope.md](envelope.md#error-frame-relay---daemon): a known code or `relay_error`,

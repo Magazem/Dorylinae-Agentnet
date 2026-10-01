@@ -344,8 +344,8 @@ cards, announcements or codes.
 **When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
 `team.roster_apply` is class S and the GC's `peer.remove {reason: "team"}` rows are class S- (both described above).
 `team.invite_issued` is class S, but it has no transaction: if its row fails, the daemon
-cancels the pairing it just started and returns the error, so no code is released without
-its row. Every other team row is class N (OD-F31-3). The owner-side membership rows change no
+cancels the pairing it just started (`peers.Manager.Cancel`, failure code `cancelled`) and
+returns the error, so no code is released without its row. The approval stays spent. Every other team row is class N (OD-F31-3). The owner-side membership rows change no
 local trust; the members record the trust change as `team.roster_apply`. So
 `team_remove` no longer fails after removing the member when its `team.member_remove` row
 fails. It logs the failure and still broadcasts the roster.

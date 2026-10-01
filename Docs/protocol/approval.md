@@ -236,8 +236,12 @@ first grant. The `approval_unavailable` message and `status` name the fix in pla
 "install zenity (or kdialog)", "no desktop session", or "PowerShell/WinForms blocked by policy".
 
 **How the check works (R55-125, R55-F31).** `approval.WindowRunner` gains `Check(ctx)
-(ok bool, fix string)`. It opens no window, spawns no process and reads no peer data. It is
-cached for 60 s and re-run on `status` once the cache is older:
+(ok bool, fix string)`. It opens no window, spawns no process and reads no peer data. Its
+result is cached for 60 s. `status` never waits for it: it returns the cached value and,
+when that is older than 60 s, starts one refresh in the background (at most one at a time,
+with a 1 s budget, because the Linux lookup is a D-Bus call). The first check runs at
+daemon start. `fix` is always one of the fixed strings below, never OS or D-Bus error text
+(review 84b F9):
 
 | OS | `missing` when | `fix` |
 |---|---|---|
@@ -682,11 +686,14 @@ Those rows have actor `daemon` and no `via`. In code, the daemon's callers use
 `approval.create` and `approval.approve` are class S. The row is written in the transaction
 that inserts the approval or marks it approved, so an approval that has no row was never
 created or approved. If `approval.approve` cannot be written, Confirm fails as when `Perform`
-fails: the approval stays `pending` and its timer restarts. `approval.reject`,
+fails: the approval stays `pending` and its timer restarts. The row is written after the
+precondition and rebuild checks and before `Perform`, so the chain reads `approval.approve`
+before the rows `Perform` writes (`grant.issue`, `peer.verify`, …), as today. `approval.reject`,
 `approval.bad_code` and `approval.locked` are class S-. They are written in the transaction
 of their state change (`bad_code` together with the attempts counter and the daily
-wrong-code count, the one transaction that R55-F27 introduces for R55-147). A failed row is logged and the state change
-still commits. `approval.open` and `approval.limit` record no state change and are class N.
+wrong-code count in one transaction: R55-F27 needs that transaction for R55-147, and
+whichever ticket lands first builds it). A failed row is logged and the state change
+still commits (within the limit in audit.md, "What S- really guarantees"). `approval.open` and `approval.limit` record no state change and are class N.
 `approval.mode` is class L.
 
 ## Tables
