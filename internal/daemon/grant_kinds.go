@@ -90,6 +90,19 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			if !errors.Is(err, capability.ErrUnknownGrant) {
 				return err
 			}
+			// Held caps (R55-F13, review 71b F6): after the duplicate and
+			// conflict checks, so a redelivered grant is never refused.
+			live, err := capStore.CountHeldLiveInSessionTx(ctx, tx, g.Session, now)
+			if err != nil {
+				return err
+			}
+			total, err := capStore.CountHeldInSessionTx(ctx, tx, g.Session)
+			if err != nil {
+				return err
+			}
+			if live >= capability.MaxHeldLivePerSession || total >= capability.MaxHeldTotalPerSession {
+				return fmt.Errorf("grant: session %s holds %d live and %d total grants: %w", g.Session, live, total, mail.ErrLimit)
+			}
 			rec := capability.Record{
 				ID: g.ID, Peer: g.Iss, Session: g.Session, Action: g.Action, Label: g.Resource.Label,
 				Branch: g.Resource.Branch, Scope: g.Scope, Sensitive: g.Sensitive, Nbf: g.Nbf, Exp: g.Exp,

@@ -121,6 +121,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runFetch(args[1:], stdout, stderr)
 	case "log":
 		return runLog(args[1:], stdout, stderr)
+	case "prune":
+		return runPrune(args[1:], stdout, stderr)
 	case "mail":
 		if debugEnabled() {
 			return runMail(args[1:], stdout, stderr)
@@ -172,6 +174,7 @@ Commands:
   grant     Give a teammate's agent scoped read access (also: grants, revoke, grant policy)
   fetch     Read a file or listing under a grant you hold
   log       Show the audit log and check its hash chain
+  prune     Remove finished items older than a cutoff (asks for your approval)
 %s
 Run 'agentnet <command> --help' for command flags.
 `, summary, debug)

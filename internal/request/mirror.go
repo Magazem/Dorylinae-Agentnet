@@ -130,9 +130,9 @@ func (s *Store) applyDecline(ctx context.Context, tx *sql.Tx, op *mail.Opened) e
 		return badBody("%s", err.Error())
 	}
 	switch code {
-	case "user", "not_team_member", "unknown_team", "unverified_peer":
+	case "user", "not_team_member", "unknown_team", "unverified_peer", "inbox_full":
 	default:
-		return badBody("code must be user, not_team_member, unknown_team or unverified_peer")
+		return badBody("code must be user, not_team_member, unknown_team, unverified_peer or inbox_full")
 	}
 	reason, err := decodeNonEmpty(body, "reason")
 	if err != nil {
@@ -317,8 +317,11 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 	out := &mirrorOutcome{kind: kind, requestID: reqID, peer: row.peer, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title, until: until, sessionAfter: sessionAfter}
 	finalState := row.state
 	if seq > row.stateSeq {
-		setSQL := `state = ?, state_seq = ?, state_at = ?`
-		args := []any{newState, seq, wireTime(at)}
+		// updated is the local time of the change, never the peer's at: a
+		// request sent long ago and finished now is not older than a prune's
+		// cutoff (retention.md §Approval, review 81b M1).
+		setSQL := `state = ?, state_seq = ?, state_at = ?, updated = ?`
+		args := []any{newState, seq, wireTime(at), storeTime(s.now())}
 		if extraSet != "" {
 			setSQL += ", " + extraSet
 			args = append(args, extraArgs...)
@@ -357,7 +360,7 @@ func (s *Store) applyMirror(ctx context.Context, tx *sql.Tx, op *mail.Opened, ki
 
 	if row.cancel.Valid && row.cancel.String == "requested" &&
 		(finalState == StateAccepted || finalState == StateDeclined || finalState == StateCompleted) {
-		if _, err := tx.ExecContext(ctx, `UPDATE requests SET cancel = 'refused' WHERE direction = 'out' AND peer = ? AND id = ?`, row.peer, row.id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE requests SET cancel = 'refused', updated = ? WHERE direction = 'out' AND peer = ? AND id = ?`, storeTime(s.now()), row.peer, row.id); err != nil {
 			return fmt.Errorf("request: refuse cancel: %w", err)
 		}
 		out.cancelRefused = true

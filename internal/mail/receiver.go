@@ -46,11 +46,14 @@ const (
 
 // Kind describes how the receiver processes one known application kind.
 type Kind struct {
-	// Inbox stores a mail_inbox row with the verified plaintext as proof.
+	// Inbox stores a mail_inbox row for dedupe. Since R55-F13 the row is
+	// blank (signed = ''): the plaintext is not kept a second time
+	// (Docs/protocol/mail.md §Dedupe and inbox).
 	Inbox bool
 	// Apply writes the kind-specific rows. It runs inside the dedupe
 	// transaction, so it must only use tx. An error rolls everything back and
-	// nothing is acked, except an error wrapping ErrBadBody (see there). An
+	// nothing is acked, except an error wrapping ErrBadBody or ErrLimit (see
+	// there). An
 	// error that quotes body content must wrap ErrBadBody; the receiver never
 	// logs an Apply error's text either way (errClass).
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error
@@ -116,6 +119,16 @@ var ErrBadBody = errors.New("mail: bad body")
 // ReasonBadBody is the audit reason for ErrBadBody.
 const ReasonBadBody = "bad_body"
 
+// ErrLimit is wrapped by an Apply error when a per-peer cap refuses the mail
+// (Docs/protocol/request.md §Per-peer caps, Docs/protocol/grant.md §Kinds). The
+// receiver handles it exactly like ErrBadBody (only the marked mail_seen row,
+// acked rejected, a resend re-acked without Apply) but audits mail.reject with
+// reason limit.
+var ErrLimit = errors.New("mail: limit")
+
+// ReasonLimit is the audit reason for ErrLimit.
+const ReasonLimit = "limit"
+
 // badBodyMark is appended to mail_seen.received_at of a bad-body row, so a
 // resend is re-acked as rejected without calling Apply and without a
 // migration. Prune's string comparison still orders such rows by time.
@@ -175,9 +188,13 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		r.logFailure(op, known, err)
 		return err
 	}
-	if res == seenBad || res == seenDupBad {
-		rerr := reject(11, ReasonBadBody, nil)
-		if res == seenBad && r.Opener.Audit != nil {
+	if res == seenBad || res == seenLimit || res == seenDupBad {
+		reason := ReasonBadBody
+		if res == seenLimit {
+			reason = ReasonLimit
+		}
+		rerr := reject(11, reason, nil)
+		if res != seenDupBad && r.Opener.Audit != nil {
 			r.Opener.Audit.Report(op.Msg.From, op.Msg.ID, rerr)
 		}
 		r.ack(ctx, op.Msg.From, op.Msg.ID, AckRejected)
@@ -282,7 +299,8 @@ const (
 	seenNew    seenResult = iota // stored
 	seenDup                      // repeat of an accepted (from, id)
 	seenBad                      // Apply returned ErrBadBody; only mail_seen recorded
-	seenDupBad                   // repeat of a bad-body (from, id)
+	seenDupBad                   // repeat of a bad-body or limit (from, id)
+	seenLimit                    // Apply returned ErrLimit; only mail_seen recorded
 )
 
 // store runs the single dedupe transaction.
@@ -316,23 +334,22 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		if k.Apply != nil {
 			if err := k.Apply(ctx, tx, op); err != nil {
 				if errors.Is(err, ErrBadBody) {
-					return r.storeBad(ctx, tx, op, at)
+					return r.storeBad(ctx, tx, op, at, seenBad)
+				}
+				if errors.Is(err, ErrLimit) {
+					return r.storeBad(ctx, tx, op, at, seenLimit)
 				}
 				return seenNew, &stageError{stage: "apply", prefix: "apply " + op.Msg.Kind, err: err}
 			}
 		}
 		if k.Inbox {
-			// Docs/protocol/work-session.md #inbox-copy-d18: Apply may have set
-			// op.Withhold to mean this content must not be kept; the row
-			// (from_key, id, kind, created, received_at) is still stored, only
-			// blank, so (from_key, id) still deduplicates a redelivery.
-			signed := op.Signed
-			if op.Withhold {
-				signed = nil
-			}
+			// The row (from_key, id, kind, created, received_at) only
+			// deduplicates a redelivery: the signed plaintext is never kept a
+			// second time, for any kind (Docs/protocol/mail.md §Inbox rows,
+			// R55-F13). Each kind keeps what it needs in its own tables.
 			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, ?)`,
-				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at, string(signed)); err != nil {
+				`INSERT INTO mail_inbox (from_key, id, kind, created, received_at, signed) VALUES (?, ?, ?, ?, ?, '')`,
+				op.Msg.From, op.Msg.ID, op.Msg.Kind, op.Msg.Created.UTC().Format(timeFmt), at); err != nil {
 				return seenNew, stageErr("store inbox", err)
 			}
 		}
@@ -361,10 +378,11 @@ func seenAs(ctx context.Context, tx *sql.Tx, op *Opened) (seenResult, error) {
 }
 
 // storeBad discards the Apply transaction and records only the marked
-// mail_seen row in a new one. If another delivery of the same (from, id)
+// mail_seen row in a new one; ok (seenBad or seenLimit) is the result when it
+// records the row. If another delivery of the same (from, id)
 // recorded the row in between, that row decides the outcome, so the reject is
 // audited once and the ack matches what was stored.
-func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at string) (seenResult, error) {
+func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at string, ok seenResult) (seenResult, error) {
 	_ = tx.Rollback()
 	if r.beforeBad != nil {
 		r.beforeBad()
@@ -390,7 +408,7 @@ func (r *Receiver) storeBad(ctx context.Context, tx *sql.Tx, op *Opened, at stri
 	if err := commit(tx2); err != nil {
 		return seenNew, stageErr("commit", err)
 	}
-	return seenBad, nil
+	return ok, nil
 }
 
 // Ack members (Docs/protocol/mail.md §Ack): ids for a mail stored or applied,
@@ -471,6 +489,18 @@ func (r *Receiver) Flush() {
 // Prune deletes mail_seen rows received more than SeenRetention before now.
 func Prune(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
 	res, err := db.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`,
+		now.Add(-SeenRetention).UTC().Format(StoreTimeFmt))
+	if err != nil {
+		return 0, fmt.Errorf("mail: prune mail_seen: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// PruneSeenTx is Prune inside tx, for agentnet prune, which must remove
+// mail_seen rows before the mail_inbox rows of the same ids in one
+// transaction (Docs/protocol/retention.md §Finished items).
+func PruneSeenTx(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
+	res, err := tx.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`,
 		now.Add(-SeenRetention).UTC().Format(StoreTimeFmt))
 	if err != nil {
 		return 0, fmt.Errorf("mail: prune mail_seen: %w", err)

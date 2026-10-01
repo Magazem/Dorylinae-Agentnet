@@ -33,6 +33,8 @@ func TestReview79Migration23RebuildKeepsRows(t *testing.T) {
     decided   TEXT
 )`,
 		`CREATE INDEX approvals_state ON approvals (state, expires)`,
+		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
+		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`, // migration 24
 		`DELETE FROM migrations WHERE version > 22`,
 	}
 	for _, q := range rewind {

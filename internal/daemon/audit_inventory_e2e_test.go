@@ -198,6 +198,25 @@ func TestAuditInventory(t *testing.T) {
 		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE request_id = '`+req4+`' AND state IN ('awaiting_result', 'quarantined')`) == 1
 	})
 
+	// Prune (R55-F13): one finished request 40 days old, approved, removed.
+	old := time.Now().Add(-40 * 24 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	if err := a.exec(`INSERT INTO requests (direction, peer, id, team_id, type, urgency, urgency_declared, body, body_hash,
+		state, created, received_at, mail_id, updated) VALUES ('in', ?, 'r-000000000000000000000000000000aa', 't', 'task', 'normal', 'normal',
+		'{}', 'h', 'declined', ?, ?, 'm', ?)`, b.key, old, old, old); err != nil {
+		t.Fatal(err)
+	}
+	var pr daemon.DataPruneResult
+	run.call(a, "data_prune", map[string]any{"older_than_s": 3024000}, &pr)
+	if pr.Approval == nil {
+		t.Fatalf("data_prune = %+v, want a pending approval", pr)
+	}
+	e.approve(t, pr.Approval.ID)
+	harnessWait(t, "the approved prune to run", func() bool {
+		var r daemon.DataPruneResult
+		a.call("data_prune", map[string]any{"older_than_s": 3024000, "approval": pr.Approval.ID}, &r)
+		return r.Approval == nil && r.Counts.Requests == 1
+	})
+
 	// peers_remove last: it ends the pairing.
 	run.call(a, "peers_remove", daemon.PeerRemoveParams{Peer: b.key}, raw())
 
@@ -211,6 +230,22 @@ func TestAuditInventory(t *testing.T) {
 	}
 	checkInventory(t, run, methodInventory, sortedKeys(methodInventory, false), true, a, b)
 	checkInventory(t, run, mailKindInventory, sortedKeys(mailKindInventory, false), false, a, b)
+
+	// R55-F13 (test A9): after every kind above (requests and their
+	// lifecycle, team.*, ws.*, grant, debate.*), no inbox row on either side
+	// keeps a copy of the signed plaintext; each kind's content is only in
+	// its own table.
+	for _, n := range []*harnessNode{a, b} {
+		if c := n.count(`SELECT COUNT(*) FROM mail_inbox WHERE signed <> ''`); c != 0 {
+			t.Errorf("%s: %d inbox rows keep plaintext", n.name, c)
+		}
+		if c := n.count(`SELECT COUNT(*) FROM mail_inbox`); c == 0 {
+			t.Errorf("%s: no inbox rows at all", n.name)
+		}
+	}
+	if c := b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND body LIKE '%session one%'`); c != 1 {
+		t.Errorf("B's request row for session one: %d, want its content in requests.body", c)
+	}
 }
 
 // TestAuditInventoryDevices is the device half: link, scope and unlink between

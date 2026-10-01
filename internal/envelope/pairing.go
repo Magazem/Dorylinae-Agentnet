@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"errors"
 	"strings"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 )
 
 // Pairing limits, see Docs/protocol/pairing.md.
 const (
-	// MaxCardBytes is the largest Agent Card the relay carries in a pairing frame.
-	MaxCardBytes = 16 << 10
+	// MaxCardBytes is the largest Agent Card the relay carries in a pairing frame:
+	// the same limit every verifier applies (agent-card.md §Size).
+	MaxCardBytes = agentcard.MaxCardBytes
 	// MaxMboxBytes is the largest mailbox key announcement the relay carries.
 	MaxMboxBytes = 4 << 10
 	// MaxRefLen is the longest correlation ref accepted on a pairing request.

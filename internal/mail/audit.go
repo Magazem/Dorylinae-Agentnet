@@ -21,10 +21,6 @@ const (
 	// maxAuditedSeen bounds the (peer, id) pairs remembered as already
 	// audited in this run (Docs/protocol/mail.md §Receiving, OD-F14-5).
 	maxAuditedSeen = 4096
-
-	// reasonLimit is R55-F13's reject reason for an application mail refused
-	// by a per-peer cap: a verified paired peer's mail, so it is audited.
-	reasonLimit = "limit"
 )
 
 // AuditSink is the part of audit.Log that RejectAudit needs.
@@ -76,7 +72,7 @@ func (a *RejectAudit) Flush() { a.lines.Flush() }
 // of content the peer signed (steps 8, 9, 10, 12), except a keys announcement
 // that has only expired (not_after <= now; a replay causes it), and bad_body or limit.
 func auditable(re *RejectError) bool {
-	if re.Reason == ReasonBadBody || re.Reason == reasonLimit {
+	if re.Reason == ReasonBadBody || re.Reason == ReasonLimit {
 		return true
 	}
 	if re.Step < 8 || re.Step > 12 || re.Step == 11 {

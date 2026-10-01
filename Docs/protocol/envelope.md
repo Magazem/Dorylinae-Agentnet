@@ -605,7 +605,7 @@ audit summary that keeps the counts.
 | `mail_reject` | mail opener and receiver, every reject ([mail.md](mail.md#receiving-verification-order)) | Info | `reason`, `step`, `peer` | yes |
 | `mail_ack_failed` | mail receiver: the ack could not be sent (was `ack_no_mailbox_key`, `ack_seal_failed`, `ack_send_failed`, one Warn per replayed mail) | Warn | `reason`, `id`, `error`? | yes: `no_mailbox_key`, `seal_failed`, `send_failed` |
 | `session_reject` | session manager, every reject ([session.md](session.md#rejection)) | Info | `reason`, `type`, `peer`, `session`? | yes |
-| `session_drop` | session manager: inbox full | Warn | `type` | no |
+| `session_drop` | session manager: inbox full or payload too long, before the queue (R55-F13) | Warn | `type` | yes: `oversize`, `queue_full` |
 | `session_send_failed` | session manager: a send failed (a forged `init` makes the daemon send a `resp`) | Warn | `type`, `error` | no |
 
 Presence keeps its own per-peer Debug limiter ([presence.md](presence.md)). The limiter

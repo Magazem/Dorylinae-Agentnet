@@ -7,6 +7,29 @@ package request
 
 import "time"
 
+// Per-peer caps on stored incoming requests, Docs/protocol/request.md
+// §Per-peer caps (R55-F13, owner decision D50). Constants, not settings.
+const (
+	// MaxOpenPerPeer is the open cap: `in` rows from one sender in state
+	// pending, deferred or accepted. A new request beyond it is auto-declined
+	// inbox_full.
+	MaxOpenPerPeer = 100
+	// MaxNewPerPeerPerDay is the daily cap: `in` rows from one sender with
+	// received_at in the last 24 h, any state. A new request beyond it is
+	// refused for a limit (mail.ErrLimit).
+	MaxNewPerPeerPerDay = 200
+	// MaxOpenPerIntroducer and MaxNewPerIntroducerPerDay are the same caps
+	// counted over the keys one team owner introduced in the last
+	// IntroducerFreshFor (review 71b F2, owner decision D62). They apply only
+	// to a sender that is itself that fresh.
+	MaxOpenPerIntroducer      = 200
+	MaxNewPerIntroducerPerDay = 400
+	// IntroducerFreshFor is how long after its introduction a key counts
+	// towards its introducer's caps (D62): the key-churn attack needs fresh
+	// keys, and an established member is bounded by its own caps only.
+	IntroducerFreshFor = 7 * 24 * time.Hour
+)
+
 // Size and count limits from Docs/protocol/request.md §Size limits.
 const (
 	// MaxRequestBody is the cap on len(canonical(request)) (65536 bytes).

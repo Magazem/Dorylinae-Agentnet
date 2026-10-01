@@ -3,8 +3,8 @@
 // published in Docs/protocol/pairing.md, Docs/protocol/mail.md,
 // Docs/protocol/grant.md, Docs/protocol/audit.md, Docs/protocol/debate.md and
 // Docs/protocol/decision.md (with the Decision's negative checks), relay
-// auth v2 of Docs/protocol/envelope.md, and the Agent Card vectors P1 and
-// N1-N15 of Docs/protocol/agent-card.md (each refused at its stated
+// auth v2 of Docs/protocol/envelope.md, and the Agent Card vectors P1, P2 and
+// N1-N17 of Docs/protocol/agent-card.md (each refused at its stated
 // Verification step, card.go), and compares them with the values in
 // vectors.json (transcribed from those docs). Every JSON document is read
 // under the strict parse of agent-card.md (rules 6-8).

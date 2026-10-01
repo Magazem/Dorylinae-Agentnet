@@ -44,6 +44,9 @@ const (
 	MaxLive = 3
 	// RunInterval is how often the rotation job runs.
 	RunInterval = time.Hour
+	// loadRetry is how long after a failed keystore read MailboxKey leaves
+	// that key alone (Docs/protocol/mail.md §Mailbox keys lifecycle).
+	loadRetry = time.Second
 
 	// ActionRotate is the audit action for a new current key.
 	ActionRotate = "mailbox.rotate"
@@ -71,6 +74,13 @@ type Keys struct {
 	audit    AuditSink
 	log      *slog.Logger
 	onRotate func(announcement []byte)
+	// cache holds the private keys MailboxKey loaded, by key_id, until the
+	// key is deleted; failed is the time of the last failed keystore read
+	// per key_id (R55-F13, review 55 R55-051). Both are guarded by mu.
+	cache  map[string]*ecdh.PrivateKey
+	failed map[string]time.Time
+	// wrap, if set, wraps every keystore backend (tests count reads).
+	wrap func(keystore.Backend) keystore.Backend
 }
 
 // New returns the mailbox keys stored under configDir. mode is "auto" (OS
@@ -116,15 +126,22 @@ func (k *Keys) OnRotate(f func(announcement []byte)) {
 }
 
 func (k *Keys) keystoreFor(keyID string) (*keystore.Store, error) {
+	var backends []keystore.Backend
 	file := keystore.NewFile(filepath.Join(k.dir, keyID+".key"))
 	switch k.mode {
 	case "", "auto":
-		return keystore.New(keystore.KeychainForEntry("mailbox-", k.home, "-"+keyID), file), nil
+		backends = []keystore.Backend{keystore.KeychainForEntry("mailbox-", k.home, "-"+keyID), file}
 	case "file":
-		return keystore.New(file), nil
+		backends = []keystore.Backend{file}
 	default:
 		return nil, fmt.Errorf("mailbox: keystore mode must be \"auto\" or \"file\", got %q", k.mode)
 	}
+	if k.wrap != nil {
+		for i, b := range backends {
+			backends[i] = k.wrap(b)
+		}
+	}
+	return keystore.New(backends...), nil
 }
 
 // row is one mailbox_keys_own row.
@@ -258,7 +275,9 @@ func (k *Keys) load(keyID string) (*ecdh.PrivateKey, error) {
 }
 
 // MailboxKey implements mail.Keys: the private half of the live key with this
-// key_id. A key that is deleted, or past not_after + 7 d, is not live.
+// key_id. A key that is deleted, or past not_after + 7 d, is not live. The key
+// is read from the keystore once and then cached until it is deleted; after a
+// failed read the key is not read again for a second (R55-F13).
 func (k *Keys) MailboxKey(id mail.KeyID) (*ecdh.PrivateKey, bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -272,13 +291,36 @@ func (k *Keys) MailboxKey(id mail.KeyID) (*ecdh.PrivateKey, bool) {
 		if r.keyID != id.String() || !r.notAfter.Add(DeleteGrace).After(now) {
 			continue
 		}
-		priv, err := k.load(r.keyID)
-		if err != nil {
+		if priv, ok := k.cache[r.keyID]; ok {
+			return priv, true
+		}
+		if t, ok := k.failed[r.keyID]; ok && now.Sub(t) < loadRetry && !now.Before(t) {
 			return nil, false
 		}
+		priv, err := k.load(r.keyID)
+		if err != nil {
+			if k.failed == nil {
+				k.failed = map[string]time.Time{}
+			}
+			k.failed[r.keyID] = now
+			return nil, false
+		}
+		delete(k.failed, r.keyID)
+		if k.cache == nil {
+			k.cache = map[string]*ecdh.PrivateKey{}
+		}
+		k.cache[r.keyID] = priv
 		return priv, true
 	}
 	return nil, false
+}
+
+// forgetLocked drops the cached private key of keyID. An *ecdh.PrivateKey
+// cannot be wiped in place (its Bytes returns a copy), so dropping the only
+// reference is all that can be done.
+func (k *Keys) forgetLocked(keyID string) {
+	delete(k.cache, keyID)
+	delete(k.failed, keyID)
 }
 
 // Rotate is one run of the rotation job: it creates a new current key if there
@@ -420,9 +462,10 @@ func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error
 	return errors.Join(errs...)
 }
 
-// deleteKey removes the private key from the keystore and marks the row. The
-// row stays for audit.
+// deleteKey removes the private key from the keystore and the cache and marks
+// the row. The row stays for audit.
 func (k *Keys) deleteKey(ctx context.Context, keyID string, now time.Time) error {
+	k.forgetLocked(keyID)
 	ks, err := k.keystoreFor(keyID)
 	if err != nil {
 		return err

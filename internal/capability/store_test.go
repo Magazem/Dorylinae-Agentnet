@@ -393,3 +393,105 @@ func TestScopeWithin(t *testing.T) {
 		}
 	}
 }
+
+// A16 (R55-F13, review 55 R55-064): List pages by (created, id), newest
+// first. 450 rows, three to each created value, read 200 at a time: 3 pages,
+// every id once, in order, including the rows that share created.
+func TestGrantListPages(t *testing.T) {
+	db := openTestDB(t)
+	s := &Store{DB: db}
+	ctx := context.Background()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	want := map[string]bool{}
+	for i := 0; i < 450; i++ {
+		rec := testRecord(NewGrantID(), base)
+		rec.Created = base.Add(time.Duration(i/3) * time.Second)
+		if err := s.InsertPending(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+		want[rec.ID] = true
+	}
+	var all []Record
+	var sizes []int
+	cursor := ""
+	for len(sizes) < 10 {
+		page, err := s.List(ctx, ListFilter{Session: "s-11111111111111111111111111111111", Limit: 200, Cursor: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sizes = append(sizes, len(page))
+		all = append(all, page...)
+		if len(page) < 200 {
+			break
+		}
+		cursor = CursorOf(page[len(page)-1])
+	}
+	if len(sizes) != 3 || sizes[0] != 200 || sizes[1] != 200 || sizes[2] != 50 {
+		t.Fatalf("page sizes = %v, want [200 200 50]", sizes)
+	}
+	seen := map[string]bool{}
+	for i, r := range all {
+		if seen[r.ID] || !want[r.ID] {
+			t.Fatalf("row %d: %s duplicate or unknown", i, r.ID)
+		}
+		seen[r.ID] = true
+		if i > 0 {
+			p := all[i-1]
+			if r.Created.After(p.Created) || (r.Created.Equal(p.Created) && r.ID >= p.ID) {
+				t.Fatalf("row %d (%s %s) not after row %d (%s %s)", i, r.Created, r.ID, i-1, p.Created, p.ID)
+			}
+		}
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("%d of %d ids listed", len(seen), len(want))
+	}
+
+	// A cursor List did not make is refused, not read as a position.
+	for _, c := range []string{"!!", "bm90LWEtY3Vyc29y", CursorOf(Record{ID: "", Created: base}),
+		"MjAyNi0wMS0wMVQwMDowMDowMFp8Zy0x" /* "2026-01-01T00:00:00Z|g-1": not the store format */} {
+		if _, err := s.List(ctx, ListFilter{Cursor: c}); !errors.Is(err, ErrBadCursor) {
+			t.Errorf("cursor %q: err = %v, want ErrBadCursor", c, err)
+		}
+	}
+}
+
+// R55-F13 (review 71b F6): the held caps count live (exp > now) and total
+// held rows of one session; issued rows and other sessions do not count.
+func TestCountHeldInSession(t *testing.T) {
+	db := openTestDB(t)
+	s := &Store{DB: db}
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	const sid = "s-22222222222222222222222222222222"
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	add := func(session string, exp time.Time, held bool) {
+		rec := testRecord(NewGrantID(), now.Add(-3*time.Hour))
+		rec.Session, rec.Exp = session, exp
+		if held {
+			err = s.InsertHeldTx(ctx, tx, rec)
+		} else {
+			err = s.InsertActiveTx(ctx, tx, rec)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(sid, now.Add(time.Hour), true)
+	add(sid, now.Add(time.Hour), true)
+	add(sid, now, true) // exp == now: no longer live
+	add(sid, now.Add(-time.Hour), true)
+	add(sid, now.Add(time.Hour), false)
+	add("s-33333333333333333333333333333333", now.Add(time.Hour), true)
+	live, err := s.CountHeldLiveInSessionTx(ctx, tx, sid, now)
+	if err != nil || live != 2 {
+		t.Fatalf("live = %d, %v; want 2", live, err)
+	}
+	total, err := s.CountHeldInSessionTx(ctx, tx, sid)
+	if err != nil || total != 4 {
+		t.Fatalf("total = %d, %v; want 4", total, err)
+	}
+}

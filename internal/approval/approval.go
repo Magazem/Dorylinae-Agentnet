@@ -33,12 +33,16 @@ const (
 	// invite` (D48, R55-F24): both are trust changes.
 	KindPeerVerify = "peer_verify"
 	KindTeamInvite = "team_invite"
+	// KindDataPrune gates agentnet prune --yes (Docs/protocol/retention.md
+	// §Approval, owner decision D57): removal needs a human.
+	KindDataPrune = "data_prune"
 )
 
 var validKinds = map[string]bool{
 	KindGrant: true, KindGrantPolicy: true, KindRelease: true,
 	KindAcceptResult: true, KindDeviceLink: true, KindDeviceScope: true,
 	KindDebateConstraint: true, KindPeerVerify: true, KindTeamInvite: true,
+	KindDataPrune: true,
 }
 
 // States (Docs/protocol/approval.md §Object).

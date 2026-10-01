@@ -560,6 +560,44 @@ DROP TABLE approvals;
 ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_state ON approvals (state, expires);
 `},
+	// Per-peer caps and prune (Docs/protocol/retention.md §Migration,
+	// R55-F13). Indexes and one column only, no data rewrite: the old
+	// mail_inbox copies are blanked by agentnet prune, never here (review 71b
+	// F4). requests.introducer is the sender's introduced_by at receipt and
+	// requests.introduced_at its introduction time (its paired_at), which the
+	// introducer caps count by (owner decision D62): in rows only; NULL for a
+	// directly paired sender and for rows from before this migration.
+	{24, "retention_caps", `
+CREATE INDEX requests_peer_state ON requests (direction, peer, state);
+ALTER TABLE requests ADD COLUMN introducer TEXT;
+ALTER TABLE requests ADD COLUMN introduced_at TEXT;
+CREATE INDEX requests_introducer_state ON requests (direction, introducer, introduced_at, state);
+CREATE INDEX requests_introducer_time ON requests (direction, introducer, introduced_at, received_at);
+CREATE INDEX mail_inbox_received ON mail_inbox (received_at);
+`},
+	// agentnet prune --yes needs a human approval (owner decision D57,
+	// OD-F13-8 = (b)): the approvals kind CHECK gains 'data_prune', keeping
+	// every kind of migration 23 (R55-F24). Rebuilt with explicit column
+	// lists, as migrations 19 and 23 do; no table references approvals and it
+	// has no trigger.
+	{25, "approval_kind_data_prune", `
+CREATE TABLE approvals_new (
+    id        TEXT PRIMARY KEY,
+    kind      TEXT NOT NULL CHECK (kind IN ('grant','grant_policy','release','accept_result','device_link','device_scope','debate_constraint','peer_verify','team_invite','data_prune')),
+    subject   TEXT NOT NULL,
+    summary   TEXT NOT NULL,
+    created   TEXT NOT NULL,
+    expires   TEXT NOT NULL,
+    attempts  INTEGER NOT NULL DEFAULT 0,
+    state     TEXT NOT NULL CHECK (state IN ('pending','approved','rejected','expired')),
+    decided   TEXT
+);
+INSERT INTO approvals_new (id, kind, subject, summary, created, expires, attempts, state, decided)
+SELECT id, kind, subject, summary, created, expires, attempts, state, decided FROM approvals;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_state ON approvals (state, expires);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

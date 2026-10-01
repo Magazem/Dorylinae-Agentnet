@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
@@ -63,6 +64,17 @@ const (
 // SIDSize is the length of a session ID.
 const SIDSize = 16
 
+// MaxPayload is the largest decoded session.* payload queued: the sid, the
+// 8-byte counter and one maximal 65535-byte Noise message. A longer one is
+// dropped before the queue (R55-F13, review 55 R55-052).
+const MaxPayload = SIDSize + 8 + 65535
+
+// Drop reasons of the session_drop log line.
+const (
+	DropOversize  = "oversize"
+	DropQueueFull = "queue_full"
+)
+
 const (
 	defaultWait        = time.Second
 	defaultPingTimeout = 10 * time.Second
@@ -76,6 +88,7 @@ const (
 	maxPings           = 1024
 	maxRefs            = 4096
 	inboxSize          = 256
+	inboxBytes         = 16 << 20 // decoded payload bytes in the inbox (R55-F13)
 	auditBudget        = 5 * time.Second
 	sendBudget         = 5 * time.Second
 
@@ -187,8 +200,11 @@ type Manager struct {
 	initGate func(ctx context.Context, peer string) bool // guarded by mu
 
 	inbox chan envelope.Envelope
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	// queued is the decoded payload bytes in inbox: added before an envelope
+	// is queued, taken off when the worker receives it.
+	queued atomic.Int64
+	stop   chan struct{}
+	wg     sync.WaitGroup
 
 	// sendMu serialises everything that sends, so counters leave in order.
 	// Lock order: sendMu, then mu.
@@ -332,16 +348,36 @@ func (m *Manager) Close() {
 	m.lines.Flush()
 }
 
-// HandleEnvelope queues an envelope from the relay. It never blocks.
+// HandleEnvelope queues an envelope from the relay. It never blocks. An
+// envelope whose payload is longer than MaxPayload, or that would take the
+// inbox past 256 envelopes or 16 MiB, is dropped: it is counted into the
+// limited session_drop line, never audited (the sender is not known yet).
 func (m *Manager) HandleEnvelope(e envelope.Envelope) {
 	if !strings.HasPrefix(e.Type, "session.") {
+		return
+	}
+	n := int64(len(e.Payload))
+	if n > MaxPayload {
+		m.drop(e, DropOversize)
+		return
+	}
+	if m.queued.Add(n) > inboxBytes {
+		m.queued.Add(-n)
+		m.drop(e, DropQueueFull)
 		return
 	}
 	select {
 	case m.inbox <- e:
 	default:
-		m.lines.Note(slog.LevelWarn, "session_drop", "session inbox full, dropped envelopes", "", "type", e.Type)
+		m.queued.Add(-n)
+		m.drop(e, DropQueueFull)
 	}
+}
+
+// drop counts a dropped envelope into the limited session_drop line, by
+// reason (Docs/protocol/session.md §Rejection). Never the envelope id.
+func (m *Manager) drop(e envelope.Envelope, reason string) {
+	m.lines.Note(slog.LevelWarn, "session_drop", "session envelopes dropped before the queue", reason, "type", e.Type)
 }
 
 // HandleError fails the pings affected by a relay error frame (peer_offline, ...).
@@ -549,6 +585,7 @@ func (m *Manager) worker() {
 		case <-m.stop:
 			return
 		case e := <-m.inbox:
+			m.queued.Add(-int64(len(e.Payload)))
 			m.handle(e)
 		}
 	}

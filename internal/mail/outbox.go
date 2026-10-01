@@ -39,6 +39,10 @@ const (
 	outboxTick        = time.Second
 	outboxMaintenance = time.Minute
 	outboxBatch       = 50
+
+	// ResealInterval is how long after a re-seal a row is not re-sealed
+	// again (Docs/protocol/mail.md §Key-miss recovery step 3, R55-F13).
+	ResealInterval = time.Hour
 )
 
 // Submit refusals.
@@ -92,6 +96,11 @@ type Outbox struct {
 	// online counts OnPeerOnline calls per peer, for the same reason as ready.
 	onlineMu sync.Mutex
 	online   map[string]uint64
+	// resealed is the time of each row's last re-seal (R55-F13): a row is
+	// re-sealed at most once per ResealInterval. Entries go after the
+	// interval and when the row becomes final.
+	resealMu sync.Mutex
+	resealed map[string]time.Time
 }
 
 // Submitted is the result of Submit.
@@ -401,6 +410,9 @@ WHERE id = ? AND (? = '' OR to_key = ?) AND state IN ('queued','relayed')`,
 		return false
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		o.forgetReseal(id)
+	}
 	if n > 0 && o.OnFinal != nil {
 		var toKey, kind string
 		if qerr := o.DB.QueryRowContext(ctx, `SELECT to_key, kind FROM outbox WHERE id = ?`, id).Scan(&toKey, &kind); qerr == nil {
@@ -536,9 +548,49 @@ func (o *Outbox) HandleError(ef envelope.ErrorFrame) {
 	}
 }
 
+// resealDue reports whether row id may be re-sealed now: it was not
+// re-sealed in the last ResealInterval. The clock is read only for a row that
+// has an entry.
+func (o *Outbox) resealDue(id string) bool {
+	o.resealMu.Lock()
+	defer o.resealMu.Unlock()
+	t, ok := o.resealed[id]
+	if !ok {
+		return true
+	}
+	if o.now().Sub(t) < ResealInterval {
+		return false
+	}
+	delete(o.resealed, id)
+	return true
+}
+
+// markResealed records a re-seal of row id at now and drops the entries that
+// are ResealInterval old.
+func (o *Outbox) markResealed(id string, now time.Time) {
+	o.resealMu.Lock()
+	defer o.resealMu.Unlock()
+	if o.resealed == nil {
+		o.resealed = map[string]time.Time{}
+	}
+	for k, t := range o.resealed {
+		if now.Sub(t) >= ResealInterval {
+			delete(o.resealed, k)
+		}
+	}
+	o.resealed[id] = now
+}
+
+func (o *Outbox) forgetReseal(id string) {
+	o.resealMu.Lock()
+	defer o.resealMu.Unlock()
+	delete(o.resealed, id)
+}
+
 // Retry is the key-miss recovery of the sender: peer could not decrypt the
 // mails in ids. Each one that is still open and was sealed to another key than
-// the peer's newest is re-sealed (same id and created, new ts) and sent now.
+// the peer's newest is re-sealed (same id and created, new ts) and sent now,
+// unless it was re-sealed less than ResealInterval ago (R55-F13).
 func (o *Outbox) Retry(ctx context.Context, peer string, ids []string) {
 	pub, ok := o.Peers.MailboxPub(peer)
 	if !ok {
@@ -558,6 +610,9 @@ func (o *Outbox) Retry(ctx context.Context, peer string, ids []string) {
 			continue
 		}
 		seen[id] = true
+		if !o.resealDue(id) {
+			continue
+		}
 		var r outboxRow
 		var signed, keyID sql.NullString
 		err := o.DB.QueryRowContext(ctx,
@@ -589,6 +644,7 @@ WHERE id = ? AND to_key = ? AND state IN ('queued','relayed') AND signed IS NOT 
 		if n, _ := res.RowsAffected(); n != 1 {
 			continue
 		}
+		o.markResealed(id, now)
 		r.frame = frame
 		o.send(ctx, r)
 	}

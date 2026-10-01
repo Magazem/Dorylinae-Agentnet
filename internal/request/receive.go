@@ -19,6 +19,10 @@ import (
 
 const maxAge = 30 * 24 * time.Hour
 
+// emptyBody is the body stored for an auto-declined `in` row, which keeps no
+// content (Docs/protocol/request.md §Receiving step 3).
+const emptyBody = "{}"
+
 // SubmitTx is the outbox capability the receiving path needs: sending the
 // auto-decline reply inside the same transaction as the declined row
 // (Docs/review/12-phase1-spec-review.md, the auto-decline atomicity rule).
@@ -181,7 +185,25 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	}
 
 	now := s.now()
-	tombstoned, err := s.consumeTombstone(ctx, tx, op, req, canon, hash, now)
+	if req.Type == TypeDebate {
+		// A debate id re-used after prune removed its debate but kept its
+		// Decision (review 71b F8).
+		decided, err := s.Debates.HasDecisionTx(ctx, tx, req.From, req.To, req.ID)
+		if err != nil {
+			return err
+		}
+		if decided {
+			return badBody("debate request id already has a Decision")
+		}
+	}
+	intro, err := introducerOf(ctx, tx, op.Msg.From)
+	if err != nil {
+		return err
+	}
+	if err := checkDailyCaps(ctx, tx, op.Msg.From, intro, now); err != nil {
+		return err
+	}
+	tombstoned, err := s.consumeTombstone(ctx, tx, op, req, canon, hash, intro, now)
 	if err != nil {
 		return err
 	}
@@ -198,12 +220,12 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 		contextFiles: len(req.Context), contextBytes: ContextBytes(req.Context)}
 
 	// Policy auto-decline (Docs/protocol/request.md §Receiving step 3).
-	code, err := s.declineCode(ctx, tx, req)
+	code, err := s.declineCode(ctx, tx, req, intro, now)
 	if err != nil {
 		return err
 	}
 	if code != "" {
-		if err := s.storeDeclined(ctx, tx, op, req, canon, hash, code, now); err != nil {
+		if err := s.storeDeclined(ctx, tx, op, req, hash, code, intro, now); err != nil {
 			return err
 		}
 		out.newRow, out.autoDecline, out.code = true, true, code
@@ -222,10 +244,10 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO requests (
 	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
-	body, body_hash, state, state_seq, created, received_at, mail_id, updated
-) VALUES ('in', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+	body, body_hash, state, state_seq, created, received_at, mail_id, updated, introducer, introduced_at
+) VALUES ('in', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?, ?)`,
 		op.Msg.From, req.ID, req.Team, req.Type, urgency, declared, downgradedByArg,
-		string(canon), hash, wireTime(req.Created), storeTime(now), op.Msg.ID, storeTime(now),
+		string(canon), hash, wireTime(req.Created), storeTime(now), op.Msg.ID, storeTime(now), intro.by, intro.at,
 	); err != nil {
 		return fmt.Errorf("request: insert in row: %w", err)
 	}
@@ -304,7 +326,24 @@ func effectiveDeclared(r *Request) string {
 
 // declineCode returns the auto-decline code for req, or "" to accept it,
 // checked in the order of Docs/protocol/request.md §Receiving step 3.
-func (s *Store) declineCode(ctx context.Context, tx *sql.Tx, req *Request) (string, error) {
+func (s *Store) declineCode(ctx context.Context, tx *sql.Tx, req *Request, intro introduction, now time.Time) (string, error) {
+	code, err := s.policyDeclineCode(ctx, tx, req)
+	if code != "" || err != nil {
+		return code, err
+	}
+	full, err := openCapReached(ctx, tx, req.From, intro, now)
+	if err != nil {
+		return "", err
+	}
+	if full {
+		return "inbox_full", nil
+	}
+	return "", nil
+}
+
+// policyDeclineCode is declineCode without the open caps, which are checked
+// last.
+func (s *Store) policyDeclineCode(ctx context.Context, tx *sql.Tx, req *Request) (string, error) {
 	if s.UnverifiedPeer != nil {
 		unverified, err := s.UnverifiedPeer(tx, req.From)
 		if err != nil {
@@ -339,8 +378,10 @@ func (s *Store) declineCode(ctx context.Context, tx *sql.Tx, req *Request) (stri
 
 // storeDeclined stores the row as declined and sends the decline reply inside
 // tx, so a crash cannot leave a declined row with no reply
-// (Docs/protocol/request.md §Receiving step 3).
-func (s *Store) storeDeclined(ctx context.Context, tx *sql.Tx, op *mail.Opened, req *Request, canon []byte, hash, code string, now time.Time) error {
+// (Docs/protocol/request.md §Receiving step 3). The row keeps no content: body
+// is {} and body_hash is the received request's, so a resend is still
+// recognised (review 55 R55-018, O-093).
+func (s *Store) storeDeclined(ctx context.Context, tx *sql.Tx, op *mail.Opened, req *Request, hash, code string, intro introduction, now time.Time) error {
 	replyBody := map[string]any{"at": wireTime(now), "code": code, "request": req.ID, "seq": 1}
 	lastReply, err := jsonObject(map[string]any{"kind": "request.decline", "body": replyBody})
 	if err != nil {
@@ -350,11 +391,11 @@ func (s *Store) storeDeclined(ctx context.Context, tx *sql.Tx, op *mail.Opened, 
 INSERT INTO requests (
 	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
 	body, body_hash, state, state_seq, decline_code, created, received_at, mail_id,
-	last_reply, last_reply_sent, updated
-) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'declined', 1, ?, ?, ?, ?, ?, ?, ?)`,
+	last_reply, last_reply_sent, updated, introducer, introduced_at
+) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'declined', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		op.Msg.From, req.ID, req.Team, req.Type, req.Urgency, effectiveDeclared(req),
-		string(canon), hash, code, wireTime(req.Created), storeTime(now), op.Msg.ID,
-		lastReply, storeTime(now), storeTime(now),
+		emptyBody, hash, code, wireTime(req.Created), storeTime(now), op.Msg.ID,
+		lastReply, storeTime(now), storeTime(now), intro.by, intro.at,
 	); err != nil {
 		return fmt.Errorf("request: insert declined row: %w", err)
 	}
@@ -370,7 +411,7 @@ INSERT INTO requests (
 // tombstone, if one exists for (op.Msg.From, req.ID)
 // (Docs/protocol/request.md §Receiving step 2, "with no row, and a cancel
 // tombstone exists").
-func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opened, req *Request, canon []byte, hash string, now time.Time) (bool, error) {
+func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opened, req *Request, canon []byte, hash string, intro introduction, now time.Time) (bool, error) {
 	var reason sql.NullString
 	var receivedAt string
 	err := tx.QueryRowContext(ctx, `SELECT reason, received_at FROM request_cancels WHERE peer = ? AND id = ?`, op.Msg.From, req.ID).
@@ -398,15 +439,103 @@ func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opene
 INSERT INTO requests (
 	direction, peer, id, team_id, type, urgency, urgency_declared, downgraded_by,
 	body, body_hash, state, state_seq, state_at, reason, created, received_at, mail_id,
-	last_reply, last_reply_sent, updated
-) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'cancelled', 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	last_reply, last_reply_sent, updated, introducer, introduced_at
+) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'cancelled', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		op.Msg.From, req.ID, req.Team, req.Type, req.Urgency, effectiveDeclared(req),
 		string(canon), hash, wireTime(at), reasonArg, wireTime(req.Created), storeTime(now), op.Msg.ID,
-		lastReply, storeTime(at), storeTime(now),
+		lastReply, storeTime(at), storeTime(now), intro.by, intro.at,
 	); err != nil {
 		return false, fmt.Errorf("request: insert tombstoned row: %w", err)
 	}
 	return true, nil
+}
+
+// introduction is the sender's introducer and introduction time, recorded on
+// every `in` row it sends (Docs/protocol/request.md §Receiving, review 71b F2,
+// owner decision D62).
+type introduction struct {
+	by sql.NullString // peers.introduced_by; NULL for a directly paired or unknown sender
+	at sql.NullString // that peer's paired_at (its introduction), store format; NULL when by is
+}
+
+// introducerOf reads the sender's introduction. An introduced peer's
+// paired_at is the local time the first roster naming it was stored
+// (peers.Store.Introduce); a later roster keeps it, and a direct pairing
+// clears introduced_by.
+func introducerOf(ctx context.Context, tx *sql.Tx, peer string) (introduction, error) {
+	var by, pairedAt sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT introduced_by, paired_at FROM peers WHERE public_key = ?`, peer).Scan(&by, &pairedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return introduction{}, fmt.Errorf("request: read introducer: %w", err)
+	}
+	if by.String == "" {
+		return introduction{}, nil
+	}
+	at, err := time.Parse(time.RFC3339, pairedAt.String)
+	if err != nil {
+		return introduction{}, fmt.Errorf("request: read introducer: paired_at: %w", err)
+	}
+	return introduction{by: by, at: sql.NullString{String: storeTime(at), Valid: true}}, nil
+}
+
+// freshSince is the earliest introduction time that still counts towards the
+// introducer caps at now (D62).
+func freshSince(now time.Time) string { return storeTime(now.Add(-IntroducerFreshFor)) }
+
+// freshAt reports whether the sender was introduced within IntroducerFreshFor
+// of now, so the introducer caps apply to it (D62).
+func (i introduction) freshAt(now time.Time) bool {
+	return i.by.Valid && i.at.String >= freshSince(now)
+}
+
+// checkDailyCaps is the daily cap of Docs/protocol/request.md §Per-peer caps:
+// `in` rows received in the last 24 h, in any state, per sender key and, for
+// a freshly introduced sender, per introducer over its fresh keys only (D62).
+// Over either, the mail is refused for a limit (mail.ErrLimit).
+func checkDailyCaps(ctx context.Context, tx *sql.Tx, peer string, intro introduction, now time.Time) error {
+	since := storeTime(now.Add(-24 * time.Hour))
+	var n int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND peer = ? AND received_at >= ?`, peer, since).Scan(&n); err != nil {
+		return fmt.Errorf("request: count daily rows: %w", err)
+	}
+	if n >= MaxNewPerPeerPerDay {
+		return fmt.Errorf("request: sender over the daily cap: %w", mail.ErrLimit)
+	}
+	if !intro.freshAt(now) {
+		return nil
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
+WHERE direction = 'in' AND introducer = ? AND introduced_at >= ? AND received_at >= ?`, intro.by.String, freshSince(now), since).Scan(&n); err != nil {
+		return fmt.Errorf("request: count daily rows: %w", err)
+	}
+	if n >= MaxNewPerIntroducerPerDay {
+		return fmt.Errorf("request: introducer over the daily cap: %w", mail.ErrLimit)
+	}
+	return nil
+}
+
+// openCapReached is the open cap of Docs/protocol/request.md §Per-peer caps:
+// `in` rows in state pending, deferred or accepted, per sender key and, for a
+// freshly introduced sender, per introducer over its fresh keys only (D62).
+func openCapReached(ctx context.Context, tx *sql.Tx, peer string, intro introduction, now time.Time) (bool, error) {
+	var n int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
+WHERE direction = 'in' AND peer = ? AND state IN ('pending', 'deferred', 'accepted')`, peer).Scan(&n); err != nil {
+		return false, fmt.Errorf("request: count open rows: %w", err)
+	}
+	if n >= MaxOpenPerPeer {
+		return true, nil
+	}
+	if !intro.freshAt(now) {
+		return false, nil
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM requests
+WHERE direction = 'in' AND introducer = ? AND introduced_at >= ? AND state IN ('pending', 'deferred', 'accepted')`,
+		intro.by.String, freshSince(now)).Scan(&n); err != nil {
+		return false, fmt.Errorf("request: count open rows: %w", err)
+	}
+	return n >= MaxOpenPerIntroducer, nil
 }
 
 // after audits the outcome, once, after a successful commit

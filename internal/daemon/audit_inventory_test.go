@@ -116,6 +116,10 @@ var methodInventory = map[string]invEntry{
 	// Debates: checked by their own scenario (TestDebateConstrainE2E), not
 	// the shared one (sortedKeys).
 	"debate_constrain": acts("A", "debate.constraint"),
+
+	// Retention (R55-F13): the approval is audited at once, data.prune per
+	// removing call once a human approved it.
+	"data_prune": acts("A", "approval.create", "data.prune"),
 }
 
 // mailKindInventory: every mail kind the daemon registers, with the action the

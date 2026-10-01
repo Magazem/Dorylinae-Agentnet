@@ -1109,3 +1109,89 @@ func linkFile(t *testing.T, target, link string) {
 		t.Fatalf("file symlink: %v", err)
 	}
 }
+
+// A17 (R55-F13, review 55 R55-079; inverts review 55 C10-02): the 24 h byte
+// budget is a sliding window of hourly buckets. Across the old fixed-window
+// boundary a second budget is refused, any 24 h serve at most the budget
+// plus the one operation that crossed it, and bytes age out between 24 and
+// 25 h after they were served.
+func TestFetchByteBudgetSlidingWindow(t *testing.T) {
+	const budget, op = 1000, 150
+	s := NewFetchServer(FetchConfig{BytesPer24h: budget})
+	defer s.Close()
+	admitted := func(g string, at time.Time) bool {
+		rel, err := s.admit(g, at)
+		if err != nil {
+			return false
+		}
+		rel()
+		return true
+	}
+	t0 := time.Date(2026, 3, 1, 10, 30, 0, 0, time.UTC)
+
+	// The review's scenario: the budget used just before the old boundary.
+	s.addServed("g-1", budget-1, t0)
+	late := t0.Add(24*time.Hour - time.Second)
+	if !admitted("g-1", late) {
+		t.Fatal("refused before the budget was used")
+	}
+	s.addServed("g-1", 1, late)
+	for _, at := range []time.Time{t0.Add(24 * time.Hour), t0.Add(24*time.Hour + 29*time.Minute)} {
+		if admitted("g-1", at) {
+			t.Fatalf("admitted at %s: a second budget within 24 h of the first", at.Format(time.DateTime))
+		}
+	}
+
+	// Ageing out: a byte counts until its clock hour is 25 hours old.
+	for _, c := range []struct {
+		served         time.Time
+		refused, again time.Duration // since served: still refused, admitted again
+	}{
+		{t0, 24*time.Hour + 29*time.Minute + 59*time.Second, 24*time.Hour + 30*time.Minute}, // 10:30 -> 11:00
+		{time.Date(2026, 3, 1, 10, 59, 59, 0, time.UTC), 24 * time.Hour, 24*time.Hour + time.Second},
+		{time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), 25*time.Hour - time.Second, 25 * time.Hour},
+	} {
+		g := "g-age-" + c.served.Format("1504")
+		s.addServed(g, budget, c.served)
+		if admitted(g, c.served.Add(c.refused)) {
+			t.Errorf("%s: admitted %s later", g, c.refused)
+		}
+		if !admitted(g, c.served.Add(c.again)) {
+			t.Errorf("%s: still refused %s later", g, c.again)
+		}
+		if c.refused < 24*time.Hour || c.again > 25*time.Hour {
+			t.Fatalf("fixture: %s/%s outside 24-25 h", c.refused, c.again)
+		}
+	}
+
+	// A greedy holder for 72 h, one operation every 7 minutes: no 24 h
+	// window gets more than budget + op, and the bytes do age out.
+	type serve struct {
+		at time.Time
+		n  int64
+	}
+	var served []serve
+	var total int64
+	for at := t0; at.Before(t0.Add(72 * time.Hour)); at = at.Add(7 * time.Minute) {
+		if admitted("g-2", at) {
+			s.addServed("g-2", op, at)
+			served = append(served, serve{at, op})
+			total += op
+		}
+	}
+	for i := range served {
+		var in int64
+		for _, x := range served[i:] {
+			if x.at.Sub(served[i].at) >= 24*time.Hour {
+				break
+			}
+			in += x.n
+		}
+		if in > budget+op {
+			t.Fatalf("%d bytes within 24 h from %s (budget %d + one operation %d)", in, served[i].at.Format(time.DateTime), budget, op)
+		}
+	}
+	if total < 3*budget {
+		t.Fatalf("served %d bytes in 72 h, want at least %d: the budget never renews", total, 3*budget)
+	}
+}

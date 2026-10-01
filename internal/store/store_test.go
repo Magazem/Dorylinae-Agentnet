@@ -108,6 +108,7 @@ func TestMigration8PreservesPeers(t *testing.T) {
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
 		`DROP TABLE experience_records`,
+		`DROP INDEX mail_inbox_received`, // migration 24 (requests and approvals are dropped above)
 		`DELETE FROM migrations WHERE version > 7`,
 		`INSERT INTO peers VALUES ('k1', 'n1', 'h1', '[{"id":"s"}]', '{"a":1}', '2026-01-02T03:04:05Z', 'relay', '[]')`,
 		`INSERT INTO peers VALUES ('k2', 'n2', 'h2', '[]', '{"b":2}', '2026-02-02T03:04:05Z', 'code', '[{"x":1}]')`,
@@ -188,7 +189,7 @@ func TestMigrationAddsPeerTrust(t *testing.T) {
 		`DROP TABLE debate_entries`,
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
-		`DROP TABLE experience_records`,
+		`DROP TABLE experience_records`, // migrations 24 and 25 go with mail_inbox, requests and approvals
 		`DROP TABLE peers`,
 		`CREATE TABLE peers (public_key TEXT PRIMARY KEY, name TEXT NOT NULL, harness TEXT NOT NULL,
 			skills TEXT NOT NULL CHECK (json_valid(skills)), card TEXT NOT NULL CHECK (json_valid(card)),
@@ -240,10 +241,14 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, q := range []string{
-			// Back to schema 17: undo migrations 22 (work_sessions.runner),
-			// 21 (experience_records), 20 (decisions) and 19 (debates, which
-			// alters work_sessions). Migration 23 (R55-F24) only rebuilds approvals
-			// with a wider kind CHECK and adds no table or column: nothing to undo.
+			// Back to schema 17: undo migrations 24 (request caps indexes and
+			// requests.introducer), 22 (work_sessions.runner), 21
+			// (experience_records), 20 (decisions) and 19 (debates, which
+			// alters work_sessions). Migrations 23 (R55-F24) and 25 (R55-F13)
+			// only rebuild approvals with a wider kind CHECK and add no table
+			// or column: nothing to undo, they replay over any approvals form.
+			`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
+			`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
 			`ALTER TABLE work_sessions DROP COLUMN runner`, `ALTER TABLE work_sessions DROP COLUMN result_mail`,
 			`DROP TABLE experience_records`,
 			`DROP TABLE decisions`, `DROP TABLE debate_constraints`, `DROP TABLE debate_entries`, `DROP TABLE debates`,

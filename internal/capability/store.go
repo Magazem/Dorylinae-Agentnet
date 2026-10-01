@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -228,12 +229,52 @@ type ListFilter struct {
 	Session   string // "" = any
 	Direction string // "" = any
 	State     string // "" = any
+	// Limit caps the rows returned (0 = no cap). Cursor continues after the
+	// row a previous page ended with (CursorOf; "" = from the newest). Both
+	// are the paging of IPC grant_list (R55-F13, review 55 R55-064).
+	Limit  int
+	Cursor string
 }
 
-// List returns grants matching f, newest first.
+// ErrBadCursor is returned by List for a Cursor that CursorOf did not make.
+var ErrBadCursor = errors.New("capability: bad cursor")
+
+// CursorOf returns the opaque List cursor that continues after r: base64url
+// of "created|id", the keyset of List's order.
+func CursorOf(r Record) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(fmtTime(r.Created) + "|" + r.ID))
+}
+
+// parseCursor decodes a CursorOf value into its (created, id) keyset.
+func parseCursor(c string) (created, id string, err error) {
+	raw, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return "", "", ErrBadCursor
+	}
+	created, id, ok := strings.Cut(string(raw), "|")
+	if !ok || !idPattern.MatchString(id) {
+		return "", "", ErrBadCursor
+	}
+	if t, perr := time.Parse(storeTimeFmt, created); perr != nil || fmtTime(t) != created {
+		return "", "", ErrBadCursor
+	}
+	return created, id, nil
+}
+
+// List returns grants matching f, newest first (by created, then id, so
+// rows with equal created keep one order across pages). With f.Limit it
+// returns at most that many; with f.Cursor only rows after that cursor.
 func (s *Store) List(ctx context.Context, f ListFilter) ([]Record, error) {
 	q := `SELECT ` + grantColumns + ` FROM grants WHERE 1=1`
 	var args []any
+	if f.Cursor != "" {
+		created, id, err := parseCursor(f.Cursor)
+		if err != nil {
+			return nil, err
+		}
+		q += ` AND (created < ? OR (created = ? AND id < ?))`
+		args = append(args, created, created, id)
+	}
 	if f.Session != "" {
 		q += ` AND session = ?`
 		args = append(args, f.Session)
@@ -246,7 +287,11 @@ func (s *Store) List(ctx context.Context, f ListFilter) ([]Record, error) {
 		q += ` AND state = ?`
 		args = append(args, f.State)
 	}
-	q += ` ORDER BY created DESC`
+	q += ` ORDER BY created DESC, id DESC`
+	if f.Limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, f.Limit)
+	}
 	rows, err := s.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("capability: list grants: %w", err)
@@ -429,6 +474,36 @@ func (s *Store) RevokeForPeerTx(ctx context.Context, tx *sql.Tx, peer, reason st
 		}
 	}
 	return ids, nil
+}
+
+// Held caps per session (Docs/protocol/grant.md §Kinds, R55-F13, review 55
+// R55-064 and review 71b F6).
+const (
+	MaxHeldLivePerSession  = 64
+	MaxHeldTotalPerSession = 512
+)
+
+// CountHeldLiveInSessionTx counts the held rows of session sid whose exp is
+// later than now, in any state, inside tx.
+func (s *Store) CountHeldLiveInSessionTx(ctx context.Context, tx *sql.Tx, sid string, now time.Time) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE session = ? AND direction = 'held' AND exp > ?`,
+		sid, fmtTime(now)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("capability: count live held grants: %w", err)
+	}
+	return n, nil
+}
+
+// CountHeldInSessionTx counts every held row of session sid (any state, any
+// exp), inside tx.
+func (s *Store) CountHeldInSessionTx(ctx context.Context, tx *sql.Tx, sid string) (int, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM grants WHERE session = ? AND direction = 'held'`, sid).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("capability: count held grants: %w", err)
+	}
+	return n, nil
 }
 
 // FindHeldTx looks up a held row by (id, peer) for the grant.revoke apply

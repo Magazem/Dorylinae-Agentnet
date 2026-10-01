@@ -15,8 +15,10 @@
 //
 // Exit codes: 0 valid; 1 invalid (the signature does not verify, or it
 // verifies but the card does not match the v1 schema); 2 unreadable or
-// malformed input (Verification steps 1-3: strict parse, strict base64url,
-// canonical form).
+// malformed input (Verification steps 1-3: size, strict parse, strict
+// base64url, canonical form). A card over 16384 bytes (after the BOM) or with
+// more than 32 skills is refused (agent-card.md §Size): the first exits 2,
+// the second 1.
 package main
 
 import (
@@ -42,7 +44,10 @@ const (
 	maxInput   = 1 << 20
 	maxSafeInt = 1 << 53
 	maxText    = 128
-	alphabet   = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	// maxCardBytes and maxSkills are the limits of agent-card.md §Size.
+	maxCardBytes = 16384
+	maxSkills    = 32
+	alphabet     = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 )
 
 var (
@@ -84,7 +89,11 @@ func run(stdin io.Reader, stdout, stderr io.Writer) int {
 
 // verify returns the card name and public key when the card is valid.
 func verify(data []byte) (name, pubKey string, err error) {
-	// Step 1: the strict parse of the whole envelope, and rule 4 on every number.
+	// Step 1: the size, before any parsing; then the strict parse of the whole
+	// envelope, and rule 4 on every number.
+	if len(data) > maxCardBytes {
+		return "", "", fmt.Errorf("%w: %d bytes, over the limit of %d", errMalformed, len(data), maxCardBytes)
+	}
 	doc, err := parse(data)
 	if err != nil {
 		return "", "", fmt.Errorf("%w: %w", errMalformed, err)
@@ -173,6 +182,9 @@ func schema(card map[string]any) error {
 	skills, ok := card["skills"].([]any)
 	if !ok {
 		return errors.New("skills must be an array")
+	}
+	if len(skills) > maxSkills {
+		return fmt.Errorf("%d skills, at most %d", len(skills), maxSkills)
 	}
 	for i, el := range skills {
 		sk, ok := el.(map[string]any)

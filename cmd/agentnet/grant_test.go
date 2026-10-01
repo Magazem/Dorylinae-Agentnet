@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -185,7 +186,7 @@ func TestGrantsListing(t *testing.T) {
 	}
 	var params daemon.GrantListParams
 	got.into(t, &params)
-	if params != (daemon.GrantListParams{Session: "s-1", Direction: "held"}) {
+	if params.Session != "s-1" || params.Direction != "held" || params.Limit == nil || *params.Limit != 200 || params.Cursor != "" {
 		t.Errorf("params = %+v", params)
 	}
 	for _, want := range []string{"ID", "DIR", "g-aaa", "g-held", "bob", "repo-ab12#main", "internal", "revoked", "active"} {
@@ -309,5 +310,73 @@ func TestGrantPolicyCommands(t *testing.T) {
 	removed.into(t, &rp)
 	if rp.ID != "p-1" {
 		t.Errorf("remove params = %+v", rp)
+	}
+}
+
+// A16 (R55-F13): `grants` reads every grant_list page. 450 grants served 200
+// at a time are all printed, in order, in the table and in --json.
+func TestGrantsReadsAllPages(t *testing.T) {
+	p := shortHome(t)
+	var mu sync.Mutex
+	var badParams []string
+	calls := 0
+	startFakeDaemon(t, p, map[string]ipc.HandlerFunc{
+		"grant_list": func(_ context.Context, params json.RawMessage) (any, error) {
+			var q daemon.GrantListParams
+			_ = json.Unmarshal(params, &q)
+			mu.Lock()
+			calls++
+			if q.Limit == nil || *q.Limit != 200 {
+				badParams = append(badParams, string(params))
+			}
+			mu.Unlock()
+			start := 0
+			if q.Cursor != "" {
+				if _, err := fmt.Sscanf(q.Cursor, "c%d", &start); err != nil {
+					return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "bad cursor"}
+				}
+			}
+			res := daemon.GrantListResult{}
+			for i := start; i < 450 && i < start+200; i++ {
+				res.Grants = append(res.Grants, testGrantView(fmt.Sprintf("g-%03d", i), "active"))
+			}
+			if start+200 < 450 {
+				res.NextCursor = fmt.Sprintf("c%d", start+200)
+			}
+			return res, nil
+		},
+	})
+	var out, errb bytes.Buffer
+	if code := run([]string{"grants"}, &out, &errb); code != exitOK {
+		t.Fatalf("code %d, stderr %q", code, errb.String())
+	}
+	last := -1
+	for i := 0; i < 450; i++ {
+		at := strings.Index(out.String(), fmt.Sprintf("g-%03d ", i))
+		if at < 0 || at < last {
+			t.Fatalf("grant g-%03d missing or out of order in the table", i)
+		}
+		last = at
+	}
+	out.Reset()
+	if code := run([]string{"grants", "--json"}, &out, &errb); code != exitOK {
+		t.Fatal(code)
+	}
+	var body struct {
+		OK     bool
+		Grants []daemon.GrantView
+	}
+	if err := json.Unmarshal(out.Bytes(), &body); err != nil || !body.OK || len(body.Grants) != 450 {
+		t.Fatalf("json: %d grants, %v", len(body.Grants), err)
+	}
+	for i, g := range body.Grants {
+		if g.ID != fmt.Sprintf("g-%03d", i) {
+			t.Fatalf("json grant %d = %s", i, g.ID)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 6 || len(badParams) != 0 {
+		t.Fatalf("%d grant_list calls (want 3 pages twice), params without limit 200: %v", calls, badParams)
 	}
 }

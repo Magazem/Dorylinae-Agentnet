@@ -127,7 +127,7 @@ func TestRejectAuditCountLogged(t *testing.T) {
 	a.Report("p", vectorID, reject(12, ReasonBadKeys, fmt.Errorf("%w: %w", errBadAnnouncement, fmt.Errorf("%w: %w", ErrAnnouncementExpired, errAnnouncementPast))))
 	a.Report("p", vectorID, reject(8, ReasonWrongRecipient, nil))
 	a.Report("p", vectorID, reject(11, ReasonBadBody, nil))
-	a.Report("p", vectorID, reject(11, reasonLimit, nil))
+	a.Report("p", vectorID, reject(11, ReasonLimit, nil))
 	want := map[string]int{ReasonDecrypt: 1, ReasonBadSignature: 1, ReasonStale: 1, ReasonBadKeys: 1}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("counted %v, want %v", got, want)
@@ -139,9 +139,9 @@ func TestLimitRejectAudited(t *testing.T) {
 	rec := &syncDetailRec{}
 	a := NewRejectAudit(rec, slog.New(slog.DiscardHandler))
 	for range 5 {
-		a.Report("p", vectorID, reject(11, reasonLimit, nil))
+		a.Report("p", vectorID, reject(11, ReasonLimit, nil))
 	}
-	if ev := rec.all(); len(ev) != 1 || ev[0]["reason"] != reasonLimit {
+	if ev := rec.all(); len(ev) != 1 || ev[0]["reason"] != ReasonLimit {
 		t.Fatalf("rows = %v", ev)
 	}
 }

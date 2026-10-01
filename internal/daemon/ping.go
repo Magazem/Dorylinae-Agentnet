@@ -44,7 +44,7 @@ type PingStatusParams struct {
 
 // newSessions binds a fresh Noise static key to the identity and returns the
 // session manager (Docs/protocol/session.md). Only paired peers may talk to it.
-func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, ps *peers.Store, opts Options, countReject func(reason string)) (*session.Manager, error) {
+func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, db *sql.DB, opts Options, countReject func(reason string)) (*session.Manager, error) {
 	pub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("agent card public key: %w", err)
@@ -57,20 +57,26 @@ func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, ps *
 		Static: static,
 		Audit:  log,
 		IsPaired: func(ctx context.Context, key string) (bool, error) {
-			list, err := ps.List(ctx)
-			if err != nil {
-				return false, err
-			}
-			for _, p := range list {
-				if p.PublicKey == key {
-					return true, nil
-				}
-			}
-			return false, nil
+			return isPairedCtx(ctx, db, key)
 		},
 		Logger:      opts.Logger,
 		CountReject: countReject,
 	}), nil
+}
+
+// isPairedCtx reports whether key is a paired peer with a one-row lookup on
+// the primary key. It runs for every inbound session frame, so it must not
+// read the whole peers table and decode every card's skills, as peers.List
+// does (review 55 R55-057). Unlike isPairedQ it returns a database error.
+func isPairedCtx(ctx context.Context, db *sql.DB, key string) (bool, error) {
+	var one int
+	switch err := db.QueryRowContext(ctx, `SELECT 1 FROM peers WHERE public_key = ?`, key).Scan(&one); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("peers: is paired: %w", err)
+	}
+	return true, nil
 }
 
 func registerPing(srv *ipc.Server, m *session.Manager, ps *peers.Store) {

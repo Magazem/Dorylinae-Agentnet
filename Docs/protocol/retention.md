@@ -12,9 +12,10 @@ a peer could create (review 55 R55-018). Owner decision D50 fixes the policy:
    ([grant.md §Kinds](grant.md#kinds)) and the Agent Card size
    ([agent-card.md §Size](agent-card.md#size)). A full cap is never silent: the sender's
    request ends declined with code `inbox_full` (the open cap, D50's clear refusal) or its mail
-   ends `failed` (`rejected`) (every other cap). Keys introduced by one team owner share one
-   more set of request caps, so an owner cannot multiply them by introducing fresh keys
-   (review 71b F2).
+   ends `failed` (`rejected`) (every other cap). Keys introduced by one team owner in the last
+   7 days share one more set of request caps, so an owner cannot multiply them by introducing
+   fresh keys (review 71b F2); established members are bounded by their own caps only
+   (owner decision D62).
 2. **One copy.** The signed plaintext of an applied mail is not kept a second time:
    `mail_inbox.signed` is stored blank (`''`) for every kind
    ([mail.md §Dedupe and inbox](mail.md#dedupe-and-inbox)). Each kind keeps what it needs in
@@ -22,6 +23,10 @@ a peer could create (review 55 R55-018). Owner decision D50 fixes the policy:
 3. **No automatic deletion of content.** The daemon never deletes a request, a result, a
    debate, a Decision or an experience record on its own. The user removes finished items
    with [`agentnet prune --older-than D`](../cli/prune.md).
+
+The daily request cap counts by receipt time, so a relay that holds an honest peer's mail
+and delivers it in one burst can bring that peer over it (review 81 L2,
+[request.md §Per-peer caps](request.md#per-peer-caps-r55-f13)).
 
 The automatic clean-ups that already exist are metadata or short-lived state, and stay as they
 are: `mail_seen` after 35 d ([mail.md](mail.md#dedupe-and-inbox)), final outbox rows 30 d after
@@ -54,12 +59,12 @@ it:
 |---|---|
 | `work_sessions` | its session row |
 | `grants` | every grant of that session, both directions |
-| `experience_records` | the records of that session (any role) |
+| `experience_records` | the records of that session (any role), and those of its debate (written under the debate's session, review 81b L1) |
 | `debates`, `debate_entries`, `debate_constraints` | its debate and all its entries and constraints |
 
 `prune` also removes rows whose request is already gone, when they are finished and older than
 the cutoff by the same rules: a `closed` work session (with its grants and experience records)
-and a `closed` or `broken` debate (with its entries and constraints). Grants outside those two
+and a `closed` or `broken` debate (with its entries, constraints and experience records). Grants outside those two
 cases follow their direction (review 71b F1):
 
 - a **`held`** grant whose `exp`, or whose `revoked_at` when it is `revoked`, is before the
@@ -97,7 +102,9 @@ the user's own actions can leave unprunable, and it grows only with the user's o
 `prune` is irreversible, and any local process that can call IPC can run it (an agent
 included, for example one misled by a brief it received). Its reach is bounded by the rules
 above: nothing unfinished, nothing younger than 35 days, never a Decision or the audit log,
-and every call is audited. No human approval is asked (OD-F13-8).
+and every call is audited. And no removal happens without a **human approval** in the
+approval window ([Approval](#approval), owner decision D57, OD-F13-8 = (b)), so an agent
+cannot delete history on its own.
 
 ### Why 35 days
 
@@ -136,27 +143,35 @@ new, so nothing is re-admitted after a prune:
   the daemon starts. On a full disk it would fail, the daemon would not start, and `prune`,
   which needs the daemon, could not be run either.
 - `in` rows auto-declined before R55-F13 keep their body until `prune` removes them.
-- `in` rows received before R55-F13 have `introducer` NULL, so they count only towards their
-  sender's own caps, not an introducer's ([request.md §Per-peer
+- `in` rows received before R55-F13 have `introducer` and `introduced_at` NULL, so they
+  count only towards their sender's own caps, not an introducer's ([request.md §Per-peer
   caps](request.md#per-peer-caps-r55-f13)).
 - Held grant rows beyond the per-session caps are kept; the caps apply to new grant mail only.
 
 ## Migration
 
-Migration N (R55-F13; N is the next free version when it merges). Indexes and one column
-only, no data rewrite, so it runs in about the time of reading `requests` and `mail_inbox`
-once:
+Migration **24** `retention_caps` (R55-F13; 23 is reserved for R55-F24). Indexes and two
+columns only, no data rewrite, so it runs in about the time of reading `requests` and
+`mail_inbox` once:
 
 ```sql
 CREATE INDEX requests_peer_state ON requests (direction, peer, state);        -- open cap
 ALTER TABLE requests ADD COLUMN introducer TEXT;                               -- in only: the sender's introduced_by at receipt
-CREATE INDEX requests_introducer_state ON requests (direction, introducer, state);
-CREATE INDEX requests_introducer_time ON requests (direction, introducer, received_at);
+ALTER TABLE requests ADD COLUMN introduced_at TEXT;                            -- in only: its introduction time (D62)
+CREATE INDEX requests_introducer_state ON requests (direction, introducer, introduced_at, state);
+CREATE INDEX requests_introducer_time ON requests (direction, introducer, introduced_at, received_at);
 CREATE INDEX mail_inbox_received ON mail_inbox (received_at);                  -- prune
 ```
 
-The `requests` column is added with `ALTER TABLE … ADD COLUMN`, so the requests table is not
-rebuilt and the rewind tests' DROP lists do not change (the indexes go with their tables).
+The `requests` columns are added with `ALTER TABLE … ADD COLUMN`, so the requests table is
+not rebuilt. The rewind tests that go back past 24 without dropping `requests` and
+`mail_inbox` undo it explicitly (drop the four indexes and the two columns).
+
+Migration **25** `approval_kind_data_prune` rebuilds `approvals` (SQLite cannot alter a
+CHECK) so that its kind CHECK also allows `data_prune` ([Approval](#approval)). It lists
+R55-F24's kinds `peer_verify` and `team_invite` too, so the table ends the same whichever of
+the two tickets merges first; it copies every row with explicit column lists, as migration 19
+does.
 
 The database runs with `secure_delete` on, so blanked text and deleted rows are overwritten in
 the file. Neither blanking nor `prune` shrinks the database file: SQLite reuses the freed pages
@@ -170,16 +185,26 @@ first; the error is `io_error` and nothing is half-removed.
 
 ## IPC
 
-`data_prune {"older_than_s": N, "dry_run"?: bool}` → `{"cutoff": "<RFC 3339>", "dry_run":
-bool, "counts": {"requests", "work_sessions", "grants", "debates", "debate_entries",
-"debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"}, "more": bool}`.
+`data_prune {"older_than_s": N, "dry_run"?: bool, "approval"?: "a-…"}` → `{"cutoff": "<RFC
+3339>", "dry_run": bool, "counts": {"requests", "work_sessions", "grants", "debates",
+"debate_entries", "debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"},
+"more": bool, "approval"?: <approval view>}`.
 
-- `older_than_s` is an integer number of seconds, at least 3024000 (35 d). A smaller value,
-  or a missing or non-integer one, is `bad_request`.
+- Without `dry_run` and without `approval`, the call creates the [approval](#approval) and
+  returns it (`approval`, state `pending`) with the counts it shows and `more: true`; nothing is
+  removed. With `approval` (the same `older_than_s`), the call answers `approval` (still
+  `pending`) until the human decides, then removes one batch per call as described below.
+  A rejected approval is `approval_rejected`, an expired one `approval_expired`, and an id that
+  is not (or no longer) a running prune `unknown_approval`; a different `older_than_s` is
+  `bad_request`.
+
+- `older_than_s` is an integer number of seconds, at least 3024000 (35 d), written as a plain
+  JSON integer. A smaller value, or a missing, quoted or non-integer one, is `bad_request`.
 - `dry_run: true` counts what a full prune would remove (and the rows it would blank), in one
-  read-only call using the indexes of [Migration](#migration), and removes nothing; `more` is
-  `false`.
-- Otherwise one call works in one transaction, in this order, and returns what it removed:
+  read-only SQL statement using the indexes of [Migration](#migration) (set-based counts, not a
+  query per item: about 70 ms for 40,000 finished requests, review 81 L1), outside any write
+  transaction, and removes nothing; `more` is `false`.
+- Once approved, one call works in one transaction, in this order, and returns what it removed:
   1. finished requests, oldest `updated` first, each with everything that belongs to it: at
      most **500 requests**, and the call stops adding requests once the content of those
      already taken (the byte lengths of `requests.body`, `requests.result`, `last_reply`,
@@ -196,17 +221,61 @@ bool, "counts": {"requests", "work_sessions", "grants", "debates", "debate_entri
   byte bounds keep each call within the 2-second rule of [ipc.md](ipc.md) with
   `secure_delete` on, keep the single database connection free for mail and IPC between
   calls, and bound the free disk space a call needs ([Full disk](#migration)). The daemon
-  computes `cutoff` from its own clock at each call.
+  computes `cutoff` from its own clock: for a dry run at that call, for a removal once, when
+  the approval is created ([Approval](#approval)); every batch removes against that fixed
+  cutoff.
 - Errors: `bad_request`; `io_error` when the database write fails (for example a full disk:
-  a delete needs a little free space for its journal).
+  a delete needs a little free space for its journal); the approval errors of
+  [approval.md](approval.md#ipc-and-cli) (`approval_limit`, `approval_locked`,
+  `approval_unavailable`, `approval_expired`, `unknown_approval`) and `approval_rejected`.
+
+## Approval
+
+Owner decision D57 (OD-F13-8 = (b)): `data_prune` removes or blanks nothing until a human has
+approved it through [approval.md](approval.md), like every other approval: the approval
+window on a desktop, the daemon's terminal in [terminal mode](approval.md#headless-machines),
+and `approval_unavailable` where neither exists. The approval store, its limits (5 pending,
+20 an hour, 3 attempts, 10 wrong codes a day) and the one summary builder are reused; the
+kind is `data_prune`.
+
+- **Created by the first removing call.** `data_prune {"older_than_s"}` (no `dry_run`, no
+  `approval`) fixes the cutoff (`now − older_than`, from the daemon's clock), counts what a
+  prune at that cutoff removes (as a dry run), and creates the approval. When the count is
+  zero it creates nothing and returns the zero counts. The waiting object is kept in memory
+  only (like `debate_constraint`), under a subject `n-` + 32 hex: a restart, which expires
+  every pending approval, leaves nothing to remove.
+- **Summary** ([approval.md §Contents per kind](approval.md#contents-per-kind)): the minimum
+  age, the cutoff, and the counts, numbers only (never a peer, a request or any content).
+- **Counts bound at creation.** The counts are taken once, when the approval is created, and
+  bound to it; confirm rebuilds the summary from those counts and compares it with the one
+  shown, but does not count again inside its write transaction on the daemon's single
+  connection (review 81 L1). A change after counting can only take items out of the set: an
+  item is in it only if its `updated` is before the fixed cutoff, and every change sets
+  `updated` to now, the local time of the change. This includes the sender mirror: a
+  lifecycle mail that finishes an `out` row sets its `updated` to the time it is applied,
+  never the peer's `at`, so a request sent long ago and finished today is not older than
+  the cutoff (review 81b M1). The only rows that can join are `mail_inbox` rows whose
+  `mail_seen` row ages out in the meantime (each batch uses its own `now` for that rule).
+- **Never more than shown.** The batches remove no more of each table than the approved
+  count: the daemon keeps what the earlier batches of the approval removed, and each batch
+  removes at most the approved count less that, table by table (review 81b). An item that no
+  longer fits (a request with its dependents, an orphan, an inbox row) ends the prune: it
+  and everything after it are left, and the call returns `more: false`. What is left needs
+  a new `agentnet prune` and a new approval.
+- **Perform** removes nothing: it lets the calls that name the approval run for one hour.
+  Each such call removes one bounded batch against the **approved cutoff**, in its own
+  transaction, audited as below. The call that returns `more: false` ends the approval's
+  use; a later call with it is `unknown_approval`.
 
 ## Audit
 
 Every `data_prune` call that removed or blanked at least one row appends `data.prune` (actor `cli`) with
-`{"older_than_s", "cutoff", "requests", "work_sessions", "grants", "debates",
+`{"older_than_s", "cutoff", "approval", "requests", "work_sessions", "grants", "debates",
 "debate_entries", "debate_constraints", "experience_records", "mail_inbox", "inbox_blanked"}`
+(`approval` is the id of the approval that allowed it)
 (written with `AppendTx` in the prune transaction, so the counts and the removals commit
 together): counts only,
-never ids, titles or content. A dry run writes no row. Audit rows that name a pruned request,
+never ids of what was removed, titles or content. A dry run writes no row; creating,
+approving or rejecting the approval writes the usual `approval.*` rows. Audit rows that name a pruned request,
 session or grant stay as they are: they hold only ids and enums, and the chain is never
 rewritten.

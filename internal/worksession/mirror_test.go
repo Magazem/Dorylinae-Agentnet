@@ -79,3 +79,28 @@ func TestMirror_Orphan(t *testing.T) {
 		t.Errorf("audit = %v, want ws.orphan", got)
 	}
 }
+
+// TestMirror_OrphanAfterPrune: once agentnet prune removed B's session and
+// request (R55-F13, test A13), a late ws.state for it is an orphan: ignored
+// and audited ws.orphan, never a new session (Docs/protocol/retention.md
+// §Why 35 days).
+func TestMirror_OrphanAfterPrune(t *testing.T) {
+	a, b, reqID, sid := setupAcceptedSession(t)
+	if _, err := b.db.Exec(`DELETE FROM work_sessions WHERE id = ?`, sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.db.Exec(`DELETE FROM requests WHERE id = ?`, reqID); err != nil {
+		t.Fatal(err)
+	}
+	sm := stateMailFrom(testA, testB, reqID, 1, 5, StateOpen, "", "", "", wireTime(a.clock))
+	if err := deliver(t, b, testA, sm); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if got := b.audit.actions(); !containsAction(got, "ws.orphan") {
+		t.Errorf("audit = %v, want ws.orphan", got)
+	}
+	var n int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM work_sessions WHERE id = ?`, sid).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("session rows = %d, %v; want none", n, err)
+	}
+}

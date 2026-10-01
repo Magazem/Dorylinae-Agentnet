@@ -457,7 +457,9 @@ Specified in their documents, with the same rules (review 48: this table was mis
 
 - `data_prune` ([retention.md](retention.md#ipc)): removes finished items older than a cutoff
   of at least 35 days, in batches that each return within 2 s (`more: true` means call again);
-  `dry_run` only counts. Written by [`agentnet prune`](../cli/prune.md).
+  `dry_run` only counts. A removal first needs a human approval (kind `data_prune`, owner
+  decision D57): the first call returns the pending approval, and the calls that name it
+  (`approval`) remove once the human approved. Written by [`agentnet prune`](../cli/prune.md).
 - `grant_list` gains `limit` and `cursor`, and its result `next_cursor`
   ([grant.md](grant.md#ipc)).
 
