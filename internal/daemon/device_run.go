@@ -150,6 +150,12 @@ type helperRunner struct {
 	// curMu guards cur, the command running now (nil when none).
 	curMu sync.Mutex
 	cur   *activeRun
+	// kicks counts the sweeps kick started, so that the daemon waits for
+	// them before closing the store (review 55 R55-145); kickMu guards
+	// kicksClosed, set by wait, after which kick starts none.
+	kickMu      sync.Mutex
+	kicksClosed bool
+	kicks       sync.WaitGroup
 }
 
 func newHelperRunner(db *sql.DB, ds *device.Store, ws *worksession.Store, log *audit.Log, self string, logger *slog.Logger) *helperRunner {
@@ -169,18 +175,55 @@ func (r *helperRunner) signal() {
 // and a running one is stopped. It never blocks, so it may be called inside
 // a transaction: the sweep's own transaction waits for that one to end.
 func (r *helperRunner) kick() {
-	go r.sweep(context.Background())
+	r.kickMu.Lock()
+	defer r.kickMu.Unlock()
+	if r.kicksClosed {
+		// The daemon is stopping: the running command is stopped with it,
+		// and the next start's recoverAfterRestart checks what is left.
+		return
+	}
+	r.kicks.Add(1)
+	go func() {
+		defer r.kicks.Done()
+		r.sweep(context.Background())
+	}()
+}
+
+// wait makes later kicks do nothing and waits for the sweeps already
+// started, so that none outlives the store (review 55 R55-145).
+func (r *helperRunner) wait() {
+	r.kickMu.Lock()
+	r.kicksClosed = true
+	r.kickMu.Unlock()
+	r.kicks.Wait()
 }
 
 // sweep drops the queued runs that are no longer allowed, stops the running
-// one if it is no longer allowed, and wakes the runner.
+// one if it is no longer allowed, and wakes the runner. A sweep that cannot
+// confirm the running command is still allowed stops it (review 55
+// R55-098): a revocation must kill it at once (Docs/protocol/device.md
+// §Running), not at its timeout because the check failed.
 func (r *helperRunner) sweep(ctx context.Context) {
 	r.sweepMu.Lock()
 	defer r.sweepMu.Unlock()
-	if _, _, err := r.take(ctx, false); err != nil && r.logger != nil {
-		r.logger.Warn("device: sweep run queue", "error", err)
+	if _, _, err := r.take(ctx, false); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("device: sweep run queue", "error", err)
+		}
+		if ctx.Err() == nil {
+			r.stopCurrent()
+		}
 	}
 	r.signal()
+}
+
+// stopCurrent stops the running command, whichever it is.
+func (r *helperRunner) stopCurrent() {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	if r.cur != nil {
+		r.cur.stop(errRunRevoked)
+	}
 }
 
 // stopRunning stops the running command if it is still the one of session:
@@ -210,6 +253,13 @@ func (r *helperRunner) stillRunning(session string, plan device.RunPlan) {
 		return
 	}
 	r.cur.expires = plan.Expires
+}
+
+// executing reports whether a command is running now.
+func (r *helperRunner) executing() bool {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	return r.cur != nil
 }
 
 // runExpires is when the running command's scope expires, as of the last
@@ -312,6 +362,17 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 	if err != nil {
 		return nil, device.RunPlan{}, err
 	}
+	// Only loop starts runs, one at a time, so a job still marked running
+	// when it asks for the next one was left by a finish that failed after
+	// its result: clear it, or no queued run would start before a restart
+	// (review 55 R55-099).
+	stale := start && st.Running != nil && !r.executing()
+	if stale {
+		if r.logger != nil {
+			r.logger.Warn("device: clear a finished run left marked running", "session", st.Running.Session)
+		}
+		st.Running = nil
+	}
 	stop := ""
 	var runningPlan device.RunPlan
 	if st.Running != nil {
@@ -342,7 +403,7 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 			keep = append(keep, j)
 		}
 	}
-	if len(dropped) > 0 || next != nil {
+	if len(dropped) > 0 || next != nil || stale {
 		st.Queued = keep
 		if next != nil {
 			st.Running = next
@@ -551,7 +612,9 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 		}
 		break
 	}
-	if err := r.finish(ctx); err != nil && r.logger != nil {
+	// Not cut short by the daemon stopping just after the result: the next
+	// start would report the run as interrupted (review 55 R55-099).
+	if err := r.finish(context.WithoutCancel(ctx)); err != nil && r.logger != nil {
 		r.logger.Warn("device: finish run", "error", err)
 	}
 	r.audit(ctx, "device.run", map[string]any{
