@@ -5,6 +5,7 @@ package paths
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"unsafe"
@@ -88,7 +89,14 @@ func CheckPrivate(p string) error {
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
 			return fmt.Errorf("read the access list of %s: %w", p, err)
 		}
-		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 || uint32(ace.Mask)&^harmlessAccess == 0 {
+		// An inherit-only entry grants nothing on p itself, but every file
+		// or dir created in p later inherits it (review 87 L1); on a file it
+		// has no effect at all.
+		inheritOnly := ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0
+		if inheritOnly && ace.Header.AceFlags&(windows.OBJECT_INHERIT_ACE|windows.CONTAINER_INHERIT_ACE) == 0 {
+			continue
+		}
+		if uint32(ace.Mask)&^harmlessAccess == 0 {
 			continue
 		}
 		switch ace.Header.AceType {
@@ -100,6 +108,8 @@ func CheckPrivate(p string) error {
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart)).String() //nolint:gosec // the SID follows the mask in an ACCESS_ALLOWED_ACE (winnt.h)
 		switch {
+		case sid == sidCreatorOwner && inheritOnly:
+			sid = self // the creator of a new file in p is this process's user
 		case sid == sidCreatorOwner || sid == sidOwnerRights:
 			sid = owner
 		case strings.HasPrefix(sid, "S-1-15-"):
@@ -115,13 +125,31 @@ func CheckPrivate(p string) error {
 // secureDir makes the config dir private (R55-089): a dir owned by another
 // user is refused, and a DACL that lets someone else in is replaced by a
 // protected one with a single entry, inherited by everything inside, for the
-// current user. A private dir is left as it is.
-func secureDir(dir string) error {
+// current user. A private dir is left as it is. The DACL is replaced only
+// when Ensure just created the dir or it is empty: an existing dir with
+// contents (a shared folder chosen as home) is refused with a
+// *SharedDirError instead (review 87 L4).
+func secureDir(dir string, created bool) error {
 	err := CheckPrivate(dir)
 	var np *NotPrivateError
 	if err == nil || !errors.As(err, &np) || np.Owner {
 		return err
 	}
+	if !created {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		if len(entries) > 0 {
+			return &SharedDirError{NotPrivateError: np}
+		}
+	}
+	return rewriteDACL(dir)
+}
+
+// rewriteDACL replaces the DACL of dir with a protected one granting the
+// current user full control, inherited by everything inside.
+func rewriteDACL(dir string) error {
 	self, err := currentUserSID()
 	if err != nil {
 		return err

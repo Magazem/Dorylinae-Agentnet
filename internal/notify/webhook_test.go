@@ -64,8 +64,31 @@ func mustSetWebhook(t *testing.T, wh *Webhook, url string, title bool) {
 	if err := wh.Settings.SetWebhook(ctx, WebhookConfig{URL: url, Format: FormatGeneric, Title: title}, wh.now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wh.RotateSecret(); err != nil {
+	if _, _, err := wh.RotateSecret(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Review 87 M1: when two key backends hold different secrets (a stale copy,
+// or one planted by a process that can write files but not the keychain),
+// the worker uses the one matching the hash stored with the webhook; a config
+// without a hash refuses to choose.
+func TestWebhookSecretChosenByStoredHash(t *testing.T) {
+	dir := testutil.TempDir(t)
+	a, b := keystore.NewFile(filepath.Join(dir, "a.key")), keystore.NewFile(filepath.Join(dir, "b.key"))
+	if err := a.Set([]byte("planted")); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set([]byte("current")); err != nil {
+		t.Fatal(err)
+	}
+	ks := keystore.New(a, b)
+	got, _, err := ks.LoadMatching(secretMatches(WebhookConfig{SecretSHA256: SecretHash([]byte("current"))}))
+	if err != nil || string(got) != "current" {
+		t.Fatalf("LoadMatching = %q, %v", got, err)
+	}
+	if _, _, err := ks.LoadMatching(secretMatches(WebhookConfig{})); !errors.Is(err, keystore.ErrConflict) {
+		t.Fatalf("no stored hash = %v, want ErrConflict", err)
 	}
 }
 

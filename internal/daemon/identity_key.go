@@ -58,7 +58,20 @@ func (k *identityKey) read() (ed25519.PrivateKey, error) {
 	if k.ks == nil {
 		return nil, errors.New("no identity keystore")
 	}
-	seed, _, err := k.ks.Load()
+	// Only the copy matching the agent card is read: a different key in
+	// another backend is not this agent's (review 87 M1).
+	var match func([]byte) bool
+	if len(k.pub) == ed25519.PublicKeySize {
+		match = func(seed []byte) bool {
+			if len(seed) != ed25519.SeedSize {
+				return false
+			}
+			priv := ed25519.NewKeyFromSeed(seed)
+			defer clear(priv)
+			return priv.Public().(ed25519.PublicKey).Equal(k.pub)
+		}
+	}
+	seed, _, err := k.ks.LoadMatching(match)
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}

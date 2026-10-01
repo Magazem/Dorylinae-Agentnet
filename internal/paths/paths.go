@@ -87,11 +87,17 @@ func Canonical(dir string) string {
 // Ensure creates the config directory with owner-only permissions: mode 0700,
 // or on Windows a protected DACL for the current user when anyone else had
 // access. A directory owned by another user is refused (review 55 R55-089).
+// On Windows the access list of an existing directory that is not empty is
+// never replaced: it may be a shared folder $DORYLINAE_HOME points at, and
+// the rewrite would lock everyone else out of it (review 87 L4). Ensure then
+// fails with a *SharedDirError naming the fix.
 func (p Paths) Ensure() error {
+	_, err := os.Stat(p.Dir)
+	created := errors.Is(err, fs.ErrNotExist)
 	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if err := secureDir(p.Dir); err != nil {
+	if err := secureDir(p.Dir, created); err != nil {
 		return fmt.Errorf("secure config dir: %w", err)
 	}
 	return nil
@@ -108,3 +114,16 @@ type NotPrivateError struct {
 func (e *NotPrivateError) Error() string {
 	return e.Path + " is not private to the current user: accessible by " + e.Who
 }
+
+// SharedDirError means Ensure found an existing config directory with
+// contents that others can access, and left its access list alone.
+type SharedDirError struct {
+	*NotPrivateError
+}
+
+func (e *SharedDirError) Error() string {
+	return e.NotPrivateError.Error() + "; it already holds files, so its access list is not changed: restrict it to your own user " +
+		"(icacls \"" + e.Path + "\" /inheritance:r /grant:r \"%USERNAME%:(OI)(CI)F\") or set " + HomeEnv + " to a new directory"
+}
+
+func (e *SharedDirError) Unwrap() error { return e.NotPrivateError }

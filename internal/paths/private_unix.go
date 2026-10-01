@@ -28,7 +28,7 @@ func CheckPrivate(p string) error {
 
 // secureDir makes the config dir owner-only. chmod fails on a dir owned by
 // another user, so such a dir is refused too.
-func secureDir(dir string) error {
+func secureDir(dir string, _ bool) error {
 	// Directory needs the x bit; 0700 is owner-only.
 	return os.Chmod(dir, 0o700) //nolint:gosec // see above
 }

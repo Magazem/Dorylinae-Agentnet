@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
@@ -113,36 +114,55 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 	}
 	haveCard := cardErr == nil
 
-	seed, backend, err := ks.Load()
-	switch {
-	case err == nil:
-		priv, perr := privFromSeed(seed)
-		if perr != nil {
-			return nil, Report{}, perr
-		}
-		if haveCard {
-			if existing.Card.PublicKey != pubString(priv) {
-				return nil, Report{}, fmt.Errorf("identity: stored private key does not match the key in %s", cardPath)
-			}
+	if haveCard {
+		// Only a key matching the card is the identity's: a copy in another
+		// backend (a key file planted by a process that cannot reach the
+		// keychain) is ignored (review 87 M1).
+		seed, backend, err := ks.LoadMatching(SeedMatches(existing.Card.PublicKey))
+		switch {
+		case err == nil:
+			defer clear(seed)
 			return &Identity{card: *existing, keyBackend: backend}, Report{}, nil
-		}
-		// Key without a card (interrupted first run): re-create the card for the same key.
-		return finish(cardPath, priv, backend, false, nil, opts, now)
-	case errors.Is(err, keystore.ErrNotFound):
-		if haveCard {
+		case errors.Is(err, keystore.ErrMismatch):
+			return nil, Report{}, fmt.Errorf("identity: no stored private key matches the key in %s, nothing was changed (%w); restore the key or delete %s to start a new identity", cardPath, err, cardPath)
+		case errors.Is(err, keystore.ErrNotFound):
 			return nil, Report{}, fmt.Errorf("%w (%w); restore it or delete %s to start a new identity", ErrKeyLost, err, cardPath)
-		}
-	case errors.Is(err, keystore.ErrUnavailable):
-		// The keychain may hold the key but cannot be read now (locked, timed
-		// out): that is not a lost key (review 55 R55-092). Without a card
-		// there is no identity yet, so a new one is created as on a machine
-		// without a keychain.
-		if haveCard {
+		case errors.Is(err, keystore.ErrUnavailable):
+			// The keychain may hold the key but cannot be read now (locked,
+			// timed out): that is not a lost key (review 55 R55-092).
 			return nil, Report{}, fmt.Errorf("identity: the private key could not be read, nothing was changed (%w); unlock the keychain and start again", err)
+		default:
+			return nil, Report{}, err
 		}
-	default:
-		return nil, Report{}, err
 	}
+
+	// No card. A stored key is adopted (an interrupted first run) only when
+	// every backend answered and agrees: with two different keys, or one key
+	// while another backend could not be read, nothing says which is ours, and
+	// adopting a key a file-only writer planted would hand it the identity
+	// (review 87 M1).
+	c := ks.Read()
+	defer c.Clear()
+	switch {
+	case c.Distinct():
+		return nil, Report{}, fmt.Errorf("identity: %s is missing and %s hold different private keys, nothing was changed; restore the card, or remove the key that is not this agent's", cardPath, backendList(c))
+	case len(c.Copies) > 0 && len(c.Unavailable)+len(c.Broken) > 0:
+		return nil, Report{}, fmt.Errorf("identity: %s is missing and a private key is stored in %s, but other key storage could not be read (%w), nothing was changed; unlock the keychain (or fix the key file) and start again, or restore the card",
+			cardPath, backendList(c), errors.Join(append(c.Unavailable, c.Broken...)...))
+	case len(c.Copies) > 0:
+		// Key without a card (interrupted first run): re-create the card for the same key.
+		priv, err := privFromSeed(c.Copies[0].Secret)
+		if err != nil {
+			return nil, Report{}, err
+		}
+		defer clear(priv)
+		return finish(cardPath, priv, c.Copies[0].Backend, false, nil, opts, now)
+	case len(c.Broken) > 0:
+		return nil, Report{}, errors.Join(c.Broken...)
+	}
+	// No key anywhere that could be read. A keychain that is unavailable now
+	// may hold an older key, but no card refers to it, so a new identity is
+	// created as on a machine without a keychain.
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -185,6 +205,9 @@ func finish(cardPath string, priv ed25519.PrivateKey, backend string, generated 
 	return &Identity{card: signed, keyBackend: backend}, Report{Created: true, Detail: detail}, nil
 }
 
+// ReadCard returns the verified Agent Card stored under dir.
+func ReadCard(dir string) (*agentcard.Signed, error) { return readCard(filepath.Join(dir, CardFile)) }
+
 func readCard(path string) (*agentcard.Signed, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path is inside the daemon config dir
 	if err != nil {
@@ -198,6 +221,27 @@ func privFromSeed(seed []byte) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("identity: stored key has %d bytes, want %d", len(seed), ed25519.SeedSize)
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// SeedMatches returns a keystore check that accepts a stored seed only when
+// its public key is pub (base64url, as in the agent card).
+func SeedMatches(pub string) func(seed []byte) bool {
+	return func(seed []byte) bool {
+		if len(seed) != ed25519.SeedSize {
+			return false
+		}
+		priv := ed25519.NewKeyFromSeed(seed)
+		defer clear(priv)
+		return pubString(priv) == pub
+	}
+}
+
+func backendList(c keystore.Contents) string {
+	var names []string
+	for _, cp := range c.Copies {
+		names = append(names, cp.Backend)
+	}
+	return strings.Join(names, " and ")
 }
 
 func pubString(priv ed25519.PrivateKey) string {

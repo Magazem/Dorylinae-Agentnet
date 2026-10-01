@@ -306,7 +306,7 @@ func checkConfigWith(p paths.Paths, checkOwner, checkPrivate func(string) error)
 		if errors.As(err, &np) {
 			return doctorCheck{ID: "config", State: doctorWarn,
 				Detail: displayRelHome(p.Dir) + " can be read by someone other than you",
-				Fix:    "restrict the directory to your own user (agentnetd does this on start unless another user owns it)"}
+				Fix:    "restrict the directory to your own user (agentnetd does this on start when you own it; on Windows only while it is empty)"}
 		}
 		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check who can read the config directory"}
 	}
@@ -338,16 +338,31 @@ func displayRelTo(home, path string) string {
 }
 
 // checkKeychain reports which backend holds the identity key, without ever
-// creating one (doctor only reads).
+// creating one (doctor only reads). With an agent card, only the key matching
+// it counts, as at start-up (review 87 M1).
 func checkKeychain(p paths.Paths) doctorCheck {
 	ks, err := identity.NewKeystoreFromEnv(p.Dir)
 	if err != nil {
 		return doctorCheck{ID: "keychain", State: doctorFail, Detail: "could not open the key storage"}
 	}
-	_, backend, err := ks.Load()
+	var match func([]byte) bool
+	card, cardErr := identity.ReadCard(p.Dir)
+	if cardErr == nil {
+		match = identity.SeedMatches(card.Card.PublicKey)
+	}
+	seed, backend, err := ks.LoadMatching(match)
+	clear(seed)
 	switch {
 	case err == nil:
 		return doctorCheck{ID: "keychain", State: doctorOK, Detail: "identity key readable from " + backend}
+	case errors.Is(err, keystore.ErrConflict), errors.Is(err, keystore.ErrMismatch):
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "no stored identity key matches the agent card, or the keychain and the key file hold different keys",
+			Fix:    "remove the key that is not this agent's (often a stray identity.key), or restore the agent card"}
+	case errors.Is(err, keystore.ErrNotFound) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the agent card exists but its private key was not found",
+			Fix:    "restore the key, or delete agent-card.json to start a new identity"}
 	case errors.Is(err, keystore.ErrNotFound):
 		return doctorCheck{ID: "keychain", State: doctorWarn,
 			Detail: "no identity key yet",

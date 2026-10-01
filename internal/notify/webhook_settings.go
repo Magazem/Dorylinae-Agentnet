@@ -34,6 +34,10 @@ type WebhookConfig struct {
 	URL    string `json:"url"`
 	Format string `json:"format"`
 	Title  bool   `json:"title"`
+	// SecretSHA256 is SecretHash of the current secret (review 87 M1).
+	// Empty in a config written before it existed: the secret is then used
+	// only when every key backend holds the same one.
+	SecretSHA256 string `json:"secret_sha256,omitempty"`
 }
 
 // GetWebhook returns the stored webhook config, and ok=false when no webhook

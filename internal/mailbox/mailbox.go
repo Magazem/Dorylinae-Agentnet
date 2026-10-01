@@ -240,14 +240,20 @@ func (k *Keys) Announcement() ([]byte, error) {
 // An unavailable keystore (a locked keychain) counts as usable: the key is
 // most likely still there, and a needless rotation would announce a new key
 // to every peer (review 55 R55-092). A key that is really gone is then
-// replaced at the latest by the scheduled rotation.
+// replaced at the latest by the scheduled rotation. A host without a keychain
+// service is not "unavailable": the key can only be in the file, so a missing
+// file means a lost key (review 87 L2).
 func (k *Keys) usable(r *row, now time.Time) (bool, error) {
 	if !r.notAfter.After(now.Add(renewBefore)) {
 		return false, nil
 	}
-	priv, err := k.load(r.keyID)
+	pub, err := k.rowPub(r)
+	if err != nil {
+		return false, nil
+	}
+	_, err = k.load(r.keyID, pub)
 	switch {
-	case errors.Is(err, keystore.ErrNotFound):
+	case errors.Is(err, keystore.ErrNotFound), errors.Is(err, keystore.ErrMismatch):
 		return false, nil
 	case errors.Is(err, keystore.ErrUnavailable):
 		k.log.Warn("mailbox: keystore unavailable, keeping the current key", "event", "mailbox_error", "key_id", r.keyID, "error", err)
@@ -255,8 +261,7 @@ func (k *Keys) usable(r *row, now time.Time) (bool, error) {
 	case err != nil:
 		return false, err
 	}
-	pub, _ := k.rowPub(r)
-	return pub != nil && string(priv.PublicKey().Bytes()) == string(pub), nil
+	return true, nil
 }
 
 func (k *Keys) rowPub(r *row) ([]byte, error) {
@@ -267,13 +272,18 @@ func (k *Keys) rowPub(r *row) ([]byte, error) {
 	return ann.Pub, nil
 }
 
-// load reads the private key of keyID from the keystore.
-func (k *Keys) load(keyID string) (*ecdh.PrivateKey, error) {
+// load reads the private key of keyID whose public key is pub from the
+// keystore. A copy with another public key (a key file planted by a process
+// that cannot reach the keychain) is ignored (review 87 M1).
+func (k *Keys) load(keyID string, pub []byte) (*ecdh.PrivateKey, error) {
 	ks, err := k.keystoreFor(keyID)
 	if err != nil {
 		return nil, err
 	}
-	seed, _, err := ks.Load()
+	seed, _, err := ks.LoadMatching(func(seed []byte) bool {
+		priv, err := ecdh.X25519().NewPrivateKey(seed)
+		return err == nil && string(priv.PublicKey().Bytes()) == string(pub)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +314,11 @@ func (k *Keys) MailboxKey(id mail.KeyID) (*ecdh.PrivateKey, bool) {
 		if t, ok := k.failed[r.keyID]; ok && now.Sub(t) < loadRetry && !now.Before(t) {
 			return nil, false
 		}
-		priv, err := k.load(r.keyID)
+		pub, err := k.rowPub(&r)
+		var priv *ecdh.PrivateKey
+		if err == nil {
+			priv, err = k.load(r.keyID, pub)
+		}
 		if err != nil {
 			if k.failed == nil {
 				k.failed = map[string]time.Time{}
@@ -541,8 +555,8 @@ func (k *Keys) importLegacy(ctx context.Context) error {
 		}
 		return os.Remove(path)
 	}
-	if priv, err := k.load(keyID); err != nil || string(priv.PublicKey().Bytes()) != string(ann.Pub) {
-		if err != nil && !errors.Is(err, keystore.ErrNotFound) {
+	if _, err := k.load(keyID, ann.Pub); err != nil {
+		if !errors.Is(err, keystore.ErrNotFound) && !errors.Is(err, keystore.ErrMismatch) {
 			return fmt.Errorf("mailbox: import current.json: %w", err) // keep the file, try again
 		}
 		return os.Remove(path)

@@ -60,7 +60,9 @@ For a key created at time `t`:
   cannot be read because the keychain is unavailable (locked, timed out) is kept, and is
   replaced at the latest by the 7-day rotation (review 55 R55-092).
 - In the same job, every key with `not_after + 7 d ≤ now` is deleted from the keystore, and
-  its row gets `deleted` set. The row itself is kept for audit.
+  its row gets `deleted` set. The row itself is kept for audit. While the keychain is locked
+  or times out, the delete fails and the row stays live, so the next run retries it
+  (review 87 M2).
 - A key is **live** when it is not deleted. This schedule never has more than **3 live keys**
   (ages below 7, 14 and 21 days). The job also enforces the limit: if a 4th would be live, the
   oldest is deleted early.

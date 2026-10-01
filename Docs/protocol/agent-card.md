@@ -245,25 +245,58 @@ Order of preference, per config directory:
 The config directory itself is made owner-only when the daemon starts (and
 by `agentnetd install`): mode `0700`, or on Windows, when anyone other than
 the current user, SYSTEM or Administrators has access, a protected DACL with
-a single inherited allow entry for the current user. A config directory owned
-by another user is refused. `agentnet doctor` warns when someone else can read
-it.
+a single inherited allow entry for the current user. On Windows an
+inherit-only entry counts as access too, because every file created in the
+directory later gets it. A config directory owned by another user is refused.
+On Windows the DACL is replaced only when the daemon has just created the
+directory or it is empty: an existing directory that already holds files and
+that others can access (for example a shared folder `DORYLINAE_HOME` points
+at) is never rewritten, because that would lock everyone else out of it. The
+daemon refuses to start instead, and the error gives the fix: restrict the
+directory to your own user (`icacls <dir> /inheritance:r /grant:r
+"%USERNAME%:(OI)(CI)F"`) or point `DORYLINAE_HOME` at a new directory.
+`agentnet doctor` warns when someone else can read it.
 
 Setting `DORYLINAE_KEYSTORE=file` skips the keychain (headless servers, CI,
 tests). The default is `auto`. The keychain is tried first; if it is
 unavailable or errors, the file is used and the reason is recorded in the
-audit event. Saving to one backend removes the copies in the others; a copy
-in a keychain that is unavailable at that moment cannot be removed, so on
-load, when the keychain and the file hold different keys, the file's (the
-newer) wins. A key found only in the file is not migrated automatically.
+audit event. Saving to one backend removes the copies in the others. A copy
+in a keychain that is unavailable at that moment cannot be removed. A key
+found only in the file is not migrated automatically.
 
-An *unavailable* keychain (no keychain service, locked, a call timing out
-after 5 s) is not the same as a *missing* key: the key may be in it. When no
-backend holds the key and the keychain was unavailable, loading reports the
-keychain as unavailable, not the key as lost. Deleting skips an unavailable
-keychain (on a machine without one nothing can be stored there). These rules
-apply to every secret kept this way (the mailbox keys and the webhook secret
-too).
+Loading reads every backend and never prefers one by its place in the order:
+a process that can write files in the config directory but cannot reach the
+keychain could otherwise plant its own key and take over the identity. When
+the backends hold different values, the copy used is the one that matches
+data the daemon already trusts:
+
+- the identity key: the copy whose public key is in `agent-card.json`. With
+  no card, a stored key is adopted only when every backend could be read and
+  they all hold the same key; otherwise the daemon refuses to start and
+  changes nothing;
+- a mailbox key: the copy whose public key is the one in its
+  `mailbox_keys_own` row;
+- the webhook secret: the copy whose SHA-256 is stored with the webhook
+  setting. A setting from before this rule has no hash, and two different
+  copies then fail delivery with `no_secret` until the secret is rotated.
+
+A copy that does not match is ignored but left in place. A key file that is
+unusable (readable by others, corrupt) does not hide a matching copy in the
+keychain. Without a matching copy, the error names the file and the backend
+that holds a copy, so the fix (deleting the file) is clear.
+
+An *unavailable* keychain (locked, an unlock prompt dismissed, a call timing
+out after 5 s) is not the same as a *missing* key: the key may be in it.
+When no backend holds the key and the keychain was unavailable, loading
+reports the keychain as unavailable, not the key as lost. A host with *no
+keychain service* (no D-Bus session bus or Secret Service on Linux, an
+unsupported platform) is different again: nothing can be stored there, so
+it counts as an absence. A key missing from the file is then reported as
+lost, and a mailbox key is replaced at once. Deleting skips a keychain only
+when the host has no keychain service. A locked keychain makes the delete
+fail, so it is retried later; the mailbox's hourly job keeps the key live
+until the delete succeeds. These rules apply to every secret kept this way
+(the mailbox keys and the webhook secret too).
 
 The signed card is cached at `<config dir>/agent-card.json`. Lifecycle on
 daemon start:
@@ -273,7 +306,9 @@ daemon start:
 | missing | missing | First run: generate key, create + sign card, audit `identity.create` |
 | present | present, valid, key matches | Reuse; no audit event |
 | present | missing | Re-create the card for the same key, audit `identity.create` |
-| present | invalid or for another key | Daemon fails to start; nothing is overwritten |
+| present | invalid | Daemon fails to start; nothing is overwritten |
+| present, but no copy matches the card | present | Daemon fails to start; nothing is overwritten. A copy that does not match (a stray `identity.key`) is ignored when another backend holds the matching key |
+| different keys in keychain and file, or a key while the other backend is unavailable | missing | Daemon fails to start; nothing is changed. Restore the card or remove the key that is not this agent's |
 | missing | present | Daemon fails to start (key lost; silently rotating the identity would break peers). Delete `agent-card.json` to start a new identity |
 | keychain unavailable, file has none | present | Daemon fails to start; nothing is changed. The error says the keychain could not be read, not that the key is lost |
 | keychain unavailable, file has none | missing | First run, as above: the new key goes to the file |

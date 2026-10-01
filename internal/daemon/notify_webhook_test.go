@@ -2,6 +2,7 @@ package daemon_test
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
@@ -102,6 +104,26 @@ func TestNotifyWebhookIPC(t *testing.T) {
 	case <-received:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the test webhook was never delivered")
+	}
+
+	// The secret's hash is stored with the webhook, so the worker signs only
+	// with that secret (review 87 M1).
+	rawSecret, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(set.Secret, "whsec_"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sth, err := store.Open(ctx, p.DB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfgJSON string
+	err = sth.DB().QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'notify.webhook'`).Scan(&cfgJSON)
+	_ = sth.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"secret_sha256":"` + notify.SecretHash(rawSecret) + `"`; !strings.Contains(cfgJSON, want) {
+		t.Fatalf("webhook setting %s lacks %s", cfgJSON, want)
 	}
 
 	// "--webhook off" removes it.
