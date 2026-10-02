@@ -22,18 +22,39 @@ Canonical JSON, one per `(session, role)`:
 
 | Plan field | Member | Source |
 |---|---|---|
-| — | `v`, `session`, `request`, `role` (`requester`/`worker`, or `initiator`/`respondent` for a debate), `kind` (`work`/`debate`), `peer` (key), `team` (id), `type` (request type) | the session and request rows |
+| — | `v`, `session`, `request`, `role` (`requester`/`worker`, or `initiator`/`respondent` for a debate), `kind` (`work`/`debate`), `peer` (key), `team` (id), `type` (request type) | the session and request rows. `team` is the request's team id for **every** kind, debates included (R55-F29) |
 | problem | `problem: {"title", "brief"}` | the request (for a debate: title and topic) |
-| approach | `approach: {"grants"?: [{"action", "sensitive", "state"}], "rounds", "changes"?: <last changes text>}`; debate: `{"positions": {"initiator": <claim>, "respondent": <claim>}, "rounds_used"}` | grants of the session (action, sensitivity and final state only, never paths or labels), `work_sessions.round` and `changes` (Phase 2 keeps only the **last** changes text); debate entries |
-| what worked | `worked?: {"status", "summary"?, "verification"}` | the **accepted** result's D14 `status` and `summary`; debate: `final_agreement.decision` |
-| what failed | `failed?: {"rounds_rejected", "last_changes"?}`; debate: `{"remaining_disagreement_points"}` (count) | round count − 1 and the last changes text; for a cancelled session `{"cancelled_by": "requester"|"worker"|"timeout"}` |
-| verification | `verification: "none"|"tests_passed"|"human_accepted"` plus `verification_by` | the session |
-| acceptance | `acceptance: {"outcome", "age_s", "decision"?: {"id", "hash"}}` | the close; the Decision for a debate. No signature state: A writes its record at `closing`, before B signs, and the record is never updated (review 43 L2); the `decisions` table has the current state |
+| approach | `approach: {"grants"?: [{"action", "sensitive", "state"}], "rounds", "changes"?: <last changes text>}`; debate: `{"positions"?: {"initiator"?: <claim>, "respondent"?: <claim>}, "rounds_used"}` | grants of the session (action, sensitivity and final state only, never paths or labels), `work_sessions.round` and `changes` (Phase 2 keeps only the **last** changes text); debate: the [covered entries](#covered-debate-entries) |
+| what worked | `worked?: {"status", "summary"?, "verification"}`; debate: `worked?: {"decision"}` | the **accepted** result's D14 `status` and `summary`; debate (`agreed` only): the Decision's `final_agreement.decision` |
+| what failed | `failed?: {"rounds_rejected", "last_changes"?}`; debate (`escalated`): `{"remaining_disagreement_points"}`; any cancelled session: `{"cancelled_by", "cause"?}` | round count − 1 and the last changes text; debate: the number of items in the Decision's `remaining_disagreement` (rule 8 of [decision.md §Derivation](decision.md#derivation): the proposal's and the answer's, duplicates dropped; 0 when absent). `cancelled_by`: `requester`, `worker` or `timeout` for a work session; `initiator`, `respondent` or `timeout` for a debate. `cause` only on B's own closes for a bad peer: `bad_reveal` ([debate.md §Commit–reveal](debate.md#commitreveal)) or `decision_refused` ([decision.md §If B refuses](decision.md#signing)), both with `cancelled_by: "respondent"` |
+| verification | `verification: "none"|"tests_passed"|"human_accepted"`, always present; `verification_by?: "requester"|"worker"` | the session. `none` for every debate and every cancelled session. `verification_by` is present iff `verification` is not `none`: `requester` for `human_accepted`, `worker` for `tests_passed` (R55-F29) |
+| acceptance | `acceptance: {"outcome", "age_s", "decision"?: {"id", "hash"}}` | the close; the Decision for a debate. No signature state: A writes its record at `closing`, before B signs, and the record is never updated (review 43 L2); the `decisions` table has the current state. On B's `decision_refused` close, `decision` is B's **own** unsigned record (its id and B's hash) when B stored one, absent when it could not derive one |
 | — | `opened`, `closed` | the session |
 
 Optional members are absent when there is no data. The record's canonical size is capped at
 **65536 bytes**; members are dropped in the order `approach.changes`, `failed.last_changes`,
-`problem.brief` until it fits, with `"truncated": true` added.
+`problem.brief`, `approach.grants` until it fits, with `"truncated": true` added. Without
+those four members every remaining string is bounded by a field cap (title 120 code points;
+the result summary, the claims and the decision line 280 code points each), so the fourth
+step always fits. The builder
+never returns a record over the cap (R55-F29; a test builds a session with 2000 grants).
+
+### Covered debate entries
+
+A debate record describes the debate **as it closed on this side**, the same transcript its
+Decision uses (R55-F29, review 55 R55-170):
+
+- **A:** entries in state `applied` (what `entries` in A's close counts).
+- **B, applying A's close** (signed or refused): entries in state `applied` or `sent` at
+  slots below the close's `entries`. A B entry A cut is `late` and is not covered.
+- **B, abandon or bad reveal** (no close applied): entries in state `applied` or `sent`.
+
+`approach.positions` takes the claim of slot 0 and slot 1 from the covered entries only, and is
+absent when neither is covered. `rounds_used` counts the covered moves. `worked` and
+`failed.remaining_disagreement_points` are read from the Decision this side stored at the close
+(A's at `closing`, B's signed one), never by scanning the transcript. A `cancelled` record
+has neither member, including B's `decision_refused` close: its outcome is `cancelled`, and
+B's own unsigned Decision appears only as `acceptance.decision`.
 
 **Never in the record** (enforced by the builder and tested with markers):
 
@@ -50,7 +71,8 @@ Optional members are absent when there is no data. The record's canonical size i
 
 - Written **in the transaction that closes the session** on each side (A's close
   transition; B's mirror applying `closed`; for a debate, A's close, B's apply of
-  `debate.close`, B's local abandon, B's `broken` close, or B's `decision.refuse` close), so a
+  `debate.close`, B's local abandon (`cancelled_by: "respondent"`), B's `broken` close
+  (`cause: "bad_reveal"`), or B's `decision.refuse` close (`cause: "decision_refused"`)), so a
   crash never leaves a closed session without its record, and a
   rolled-back close leaves no record. Exactly one record per `(session, role)` (a second
   close is impossible by the state machine).

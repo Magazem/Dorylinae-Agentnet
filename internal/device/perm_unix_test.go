@@ -25,7 +25,7 @@ func TestCheckProgramOwnerUnix(t *testing.T) {
 	if err := CheckProgramOwner(prog); err != nil {
 		t.Fatalf("a private program: %v", err)
 	}
-	if err := CheckTarget(prog, dir); err != nil {
+	if err := CheckTarget(prog, dir, nil); err != nil {
 		t.Fatalf("CheckTarget, private program: %v", err)
 	}
 
@@ -45,7 +45,7 @@ func TestCheckProgramOwnerUnix(t *testing.T) {
 	if err := CheckProgramOwner(inShared); !errors.As(err, &we) || we.Path != shared {
 		t.Fatalf("a program in a world-writable directory: %v", err)
 	}
-	if err := CheckTarget(inShared, dir); !errors.As(err, &we) {
+	if err := CheckTarget(inShared, dir, nil); !errors.As(err, &we) {
 		t.Fatalf("CheckTarget, world-writable directory: %v", err)
 	}
 	sc := baseScope()
