@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf16"
@@ -26,8 +27,12 @@ func TestShowDesktopWindowsEnvNotArgv(t *testing.T) {
 	if err := showDesktop(context.Background(), windowsInjectionText, windowsInjectionText); err != nil {
 		t.Fatal(err)
 	}
-	if gotName != "powershell.exe" {
-		t.Fatalf("name = %q, want powershell.exe", gotName)
+	wantPS, err := powershellPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotName != wantPS || !filepath.IsAbs(gotName) {
+		t.Fatalf("name = %q, want the absolute system path %q (review 55 R55-090)", gotName, wantPS)
 	}
 	for _, a := range gotArgs {
 		if strings.Contains(a, windowsInjectionText) {

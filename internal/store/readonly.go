@@ -14,7 +14,7 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("open database read-only: %w", err)
 	}
-	dsn := "file:" + path + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+	dsn := fileURI(path) + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database read-only: %w", err)

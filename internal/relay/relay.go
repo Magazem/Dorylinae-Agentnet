@@ -15,9 +15,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -37,6 +40,11 @@ const (
 	// drains before disconnecting everyone anyway (Docs/protocol/relay-hosted.md
 	// §3: "graceful shutdown on SIGTERM waits up to 10 s for writes").
 	drainWaitTimeout = 10 * time.Second
+	// serveWaitTimeout bounds how long Close waits, after disconnecting
+	// every peer, for the connection goroutines to finish the frame they are
+	// handling before it closes the queue (R55-036). Kept inside the early
+	// relay's TimeoutStopSec together with shutdownWindow and drainWaitTimeout.
+	serveWaitTimeout = 4 * time.Second
 )
 
 // Options tune a Server. The zero value is what cmd/relay uses.
@@ -220,6 +228,7 @@ type Server struct {
 	now    func() time.Time
 	pairs  *pairings
 	q      *queue
+	dbLock *os.File // run lock on <db>.lock; nil for an in-memory queue
 	eph    *ephemeralLimiter
 	ephMax int
 
@@ -260,6 +269,7 @@ type Server struct {
 
 	journal   *JournalWriter
 	drainWG   sync.WaitGroup // outstanding queue-drain goroutines; Close waits for these
+	serveWG   sync.WaitGroup // connection read loops (Server.serve); Close waits for these, bounded (R55-036)
 	drainHeld atomic.Int64   // bytes queue drains have read and not yet put in an outbound buffer
 	// redeliveredBytes and redeliverySkips count queued bytes sent again and
 	// redeliveries skipped for want of budget (R55-F2 metrics).
@@ -286,6 +296,10 @@ type Stats struct {
 	// redeliveries skipped for want of budget (R55-F2).
 	QueueRedeliveredBytes    int64
 	QueueRedeliveriesSkipped int64
+	// DBBytes is the size of the database file (0 for an in-memory queue) and
+	// DiskFreeBytes the free space on its file system; -1 when unknown (R55-190).
+	DBBytes       int64
+	DiskFreeBytes int64
 }
 
 // Stats reports current connections and offline-queue occupancy.
@@ -294,8 +308,18 @@ func (s *Server) Stats() (Stats, error) {
 	n := len(s.conns)
 	s.mu.Unlock()
 	rows, bytes, err := s.q.stats()
-	return Stats{Connections: n, QueueRows: rows, QueueBytes: bytes,
-		QueueRedeliveredBytes: s.redeliveredBytes.Load(), QueueRedeliveriesSkipped: s.redeliverySkips.Load()}, err
+	st := Stats{Connections: n, QueueRows: rows, QueueBytes: bytes,
+		QueueRedeliveredBytes: s.redeliveredBytes.Load(), QueueRedeliveriesSkipped: s.redeliverySkips.Load(),
+		DiskFreeBytes: -1}
+	if path := s.q.path; path != "" {
+		if info, statErr := os.Stat(path); statErr == nil {
+			st.DBBytes = info.Size()
+		}
+		if free, freeErr := freeDiskSpace(filepath.Dir(path)); freeErr == nil {
+			st.DiskFreeBytes = int64(min(free, math.MaxInt64)) //nolint:gosec // clamped
+		}
+	}
+	return st, err
 }
 
 // Budgets are the memory budgets a Server enforces (relay-hosted.md
@@ -386,8 +410,22 @@ func Open(opts Options) (*Server, error) {
 	s.led = newLedger(inflight, inflight, ephemeral, s.now)
 	s.led.hit = s.lim.hit
 	s.frameTimeout = orDefault(opts.FrameReadTimeout, defaultFrameReadTimeout)
+	if opts.QueuePath != "" {
+		// Held until Close, so relay restore can tell the relay is running (review 88 F5).
+		lock, lerr := lockDB(opts.QueuePath)
+		if lerr != nil {
+			return nil, lerr
+		}
+		s.dbLock = lock
+	}
+	releaseLock := func() {
+		if s.dbLock != nil {
+			_ = s.dbLock.Close()
+		}
+	}
 	q, err := openQueue(opts.QueuePath, opts.QueueTTL, opts.QueueMaxEnvelopes, opts.QueueMaxBytes, s.now)
 	if err != nil {
+		releaseLock()
 		return nil, err
 	}
 	q.lim = queueLimits{
@@ -406,6 +444,7 @@ func Open(opts Options) (*Server, error) {
 	if opts.Accounts != "" && opts.Accounts != AccountsOff {
 		if s.acct, err = newAccounts(opts, q, opts.Journal, s.now); err != nil {
 			_ = q.close()
+			releaseLock()
 			return nil, err
 		}
 		s.acct.stop, s.acct.done = make(chan struct{}), make(chan struct{})
@@ -506,7 +545,20 @@ func (s *Server) Close() {
 		case <-time.After(drainWaitTimeout):
 		}
 		s.mu.Lock()
+		conns := make([]*conn, 0, len(s.conns))
 		for _, c := range s.conns {
+			conns = append(conns, c)
+		}
+		s.mu.Unlock()
+		// Mark every connection draining before any drainClose starts, so a
+		// frame routed to a peer whose buffer has already flushed is queued
+		// and acknowledged "queued", not sent into a dead buffer (review 88 F3).
+		for _, c := range conns {
+			c.mu.Lock()
+			c.draining = true
+			c.mu.Unlock()
+		}
+		for _, c := range conns {
 			// The close handshake itself (coder/websocket waits up to 5s to
 			// write it and 5s for the peer's reply) runs in the background,
 			// as before: Close must not block on a peer that stopped
@@ -514,8 +566,20 @@ func (s *Server) Close() {
 			// outbound buffer to flush first.
 			go func(c *conn) { c.drainClose("relay shutting down") }(c)
 		}
-		s.mu.Unlock()
+		// A frame a read loop is handling when the peer is closed must reach
+		// the queue before it is closed (R55-036): wait for the loops, bounded
+		// so a peer that never completes the close handshake cannot hold the
+		// restart. No loop starts after closing is set (beginServe).
+		served := make(chan struct{})
+		go func() { s.serveWG.Wait(); close(served) }()
+		select {
+		case <-served:
+		case <-time.After(serveWaitTimeout):
+		}
 		_ = s.q.close()
+		if s.dbLock != nil {
+			_ = s.dbLock.Close()
+		}
 	})
 }
 
@@ -584,11 +648,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.dismiss(c)
+	if !s.beginServe() {
+		s.refuseAfterAuth(r.Context(), ws, envelope.CodeRelayFull, "relay is shutting down; retry later")
+		return
+	}
+	defer s.serveWG.Done()
 	c.maxBytes, c.led, c.raw = s.lim.connBuffer, s.led, hw.raw
 	// Deferred so that a panic while routing cannot leak budget (R55-144).
 	defer c.release()
 	ws.SetReadLimit(envelope.MaxFrameBytes)
 	s.serve(r.Context(), c)
+}
+
+// beginServe registers a connection read loop with Close, or reports false
+// once Close has begun (sync.WaitGroup forbids Add racing with Wait, so the
+// check and the Add share mu with Close's closing flag). Every true must be
+// matched by serveWG.Done.
+func (s *Server) beginServe() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.serveWG.Add(1)
+	return true
 }
 
 // hijackWriter keeps the socket websocket.Accept hijacks, so an evicted
