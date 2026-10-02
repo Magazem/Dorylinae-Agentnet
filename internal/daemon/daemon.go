@@ -584,7 +584,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	hctx, stopHelper := context.WithCancel(ctx)
 	hDone := make(chan struct{})
 	go func() { defer close(hDone); helper.loop(hctx) }()
-	defer func() { stopHelper(); <-hDone }()
+	// The kick sweeps are waited for too: one may still be sending the
+	// ws.cancel of a run it dropped (review 55 R55-145).
+	defer func() { stopHelper(); <-hDone; helper.wait() }()
 	wireQuarantine(wsStore, capStore, apprStore, reqStore, opts.Quarantine)
 	// Debates (Docs/protocol/debate.md, 3.1a): the request type debate, its
 	// session kind and the debate.* kinds. The peer-wide quarantine clause

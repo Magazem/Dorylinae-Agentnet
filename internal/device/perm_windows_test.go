@@ -80,7 +80,7 @@ func TestCheckProgramOwnerWindows(t *testing.T) {
 	if err := CheckProgramOwner(inShared); !errors.As(err, &we) || we.Path != shared || we.Who != "Users" {
 		t.Fatalf("a program in a directory Users can add files to: %v", err)
 	}
-	if err := CheckTarget(inShared, dir); !errors.As(err, &we) {
+	if err := CheckTarget(inShared, dir, nil); !errors.As(err, &we) {
 		t.Fatalf("CheckTarget: %v", err)
 	}
 	sc := baseScope()
