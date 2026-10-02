@@ -1,11 +1,14 @@
 package presence
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -113,7 +116,8 @@ func TestCheckTeamGoneKeepsModeOnLookupError(t *testing.T) {
 	}
 }
 
-// R55-107: an audit failure is returned, but the mode is applied and the
+// R55-107, R55-F31 (T6.2): presence.mode is an N row. An audit failure is
+// logged centrally and SetMode returns nil; the mode is applied and the
 // goodbye/online diff still goes out.
 func TestSetModeAuditErrorStillSyncs(t *testing.T) {
 	s, _, _, member, relay, _ := newSendingSender(t)
@@ -131,8 +135,14 @@ func TestSetModeAuditErrorStillSyncs(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Audit = audit.New(st.DB())
-	if err := s.SetMode(ctx, VisibilityMode{Mode: ModeInvisible}); err == nil {
-		t.Fatal("SetMode returned nil although the audit row could not be written")
+	var logbuf bytes.Buffer
+	audit.SetErrorLog(slog.New(slog.NewTextHandler(&logbuf, nil)))
+	t.Cleanup(func() { audit.SetErrorLog(nil) })
+	if err := s.SetMode(ctx, VisibilityMode{Mode: ModeInvisible}); err != nil {
+		t.Fatalf("SetMode = %v, want nil for an N row", err)
+	}
+	if out := logbuf.String(); strings.Count(out, "event=audit_error") != 1 || !strings.Contains(out, "action=presence.mode") {
+		t.Fatalf("central log: %q", out)
 	}
 	if m := s.Mode(); m.Mode != ModeInvisible {
 		t.Fatalf("mode = %+v, want invisible", m)

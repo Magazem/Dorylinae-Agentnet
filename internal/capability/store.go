@@ -657,15 +657,48 @@ func (s *Store) PolicyDelete(ctx context.Context, id string) error {
 	return nil
 }
 
+// PolicyDeleteTx removes one policy inside tx and returns it, so the caller
+// can audit its peer and action in the same transaction (R55-160).
+func (s *Store) PolicyDeleteTx(ctx context.Context, tx *sql.Tx, id string) (Policy, error) {
+	p, err := scanPolicy(tx.QueryRowContext(ctx, `SELECT `+policyColumns+` FROM grant_policies WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Policy{}, ErrUnknownPolicy
+	}
+	if err != nil {
+		return Policy{}, fmt.Errorf("capability: read policy: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM grant_policies WHERE id = ?`, id); err != nil {
+		return Policy{}, fmt.Errorf("capability: delete policy: %w", err)
+	}
+	return p, nil
+}
+
 // PolicyDeleteForPeerTx removes every policy of peer inside tx (Docs/protocol/
 // grant.md §Policies, "Policies also end with the peer (peers remove deletes
-// them)").
-func (s *Store) PolicyDeleteForPeerTx(ctx context.Context, tx *sql.Tx, peer string) error {
-	_, err := tx.ExecContext(ctx, `DELETE FROM grant_policies WHERE peer = ?`, peer)
+// them)") and returns the deleted policies for the caller to audit.
+func (s *Store) PolicyDeleteForPeerTx(ctx context.Context, tx *sql.Tx, peer string) ([]Policy, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT `+policyColumns+` FROM grant_policies WHERE peer = ? ORDER BY created`, peer)
 	if err != nil {
-		return fmt.Errorf("capability: delete peer policies: %w", err)
+		return nil, fmt.Errorf("capability: list peer policies: %w", err)
 	}
-	return nil
+	var out []Policy
+	for rows.Next() {
+		p, err := scanPolicy(rows)
+		if err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("capability: scan policy: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	_ = rows.Close()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM grant_policies WHERE peer = ?`, peer); err != nil {
+		return nil, fmt.Errorf("capability: delete peer policies: %w", err)
+	}
+	return out, nil
 }
 
 // MatchParams describes a would-be grant for policy matching.

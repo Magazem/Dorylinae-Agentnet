@@ -265,7 +265,7 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		// lock is held until this approval is recorded (R55-085).
 		defer pending.lock(peer.PublicKey)()
 		if old := pending.takeLocked(peer.PublicKey); old != "" {
-			_, _ = apprStore.Reject(ctx, old, "superseded")
+			_, _ = apprStore.RejectFor(ctx, old, "superseded")
 		}
 		peerKey, linkID := peer.PublicKey, link.ID
 		var approvalID string
@@ -355,7 +355,7 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		if _, err := ds.ClearScopeTx(ctx, tx, link.ID); err != nil {
 			return nil, err
 		}
-		if err := auditTx(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID}); err != nil {
+		if err := audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID}); err != nil {
 			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -364,7 +364,7 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		// Narrowing takes effect at once: a scope still waiting for its code
 		// is rejected, and queued runs are dropped.
 		if old := pending.take(peer.PublicKey); old != "" {
-			_, _ = apprStore.Reject(ctx, old, "scope_cleared")
+			_, _ = apprStore.RejectFor(ctx, old, "scope_cleared")
 		}
 		runner.kick()
 		return DeviceScopeClearResult{Link: deviceView(ctx, ps, ds, link)}, nil

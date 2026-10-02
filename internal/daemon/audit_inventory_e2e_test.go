@@ -158,6 +158,13 @@ func TestAuditInventory(t *testing.T) {
 		return b.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+sid1+`' AND state = 'open' AND round = 2`) == 1
 	})
 
+	// A second grant stays active until the session closes: its end writes a
+	// grant.revoke row (session_closed) on both sides (R55-124).
+	g2 := e.grant(t, sid1, "fs.read", dir, false)
+	harnessWait(t, "B to hold the second grant", func() bool {
+		return b.count(`SELECT COUNT(*) FROM grants WHERE id = '`+g2+`' AND direction = 'held' AND state = 'active'`) == 1
+	})
+
 	// A grant policy, added (approved) and removed; the first grant revoked.
 	var pol approvalIDResult
 	run.call(a, "grant_policy_add", daemon.GrantPolicyAddParams{Peer: b.key, Action: "fs.read", Resource: dir, MaxExpires: "72h"}, &pol)
@@ -168,6 +175,9 @@ func TestAuditInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.call(a, "grant_policy_remove", map[string]any{"id": policyID}, raw())
+	// R55-160: the row names the policy, the peer and the action, actor cli.
+	waitAuditDetail(t, a, audit.ActorCLI, "grant.policy_remove", `"policy":"`+policyID+`"`, `"peer":"`+b.key+`"`, `"action":"fs.read"`)
+	waitAuditDetail(t, a, audit.ActorCLI, "grant.policy_add", `"policy":"`+policyID+`"`)
 	run.call(a, "grant_revoke", daemon.GrantRevokeParams{ID: g1.Grant.ID}, &daemon.GrantRevokeResult{})
 
 	run.call(b, "ws_result", map[string]any{"id": sid1, "result": map[string]any{"status": "pass", "summary": "ok", "verification": "tests_passed"}}, &daemon.SessionResult{})
@@ -175,6 +185,9 @@ func TestAuditInventory(t *testing.T) {
 	e.waitState(t, sid1, "quarantined")
 	releaseAndAwait(t, e, sid1)
 	run.call(a, "ws_accept_result", map[string]any{"id": sid1}, &daemon.SessionResult{})
+	// The close ended the second grant on both sides (R55-124).
+	waitAuditDetail(t, a, audit.ActorDaemon, "grant.revoke", `"grant":"`+g2+`"`, `"reason":"session_closed"`)
+	waitAuditDetail(t, b, audit.ActorDaemon, "grant.revoke", `"grant":"`+g2+`"`, `"reason":"session_closed"`)
 
 	// Session 2 is quarantined and discarded, session 3 cancelled, session 4 completed by B.
 	sid2 := accept(submit("session two"))
@@ -217,8 +230,21 @@ func TestAuditInventory(t *testing.T) {
 		return r.Approval == nil && r.Counts.Requests == 1
 	})
 
-	// peers_remove last: it ends the pairing.
+	// peers_remove last: it ends the pairing, its grants and its policies, each
+	// with a row of its own (R55-124, review 84b F6).
+	sid6 := accept(submit("session six"))
+	g6 := e.grant(t, sid6, "fs.read", dir, false)
+	var pol2 approvalIDResult
+	a.call("grant_policy_add", daemon.GrantPolicyAddParams{Peer: b.key, Action: "fs.read", Resource: dir, MaxExpires: "72h"}, &pol2)
+	e.approve(t, pol2.Approval.ID)
+	harnessWait(t, "the second policy to be stored", func() bool { return a.count(`SELECT COUNT(*) FROM grant_policies`) == 1 })
+	var policy2 string
+	if err := a.query(`SELECT id FROM grant_policies`, &policy2); err != nil {
+		t.Fatal(err)
+	}
 	run.call(a, "peers_remove", daemon.PeerRemoveParams{Peer: b.key}, raw())
+	waitAuditDetail(t, a, audit.ActorDaemon, "grant.revoke", `"grant":"`+g6+`"`, `"reason":"peer_removed"`)
+	waitAuditDetail(t, a, audit.ActorDaemon, "grant.policy_remove", `"policy":"`+policy2+`"`, `"peer":"`+b.key+`"`, `"action":"fs.read"`)
 
 	// The no-paths rule (review 44 L4): no row of either log carries a path separator.
 	for _, n := range []*harnessNode{a, b} {

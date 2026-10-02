@@ -45,6 +45,8 @@ func (h *autoHuman) code(id string) (string, bool) {
 	return c, ok
 }
 
+func (h *autoHuman) Check(context.Context) (bool, string) { return true, "" }
+
 func (h *autoHuman) Start(_ context.Context, id, _, kind, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	if kind != approval.KindPeerVerify && kind != approval.KindTeamInvite {
 		return nil, errors.New("autoHuman: no window for " + kind)
@@ -107,6 +109,8 @@ func (m *mixedApprover) Show(ctx context.Context, id string, exp time.Time, titl
 }
 
 func (m *mixedApprover) Remove(ctx context.Context, id string) { m.notifier.Remove(ctx, id) }
+
+func (m *mixedApprover) Check(context.Context) (bool, string) { return true, "" }
 
 func (m *mixedApprover) Start(ctx context.Context, id, tag, kind, summary, note string, expires time.Time) (approval.WindowHandle, error) {
 	if kind == approval.KindPeerVerify || kind == approval.KindTeamInvite {

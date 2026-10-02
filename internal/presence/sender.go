@@ -372,9 +372,8 @@ func (s *Sender) checkTeamGone(ctx context.Context) {
 	s.mode, s.onlyTeam = ModeInvisible, ""
 	s.mu.Unlock()
 	if s.Audit != nil {
-		if err := s.Audit.Append(ctx, audit.ActorDaemon, ActionMode, map[string]any{"mode": ModeInvisible, "reason": "team_gone"}); err != nil {
-			s.log().Warn("presence: audit auto-invisible", "event", "presence_error", "error", err)
-		}
+		// A failure is logged once, centrally, by internal/audit.
+		_ = s.Audit.Append(ctx, audit.ActorDaemon, ActionMode, map[string]any{"mode": ModeInvisible, "reason": "team_gone"})
 	}
 }
 
@@ -428,18 +427,17 @@ func (s *Sender) SetMode(ctx context.Context, mode VisibilityMode) error {
 		s.ModeChanged(ctx)
 	}
 	// The mode is applied now, so the goodbye/online diff goes out even if
-	// the audit row cannot be written; the audit error is still returned
-	// (R55-107).
-	var auditErr error
+	// the audit row cannot be written. presence.mode is N: a failing row is
+	// logged centrally and nil returned.
 	if s.Audit != nil {
 		detail := map[string]any{"mode": mode.Mode}
 		if mode.Mode == ModeOnlyTeam {
 			detail["team"] = mode.Team
 		}
-		auditErr = s.Audit.Append(ctx, audit.ActorCLI, ActionMode, detail)
+		_ = s.Audit.Append(ctx, audit.ActorCLI, ActionMode, detail)
 	}
 	s.SyncVisibility(ctx)
-	return auditErr
+	return nil
 }
 
 // HumanShare reports the current presence.human share flag.
@@ -460,9 +458,7 @@ func (s *Sender) SetHumanShare(ctx context.Context, share bool) error {
 	s.humanShare, s.humanSet = share, true
 	s.mu.Unlock()
 	if s.Audit != nil {
-		if err := s.Audit.Append(ctx, audit.ActorCLI, ActionHuman, map[string]any{"share": share}); err != nil {
-			return err
-		}
+		_ = s.Audit.Append(ctx, audit.ActorCLI, ActionHuman, map[string]any{"share": share})
 	}
 	return nil
 }

@@ -196,6 +196,7 @@ type cancelOutcome struct {
 	teamID, typ, urgency string
 	title                string
 	seq                  int
+	ageS                 int64 // seconds since received_at (R55-164)
 }
 
 // CancelKind is the receiver Kind for "request.cancel", applied on the
@@ -247,7 +248,7 @@ func (s *Store) applyCancel(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 	if req, terr := decodeStoredBody(row.body); terr == nil {
 		title = req.Title
 	}
-	out := &cancelOutcome{requestID: reqID, peer: op.Msg.From, hadRow: true, state: row.state, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title}
+	out := &cancelOutcome{requestID: reqID, peer: op.Msg.From, hadRow: true, state: row.state, teamID: row.teamID, typ: row.typ, urgency: row.urgency, title: title, ageS: ageSeconds(row, now)}
 	if row.state != StatePending && row.state != StateDeferred {
 		out.result = "refused"
 		if row.state == StateCancelled {
@@ -352,6 +353,7 @@ func (s *Store) afterCancel(ctx context.Context, op *mail.Opened) {
 		detail["type"] = out.typ
 		detail["urgency"] = out.urgency
 		detail["seq"] = out.seq
+		detail["age_s"] = out.ageS
 	}
 	_ = s.Audit.Append(ctx, "daemon", "request.cancel_in", detail)
 }
@@ -381,6 +383,8 @@ func (s *Store) resubmitStale(ctx context.Context, direction, peer, id string, n
 		Kind string          `json:"kind"`
 		Body json.RawMessage `json:"body"`
 	}
+	// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+	// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 	if err := json.Unmarshal([]byte(row.lastReply.String), &payload); err != nil {
 		return
 	}

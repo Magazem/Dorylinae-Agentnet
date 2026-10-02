@@ -271,7 +271,7 @@ func deviceUnlinkKind(ds *device.Store, onUnlinked func(peer string)) mail.Kind 
 			if len(revoked) == 0 {
 				return nil
 			}
-			return auditTx(ctx, tx, audit.ActorDaemon, "device.unlink", unlinkAudit(revoked, op.Msg.From, "remote"))
+			return audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "device.unlink", unlinkAudit(revoked, op.Msg.From, "remote"))
 		},
 	}
 }
@@ -309,7 +309,7 @@ func revokeDeviceForRemovedPeer(ds *device.Store, runner *helperRunner) func(ctx
 		if runner != nil {
 			runner.kick() // asynchronous: its sweep waits for this tx
 		}
-		return auditTx(ctx, tx, audit.ActorDaemon, "device.unlink", unlinkAudit(revoked, key, "local"))
+		return audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "device.unlink", unlinkAudit(revoked, key, "local"))
 	}
 }
 
@@ -360,7 +360,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		if old, ok, err := ds.PendingFor(ctx, peer.PublicKey); err != nil {
 			return nil, err
 		} else if ok && old.Approval != "" {
-			_, _ = apprStore.Reject(ctx, old.Approval, "superseded")
+			_, _ = apprStore.RejectFor(ctx, old.Approval, "superseded")
 		}
 		link, err := ds.CreateIntent(ctx, peer.PublicKey, p.As)
 		if err != nil {
@@ -544,7 +544,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		if err != nil {
 			return nil, err
 		}
-		if err := auditTx(ctx, tx, audit.ActorCLI, "device.unlink", detail); err != nil {
+		if err := audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.unlink", detail); err != nil {
 			return nil, err
 		}
 		if err := tx.Commit(); err != nil {
@@ -557,13 +557,13 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		// review 36 L3.
 		for _, r := range revoked {
 			if r.State == device.StatePendingApproval && r.Approval != "" {
-				_, _ = apprStore.Reject(ctx, r.Approval, "unlinked")
+				_, _ = apprStore.RejectFor(ctx, r.Approval, "unlinked")
 			}
 		}
 		// A scope waiting for its code is dead too, and the helper stops
 		// running this controller's queued requests at once.
 		if old := scopes.take(peer.PublicKey); old != "" {
-			_, _ = apprStore.Reject(ctx, old, "unlinked")
+			_, _ = apprStore.RejectFor(ctx, old, "unlinked")
 		}
 		runner.kick()
 		res := DeviceUnlinkResult{MailID: sub.ID}

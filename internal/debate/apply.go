@@ -161,7 +161,7 @@ func (s *Store) applyEntryOnA(ctx context.Context, tx *sql.Tx, op *mail.Opened, 
 		if err != nil {
 			return fmt.Errorf("debate: read out request: %w", err)
 		}
-		if err := s.Sessions.OpenSession(ctx, tx, worksession.RoleRequester, r.peer, r.requestID, teamID, now); err != nil {
+		if err := s.Sessions.OpenSession(ctx, tx, "daemon", worksession.RoleRequester, r.peer, r.requestID, teamID, now); err != nil {
 			return err
 		}
 		if r, err = getRow(ctx, tx, r.session); err != nil {
@@ -743,6 +743,8 @@ func (s *Store) echo(ctx context.Context, sid string) {
 		Kind string         `json:"kind"`
 		Body map[string]any `json:"body"`
 	}
+	// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+	// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 	if json.Unmarshal([]byte(r.lastState.String), &payload) != nil {
 		return
 	}

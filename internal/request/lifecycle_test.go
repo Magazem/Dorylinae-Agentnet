@@ -297,9 +297,18 @@ func TestCancelPendingAndDeferredUnit(t *testing.T) {
 				t.Errorf("request.cancelled mails = %d, want 1", n)
 			}
 			foundCancelled := false
-			for _, a := range al.actions() {
-				if a == "request.cancel_in" {
-					foundCancelled = true
+			for _, e := range al.entries {
+				if e.action != "request.cancel_in" {
+					continue
+				}
+				foundCancelled = true
+				// R55-164 (T11): a cancelled request.cancel_in row carries age_s.
+				var d struct {
+					Result string `json:"result"`
+					AgeS   *int64 `json:"age_s"`
+				}
+				if err := json.Unmarshal([]byte(e.detail), &d); err != nil || d.Result != "cancelled" || d.AgeS == nil || *d.AgeS < 0 {
+					t.Errorf("request.cancel_in detail %s: want result cancelled and age_s >= 0 (%v)", e.detail, err)
 				}
 			}
 			if !foundCancelled {

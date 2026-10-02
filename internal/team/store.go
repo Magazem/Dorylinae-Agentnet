@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 )
@@ -474,6 +475,9 @@ func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify 
 	if err != nil {
 		return Team{}, nil, err
 	}
+	if err := s.auditRemovedTx(ctx, tx, removed); err != nil {
+		return Team{}, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
 	}
@@ -489,17 +493,24 @@ func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify 
 		}
 	}
 	s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": teamID})
-	s.auditRemoved(ctx, removed)
 	s.changed()
 	return t, removed, nil
 }
 
-func (s *Store) auditRemoved(ctx context.Context, removed []peers.Removed) {
-	for _, r := range removed {
-		s.audited(ctx, ActorDaemon, ActionPeerRemove, map[string]string{
-			"peer": r.PublicKey, "name": r.Name, "fingerprint": r.Fingerprint, "reason": "team",
-		})
+// auditRemovedTx writes the S- peer.remove row (reason "team") of every peer
+// the team GC collected, inside the GC's transaction (class S-, audit.md).
+func (s *Store) auditRemovedTx(ctx context.Context, tx *sql.Tx, removed []peers.Removed) error {
+	if s.audit == nil {
+		return nil
 	}
+	for _, r := range removed {
+		if err := audit.AppendTxSoft(ctx, tx, ActorDaemon, ActionPeerRemove, map[string]string{
+			"peer": r.PublicKey, "name": r.Name, "fingerprint": r.Fingerprint, "reason": "team",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // OwnerRemoved handles `peers remove` of a key that owns local teams
@@ -542,13 +553,15 @@ func (s *Store) OwnerRemoved(ctx context.Context, ownerKey string, now time.Time
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := s.auditRemovedTx(ctx, tx, removed); err != nil {
+		return nil, nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, nil, fmt.Errorf("team: owner removed: %w", err)
 	}
 	for _, id := range ids {
 		s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": id, "reason": "owner_removed"})
 	}
-	s.auditRemoved(ctx, removed)
 	if len(ids) > 0 {
 		s.changed()
 	}

@@ -58,6 +58,12 @@ type StatusResult struct {
 	// Approval is the approval channel: "desktop", "terminal" or
 	// "terminal-debug" (Docs/protocol/approval.md §Headless machines).
 	Approval string `json:"approval"`
+	// ApprovalWindow is "ok" or "missing" in desktop mode, from a check that
+	// opens no window; ApprovalWindowFix names the fix when it is "missing"
+	// (Docs/protocol/approval.md §The approval window, R55-125). Both are
+	// absent in terminal mode.
+	ApprovalWindow    string `json:"approval_window,omitempty"`
+	ApprovalWindowFix string `json:"approval_window_fix,omitempty"`
 	// Git is "ok" or "unsupported: <reason>" (D23, Docs/protocol/grant.md
 	// §Serving git): below Git 2.32, git.read grants are refused; fs serving
 	// is unaffected.
@@ -292,6 +298,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 
 	log := audit.New(st.DB())
+	// Every failed audit append is logged once, centrally, by internal/audit
+	// (audit.md §When the row cannot be written), before the first append.
+	if opts.Logger != nil {
+		audit.SetErrorLog(opts.Logger)
+	} else {
+		audit.SetErrorLog(slog.Default())
+	}
 	detail := auditDetail{PID: os.Getpid(), Version: version.Version}
 	if err := log.Append(ctx, audit.ActorDaemon, audit.ActionDaemonStart, detail); err != nil {
 		_ = ln.Close()
@@ -471,6 +484,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return err
 	}
 	defer apprStore.Close()
+	// The first window check runs at start; status reads the cached result
+	// and refreshes it in the background (R55-125).
+	{
+		cctx, ccancel := context.WithTimeout(ctx, time.Second)
+		apprStore.CheckWindow(cctx)
+		ccancel()
+	}
 	if err := apprStore.ExpireStale(ctx); err != nil {
 		_ = ln.Close()
 		return err
@@ -552,8 +572,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// close (Docs/protocol/grant.md §Session end), on both the grantor (A,
 	// closeSessionTx) and the holder (B, the ws.state closed mirror step).
 	wsStore.RevokeGrants = func(ctx context.Context, tx *sql.Tx, sid string, now time.Time) error {
-		_, err := capStore.RevokeForSessionTx(ctx, tx, sid, capability.ReasonSessionClosed, now)
-		return err
+		ids, err := capStore.RevokeForSessionTx(ctx, tx, sid, capability.ReasonSessionClosed, now)
+		if err != nil {
+			return err
+		}
+		return auditGrantRevokes(ctx, tx, log, ids, capability.ReasonSessionClosed)
 	}
 	// peers remove revokes all of that peer's grants and policies
 	// (Docs/protocol/grant.md §Session end, §Policies).
@@ -571,11 +594,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	scopeApprovalsPending := newScopeApprovals()
 	onUnlinked := func(peer string) {
 		if old := scopeApprovalsPending.take(peer); old != "" {
-			_, _ = apprStore.Reject(context.WithoutCancel(ctx), old, "unlinked")
+			_, _ = apprStore.RejectFor(context.WithoutCancel(ctx), old, "unlinked")
 		}
 		helper.kick()
 	}
-	peerStore.OnRemovedTx = chainRemovedTx(revokeForRemovedPeer(capStore), revokeDeviceForRemovedPeer(devStore, helper))
+	peerStore.OnRemovedTx = chainRemovedTx(revokeForRemovedPeer(capStore, log), revokeDeviceForRemovedPeer(devStore, helper))
 	// A link that became active is announced on the desktop, content-free
 	// (D22, review 36 L5): the peer's name and its role.
 	onLinked := func(ctx context.Context, peer, role string) {
@@ -745,6 +768,12 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			Git:           gitStatus,
 			Presence:      presenceStatus(ctx, relayClient, opts.RelayURL, presenceSender, teamStore),
 			Relay:         relayStatus(relayClient, opts.RelayURL),
+		}
+		if ok, fix, has := apprStore.WindowStatus(); has {
+			res.ApprovalWindow = "ok"
+			if !ok {
+				res.ApprovalWindow, res.ApprovalWindowFix = "missing", fix
+			}
 		}
 		if p.Team != "" {
 			tr, err := statusTeam(ctx, teamStore, peerStore, presenceStore, presenceSender, id.Card().Card.Name, relayClient, opts.RelayURL, p.Team)

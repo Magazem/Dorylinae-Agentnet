@@ -18,9 +18,10 @@ import (
 // §Session id): role is "worker" when this Store's own accept just ran, or
 // "requester" when the mirror just applied a peer's request.accept. It must
 // be idempotent: a session may already exist (a ws.result can overtake the
-// accept).
+// accept). actor is the audit actor of the ws.open row: the accept's own
+// ("cli", or "daemon" for a device helper's auto-accept) on B, "daemon" on A.
 type SessionOpener interface {
-	OpenSession(ctx context.Context, tx *sql.Tx, role, peer, requestID, teamID string, now time.Time) error
+	OpenSession(ctx context.Context, tx *sql.Tx, actor, role, peer, requestID, teamID string, now time.Time) error
 }
 
 // CompleteContent is what SessionEarlyComplete decides about the content of

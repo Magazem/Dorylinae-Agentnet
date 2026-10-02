@@ -268,6 +268,10 @@ func TestAuditHasNoContent(t *testing.T) {
 		}
 	}
 
+	// R55-200: nor in either daemon's log, the relay's log, an outbox error
+	// or a webhook queue row.
+	assertNoContentAnywhere(t, markers, a, b)
+
 	// Every Docs/protocol/request.md §Audit event this flow produces is
 	// present, on the side that logs it, each with at least one row.
 	wantOnA := []string{"request.submit", "request.submit", "request.cancel", "request.state", "request.state"}

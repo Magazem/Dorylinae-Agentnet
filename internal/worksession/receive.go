@@ -121,6 +121,13 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
 			sid, RoleRequester, op.Msg.From, reqID, teamID, StateOpen, wireTime(now), wireTime(now), storeTime(now)); err != nil {
 			return fmt.Errorf("worksession: create session row: %w", err)
 		}
+		// The result overtook the accept: this insert opens A's session, so it
+		// writes ws.open (the accept mirror then finds the row; R55-121).
+		if s.Audit != nil {
+			if err := s.auditOpen(ctx, tx, "daemon", sid, reqID, op.Msg.From, RoleRequester); err != nil {
+				return err
+			}
+		}
 		row, err = findRowTx(ctx, tx, RoleRequester, op.Msg.From, reqID)
 		if err != nil {
 			return err
@@ -255,6 +262,8 @@ func (s *Store) resendLastState(ctx context.Context, sid string, now time.Time) 
 		Kind string         `json:"kind"`
 		Body map[string]any `json:"body"`
 	}
+	// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+	// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 	if err := json.Unmarshal([]byte(row.lastState.String), &payload); err != nil {
 		return
 	}

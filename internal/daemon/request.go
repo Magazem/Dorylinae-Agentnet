@@ -273,9 +273,9 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 				detail["context_files"] = n
 				detail["context_bytes"] = request.ContextBytes(outcome.Request.Context)
 			}
-			if aerr := log.Append(ctx, audit.ActorCLI, "request.submit", detail); aerr != nil {
-				return nil, aerr
-			}
+			// request.submit is N: the request is queued, so a failing row
+			// is logged centrally and the result returned.
+			_ = log.Append(ctx, audit.ActorCLI, "request.submit", detail)
 		}
 		online, lastSeen := presenceBrief(ctx, pstore, peer.PublicKey, time.Now())
 		return RequestSubmitResult{

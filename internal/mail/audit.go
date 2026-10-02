@@ -131,7 +131,5 @@ func (a *RejectAudit) Report(peer, id string, err error) {
 	if ValidID(id) {
 		detail["id"] = id
 	}
-	if err := a.sink.Append(ctx, actorDaemon, ActionReject, detail); err != nil {
-		a.log.Warn("mail: audit failed", "event", "mail_error", "error", err)
-	}
+	_ = a.sink.Append(ctx, actorDaemon, ActionReject, detail) // a failure is logged once, centrally, by internal/audit
 }

@@ -32,7 +32,13 @@ type invEntry struct {
 	// Harness marks methods the shared scenario setup (harnessPair,
 	// harnessSharedTeam) calls itself; the action is still asserted.
 	Harness bool
+	// Also lists actions that must all appear, on the same node(s), besides
+	// the one of Actions (R55-F31: request_accept also opens a session).
+	Also []string
 }
+
+// and adds actions that must appear as well.
+func (e invEntry) and(a ...string) invEntry { e.Also = a; return e }
 
 func exempt() invEntry                           { return invEntry{Exempt: true} }
 func acts(on string, a ...string) invEntry       { return invEntry{Actions: a, On: on} }
@@ -81,7 +87,7 @@ var methodInventory = map[string]invEntry{
 
 	// Requests.
 	"request_submit":   acts("A", "request.submit"),
-	"request_accept":   acts("B", "request.accept"),
+	"request_accept":   acts("B", "request.accept").and("ws.open"), // R55-121: B opens its session row
 	"request_decline":  acts("B", "request.decline"),
 	"request_defer":    acts("B", "request.defer"),
 	"request_cancel":   acts("A", "request.cancel"),
@@ -130,7 +136,7 @@ var mailKindInventory = map[string]invEntry{
 	"team.join":         acts("A", "team.member_add"),
 	"team.leave":        acts("A", "team.member_leave"),
 	"request":           acts("B", "request.in"),
-	"request.accept":    acts("A", "request.state"),
+	"request.accept":    acts("A", "request.state").and("ws.open"), // R55-121: A opens its session on the accept mirror
 	"request.decline":   acts("A", "request.state"),
 	"request.defer":     acts("A", "request.state"),
 	"request.complete":  acts("A", "request.state"),
@@ -143,6 +149,15 @@ var mailKindInventory = map[string]invEntry{
 	"grant.revoke":      acts("B", "grant.revoked_in"),
 	"device.link":       acts("any", "device.link_active"),
 	"device.unlink":     acts("B", "device.unlink"),
+
+	// Debate kinds (R55-135): registered by constant, found by debateKindRE and
+	// checked by the debate scenario (TestDebateConstrainE2E), like the
+	// debate methods.
+	"debate.entry":      acts("any", "debate.entry_in"),
+	"debate.reveal":     acts("any", "debate.reveal_in"),
+	"debate.close":      acts("B", "debate.close_in"),
+	"debate.constraint": acts("any", "debate.constraint_in"),
+	"debate.sign":       acts("A", "decision.sign_in"),
 }
 
 var (
@@ -150,6 +165,9 @@ var (
 	kindsRE    = regexp.MustCompile(`kinds\["([a-z.]+)"\]`)
 	kindConsRE = regexp.MustCompile(`(?m)^\s*Kind[A-Za-z]*\s+=\s+"([a-z.]+)"`)
 	keysKindRE = regexp.MustCompile(`"([a-z]+)":\s+mail\.KeysKind`)
+	// debateKindRE finds the debate kinds, which the daemon registers by
+	// constant (kinds[debate.MailEntry]) and kindsRE cannot see (R55-135).
+	debateKindRE = regexp.MustCompile(`(?m)^\s*(?:const\s+)?Mail[A-Za-z]*\s+=\s+"(debate\.[a-z.]+)"`)
 )
 
 // sourceNames scans the non-test Go files of the given directories.
@@ -186,6 +204,15 @@ func TestAuditInventoryIsComplete(t *testing.T) {
 		kinds[k] = true
 	}
 	for k := range sourceNames(t, keysKindRE, ".") {
+		kinds[k] = true
+	}
+	debateKinds := sourceNames(t, debateKindRE, "../debate")
+	for _, want := range []string{"debate.entry", "debate.reveal", "debate.close", "debate.constraint", "debate.sign"} {
+		if !debateKinds[want] {
+			t.Errorf("the source scan did not find the debate kind %q", want)
+		}
+	}
+	for k := range debateKinds {
 		kinds[k] = true
 	}
 	kinds["request"] = true // request.Kind() is registered as kinds["request"]
@@ -229,6 +256,20 @@ func (r *invRun) call(n *harnessNode, method string, params, out any) {
 // auditHas reports whether n's audit log has an action.
 func auditHas(n *harnessNode, action string) bool {
 	return n.count(fmt.Sprintf(`SELECT COUNT(*) FROM audit_events WHERE action = '%s'`, action)) > 0
+}
+
+// waitAuditDetail polls n's audit log until a row of action carries every
+// fragment in its detail text (with the actor, when not empty).
+func waitAuditDetail(t *testing.T, n *harnessNode, actor, action string, frags ...string) {
+	t.Helper()
+	q := fmt.Sprintf(`SELECT COUNT(*) FROM audit_events WHERE action = '%s'`, action)
+	if actor != "" {
+		q += fmt.Sprintf(` AND actor = '%s'`, actor)
+	}
+	for _, f := range frags {
+		q += fmt.Sprintf(` AND instr(detail, '%s') > 0`, f)
+	}
+	harnessWait(t, fmt.Sprintf("%s: an %s row with %v", n.name, action, frags), func() bool { return n.count(q) > 0 })
 }
 
 // waitAuditAny polls the nodes' audit logs (peers apply mail asynchronously)
@@ -276,6 +317,11 @@ func checkInventory(t *testing.T, run *invRun, inv map[string]invEntry, names []
 		}
 		if !waitAuditAny(nodes, e.Actions) {
 			t.Errorf("%s: none of %v in the audit log of %s", name, e.Actions, e.On)
+		}
+		for _, also := range e.Also {
+			if !waitAuditAny(nodes, []string{also}) {
+				t.Errorf("%s: %s is not in the audit log of %s", name, also, e.On)
+			}
 		}
 	}
 }

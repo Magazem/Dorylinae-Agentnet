@@ -56,6 +56,17 @@ type fakeWinRunner struct {
 	starts   []fakeWinStart
 	notReady bool
 	handles  map[string][]*fakeWinHandle // every handle opened for an id, in order
+	// missing and fix are what Check reports; checks counts its calls.
+	missing bool
+	fix     string
+	checks  int
+}
+
+func (r *fakeWinRunner) Check(context.Context) (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checks++
+	return !r.missing, r.fix
 }
 
 type fakeWinStart struct {

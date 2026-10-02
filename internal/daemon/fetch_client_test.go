@@ -404,7 +404,7 @@ func TestFetchStartKeepsFinishedBoundedAndReturnsInTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hws.OpenSession(ctx, tx, worksession.RoleWorker, h.self, reqID, "", time.Now()); err != nil {
+	if err := hws.OpenSession(ctx, tx, "cli", worksession.RoleWorker, h.self, reqID, "", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

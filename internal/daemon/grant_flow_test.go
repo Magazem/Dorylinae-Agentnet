@@ -153,7 +153,7 @@ VALUES (?, 'peerb', 'h', '[]', '{}', ?, ?, ?)`, peerKey, time.Now().UTC().Format
 		_, err := caps.RevokeForSessionTx(ctx, tx, sid, capability.ReasonSessionClosed, now)
 		return err
 	}
-	ps.OnRemovedTx = revokeForRemovedPeer(caps)
+	ps.OnRemovedTx = revokeForRemovedPeer(caps, log)
 	ob := &mail.Outbox{
 		DB:    db,
 		Priv:  func() (ed25519.PrivateKey, error) { return append(ed25519.PrivateKey(nil), priv...), nil },
@@ -222,7 +222,7 @@ func (h *grantHarness) openSession(peer, reqID string) string {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := h.ws.OpenSession(ctx, tx, worksession.RoleRequester, peer, reqID, "", time.Now()); err != nil {
+	if err := h.ws.OpenSession(ctx, tx, "daemon", worksession.RoleRequester, peer, reqID, "", time.Now()); err != nil {
 		h.t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -289,7 +289,7 @@ func TestGrantIssuanceRefusals(t *testing.T) {
 		reqID := "r-11111111111111111111111111111111"
 		ctx := context.Background()
 		tx, _ := h.db.BeginTx(ctx, nil)
-		if err := h.ws.OpenSession(ctx, tx, worksession.RoleWorker, peer, reqID, "", time.Now()); err != nil {
+		if err := h.ws.OpenSession(ctx, tx, "cli", worksession.RoleWorker, peer, reqID, "", time.Now()); err != nil {
 			t.Fatal(err)
 		}
 		_ = tx.Commit()
@@ -795,6 +795,8 @@ type grantFakeWindow struct {
 func newGrantFakeWindow() *grantFakeWindow {
 	return &grantFakeWindow{handles: map[string]*grantFakeHandle{}}
 }
+
+func (w *grantFakeWindow) Check(context.Context) (bool, string) { return true, "" }
 
 func (w *grantFakeWindow) Start(_ context.Context, id, _, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	w.mu.Lock()

@@ -99,7 +99,7 @@ func approvalError(err error) error {
 	case errors.Is(err, approval.ErrLocked):
 		return &ipc.Error{Code: "approval_locked", Message: "approvals are locked after too many wrong codes"}
 	case errors.Is(err, approval.ErrUnavailable):
-		return &ipc.Error{Code: "approval_unavailable", Message: "the desktop notifier is unavailable"}
+		return &ipc.Error{Code: "approval_unavailable", Message: unavailableMessage(err)}
 	case errors.Is(err, approval.ErrTerminalMode):
 		return &ipc.Error{Code: ipc.CodeBadRequest, Message: "answer on the daemon's terminal"}
 	case errors.As(err, &bce):
@@ -107,6 +107,21 @@ func approvalError(err error) error {
 	default:
 		return err
 	}
+}
+
+// unavailableMessage words approval_unavailable: a window that could not be
+// shown names the fix of the last window check when there is one (a fixed
+// string, never OS error text), and otherwise says so; "the desktop notifier
+// is unavailable" stays for a failing notifier (R55-125).
+func unavailableMessage(err error) string {
+	var ue *approval.UnavailableError
+	if !errors.As(err, &ue) || !ue.Window {
+		return "the desktop notifier is unavailable"
+	}
+	if ue.Fix != "" {
+		return "the approval window is unavailable: " + ue.Fix
+	}
+	return "the approval window could not be shown"
 }
 
 // registerApproval wires "approval_list", "approval_open" and

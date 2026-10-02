@@ -230,4 +230,7 @@ func TestDebateConstrainE2E(t *testing.T) {
 	// Ticket 3.6b's inventory, debate half: every debate method was called
 	// and audited on the node the inventory names.
 	checkInventory(t, a.run, methodInventory, debateKeys(methodInventory), true, a.harnessNode, b.harnessNode)
+	// R55-135: the five debate mail kinds, registered by constant, are in the
+	// inventory and audited on the node it names.
+	checkInventory(t, a.run, mailKindInventory, debateKeys(mailKindInventory), false, a.harnessNode, b.harnessNode)
 }

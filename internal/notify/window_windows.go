@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -142,6 +143,24 @@ func windowStationName() (string, bool) {
 	return windows.UTF16ToString(buf[:]), true
 }
 
+// checkWindow is the Windows check: an interactive session on WinSta0, and
+// powershell.exe in the system directory. It spawns nothing, so Constrained
+// Language Mode is not seen here (OD-F31-6); an opening that fails because of
+// it says so (BlockedByPolicy).
+func checkWindow(context.Context) (bool, string) {
+	if !inInteractiveSession() {
+		return false, "no desktop session"
+	}
+	psPath, err := powershellPath()
+	if err != nil {
+		return false, "PowerShell is missing"
+	}
+	if fi, err := os.Stat(psPath); err != nil || fi.IsDir() {
+		return false, "PowerShell is missing"
+	}
+	return true, ""
+}
+
 func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
 	if !inInteractiveSession() {
 		h := newDialogHandle(func() {})
@@ -169,6 +188,12 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NO_WINDOW}
 	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		h := newDialogHandle(func() {})
+		h.markNotReady()
+		return h, nil
+	}
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		h := newDialogHandle(func() {})
 		h.markNotReady()
@@ -205,6 +230,18 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 		closeJob()
 	})
 
+	// Only a fixed fact leaves the process's stderr: whether PowerShell said
+	// Constrained Language Mode blocks the form (BlockedByPolicy). The text
+	// itself is never kept or logged.
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		b, _ := io.ReadAll(io.LimitReader(stderr, 4096))
+		_, _ = io.Copy(io.Discard, stderr)
+		if lower := strings.ToLower(string(b)); strings.Contains(lower, "constrainedlanguage") || strings.Contains(lower, "constrained language") {
+			handle.blocked.Store(true)
+		}
+	}()
 	go func() {
 		sc := bufio.NewScanner(stdout)
 		first := true
@@ -220,6 +257,7 @@ func startDialog(ctx context.Context, _, tag, kind, summary string, expires time
 			handle.deliver(parseAnswerLine(line))
 			break
 		}
+		<-stderrDone
 		_ = cmd.Wait()
 		handle.markNotReady() // no-op if already ready
 		handle.deliver(dialogAnswer{kind: "dismiss"})

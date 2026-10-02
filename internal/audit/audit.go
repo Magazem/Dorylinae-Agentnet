@@ -13,6 +13,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,6 +34,54 @@ const (
 	ActionPeerVerifyFail      = "peer.verify_fail"
 	ActionChainStart          = "audit.chain_start"
 )
+
+// WriteError is the error of an audit append that failed: the row could not be
+// written (disk full, I/O error, a lock held past busy_timeout, or the chain
+// refusing the row). Callers and tests use it to tell a failed row from a
+// failed change (audit.md §When the row cannot be written).
+type WriteError struct {
+	Action string
+	Err    error
+}
+
+func (e *WriteError) Error() string { return e.Err.Error() }
+func (e *WriteError) Unwrap() error { return e.Err }
+
+// TxLostError is returned by AppendTxSoft when SQLite ended the whole
+// transaction (SQLITE_FULL, IOERR, NOMEM, RAISE(ROLLBACK)), so the savepoint
+// saved nothing. The S- caller retries its change once in a new transaction
+// without the row (audit.md, "What S- really guarantees").
+type TxLostError struct {
+	Action string
+	Err    error
+}
+
+func (e *TxLostError) Error() string {
+	return fmt.Sprintf("audit: append %s: transaction lost: %v", e.Action, e.Err)
+}
+func (e *TxLostError) Unwrap() error { return e.Err }
+
+var errorLog atomic.Pointer[slog.Logger]
+
+// noRows holds the transactions of RunSoft's retry, whose S- rows are skipped.
+var noRows sync.Map
+
+// SetErrorLog installs the logger every failed append reports to, once, with
+// the action and the driver error, never the detail. daemon.Run installs it
+// before the first append. A nil logger turns the report off.
+func SetErrorLog(l *slog.Logger) { errorLog.Store(l) }
+
+func logFailure(action string, err error) {
+	if l := errorLog.Load(); l != nil {
+		l.Error("audit write failed", "event", "audit_error", "action", action, "error", err.Error())
+	}
+}
+
+// fail wraps err as a *WriteError and reports it.
+func fail(action string, err error) error {
+	logFailure(action, err)
+	return &WriteError{Action: action, Err: err}
+}
 
 // Event is one row of the audit log.
 type Event struct {
@@ -55,7 +106,14 @@ func New(db *sql.DB) *Log { return &Log{db: db} }
 // the chain head is read under SQLite's write lock even when another process
 // (agentnetd install) appends to the same file; the DSN's busy_timeout does
 // the waiting (audit.md §Appending).
-func (l *Log) Append(ctx context.Context, actor, action string, detail any) (err error) {
+func (l *Log) Append(ctx context.Context, actor, action string, detail any) error {
+	if err := l.append(ctx, actor, action, detail); err != nil {
+		return fail(action, err)
+	}
+	return nil
+}
+
+func (l *Log) append(ctx context.Context, actor, action string, detail any) (err error) {
 	raw, err := marshalDetail(actor, action, detail)
 	if err != nil {
 		return err
@@ -94,9 +152,94 @@ func (l *Log) Append(ctx context.Context, actor, action string, detail any) (err
 func AppendTx(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error {
 	raw, err := marshalDetail(actor, action, detail)
 	if err != nil {
+		return fail(action, err)
+	}
+	if err := appendChained(ctx, tx, actor, action, raw); err != nil {
+		return fail(action, err)
+	}
+	return nil
+}
+
+// AppendTxSoft is AppendTx for S- actions (removals): the row is written
+// inside tx through a savepoint. If the row fails, only the row is rolled
+// back, the failure is logged and nil is returned, so the change commits. If
+// SQLite ended the whole transaction, it returns *TxLostError and the caller
+// retries its change without the row. A failure of the savepoint statements
+// themselves is returned (the transaction is unusable).
+func AppendTxSoft(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error {
+	if _, skip := noRows.Load(tx); skip {
+		return nil // RunSoft's retry after a lost transaction: the failure is already logged
+	}
+	raw, err := marshalDetail(actor, action, detail)
+	if err != nil {
+		logFailure(action, err)
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `SAVEPOINT audit_row`); err != nil {
+		return fail(action, err)
+	}
+	if err := appendChained(ctx, tx, actor, action, raw); err != nil {
+		logFailure(action, err)
+		if _, rerr := tx.ExecContext(ctx, `ROLLBACK TO audit_row`); rerr != nil {
+			return &TxLostError{Action: action, Err: err}
+		}
+		if _, rerr := tx.ExecContext(ctx, `RELEASE audit_row`); rerr != nil {
+			return &TxLostError{Action: action, Err: err}
+		}
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `RELEASE audit_row`); err != nil {
+		return fail(action, err)
+	}
+	return nil
+}
+
+// RunSoft runs an S- change in a transaction of its own. fn does the change
+// and writes its rows through AppendTxSoft only when withRows is true. If fn
+// fails with *TxLostError (SQLite ended the whole transaction), RunSoft runs fn
+// once more in a new transaction with withRows false, so the removal still
+// happens; the row's failure is already logged. Any other error rolls back and
+// is returned (audit.md, "What S- really guarantees").
+//
+// On the retry every AppendTxSoft on that transaction is a no-op, including
+// those of nested hooks (a peer removal's OnRemovedTx hooks), so the whole
+// removal commits without its rows.
+func RunSoft(ctx context.Context, db *sql.DB, fn func(tx *sql.Tx, withRows bool) error) error {
+	for withRows := true; ; withRows = false {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if !withRows {
+			noRows.Store(tx, struct{}{})
+		}
+		err = fn(tx, withRows)
+		noRows.Delete(tx)
+		if err == nil {
+			err = tx.Commit()
+			if err == nil {
+				return nil
+			}
+		} else {
+			_ = tx.Rollback()
+		}
+		var lost *TxLostError
+		if withRows && errors.As(err, &lost) {
+			continue
+		}
 		return err
 	}
-	return appendChained(ctx, tx, actor, action, raw)
+}
+
+// AppendTx is the package function AppendTx as a method, so an interface over
+// *Log (an approval store's sink, a test fake) can reach it.
+func (l *Log) AppendTx(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error {
+	return AppendTx(ctx, tx, actor, action, detail)
+}
+
+// AppendTxSoft is the package function AppendTxSoft as a method.
+func (l *Log) AppendTxSoft(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error {
+	return AppendTxSoft(ctx, tx, actor, action, detail)
 }
 
 // queryExecer is what both *sql.Conn and *sql.Tx provide.

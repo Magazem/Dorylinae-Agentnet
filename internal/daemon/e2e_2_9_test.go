@@ -296,6 +296,8 @@ func TestPhase2AuditHasNoContent(t *testing.T) {
 	// Scan every audit_events row on every daemon involved: A, B and the
 	// helper pair.
 	nodes := []*harnessNode{e.a, e.b, he.ctrl.harnessNode, he.help.harnessNode}
+	// R55-200: and their logs, the relays' logs, outbox errors and webhook rows.
+	assertNoContentAnywhere(t, phase2Markers, nodes...)
 	for _, n := range nodes {
 		harnessWait(t, n.name+" to have recorded its session.closed audit", func() bool {
 			return n.count(`SELECT COUNT(*) FROM audit_events WHERE action = 'ws.state' AND detail LIKE '%"state":"closed"%'`) >= 1 ||

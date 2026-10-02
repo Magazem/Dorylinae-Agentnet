@@ -57,6 +57,9 @@ func newApproveFakeWindow() *approveFakeWindow {
 	return &approveFakeWindow{handles: map[string]*approveFakeHandle{}}
 }
 
+// Check reports a window that can always be shown.
+func (w *approveFakeWindow) Check(context.Context) (bool, string) { return true, "" }
+
 func (w *approveFakeWindow) Start(_ context.Context, id, _, _, _, _ string, _ time.Time) (approval.WindowHandle, error) {
 	h := &approveFakeHandle{ready: make(chan struct{}), answerCh: make(chan [2]string, 1)}
 	close(h.ready)
