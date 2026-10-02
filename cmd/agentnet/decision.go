@@ -98,7 +98,10 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failJSON(true, stdout, stderr, exitError, "internal", err.Error())
 		}
-		return writeDecisionOutput(stdout, stderr, data, *out, *force)
+		// The Decision holds peer text; hidden runes (bidi controls) are
+		// written as \uXXXX so the terminal shows them in order (review 90
+		// S90-1). decision verify re-canonicalises, so hash and signatures hold.
+		return writeDecisionOutput(stdout, stderr, displaytext.JSON(data), *out, *force)
 	}
 	printDecisionHuman(stdout, res)
 	return exitOK

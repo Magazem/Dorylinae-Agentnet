@@ -342,9 +342,9 @@ Exit codes: 0 ok (including pending), 1 error or the invite failed, 2 usage,
 		if !*asJSON {
 			msg := "invite failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("invite failed: %s (%s)", res.Error.Message, res.Error.Code)
+				msg = "invite failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
-			_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
+			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}
 		return exitError
 	}
@@ -407,9 +407,9 @@ Exit codes: 0 ok (including pending), 1 error or the join failed, 2 usage,
 		if !*asJSON {
 			msg := "join failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("join failed: %s (%s)", res.Error.Message, res.Error.Code)
+				msg = "join failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
-			_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
+			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}
 		return exitError
 	}

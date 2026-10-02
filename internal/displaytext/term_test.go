@@ -96,6 +96,15 @@ func encode(t *testing.T, v any) []byte {
 	return buf.Bytes()
 }
 
+// Review 90 S90-2: an undecodable byte is written as \ufffd.
+func TestJSONInvalidUTF8(t *testing.T) {
+	got := JSON([]byte("{\"t\":\"a\x9b31m\xffz\"}"))
+	want := `{"t":"a\ufffd31m\ufffdz"}`
+	if string(got) != want {
+		t.Errorf("JSON = %q, want %q", got, want)
+	}
+}
+
 // R55-F10 A4.
 func TestJSON(t *testing.T) {
 	in := "a\u202Eb\u0085c\x7Fd\U000E0041"

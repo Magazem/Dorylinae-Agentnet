@@ -517,7 +517,18 @@ func JSON(b []byte) []byte {
 			continue
 		}
 		r, n := utf8.DecodeRune(b[i:])
-		if (r == utf8.RuneError && n <= 1) || !Hidden(r) {
+		if r == utf8.RuneError && n <= 1 {
+			// An undecodable byte (a lone 0x9B is the 8-bit CSI) is written as
+			// U+FFFD, which is what Go's decoder reads it as anyway (review 90 S90-2).
+			if out == nil {
+				out = make([]byte, i, len(b)+16)
+				copy(out, b[:i])
+			}
+			out = append(out, `\ufffd`...)
+			i += n
+			continue
+		}
+		if !Hidden(r) {
 			if out != nil {
 				out = append(out, b[i:i+n]...)
 			}
