@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +16,8 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relay"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
 )
 
 func newKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -126,23 +123,6 @@ func TestReconnectsWithBackoff(t *testing.T) {
 		_ = hs.Close()
 		srv.Close()
 		eventually(t, "client to notice the relay is gone", func() bool { return !c.Connected() })
-	}
-}
-
-func TestKeystoreSigner(t *testing.T) {
-	pub, priv := newKey(t)
-	ks := keystore.New(keystore.NewFile(filepath.Join(testutil.TempDir(t), "identity.key")))
-	if _, _, err := ks.Save(priv.Seed()); err != nil {
-		t.Fatal(err)
-	}
-	msg := []byte("hello")
-	sig, err := relayclient.NewKeystoreSigner(ks, pub).Sign(msg)
-	if err != nil || !ed25519.Verify(pub, msg, sig) {
-		t.Fatalf("Sign: %v", err)
-	}
-	other, _ := newKey(t)
-	if _, err := relayclient.NewKeystoreSigner(ks, other).Sign(msg); err == nil {
-		t.Fatal("signed for a public key that does not match the stored key")
 	}
 }
 

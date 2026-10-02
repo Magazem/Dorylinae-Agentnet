@@ -265,7 +265,7 @@ func applyWebhookSet(ctx context.Context, settings *notify.Settings, wh *notify.
 
 	firstSet := !existed && p.WebhookURL != nil
 	if firstSet || p.RotateSecret {
-		secret, err = wh.RotateSecret()
+		secret, cfg.SecretSHA256, err = wh.RotateSecret()
 		if err != nil {
 			return "", err
 		}

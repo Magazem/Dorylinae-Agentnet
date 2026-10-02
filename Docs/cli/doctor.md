@@ -29,7 +29,7 @@ agentnet doctor [--json]
 | `binary` | `agentnet` and `agentnetd` report the same version, and it is not older than the relay's `min_client` (4.4a; from the daemon's `status`, so only once it has connected). A dev build cannot be compared: `warn` | yes (`skip` otherwise) |
 | `program` | The `agentnetd` binary next to `agentnet`, and its folder, cannot be changed by other users (same check as `agentnetd install`, which refuses otherwise); `warn` with a fix when they can; skipped when no sibling binary exists | no |
 | `config` | The config directory exists and is owner-only (D24/L11); a drive-root ACL like `Authenticated Users:(M)` is a `warn` with a fix | no |
-| `keychain` | The identity key is readable, and from where (OS keychain or the owner-only file fallback) | no |
+| `keychain` | The identity key is readable and matches `agent-card.json`, and from where (OS keychain or the owner-only file fallback); fails when no stored key matches the card or the card's key is lost | no |
 | `service` | The per-user service (Task Scheduler task / systemd user unit / launchd agent) is installed and running | fails cleanly without it |
 | `socket` | The local IPC endpoint answers within 1 second; on macOS, its path is under the 104-byte `AF_UNIX` limit | fails cleanly without it |
 | `relay` | The relay URL follows the URL rule (loopback `ws://`, remote `wss://`); with the daemon up, its own reported connection state; with it down, an unauthenticated probe of the relay's challenge | no (probes directly if down) |

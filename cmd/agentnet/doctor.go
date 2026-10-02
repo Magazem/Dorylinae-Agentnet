@@ -295,17 +295,19 @@ func checkBinaryFor(cliVersion string, daemonUp bool, daemonVersion, minClient s
 }
 
 // checkConfig is the existing D24/L11 owner-only check (internal/device),
-// reused here; a drive-root ACL like "Authenticated Users:(M)" is a warn with
-// a fix, not a hard failure. Paths are printed relative to ~ (never a bare
-// absolute path outside it).
+// reused here, followed by a check that nobody else can read the directory
+// (review 55 R55-089: checking writers only said "owner-only" of a directory
+// others could read); either finding is a warn with a fix, not a hard
+// failure. Paths are printed relative to ~ (never a bare absolute path
+// outside it).
 func checkConfig(p paths.Paths) doctorCheck {
-	return checkConfigWith(p, device.CheckProgramOwner)
+	return checkConfigWith(p, device.CheckProgramOwner, paths.CheckPrivate)
 }
 
-// checkConfigWith is checkConfig with the ownership check injected, so a test
-// can exercise the warn branch without building a real writable-by-others
-// directory (OS-specific ACLs).
-func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
+// checkConfigWith is checkConfig with the ownership and privacy checks
+// injected, so a test can exercise the warn branches without building a
+// real directory others can access (OS-specific ACLs).
+func checkConfigWith(p paths.Paths, checkOwner, checkPrivate func(string) error) doctorCheck {
 	if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
 		return doctorCheck{ID: "config", State: doctorFail,
 			Detail: "the config directory does not exist",
@@ -319,6 +321,15 @@ func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
 				Fix:    "restrict the directory to your own user (and Administrators/root)"}
 		}
 		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check the config directory's owner"}
+	}
+	if err := checkPrivate(p.Dir); err != nil {
+		var np *paths.NotPrivateError
+		if errors.As(err, &np) {
+			return doctorCheck{ID: "config", State: doctorWarn,
+				Detail: displayRelHome(p.Dir) + " can be read by someone other than you",
+				Fix:    "restrict the directory to your own user (agentnetd does this on start when you own it; on Windows only while it is empty)"}
+		}
+		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check who can read the config directory"}
 	}
 	return doctorCheck{ID: "config", State: doctorOK, Detail: displayRelHome(p.Dir) + " exists and is owner-only"}
 }
@@ -371,20 +382,47 @@ func displayRelTo(home, path string) string {
 }
 
 // checkKeychain reports which backend holds the identity key, without ever
-// creating one (doctor only reads).
+// creating one (doctor only reads). With an agent card, the key is read with
+// the same checks as at start-up (review 87 M1, 87b N1).
 func checkKeychain(p paths.Paths) doctorCheck {
 	ks, err := identity.NewKeystoreFromEnv(p.Dir)
 	if err != nil {
 		return doctorCheck{ID: "keychain", State: doctorFail, Detail: "could not open the key storage"}
 	}
-	_, backend, err := ks.Load()
+	var (
+		seed    []byte
+		backend string
+	)
+	card, cardErr := identity.ReadCard(p.Dir)
+	if cardErr == nil {
+		seed, backend, err = identity.LoadKey(p.Dir, ks, card.Card.PublicKey)
+	} else {
+		seed, backend, err = ks.Load()
+	}
+	clear(seed)
 	switch {
 	case err == nil:
 		return doctorCheck{ID: "keychain", State: doctorOK, Detail: "identity key readable from " + backend}
+	case errors.Is(err, keystore.ErrConflict) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the key file matches the agent card but the keychain holds a different identity key (the card and key file may have been replaced)",
+			Fix:    "unless you created this identity while the keychain was unavailable, delete agent-card.json and identity.key; otherwise delete the keychain entry"}
+	case errors.Is(err, keystore.ErrConflict), errors.Is(err, keystore.ErrMismatch):
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "no stored identity key matches the agent card, or the keychain and the key file hold different keys",
+			Fix:    "remove the key that is not this agent's (often a stray identity.key), or restore the agent card"}
+	case errors.Is(err, keystore.ErrNotFound) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the agent card exists but its private key was not found",
+			Fix:    "restore the key, or delete agent-card.json to start a new identity"}
 	case errors.Is(err, keystore.ErrNotFound):
 		return doctorCheck{ID: "keychain", State: doctorWarn,
 			Detail: "no identity key yet",
 			Fix:    "run `agentnetd install` (or start `agentnetd`) to create one"}
+	case errors.Is(err, keystore.ErrUnavailable):
+		return doctorCheck{ID: "keychain", State: doctorWarn,
+			Detail: "the keychain is unavailable, and the identity key cannot be read or checked without it",
+			Fix:    "unlock the keychain (or check that its service is running) and run doctor again"}
 	default:
 		return doctorCheck{ID: "keychain", State: doctorFail,
 			Detail: "the identity key is not readable",

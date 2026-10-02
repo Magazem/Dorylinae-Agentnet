@@ -78,14 +78,14 @@ func TestCheckBinaryMinClient(t *testing.T) {
 
 func TestCheckConfigPass(t *testing.T) {
 	dir := t.TempDir()
-	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil })
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil }, func(string) error { return nil })
 	if got.State != doctorOK {
 		t.Fatalf("state = %q, want ok: %+v", got.State, got)
 	}
 }
 
 func TestCheckConfigFailMissing(t *testing.T) {
-	got := checkConfigWith(paths.Paths{Dir: filepath.Join(t.TempDir(), "missing")}, func(string) error { return nil })
+	got := checkConfigWith(paths.Paths{Dir: filepath.Join(t.TempDir(), "missing")}, func(string) error { return nil }, func(string) error { return nil })
 	if got.State != doctorFail {
 		t.Fatalf("state = %q, want fail: %+v", got.State, got)
 	}
@@ -94,8 +94,19 @@ func TestCheckConfigFailMissing(t *testing.T) {
 func TestCheckConfigWarnOnWritableByOthers(t *testing.T) {
 	dir := t.TempDir()
 	we := &device.WritableError{Path: dir, Who: "Everyone"}
-	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return we })
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return we }, func(string) error { return nil })
 	if got.State != doctorWarn || got.Fix == "" {
+		t.Fatalf("got = %+v, want warn with a fix", got)
+	}
+}
+
+// Review 55 R55-089: a directory others can read is not reported as
+// owner-only.
+func TestCheckConfigWarnOnReadableByOthers(t *testing.T) {
+	dir := t.TempDir()
+	np := &paths.NotPrivateError{Path: dir, Who: "Users"}
+	got := checkConfigWith(paths.Paths{Dir: dir}, func(string) error { return nil }, func(string) error { return np })
+	if got.State != doctorWarn || got.Fix == "" || strings.Contains(got.Detail, "owner-only") {
 		t.Fatalf("got = %+v, want warn with a fix", got)
 	}
 }
@@ -143,6 +154,40 @@ func TestCheckKeychainWarnWhenAbsent(t *testing.T) {
 	got := checkKeychain(paths.Paths{Dir: t.TempDir()})
 	if got.State != doctorWarn || got.Fix == "" {
 		t.Fatalf("got = %+v, want warn with a fix", got)
+	}
+}
+
+// Review 87 M1: a key that does not match the agent card (a stray or planted
+// identity.key) is a failure, as it is at start-up; so is a card whose key is
+// gone.
+func TestCheckKeychainFailsWhenKeyDoesNotMatchCard(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file")
+	dir := t.TempDir()
+	ks, err := identity.NewKeystore(dir, "file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkKeychain(paths.Paths{Dir: dir}); got.State != doctorOK {
+		t.Fatalf("matching key: %+v", got)
+	}
+	_, other, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ks.Save(other.Seed()); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkKeychain(paths.Paths{Dir: dir}); got.State != doctorFail || got.Fix == "" {
+		t.Fatalf("key not matching the card: %+v, want fail with a fix", got)
+	}
+	if err := os.Remove(filepath.Join(dir, identity.KeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkKeychain(paths.Paths{Dir: dir}); got.State != doctorFail || got.Fix == "" {
+		t.Fatalf("card without its key: %+v, want fail with a fix", got)
 	}
 }
 
