@@ -22,72 +22,83 @@ type BadCard struct {
 // MigrateCards is the stored-card migration of review 68 OD-3. It is
 // idempotent and runs at every daemon open. For each peers row it re-reads
 // card with the legacy parse, keeps exactly {card, signature}, and verifies
-// that under the current rules against the row's public_key
-// (agentcard.RescueStored). A card that verifies is rewritten when its
-// canonical form differs from the stored bytes (for example a v1 row with
+// that under the current rules, with the legacy text rule, against the row's
+// public_key (agentcard.RescueStored). A card that verifies is rewritten when
+// its canonical form differs from the stored bytes (for example a v1 row with
 // relay-added top-level members). A card that does not verify is left as it
-// is and returned: the row is never deleted or downgraded, and no other column
-// changes. Only a database error is returned as an error.
-func (s *Store) MigrateCards(ctx context.Context) ([]BadCard, error) {
+// is and returned in bad: the row is never deleted or downgraded, and no
+// other column changes. The public keys of rows whose card verifies but
+// breaks the R55-F10 text rule (agentcard.TextRuleError) are returned in
+// legacy: such a card is kept and is not bad (agent-card.md §Cards stored
+// before R55-F10). Only a database error is returned as an error.
+func (s *Store) MigrateCards(ctx context.Context) (bad []BadCard, legacy []string, err error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT public_key, card FROM peers ORDER BY public_key`)
 	if err != nil {
-		return nil, fmt.Errorf("peers: card migration: %w", err)
+		return nil, nil, fmt.Errorf("peers: card migration: %w", err)
 	}
 	type rewrite struct{ key, card, old string }
 	var fixes []rewrite
-	var bad []BadCard
 	for rows.Next() {
 		var key, card string
 		if err := rows.Scan(&key, &card); err != nil {
 			_ = rows.Close()
-			return nil, fmt.Errorf("peers: card migration: %w", err)
+			return nil, nil, fmt.Errorf("peers: card migration: %w", err)
 		}
-		canon, verr := agentcard.RescueStored([]byte(card), key)
-		switch {
-		case verr != nil:
+		canon, sc, verr := agentcard.RescueStored([]byte(card), key)
+		if verr != nil {
 			bad = append(bad, badCard(key, verr))
-		case string(canon) != card:
+			continue
+		}
+		if agentcard.TextRuleError(sc.Card) != nil {
+			legacy = append(legacy, key)
+		}
+		if string(canon) != card {
 			fixes = append(fixes, rewrite{key, string(canon), card})
 		}
 	}
 	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("peers: card migration: %w", err)
+		return nil, nil, fmt.Errorf("peers: card migration: %w", err)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("peers: card migration: %w", err)
+		return nil, nil, fmt.Errorf("peers: card migration: %w", err)
 	}
 	for _, f := range fixes {
 		// Compare-and-set on the old bytes, so a concurrent re-pairing wins.
 		if _, err := s.db.ExecContext(ctx, `UPDATE peers SET card = ? WHERE public_key = ? AND card = ?`, f.card, f.key, f.old); err != nil {
-			return nil, fmt.Errorf("peers: card migration: %w", err)
+			return nil, nil, fmt.Errorf("peers: card migration: %w", err)
 		}
 	}
-	return bad, nil
+	return bad, legacy, nil
 }
 
 // CheckStoredCards reports, without writing, the peers rows that
-// MigrateCards would leave in place because their card does not verify. It
-// works on a read-only handle (agentnet doctor).
-func CheckStoredCards(ctx context.Context, db *sql.DB) ([]BadCard, error) {
+// MigrateCards would leave in place because their card does not verify
+// (bad), and the public keys of rows whose card is kept under the legacy
+// text rule only (legacy, R55-F10). It works on a read-only handle (agentnet
+// doctor).
+func CheckStoredCards(ctx context.Context, db *sql.DB) (bad []BadCard, legacy []string, err error) {
 	rows, err := db.QueryContext(ctx, `SELECT public_key, card FROM peers ORDER BY public_key`)
 	if err != nil {
-		return nil, fmt.Errorf("peers: check cards: %w", err)
+		return nil, nil, fmt.Errorf("peers: check cards: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var bad []BadCard
 	for rows.Next() {
 		var key, card string
 		if err := rows.Scan(&key, &card); err != nil {
-			return nil, fmt.Errorf("peers: check cards: %w", err)
+			return nil, nil, fmt.Errorf("peers: check cards: %w", err)
 		}
-		if _, verr := agentcard.RescueStored([]byte(card), key); verr != nil {
+		_, sc, verr := agentcard.RescueStored([]byte(card), key)
+		switch {
+		case verr != nil:
 			bad = append(bad, badCard(key, verr))
+		case agentcard.TextRuleError(sc.Card) != nil:
+			legacy = append(legacy, key)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("peers: check cards: %w", err)
+		return nil, nil, fmt.Errorf("peers: check cards: %w", err)
 	}
-	return bad, nil
+	return bad, legacy, nil
 }
 
 func badCard(key string, err error) BadCard {

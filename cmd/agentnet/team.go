@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 )
@@ -143,10 +143,10 @@ Exit codes: 0 created, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamBody{OK: true, TeamResult: res})
+		writeJSON(stdout, teamBody{OK: true, TeamResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Created team %s (%s). You are the owner.\n", res.Team.Name, res.Team.ID)
+	_, _ = fmt.Fprintf(stdout, "Created team %s (%s). You are the owner.\n", displaytext.Term(res.Team.Name), res.Team.ID)
 	return exitOK
 }
 
@@ -182,7 +182,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamListBody{OK: true, TeamListResult: res})
+		writeJSON(stdout, teamListBody{OK: true, TeamListResult: res})
 		return exitOK
 	}
 	if len(res.Teams) == 0 {
@@ -192,7 +192,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tID\tROLE\tMEMBERS\tSTATE")
 	for _, t := range res.Teams {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", t.Name, t.ID, t.Role, t.Members, t.State)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", displaytext.Term(t.Name), t.ID, t.Role, t.Members, t.State)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -230,7 +230,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamShowBody{OK: true, TeamShowResult: res})
+		writeJSON(stdout, teamShowBody{OK: true, TeamShowResult: res})
 		return exitOK
 	}
 	t := res.Team
@@ -241,7 +241,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 			break
 		}
 	}
-	_, _ = fmt.Fprintf(stdout, "%s (%s), owner %s, epoch %d\n", t.Name, shortTeamID(t.ID), ownerName, t.Epoch)
+	_, _ = fmt.Fprintf(stdout, "%s (%s), owner %s, epoch %d\n", displaytext.Term(t.Name), shortTeamID(t.ID), displaytext.Term(ownerName), t.Epoch)
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tROLE\tADDED\tFINGERPRINT")
 	for _, m := range t.Members {
@@ -249,7 +249,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		if m.Owner {
 			role = "owner"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.Name, role, m.Added, envelope.FormatFingerprint(m.Fingerprint))
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", displaytext.Term(m.Name), role, m.Added, envelope.FormatFingerprint(m.Fingerprint))
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -328,7 +328,7 @@ Exit codes: 0 ok (including pending), 1 error or the invite failed, 2 usage,
 		}
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamInviteBody{OK: res.State != peers.StateFailed, TeamInviteResult: res})
+		writeJSON(stdout, teamInviteBody{OK: res.State != peers.StateFailed, TeamInviteResult: res})
 	} else {
 		switch {
 		case res.State == peers.StatePending && res.Role == peers.RoleIssuer && res.Code != "":
@@ -342,7 +342,7 @@ Exit codes: 0 ok (including pending), 1 error or the invite failed, 2 usage,
 		if !*asJSON {
 			msg := "invite failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("invite failed: %s (%s)", res.Error.Message, res.Error.Code)
+				msg = "invite failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
 			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}
@@ -393,12 +393,12 @@ Exit codes: 0 ok (including pending), 1 error or the join failed, 2 usage,
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamJoinBody{OK: res.State != peers.StateFailed, PairStatus: res})
+		writeJSON(stdout, teamJoinBody{OK: res.State != peers.StateFailed, PairStatus: res})
 	} else {
 		switch {
 		case res.State == peers.StateComplete && res.Peer != nil:
 			_, _ = fmt.Fprintf(stdout, "Paired with %s (fingerprint %s); asked to join %s's team.\nRun 'agentnet team list' in a few seconds.\n",
-				res.Peer.Name, envelope.FormatFingerprint(res.Peer.Fingerprint), res.Peer.Name)
+				displaytext.Term(res.Peer.Name), envelope.FormatFingerprint(res.Peer.Fingerprint), displaytext.Term(res.Peer.Name))
 		case res.State == peers.StatePending:
 			_, _ = fmt.Fprintf(stdout, "Join %s is still in progress.\nCheck it with: agentnet pair --status %s\n", res.ID, res.ID)
 		}
@@ -407,7 +407,7 @@ Exit codes: 0 ok (including pending), 1 error or the join failed, 2 usage,
 		if !*asJSON {
 			msg := "join failed"
 			if res.Error != nil {
-				msg = fmt.Sprintf("join failed: %s (%s)", res.Error.Message, res.Error.Code)
+				msg = "join failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
 			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
 		}
@@ -447,10 +447,10 @@ Exit codes: 0 removed, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamBody{OK: true, TeamResult: res})
+		writeJSON(stdout, teamBody{OK: true, TeamResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Removed %s from %s (epoch %d)\n", pos[1], res.Team.Name, res.Team.Epoch)
+	_, _ = fmt.Fprintf(stdout, "Removed %s from %s (epoch %d)\n", displaytext.Term(pos[1]), displaytext.Term(res.Team.Name), res.Team.Epoch)
 	return exitOK
 }
 
@@ -485,10 +485,10 @@ Exit codes: 0 renamed, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamBody{OK: true, TeamResult: res})
+		writeJSON(stdout, teamBody{OK: true, TeamResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Renamed team to %s (%s, epoch %d)\n", res.Team.Name, res.Team.ID, res.Team.Epoch)
+	_, _ = fmt.Fprintf(stdout, "Renamed team to %s (%s, epoch %d)\n", displaytext.Term(res.Team.Name), res.Team.ID, res.Team.Epoch)
 	return exitOK
 }
 
@@ -523,10 +523,10 @@ Exit codes: 0 left, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamBody{OK: true, TeamResult: res})
+		writeJSON(stdout, teamBody{OK: true, TeamResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Left %s (%s)\n", res.Team.Name, res.Team.ID)
+	_, _ = fmt.Fprintf(stdout, "Left %s (%s)\n", displaytext.Term(res.Team.Name), res.Team.ID)
 	return exitOK
 }
 
@@ -561,9 +561,9 @@ Exit codes: 0 deleted, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(teamBody{OK: true, TeamResult: res})
+		writeJSON(stdout, teamBody{OK: true, TeamResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Deleted %s (%s)\n", res.Team.Name, res.Team.ID)
+	_, _ = fmt.Fprintf(stdout, "Deleted %s (%s)\n", displaytext.Term(res.Team.Name), res.Team.ID)
 	return exitOK
 }

@@ -322,7 +322,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// Review 68 OD-3: re-verify and canonicalise stored peer cards. A card
 	// that no longer verifies is kept and reported (agentnet doctor); only a
 	// database error stops the start.
-	badCards, err := peerStore.MigrateCards(ctx)
+	badCards, legacyCards, err := peerStore.MigrateCards(ctx)
 	if err != nil {
 		_ = ln.Close()
 		return err
@@ -331,6 +331,15 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		if opts.Logger != nil {
 			opts.Logger.Warn("peer has a card that no longer verifies; re-pair or remove it",
 				"event", "peer_card_invalid", "fingerprint", b.Fingerprint, "error", b.Reason)
+		}
+	}
+	// R55-F10: a stored card that holds characters refused at new pairings
+	// is kept (agent-card.md §Cards stored before R55-F10).
+	for _, key := range legacyCards {
+		if opts.Logger != nil {
+			fp, _ := envelope.KeyFingerprint(key)
+			opts.Logger.Info("peer card holds characters refused at new pairings; kept",
+				"event", "peer_card_legacy_text", "fingerprint", fp)
 		}
 	}
 	idPub, err := envelope.ParseKey(id.Card().Card.PublicKey)
@@ -777,6 +786,10 @@ func loadIdentity(ctx context.Context, p paths.Paths, log *audit.Log, opts Optio
 		if err := log.Append(ctx, audit.ActorDaemon, identity.ActionCreate, rep.Detail); err != nil {
 			return nil, nil, err
 		}
+	}
+	if rep.LegacyText != nil && opts.Logger != nil {
+		opts.Logger.Warn("own Agent Card holds characters new pairings refuse; it is kept",
+			"event", "own_card_legacy_text", "error", rep.LegacyText.Error())
 	}
 	return id, ks, nil
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 const grantUsage = `Give a teammate's agent scoped, expiring, revocable read access (Docs/protocol/grant.md).
@@ -97,7 +97,7 @@ Exit codes: 0 grant created (pending approval or issued), 1 error, 2 usage,
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK       bool             `json:"ok"`
 			Grant    daemon.GrantView `json:"grant"`
 			Approval *approval.View   `json:"approval,omitempty"`
@@ -181,7 +181,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		res.Grants = []daemon.GrantView{}
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK     bool               `json:"ok"`
 			Grants []daemon.GrantView `json:"grants"`
 		}{OK: true, Grants: res.Grants})
@@ -194,15 +194,15 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "ID\tDIR\tPEER\tACTION\tRESOURCE\tSCOPE\tEXPIRES\tSTATE")
 	for _, g := range res.Grants {
-		resName := g.Resource.Label
+		resName := displaytext.Term(g.Resource.Label)
 		if g.Resource.Branch != "" {
-			resName += "#" + g.Resource.Branch
+			resName += "#" + displaytext.Term(g.Resource.Branch)
 		}
 		scope := g.Scope
 		if scope == "" {
 			scope = "-"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", g.ID, g.Direction, devicePeerLabel(g.Peer), g.Action, resName, scope, g.Exp, g.State)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", g.ID, g.Direction, devicePeerLabel(g.Peer), g.Action, resName, displaytext.Term(scope), g.Exp, g.State)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -245,7 +245,7 @@ Exit codes: 0 revoked, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.GrantRevokeResult
 		}{OK: true, GrantRevokeResult: res})
@@ -331,7 +331,7 @@ func runGrantPolicyAdd(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK       bool          `json:"ok"`
 			Approval approval.View `json:"approval"`
 		}{OK: true, Approval: res.Approval})
@@ -365,7 +365,7 @@ func runGrantPolicyList(args []string, stdout, stderr io.Writer) int {
 		res.Policies = []daemon.GrantPolicyView{}
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK       bool                     `json:"ok"`
 			Policies []daemon.GrantPolicyView `json:"policies"`
 		}{OK: true, Policies: res.Policies})
@@ -385,7 +385,7 @@ func runGrantPolicyList(args []string, stdout, stderr io.Writer) int {
 		if scope == "" {
 			scope = "-"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%t\t%ds\t%s\n", p.ID, devicePeerLabel(p.Peer), p.Action, branch, scope, p.Public, p.MaxExpiresS, p.Until)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%t\t%ds\t%s\n", p.ID, devicePeerLabel(p.Peer), p.Action, displaytext.Term(branch), displaytext.Term(scope), p.Public, p.MaxExpiresS, p.Until)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -413,7 +413,7 @@ func runGrantPolicyRemove(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 		}{OK: true})
 		return exitOK

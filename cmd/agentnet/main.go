@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -245,14 +244,14 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(statusBody{OK: true, StatusResult: res})
+		writeJSON(stdout, statusBody{OK: true, StatusResult: res})
 		return exitOK
 	}
 	up := time.Duration(res.UptimeSeconds * float64(time.Second)).Round(time.Second)
 	_, _ = fmt.Fprintf(stdout, "agentnetd running\n  pid:     %d\n  uptime:  %s\n  version: %s\n  outbox:  %d pending (%d queued, %d relayed), %d delivered, %d failed, %d expired\n",
 		res.PID, up, res.Version, res.Outbox.Pending, res.Outbox.Queued, res.Outbox.Relayed,
 		res.Outbox.Delivered, res.Outbox.Failed, res.Outbox.Expired)
-	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, res.Presence.Relay)
+	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, displaytext.Term(res.Presence.Relay))
 	if res.Relay != nil {
 		state := "disconnected"
 		if res.Relay.Connected {
@@ -286,7 +285,7 @@ func printStatusTeam(w io.Writer, t *daemon.StatusTeamResult) {
 			break
 		}
 	}
-	_, _ = fmt.Fprintf(w, "team %s (%s), owner %s\n", t.Name, shortTeamID(t.ID), owner)
+	_, _ = fmt.Fprintf(w, "team %s (%s), owner %s\n", displaytext.Term(t.Name), shortTeamID(t.ID), displaytext.Term(owner))
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tDAEMON\tAGENT\tHUMAN\tLAST SEEN")
 	for _, m := range t.Members {
@@ -320,17 +319,19 @@ func printStatusTeam(w io.Writer, t *daemon.StatusTeamResult) {
 		if m.Self {
 			suffix = "\t(you)"
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s%s\n", name, daemonCol, agentCol, humanCol, lastSeen, suffix)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s%s\n", displaytext.Term(name), daemonCol, agentCol, humanCol, lastSeen, suffix)
 	}
 	_ = tw.Flush()
 }
 
-// failJSON reports an error: JSON on stdout under --json, plain text on stderr otherwise.
+// failJSON reports an error: JSON on stdout under --json, plain text on
+// stderr otherwise. msg may quote peer, team or file text (a daemon
+// ipc.Error message), so the text goes through displaytext.Term (R55-F10).
 func failJSON(asJSON bool, stdout, stderr io.Writer, code int, errCode, msg string) int {
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(errBody{Error: &ipc.Error{Code: errCode, Message: msg}})
+		writeJSON(stdout, errBody{Error: &ipc.Error{Code: errCode, Message: msg}})
 	} else {
-		_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
+		_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
 	}
 	return code
 }

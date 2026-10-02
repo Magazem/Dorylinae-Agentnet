@@ -362,7 +362,9 @@ func parseRosterMember(raw any, now time.Time) (parsedMember, error) {
 	if err != nil {
 		return parsedMember{}, badBody("roster member.card: " + err.Error())
 	}
-	sc, err := agentcard.Verify(cardRaw)
+	// The legacy text rule (agentcard.VerifyStored, R55-F10): a roster may
+	// carry a member whose card predates the rule (review 76 I3).
+	sc, err := agentcard.VerifyStored(cardRaw)
 	if err != nil {
 		return parsedMember{}, badBody("roster member.card: " + err.Error())
 	}

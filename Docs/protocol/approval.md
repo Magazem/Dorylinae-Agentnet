@@ -509,7 +509,9 @@ inside a JSON string as a `\uXXXX` escape: lowercase hex, and a surrogate pair a
 parser. A consumer that searches the raw bytes for a value holding such a rune, for example an
 emoji with VS16, must decode first. The JSON is still exact, but `agentnet peers --json`
 printed on a terminal can no longer carry a C1 control or a bidi override (R55-056).
-`agentnet identity --json` is excluded (review 82b). Its documented use is as input to
+`agentnet decision <id> --json` (to stdout and `--out`) is covered too (review 90): `decision
+verify` re-canonicalises the parsed value, so the hash and signatures are unchanged. A byte that
+is not valid UTF-8 is written as `\ufffd`. `agentnet identity --json` is excluded (review 82b). Its documented use is as input to
 `tools/verifycard`, whose 16 KiB limit applies to the bytes as written. It holds only the
 user's own card and local fields. Since R55-F10, a new card cannot hold a bidi control or a line
 separator.

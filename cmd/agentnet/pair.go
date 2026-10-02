@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -125,7 +124,7 @@ Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(pairBody{OK: res.State != peers.StateFailed, PairStatus: res})
+		writeJSON(stdout, pairBody{OK: res.State != peers.StateFailed, PairStatus: res})
 	} else {
 		printPair(stdout, res)
 	}
@@ -135,7 +134,7 @@ Exit codes: 0 ok (including pending), 1 error or pairing failed, 2 usage,
 			if res.Error != nil {
 				msg = "pairing failed: " + failureText(res.Error.Code, res.Error.Message)
 			}
-			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
+			_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
 		}
 		return exitError
 	}
@@ -146,7 +145,7 @@ func printPair(w io.Writer, st daemon.PairStatus) {
 	switch {
 	case st.State == peers.StateComplete && st.Peer != nil:
 		_, _ = fmt.Fprintf(w, "Paired with %s (%s)\n  public key:  %s\n  fingerprint: %s\n  trust:       %s\n",
-			st.Peer.Name, st.Peer.Harness, st.Peer.PublicKey, envelope.FormatFingerprint(st.Peer.Fingerprint), st.Peer.Trust)
+			displaytext.Term(st.Peer.Name), displaytext.Term(st.Peer.Harness), st.Peer.PublicKey, envelope.FormatFingerprint(st.Peer.Fingerprint), st.Peer.Trust)
 	case st.State == peers.StatePending && st.Role == peers.RoleIssuer && st.Code != "":
 		_, _ = fmt.Fprintf(w, "Pairing code: %s\nExpires:      %s\nPairing ID:   %s\n\nOn the other machine run: agentnet pair %s\nThen check here with:     agentnet peers\n",
 			formatCode(st.Code), st.Expires, st.ID, formatCode(st.Code))

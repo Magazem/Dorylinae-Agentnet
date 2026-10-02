@@ -60,7 +60,9 @@ A script that checks `$? -eq 0` never treats an unconfirmed Decision as agreed.
 ```
 
 `agentnet decision <id> --json` prints the signed file itself (no `"ok"` wrapper: this is the
-same bytes `decision verify` reads; write it to `d-….json` with `--out`):
+file `decision verify` reads; write it to `d-….json` with `--out`). Hidden characters in peer text
+(bidi controls and the like) are written as `\uXXXX` escapes, in stdout and in `--out`; `decision
+verify` re-canonicalises, so the hash and signatures still verify:
 
 ```json
 {"decision": {...}, "hash": "...", "signatures": {"initiator": "...", "respondent"?: "..."}}

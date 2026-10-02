@@ -11,6 +11,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
@@ -78,19 +79,30 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 	return exitOK
 }
 
+// legacyCardNote is the line identity prints for an own card that verifies
+// only under the legacy text rule (Docs/cli/identity.md, agent-card.md
+// §Cards stored before R55-F10).
+const legacyCardNote = "note: this Agent Card holds characters that peers refuse at pairing since R55-F10; to pair with them, start a new identity"
+
 func printCard(w io.Writer, res daemon.IdentityResult) {
 	c := res.Card
 	_, _ = fmt.Fprintf(w, "name:        %s\nharness:     %s\npublic key:  %s\nfingerprint: %s\ncreated:     %s\nskills:      %s\nsignature:   %s\nkey storage: %s\n",
-		c.Name, c.Harness, c.PublicKey, envelope.FormatFingerprint(res.Fingerprint), c.Created, skillList(c.Skills), res.Signature, res.KeyBackend)
+		displaytext.Term(c.Name), displaytext.Term(c.Harness), displaytext.Term(c.PublicKey), envelope.FormatFingerprint(res.Fingerprint),
+		displaytext.Term(c.Created), skillList(c.Skills), displaytext.Term(res.Signature), displaytext.Term(res.KeyBackend))
+	if agentcard.TextRuleError(c) != nil {
+		_, _ = fmt.Fprintln(w, legacyCardNote)
+	}
 }
 
+// skillList joins the skill ids, each through displaytext.Term before the
+// join (R55-F10), so an id cannot pose as a separator.
 func skillList(skills []agentcard.Skill) string {
 	if len(skills) == 0 {
 		return "(none)"
 	}
 	ids := make([]string, len(skills))
 	for i, s := range skills {
-		ids[i] = s.ID
+		ids[i] = displaytext.Term(s.ID)
 	}
 	return strings.Join(ids, ", ")
 }

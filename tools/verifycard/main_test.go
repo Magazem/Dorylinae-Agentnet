@@ -80,6 +80,8 @@ func TestAcceptsUTF8BOM(t *testing.T) {
 // tools/verifyvectors/vectors.json. P1 and P2 verify; N1-N5 and N17 verify at
 // step 4 but fail the schema (exit 1, INVALID); N6-N16 are malformed (exit 2).
 // R55-F13 A2: N16 (over 16384 bytes) exits 2, N17 (33 skills) exits 1.
+// R55-F10 A10: N18 and N19 (a bidi control, a line separator) exit 1; P3
+// (emoji ZWJ and VS16 in the name) verifies.
 func TestNegativeVectors(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "verifyvectors", "vectors.json"))
 	if err != nil {
@@ -97,8 +99,8 @@ func TestNegativeVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.AgentCard.Cases) != 19 {
-		t.Fatalf("want 19 cases, got %d", len(v.AgentCard.Cases))
+	if len(v.AgentCard.Cases) != 22 {
+		t.Fatalf("want 22 cases, got %d", len(v.AgentCard.Cases))
 	}
 	for _, c := range v.AgentCard.Cases {
 		want := 2
@@ -120,6 +122,15 @@ func TestNegativeVectors(t *testing.T) {
 		}
 		if c.Name == "N16" && !strings.Contains(errs, "16727 bytes, over the limit of 16384") {
 			t.Errorf("N16: want a size refusal, got %q", errs)
+		}
+		if c.Name == "P3" && !strings.HasPrefix(out, `OK "Ada `) {
+			t.Errorf("P3: output %q", out)
+		}
+		if c.Name == "N18" && !strings.Contains(errs, "name contains U+202E") {
+			t.Errorf("N18: want a bidi refusal, got %q", errs)
+		}
+		if c.Name == "N19" && !strings.Contains(errs, "description contains U+2028") {
+			t.Errorf("N19: want a line separator refusal, got %q", errs)
 		}
 		if c.Name == "N17" && !strings.Contains(errs, "33 skills, at most 32") {
 			t.Errorf("N17: want a skills refusal, got %q", errs)

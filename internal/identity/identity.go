@@ -98,6 +98,10 @@ type Report struct {
 	Created bool
 	// Detail is the audit detail to record when Created is true.
 	Detail CreateDetail
+	// LegacyText is set when the stored card verifies only under the legacy
+	// text rule (agentcard.TextRuleError; agent-card.md §Cards stored before
+	// R55-F10): the card is kept, and the daemon logs a warning.
+	LegacyText error
 }
 
 // ErrKeyLost means an Agent Card exists but its private key cannot be found.
@@ -124,7 +128,7 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 			if existing.Card.PublicKey != pubString(priv) {
 				return nil, Report{}, fmt.Errorf("identity: stored private key does not match the key in %s", cardPath)
 			}
-			return &Identity{card: *existing, keyBackend: backend}, Report{}, nil
+			return &Identity{card: *existing, keyBackend: backend}, Report{LegacyText: agentcard.TextRuleError(existing.Card)}, nil
 		}
 		// Key without a card (interrupted first run): re-create the card for the same key.
 		return finish(cardPath, priv, backend, false, nil, opts, now)
@@ -177,12 +181,16 @@ func finish(cardPath string, priv ed25519.PrivateKey, backend string, generated 
 	return &Identity{card: signed, keyBackend: backend}, Report{Created: true, Detail: detail}, nil
 }
 
+// readCard reads and verifies the own card. A card made before R55-F10 can
+// only be re-signed by this daemon's key, so it is verified with the legacy
+// text rule (agentcard.VerifyStored, review 76 I3); without that the daemon
+// would not start.
 func readCard(path string) (*agentcard.Signed, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path is inside the daemon config dir
 	if err != nil {
 		return nil, err
 	}
-	return agentcard.Verify(raw)
+	return agentcard.VerifyStored(raw)
 }
 
 func privFromSeed(seed []byte) (ed25519.PrivateKey, error) {
