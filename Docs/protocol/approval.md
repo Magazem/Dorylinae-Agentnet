@@ -408,23 +408,48 @@ safe.
 3. **Stacked marks.** After each base character at most **2** combining marks (`Mn`, `Me`)
    are kept; the rest are removed. A long stack of marks is drawn above or below its line and
    can cover the neighbouring text, the fingerprint included (review 58a, M4).
-4. **Long digit runs.** A digit run is a maximal sequence of runes of category `N` (`Nd`, `Nl`,
-   `No`: ASCII, fullwidth, superscript, circled and mathematical digits). Between two of its
-   numbers there may be **up to 8** separator runes (spaces, `P*` or `S*`), so `4 - 8 - 2 - 9 -
-   1 - 3` and `4 - - 8 - - 2 …` count as one run (review 58a, L3; review 64 F5S-2). Combining
-   marks of any kind (`Mn`, `Mc`, `Me`) anywhere in the run, on a number or on a separator,
-   are part of it and do not count as separators (F5S-2). A run of **6 or more** numbers is replaced by one `…`. This is today's
-   `stripLongDigits` (review 26 N4, review 36 L2), made to see through invisible characters,
-   combining marks, non-decimal digits and spaced-out digits. The zenity octal form
+4. **Long digit runs.** A digit run is a maximal sequence of numbers: runes of category `N`
+   (`Nd`, `Nl`, `No`: ASCII, fullwidth, superscript, circled and mathematical digits), and
+   **digit look-alike** letters that **stand alone**. A digit look-alike is a letter that folds
+   (step 5) to a digit, `I`, `L` or `O`: `З`, `б`, `l`, `I`, `O`, `o`, `І`, `О`, `Ο` …. It
+   stands alone when the nearest runes before and after it, combining marks skipped, are not
+   letters (joiner letters aside), so `48291З` and `4829l3` are runs of 6 but `12345 lol` and
+   `12345 Ok` are not (review 65 F6S-2). Between two of its numbers there may be **up to 8**
+   separator runes (spaces, `P*`, `S*` or **joiner letters**: every `Lm` such as `ˑ` and `ː`,
+   and the bar- and dot-shaped `Lo` letters U+01C0–01C3 `ǀ ǁ ǂ ǃ`, U+A78F `ꞏ`, U+318D `ㆍ`,
+   U+119E `ᆞ`, U+11A2 `ᆢ`), so `4 - 8 - 2 - 9 - 1 - 3`, `4 - - 8 - - 2 …` and `4ǀ8ǀ2ǀ9ǀ1ǀ3`
+   count as one run (review 58a, L3; review 64 F5S-2; review 65 F6S-2). Combining marks of any
+   kind (`Mn`, `Mc`, `Me`) anywhere in the run, on a number or on a separator, are part of it
+   and do not count as separators (F5S-2). A run of **6 or more** numbers, at least one of them
+   of category `N`, is replaced by one `…`. This is today's `stripLongDigits` (review 26 N4,
+   review 36 L2), made to see through invisible characters, combining marks, non-decimal
+   digits, look-alike letters and spaced-out digits. The zenity octal form
    `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
-5. **Fingerprint-shaped text** (OD-R55F5-9). A run of **2 or more** groups of 4 characters of
-   the fingerprint alphabet (case-insensitive), joined by 1 to 3 separator runes (spaces, `P*`
-   or `S*`: `-`, `.`, `_`, `/`, `—`, `--` …), and any run of 8 or more such characters with no
-   separator that holds both a digit and a letter, are replaced by one `…`. Characters are
-   matched after folding look-alikes onto the alphabet: fullwidth forms, and the Cyrillic and
-   Greek letters that look like one of its letters or digits (`Е`, `М`, `С`, `Ε`, `З` → `3` …);
-   combining marks inside a group are part of it (review 64 F5S-1). A peer cannot then put the fingerprint of the device it
-   impersonates into its own name (review 58a, H1).
+5. **Fingerprint-shaped text** (OD-R55F5-9, D66). A **chain** of **2 or more** groups of 4
+   characters of the fingerprint alphabet (case-insensitive), joined by 1 to 3 separator runes
+   (spaces, `P*`, `S*` or joiner letters: `-`, `.`, `_`, `/`, `—`, `--`, `ㆍ`, `ǀ` …), is
+   replaced by one `…` when it has **4 or more groups**, or when it has 2 or 3 groups and **at
+   least one of its characters is a digit** (D66, review 65 F6S-3: `Mary & Jake`, `Zack.Hart`
+   and `Mary & Jake & Zack` are names and show; `Mar7 & Jake` and `TGVE R471` do not). Any run
+   of 8 or more such characters with no separator that holds both a digit and a letter is
+   replaced by one `…` as well. Characters are matched after folding look-alikes onto the
+   alphabet:
+   - fullwidth forms;
+   - the mathematical alphanumerics U+1D400–1D7FF (Latin, Greek and digits) and the Letterlike
+     letters that fill their holes (`ℬ`, `ℰ`, `ℍ`, `ℛ` …);
+   - the enclosed and dingbat alphanumerics (`②`, `Ⓔ`, `⒟`, `❾`, `🅴`, `🄶` …) and the regional
+     indicators;
+   - the Cyrillic, Greek, Lisu and Cherokee letters (either case) and the Latin small capitals
+     that look like one of its letters or digits (`Е`, `М`, `Ε`, `З` → `3`, `ꓰ`, `Ꭼ`, `ᴇ`, `ʀ` …).
+
+   Combining marks inside a group are part of it (review 64 F5S-1, review 65 F6S-1). A peer
+   cannot then put the fingerprint of the device it impersonates into its own name (review
+   58a, H1). **Residuals** (review 65): narrow letters of other scripts between digits (Hebrew
+   `ו`, Arabic `ا`), look-alikes that do not stand alone (`4829lO`), fingerprint letters that
+   resemble digits (`S`, `B`), superscript letters, and scripts outside these tables. Against
+   them the order holds: the real fingerprint comes first, right after `peer`, and a decoy
+   code only wastes attempts. A 2- or 3-group fragment of a fingerprint that holds no digit
+   (about 5 % of 2-group and 1 % of 3-group fragments) also shows (D66).
 6. An empty result becomes `(no name)`.
 
 The name is **not cut**: the card rules already cap it at 128 code points (OD-R55F5-4). The
@@ -625,7 +650,8 @@ Notes:
   ([work-session.md §IPC](work-session.md#ipc), R55-122), so a human who runs `agentnet session
   <id>` before releasing sees which grants made the result quarantined.
 - **Confusable names.** A name made of look-alike letters (Cyrillic `а` in `desktop`) passes
-  `displayName`. The fingerprint is the control, which is why every kind shows it, first.
+  `displayName`: folding (step 5) only blanks fingerprint-shaped text, never a word. The
+  fingerprint is the control, which is why every kind shows it, first.
 - **Residual: partial comparison.** A peer can generate keys until the first and last groups
   of its fingerprint match the target's (8 characters, about 2⁴⁰ tries, hours on one GPU). Only
   a human who compares all five groups defeats that, so the `device_link` text says "all five

@@ -226,3 +226,128 @@ func TestSafe(t *testing.T) {
 		}
 	}
 }
+
+// Review 65 F6S-1 (R55-F6b): fingerprint-shaped text survives neither the
+// mathematical, enclosed, Lisu, Cherokee or small-capital look-alikes nor a
+// joiner letter (Lm, or a bar- or dot-shaped Lo) between its groups.
+func TestNameBlanksMoreConfusableFingerprints(t *testing.T) {
+	for _, name := range []string{
+		"Desktop 𝟐𝐄𝐃𝟗 𝐓𝐆𝐕𝐄 𝐑𝟒𝟕𝟏",              // mathematical bold
+		"Desktop 𝟸𝙴𝙳𝟿 𝚃𝙶𝚅𝙴",                   // mathematical monospace
+		"Desktop 2\U0001D6ACD9 TGV\U0001D6AC", // mathematical bold capital epsilon
+		"Desktop ②ⒺⒹ⑨ ⓉⒼⓋⒺ",                   // enclosed
+		"Desktop ❷🅴🅳❾ 🅃🄶🅅🄴",                   // dingbat and supplement
+		"Desktop 2ꓰD9 TꓖVꓰ R471",              // Lisu
+		"Desktop 2ᎬᎠ9 ᎢᏀᏙᎬ R471",              // Cherokee
+		"Desktop 2ꭼꭰ9 ꭲꮐꮩꭼ",                   // small Cherokee
+		"Desktop 2ᴇᴅ9 ᴛɢᴠᴇ ʀ471",              // Latin small capitals
+		"Desktop 2ℰⅅ9 TGVℰ",                   // Letterlike
+		"Desktop 2ED9ㆍTGVEㆍR471",              // U+318D (Lo)
+		"Desktop 2ED9ǀTGVEǀR471",              // U+01C0 (Lo)
+		"Desktop 2ED9ˑTGVEˑR471",              // U+02D1 (Lm)
+	} {
+		if got := Name(name); got != "Desktop …" {
+			t.Errorf("Name(%q) = %q: the fingerprint survives", name, got)
+		}
+	}
+}
+
+// Review 65 F6S-2 (R55-F6b): a decoy code survives neither joiner letters
+// between its digits nor a digit look-alike letter that stands alone.
+func TestNameBlanksLetterDecoyCodes(t *testing.T) {
+	for _, name := range []string{
+		"Code 4ǀ8ǀ2ǀ9ǀ1ǀ3", // U+01C0 (Lo)
+		"Code 4ˑ8ˑ2ˑ9ˑ1ˑ3", // U+02D1 (Lm)
+		"Code 4ː8ː2ː9ː1ː3", // U+02D0 (Lm)
+		"Code 4ㆍ8ㆍ2ㆍ9ㆍ1ㆍ3", // U+318D (Lo)
+		"Code 4ǀǀ8ǀǀ2ǀǀ9ǀǀ1ǀǀ3",
+		"Code 48291З", // Cyrillic Ze
+		"Code З48291",
+		"Code 48291б", // Cyrillic be
+		"Code 4829l3", // lower-case L
+		"Code 4 O 8 2 9 1",
+		"Code 4́ ĺ 8 2 9 1", // marks around the look-alike
+	} {
+		if got := Name(name); got != "Code …" {
+			t.Errorf("Name(%q) = %q: the decoy survives", name, got)
+		}
+	}
+	// A look-alike inside a word, a run with no number of category N, and
+	// letters of an ordinary script between numbers end nothing new.
+	for _, in := range []string{
+		"12345 lol", "Room 12345 Ok", "l l l l l l", "O-I-O-I-O-I",
+		"3층 2호 1234", "1号楼2单元1", "laptop 2024", "v12345",
+	} {
+		if got := Name(in); got != in {
+			t.Errorf("Name(%q) = %q, want it unchanged", in, got)
+		}
+	}
+}
+
+// D66 (review 65 F6S-3, R55-F6b): a chain of 2 or 3 groups is blanked only
+// if it holds a digit; a chain of 4 or more groups always is.
+func TestNameFingerprintChainsNeedADigit(t *testing.T) {
+	for in, want := range map[string]string{
+		// Shown: 2 and 3 groups without a digit.
+		"Mary & Jake":        "Mary & Jake",
+		"Zack.Hart":          "Zack.Hart",
+		"Nate Kent":          "Nate Kent",
+		"MARY-JAKE":          "MARY-JAKE",
+		"Mary & Jake & Zack": "Mary & Jake & Zack",
+		"Тeam Mary Jake":     "Тeam Mary Jake",
+		// Blanked: a digit anywhere in a 2- or 3-group chain.
+		"Mar7 & Jake":         "…",
+		"Mary & Jake & Zac4":  "…",
+		"Desktop TGVE R471":   "Desktop …",
+		"TGVE R471 63MC":      "…",
+		"Mary & JakЗ":         "…", // Cyrillic Ze folds to 3
+		"Mary 𝟕ake":           "…", // mathematical digit
+		"Mary ⑦ake":           "…", // circled digit
+		"x 2ED9 TGVE y":       "x … y",
+		"Desktop 2ED9 / TGVE": "Desktop …",
+		// Blanked: 4 or more groups, digit or not.
+		"Our Mary & Jake & Zack & Hart": "Our …",
+		"ABCD EFGH JKMN PQRS TVWX":      "…",
+		// Not chains: one group, or groups not joined by 1 to 3 separators.
+		"Mary 7":        "Mary 7",
+		"Mar7 and Jake": "Mar7 and Jake",
+		"TGVE    R471":  "…", // spaces collapse first
+	} {
+		if got := Name(in); got != want {
+			t.Errorf("Name(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// fold: the arithmetic ranges land where the code charts put them, and every
+// table entry is a letter that folds to an ASCII character.
+func TestFold(t *testing.T) {
+	for r, want := range map[rune]rune{
+		0x1D400: 'A', 0x1D41A: 'A', 0x1D433: 'Z', 0x1D6A3: 'Z', // bold A, a, z; monospace z
+		0x1D6A8: 'A', 0x1D6AC: 'E', 0x1D6C2: 'A', 0x1D6B9: 0, 0x1D6C1: 0, 0x1D7C9: 0, // Greek
+		0x1D7CE: '0', 0x1D7FF: '9',
+		0x2460: '1', 0x2468: '9', 0x2469: 0, 0x2474: '1', 0x2488: '1',
+		0x249C: 'A', 0x24B6: 'A', 0x24CF: 'Z', 0x24D0: 'A', 0x24E9: 'Z', 0x24EA: '0', 0x24FF: '0',
+		0x24F5: '1', 0x24FE: 0, 0x2776: '1', 0x277F: 0, 0x2780: '1', 0x2792: '9', 0x2793: 0,
+		0x1F100: '0', 0x1F101: '0', 0x1F10A: '9', 0x1F110: 'A', 0x1F12A: 0, 0x1F130: 'A',
+		0x1F150: 'A', 0x1F170: 'A', 0x1F189: 'Z', 0x1F1E6: 'A', 0x1F1FF: 'Z',
+		0xFF10: '0', 0xFF41: 'A', 'q': 'Q', '7': '7', '-': 0, 0x00E9: 0,
+	} {
+		if got := fold(r); got != want {
+			t.Errorf("fold(U+%04X) = %q, want %q", r, got, want)
+		}
+	}
+	for r, c := range fpConfusables {
+		if !unicode.IsLetter(r) {
+			t.Errorf("fpConfusables: U+%04X is not a letter", r)
+		}
+		if fold(r) != c {
+			t.Errorf("fold(U+%04X) = %q, want %q", r, fold(r), c)
+		}
+	}
+	for r := range joinerLetters {
+		if !unicode.Is(unicode.Lo, r) || fold(r) != 0 {
+			t.Errorf("joinerLetters: U+%04X", r)
+		}
+	}
+}
