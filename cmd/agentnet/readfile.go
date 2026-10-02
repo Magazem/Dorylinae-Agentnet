@@ -10,12 +10,12 @@ import (
 // document.
 const maxScopeFileBytes = 256 << 10
 
-// readBounded reads at most max bytes of the --*-from-file argument path:
+// readBounded reads at most limit bytes of the --*-from-file argument path:
 // "-" reads stdin, anything else must be a regular file (after symlinks), so
 // a FIFO or device cannot block the CLI (review 55 R55-087). A longer input
 // is refused without reading it all. what names the thing for the over-limit
 // error, e.g. "the brief".
-func readBounded(path string, stdin io.Reader, max int64, what string) ([]byte, error) {
+func readBounded(path string, stdin io.Reader, limit int64, what string) ([]byte, error) {
 	name := path
 	r := stdin
 	if path == "-" {
@@ -35,12 +35,12 @@ func readBounded(path string, stdin io.Reader, max int64, what string) ([]byte, 
 		}
 		r = f
 	}
-	b, err := io.ReadAll(io.LimitReader(r, max+1))
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
-	if int64(len(b)) > max {
-		return nil, fmt.Errorf("read %s: over %d bytes; %s is limited", name, max, what)
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("read %s: over %d bytes; %s is limited", name, limit, what)
 	}
 	return b, nil
 }
