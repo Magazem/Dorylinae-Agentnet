@@ -240,8 +240,8 @@ func (q *queue) storageLow() bool {
 func openRelayDB(path string) (*sql.DB, error) {
 	dsn := "file::memory:?_pragma=busy_timeout(5000)&_pragma=secure_delete(1)"
 	if path != "" {
-		dsn = "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)" +
-			"&_pragma=journal_size_limit(" + strconv.Itoa(walSizeLimit) + ")"
+		dsn = fileDSN(path, "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=secure_delete(1)"+
+			"&_pragma=journal_size_limit("+strconv.Itoa(walSizeLimit)+")")
 	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -256,17 +256,29 @@ func openRelayDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// migrateDB applies every relay migration not yet recorded in relay_migrations.
-func migrateDB(db *sql.DB) error {
-	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
-	defer cancel()
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS relay_migrations (
+// relayMigrationsDDL creates the table that records applied migrations.
+const relayMigrationsDDL = `CREATE TABLE IF NOT EXISTS relay_migrations (
 	version    INTEGER PRIMARY KEY,
 	name       TEXT NOT NULL,
 	applied_at TEXT NOT NULL
-)`); err != nil {
-		return fmt.Errorf("create relay_migrations table: %w", err)
+)`
+
+// migrateDB applies every relay migration not yet recorded in relay_migrations.
+// Every step, creating the table included, runs under the write lock, so two
+// openers racing on a new database wait for each other instead of failing.
+func migrateDB(db *sql.DB) error {
+	for _, m := range relayMigrations {
+		if err := applyRelayMigration(db, m); err != nil {
+			return fmt.Errorf("relay migration %d (%s): %w", m.version, m.name, err)
+		}
 	}
+	return checkRelaySchemaVersion(db)
+}
+
+// checkRelaySchemaVersion refuses a database a newer binary has migrated.
+func checkRelaySchemaVersion(db *sql.DB) error {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
 	var current int
 	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM relay_migrations`).Scan(&current); err != nil {
 		return fmt.Errorf("read relay schema version: %w", err)
@@ -274,17 +286,64 @@ func migrateDB(db *sql.DB) error {
 	if current > len(relayMigrations) {
 		return fmt.Errorf("relay database schema version %d is newer than this binary (%d)", current, len(relayMigrations))
 	}
-	for _, m := range relayMigrations[current:] {
-		if _, err := db.ExecContext(ctx, m.sql); err != nil {
-			return fmt.Errorf("relay migration %d (%s): %w", m.version, m.name, err)
+	return nil
+}
+
+// applyRelayMigration runs one migration in a BEGIN IMMEDIATE transaction that
+// re-reads the schema version under the write lock and skips the migration if
+// another opener (`relay admin` next to a starting relay) applied it first, as
+// internal/store.apply does (R55-038). A migration that fails half-way rolls
+// back whole. Each migration gets its own queueOpTimeout. database/sql's
+// BeginTx issues a deferred BEGIN, hence the dedicated connection.
+func applyRelayMigration(db *sql.DB, m relayMigration) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), queueOpTimeout)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	defer func() {
+		if err != nil {
+			// Also after a failed BEGIN: the driver can report a cancelled ctx
+			// after BEGIN took effect.
+			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
 		}
-		if _, err := db.ExecContext(ctx,
+	}()
+	if _, err = conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, relayMigrationsDDL); err != nil {
+		return err
+	}
+	var current int
+	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM relay_migrations`).Scan(&current); err != nil {
+		return err
+	}
+	if current < m.version {
+		if current != m.version-1 {
+			return fmt.Errorf("schema version %d, expected %d", current, m.version-1)
+		}
+		if _, err = conn.ExecContext(ctx, m.sql); err != nil {
+			return err
+		}
+		if _, err = conn.ExecContext(ctx,
 			`INSERT INTO relay_migrations (version, name, applied_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
 			m.version, m.name); err != nil {
-			return fmt.Errorf("record relay migration %d: %w", m.version, err)
+			return err
 		}
 	}
-	return nil
+	_, err = conn.ExecContext(ctx, `COMMIT`)
+	return err
+}
+
+// fileDSN builds a SQLite "file:" URI for a filesystem path: '%', '#' and '?'
+// in path are URI syntax (a '#' would cut the path, "%41" would decode to
+// "A"), so they are escaped and the database opens at the path given
+// (R55-096). query is the already-formed "?..." part, or "".
+func fileDSN(path, query string) string {
+	path = strings.NewReplacer("%", "%25", "#", "%23", "?", "%3f").Replace(path)
+	return "file:" + path + query
 }
 
 func (q *queue) close() error { return q.db.Close() }

@@ -8,6 +8,8 @@
 # Needs: bash, go (only if binaries are missing). No jq or python required.
 # Exit code: 0 if all steps passed, 1 otherwise.
 set -u
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+export DORYLINAE_KEYSTORE=file
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"

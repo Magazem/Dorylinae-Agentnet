@@ -52,9 +52,17 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 				return badMailBody("token: %s", err.Error())
 			}
 			now := time.Now()
+			// readErr keeps a session read error other than not-found: only
+			// a session we do not have makes the grant an orphan. A DB error
+			// fails the apply so the mail is retried, never acked and lost
+			// (review 55 R55-081).
+			var readErr error
 			sessionOpen := func(id, requester, worker string) (bool, bool) {
 				v, err := wsStore.GetTx(ctx, tx, id)
 				if err != nil {
+					if !errors.Is(err, worksession.ErrUnknownSession) {
+						readErr = err
+					}
 					return false, false
 				}
 				r, w := v.SelfOf(self)
@@ -68,6 +76,9 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			g, verr := capability.Verify(raw, capability.VerifyParams{
 				Role: capability.RoleHolder, Self: self, Counterparty: op.Msg.From, Now: now, SessionOpen: sessionOpen,
 			})
+			if readErr != nil {
+				return fmt.Errorf("grant: read session: %w", readErr)
+			}
 			if verr != nil {
 				if capability.ReasonOf(verr) == capability.ReasonUnknownSession {
 					op.Outcome = &grantOutcome{kind: "orphan", grant: capability.GrantIDOf(verr), peer: op.Msg.From}

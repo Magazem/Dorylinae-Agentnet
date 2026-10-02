@@ -55,8 +55,17 @@ jobs:
           go-version-file: go.mod
       - run: go test -race ./... -count=1 -timeout 20m
 
+  # R55-202: the *_windows.go / *_darwin.go files (DACLs, IPC ACL, approval
+  # window) are only compiled, so only linted, under their own GOOS.
   lint:
+    name: lint (${{ matrix.goos }})
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, windows, darwin]
     runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
