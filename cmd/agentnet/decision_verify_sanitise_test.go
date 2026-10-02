@@ -95,21 +95,21 @@ func TestDecisionVerifyEmbeddedReasonIsSanitisedAndCapped(t *testing.T) {
 // Review 96 I4: in `decision <id>` the real fingerprint comes before the
 // peer-chosen name, so a name holding a fake fingerprint is read second.
 func TestDecisionShowFingerprintBeforeName(t *testing.T) {
-	const real, fake = "REAL REAL REAL REAL REAL", "2ED9 TGVE R471 KMNP QSTV"
+	const realFP, fake = "REAL REAL REAL REAL REAL", "2ED9 TGVE R471 KMNP QSTV"
 	var buf bytes.Buffer
 	printDecisionHuman(&buf, daemon.DecisionShowResult{
 		Decision:  json.RawMessage(`{"id":"d-1","outcome":"agreed","reason":"r"}`),
 		PeerNames: map[string]string{"initiator": "Alice (fingerprint " + fake + ")", "respondent": "Bob"},
-		PeerFPs:   map[string]string{"initiator": real, "respondent": real},
+		PeerFPs:   map[string]string{"initiator": realFP, "respondent": realFP},
 	})
 	for _, line := range strings.Split(buf.String(), "\n") {
 		if strings.Contains(line, "Alice") || strings.Contains(line, "Bob") {
-			if r, n := strings.Index(line, real), strings.Index(line, "named "); r < 0 || r > n {
+			if r, n := strings.Index(line, realFP), strings.Index(line, "named "); r < 0 || r > n {
 				t.Errorf("the fingerprint is not before the name: %q", line)
 			}
 		}
 	}
-	if !strings.Contains(buf.String(), "initiator: fingerprint "+real+", named Alice") {
+	if !strings.Contains(buf.String(), "initiator: fingerprint "+realFP+", named Alice") {
 		t.Errorf("output:\n%s", buf.String())
 	}
 }

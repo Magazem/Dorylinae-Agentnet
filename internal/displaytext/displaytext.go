@@ -256,7 +256,7 @@ func blankDigitRuns(rs []rune) []rune {
 			i++
 			continue
 		}
-		count, real, end := 0, 0, i
+		count, realDigits, end := 0, 0, i
 		j := i
 		for j < len(rs) {
 			if !num(j) {
@@ -264,7 +264,7 @@ func blankDigitRuns(rs []rune) []rune {
 			}
 			count++
 			if isNumber(rs[j]) {
-				real++
+				realDigits++
 			}
 			j++
 			for j < len(rs) && isAnyMark(rs[j]) {
@@ -290,7 +290,7 @@ func blankDigitRuns(rs []rune) []rune {
 			}
 			break
 		}
-		if count >= minDigitRun && real > 0 {
+		if count >= minDigitRun && realDigits > 0 {
 			out = append(out, '…')
 		} else {
 			out = append(out, rs[i:end]...)
