@@ -162,14 +162,15 @@ automatically; no human step (OD-P3-5).
 3. **A** verifies B's `sig` over A's own `msg` for the hash it stored and sets `signed`. A
    `debate.sign` whose `decision` differs from A's stored hash, or whose `sig` does not
    verify, is treated as a refusal (`peer_refused`, B's hash stored as `peer_hash`, audit
-   `decision.refuse`).
+   `decision.refuse`, notify `debate.refused`).
 
 **If B refuses or never signs.**
 
 - **Mismatch** (B's derivation differs, A's signature is bad, or the outcome is
   inconsistent): B stores A's claimed hash and its own, sets `peer_refused` on its side,
   closes its mirror (`cancelled`), audits `decision.refuse {session, peer, reason}`, notifies
-  `debate.broken`, and sends `debate.sign {at, decision: <B's hash>, refused: "mismatch",
+  `debate.refused` ([debate.md §Notifications](debate.md#notifications); R55-F29: not
+  `debate.broken`, which means a bad reveal only), and sends `debate.sign {at, decision: <B's hash>, refused: "mismatch",
   request, session}`. B's phase becomes `broken`. **B's own record** is the Decision B
   derives from its transcript with A's `entries`, `constraints` and `at` and the outcome
   rule 6 gives for that transcript (not A's claim), stored **unsigned** (no `sig_initiator`,
@@ -178,7 +179,7 @@ automatically; no human step (OD-P3-5).
   (fewer than two positions within `entries`, or `at` before `opened`), B stores no row and
   `decision` in its refusal is `Hash` of the empty canonical form (`SHA-256("dorylinae-decision-v1\n")`),
   which no Decision has. A sets `peer_refused`, stores B's hash as `peer_hash`, closes its
-  debate (`closed`, the outcome A decided) and notifies `debate.broken`. A correct pair never gets here: the transcript
+  debate (`closed`, the outcome A decided) and notifies `debate.refused`. A correct pair never gets here: the transcript
   is identical by construction, so a mismatch means a bug or a modified daemon, and both
   humans see it.
 - **Silence** (B offline, or B abandoned; a Phase 2 daemon cannot get here, it never accepts
@@ -190,7 +191,11 @@ automatically; no human step (OD-P3-5).
   verify` does not exit 0 for it ([Signed file](#signed-file-third-party-verification)),
   and the Markdown starts with the banner of [Markdown](#markdown). The `debate.close` is
   outboxed like all mail (7 days, D10), so B signs whenever it comes back. An abandoning B
-  does not sign (it left the debate).
+  does not sign (it left the debate). A correct B abandons only before its own `answer`, or
+  after it once A's close is held or overdue ([debate.md §Cancel and
+  abandon](debate.md#cancel-and-abandon), R55-F29 / OD-F29-1). So the usual case, "B answered
+  and then cancelled", cannot leave A unconfirmed. The race with an A that is already closing
+  on a timeout still can.
 - **`peer_refused`** Decisions render the same banner with "the respondent refused to sign:
   its record differs". The signed file does not carry the local state, so a refused
   Decision exported as JSON is indistinguishable from an unconfirmed one, which is why both
