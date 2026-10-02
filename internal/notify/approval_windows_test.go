@@ -79,3 +79,26 @@ func hasEnv(env []string, kv string) bool {
 	}
 	return false
 }
+
+// R55-090: the approval toast (which carries the code in its environment) and
+// its removal run PowerShell from the system directory, not through PATH.
+func TestApprovalPowerShellIsAbsoluteSystemPath(t *testing.T) {
+	orig := run
+	defer func() { run = orig }()
+	var names []string
+	run = func(_ context.Context, name string, _ []string, _ []string) error {
+		names = append(names, name)
+		return nil
+	}
+	if err := showApproval(context.Background(), "a-1", time.Now().Add(time.Minute), "t", "b"); err != nil {
+		t.Fatal(err)
+	}
+	removeApproval(context.Background(), "a-1")
+	want, err := powershellPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 2 || names[0] != want || names[1] != want {
+		t.Errorf("powershell invoked as %q, want twice %q", names, want)
+	}
+}

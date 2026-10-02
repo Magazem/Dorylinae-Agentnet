@@ -63,7 +63,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	logFile := fs.String("log-file", "", "append log output to this file instead of stderr, rotating at 1 MiB to PATH.1")
 	relayCA := fs.String("relay-ca", "", "PEM CA certificate(s) trusted for a wss:// relay, besides the system roots (default: "+relayCAFile+" in the config directory, if install stored one)")
 	fs.Usage = func() {
-		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--relay-ca FILE] [--log-file PATH] [--version]\n  %[2]s install [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n  %[2]s stop [--home DIR]\n  %[2]s version [--json]\n\nFlags (run):\n", summary, name)
+		_, _ = fmt.Fprintf(stdout, "%s\n\nUsage:\n  %[2]s [run] [--home DIR] [--relay URL] [--relay-ca FILE] [--log-file PATH] [--version]\n  %[2]s install [--home DIR] [--relay URL] [--relay-ca FILE] [--allow-writable-program] [--dry-run]\n  %[2]s uninstall [--home DIR] [--dry-run]\n  %[2]s stop [--home DIR]\n  %[2]s version [--json]\n\nFlags (run):\n", summary, name)
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)
