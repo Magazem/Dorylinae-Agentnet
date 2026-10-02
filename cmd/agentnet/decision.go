@@ -162,8 +162,10 @@ func printDecisionHuman(w io.Writer, res daemon.DecisionShowResult) {
 	}
 	// ID, outcome and reason are read from the Decision bytes (review 82b F5).
 	_, _ = fmt.Fprintf(w, "%s  outcome %s (%s)  state %s  signed by %s\n", displaytext.Term(d.ID), displaytext.Term(d.Outcome), displaytext.Term(d.Reason), res.State, signedBy)
-	_, _ = fmt.Fprintf(w, "  initiator: %s (fingerprint %s)\n", displaytext.Term(res.PeerNames[debate.RoleInitiator]), res.PeerFPs[debate.RoleInitiator])
-	_, _ = fmt.Fprintf(w, "  respondent: %s (fingerprint %s)\n", displaytext.Term(res.PeerNames[debate.RoleRespondent]), res.PeerFPs[debate.RoleRespondent])
+	// The real fingerprint comes before the peer-chosen name, so a name
+	// cannot show a fake one first (review 96 I4).
+	_, _ = fmt.Fprintf(w, "  initiator: fingerprint %s, named %s\n", res.PeerFPs[debate.RoleInitiator], displaytext.Term(res.PeerNames[debate.RoleInitiator]))
+	_, _ = fmt.Fprintf(w, "  respondent: fingerprint %s, named %s\n", res.PeerFPs[debate.RoleRespondent], displaytext.Term(res.PeerNames[debate.RoleRespondent]))
 	_, _ = fmt.Fprintf(w, "  hash: %s\n", res.Hash)
 }
 
