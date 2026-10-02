@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // Wire constants from Docs/protocol/grant.md.
@@ -256,6 +257,12 @@ func checkBranch(s string) error {
 	}
 	if strings.Contains(s, " ") || hasControl(s) || strings.ContainsAny(s, branchBad) {
 		return errors.New("resource.branch must not contain spaces, control characters or ~ ^ : ? * [ \\")
+	}
+	// grant.md §Grant fields (R55-F10, OD-F10-5): a human must be able to
+	// compare the branch, so no hidden rune (C1, Cf, Zl/Zp, variation
+	// selectors, default-ignorables, non-ASCII Zs, U+2800).
+	if strings.IndexFunc(s, displaytext.Hidden) >= 0 {
+		return errors.New("resource.branch must not contain invisible or format characters")
 	}
 	if strings.Contains(s, "..") {
 		return errors.New(`resource.branch must not contain ".."`)

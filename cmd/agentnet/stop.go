@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -55,7 +54,7 @@ Exit codes: 0 stopped, 1 error, 2 usage, 3 daemon not running.
 	switch {
 	case err == nil:
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(struct {
+			writeJSON(stdout, struct {
 				OK bool `json:"ok"`
 			}{true})
 		} else {

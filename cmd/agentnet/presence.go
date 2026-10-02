@@ -1,13 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // presenceBody is the machine-readable output of `presence [--json]`.
@@ -100,14 +100,14 @@ func runPresence(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(presenceBody{OK: true, PresenceGetResult: res})
+		writeJSON(stdout, presenceBody{OK: true, PresenceGetResult: res})
 		return exitOK
 	}
 	switch res.Mode {
 	case "only_team":
 		team := ""
 		if res.Team != nil {
-			team = fmt.Sprintf("%s (%s)", res.Team.Name, shortTeamID(res.Team.ID))
+			team = fmt.Sprintf("%s (%s)", displaytext.Term(res.Team.Name), shortTeamID(res.Team.ID))
 		}
 		_, _ = fmt.Fprintf(stdout, "Presence: only team %s\n", team)
 	default:

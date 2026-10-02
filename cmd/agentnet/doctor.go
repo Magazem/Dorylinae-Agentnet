@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -133,7 +132,7 @@ Exit codes: 0 no check failed (warn/skip still exit 0), 1 a check failed, 2 usag
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(result)
+		writeJSON(stdout, result)
 		return exit
 	}
 	for _, c := range checks {
@@ -203,17 +202,27 @@ func checkPeers(ctx context.Context, p paths.Paths) doctorCheck {
 			Fix: "run agentnet doctor again once agentnetd has started"}
 	}
 	defer func() { _ = db.Close() }()
-	bad, err := peers.CheckStoredCards(ctx, db)
+	bad, legacy, err := peers.CheckStoredCards(ctx, db)
 	if err != nil {
 		return doctorCheck{ID: "peers", State: doctorWarn, Detail: "could not read the peers table",
 			Fix: "run agentnet doctor again once agentnetd has started"}
 	}
-	if len(bad) == 0 {
-		return doctorCheck{ID: "peers", State: doctorOK, Detail: "every stored peer card verifies"}
+	// R55-F10: a card that passes only the legacy text rule is kept and is
+	// not bad (Docs/cli/doctor.md, agent-card.md §Cards stored before
+	// R55-F10); it is counted in the detail.
+	legacyNote := ""
+	if len(legacy) > 0 {
+		legacyNote = fmt.Sprintf(" (%d with characters refused at new pairings since R55-F10; shown escaped)", len(legacy))
 	}
-	msgs := make([]string, 0, len(bad))
+	if len(bad) == 0 {
+		return doctorCheck{ID: "peers", State: doctorOK, Detail: "every stored peer card verifies" + legacyNote}
+	}
+	msgs := make([]string, 0, len(bad)+1)
 	for _, b := range bad {
 		msgs = append(msgs, "peer "+b.PublicKey+" has a card that no longer verifies")
+	}
+	if len(legacy) > 0 {
+		msgs = append(msgs, fmt.Sprintf("%d with characters refused at new pairings since R55-F10 (kept)", len(legacy)))
 	}
 	return doctorCheck{ID: "peers", State: doctorWarn, Detail: strings.Join(msgs, "; "),
 		Fix: "re-pair, or run agentnet peers remove <key> (or agentnet team remove <team> <key>)"}

@@ -17,8 +17,8 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
@@ -168,7 +168,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 			return logFail(*asJSON, stdout, stderr, p, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(logHeadBody{OK: true, Head: h})
+			writeJSON(stdout, logHeadBody{OK: true, Head: h})
 		} else if h == nil {
 			_, _ = fmt.Fprintln(stdout, "The audit log is empty.")
 		} else {
@@ -181,7 +181,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 			return logFail(*asJSON, stdout, stderr, p, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(logVerifyBody{OK: true, Verify: res.Verify})
+			writeJSON(stdout, logVerifyBody{OK: true, Verify: res.Verify})
 		}
 		return printVerify(*asJSON, stdout, stderr, res.Verify)
 	}
@@ -207,7 +207,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 		if events == nil {
 			events = []audit.Entry{}
 		}
-		_ = json.NewEncoder(stdout).Encode(logEventsBody{OK: true, Events: events})
+		writeJSON(stdout, logEventsBody{OK: true, Events: events})
 		return exitOK
 	}
 	for _, e := range events {
@@ -238,7 +238,7 @@ func printVerify(asJSON bool, stdout, stderr io.Writer, v *audit.VerifyResult) i
 	broken := v.Status == audit.StatusBroken
 	if !asJSON {
 		if broken {
-			_, _ = fmt.Fprintf(stderr, "agentnet: the audit log is BROKEN at row %d: %s\n", v.FirstBad, v.Reason)
+			_, _ = fmt.Fprintf(stderr, "agentnet: the audit log is BROKEN at row %d: %s\n", v.FirstBad, displaytext.Term(v.Reason))
 		} else {
 			_, _ = fmt.Fprintf(stdout, "The audit log is intact: %d rows checked", v.Rows)
 			if v.LegacyRows > 0 {
@@ -257,14 +257,14 @@ func printVerify(asJSON bool, stdout, stderr io.Writer, v *audit.VerifyResult) i
 }
 
 // formatEvent is one line: "ts actor action key=value ...", every part through
-// the control-character cleaner (detail is content-free, but a key or name from
-// a peer must not inject terminal escapes).
+// displaytext.Term (R55-F10; detail is content-free, but a key or name from a
+// peer must not inject terminal escapes or reorder the line).
 func formatEvent(e audit.Entry) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s %s", notify.Clean(e.TS, 0), notify.Clean(e.Actor, 0), notify.Clean(e.Action, 0))
+	fmt.Fprintf(&b, "%s %s %s", displaytext.Term(e.TS), displaytext.Term(e.Actor), displaytext.Term(e.Action))
 	var d map[string]json.RawMessage
 	if err := json.Unmarshal(e.Detail, &d); err != nil {
-		if s := notify.Clean(string(e.Detail), 0); s != "" {
+		if s := displaytext.Term(string(e.Detail)); s != "" {
 			b.WriteString(" detail=" + s)
 		}
 		return b.String()
@@ -279,7 +279,7 @@ func formatEvent(e audit.Entry) string {
 		if compact, err := compactJSON(v); err == nil {
 			v = compact
 		}
-		b.WriteString(" " + notify.Clean(k, 0) + "=" + notify.Clean(string(v), 0))
+		b.WriteString(" " + displaytext.Term(k) + "=" + displaytext.Term(string(v)))
 	}
 	return b.String()
 }

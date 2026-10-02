@@ -13,9 +13,9 @@ import (
 	"unicode/utf8"
 )
 
-// agentCardVectors is Docs/protocol/agent-card.md §Negative test vectors and
-// §Size vectors: P1 and P2 (fails_at 0, accepted) and N1-N17, each with the
-// first Verification step that must refuse it.
+// agentCardVectors is Docs/protocol/agent-card.md §Negative test vectors,
+// §Size vectors and §Charset vectors: P1, P2 and P3 (fails_at 0, accepted)
+// and N1-N19, each with the first Verification step that must refuse it.
 type agentCardVectors struct {
 	Cases []struct {
 		Name     string `json:"name"`
@@ -40,7 +40,7 @@ func refuse(step int, format string, a ...any) error {
 // every case and checks that it stops at the stated step.
 func agentCard(c *checker, v *vectors) {
 	cases := v.AgentCard.Cases
-	c.ok("agent_card cases present", len(cases) == 19, fmt.Sprintf("%d cases, want 19 (P1, P2, N1-N17)", len(cases)))
+	c.ok("agent_card cases present", len(cases) == 22, fmt.Sprintf("%d cases, want 22 (P1-P3, N1-N19)", len(cases)))
 	for _, tc := range cases {
 		name, err := verifyCardEnvelope([]byte(tc.Envelope))
 		got := 0
@@ -58,7 +58,11 @@ func agentCard(c *checker, v *vectors) {
 		}
 		c.ok(label, got == tc.FailsAt, fmt.Sprintf("got step %d (%s)", got, detail))
 		if tc.FailsAt == 0 && err == nil {
-			c.eqs("agent_card "+tc.Name+" name", name, `Ada "test" <é>`)
+			want := `Ada "test" <é>`
+			if tc.Name == "P3" {
+				want = "Ada \U0001F469\u200D\U0001F4BB \u2764\uFE0F" // agent-card.md P3
+			}
+			c.eqs("agent_card "+tc.Name+" name", name, want)
 		}
 	}
 }
@@ -214,7 +218,9 @@ func onlyMembers(ms []member, names ...string) error {
 	return nil
 }
 
-// isText is agent-card.md "text": lo..128 code points, no Cc, no U+FFFD.
+// isText is agent-card.md "text": lo..128 code points, no Cc, no U+FFFD, and
+// (R55-F10) no bidi control (U+061C, U+200E, U+200F, U+202A-U+202E,
+// U+2066-U+2069) and no U+2028 or U+2029.
 func isText(v any, lo int) error {
 	s, ok := v.(string)
 	if !ok {
@@ -224,7 +230,9 @@ func isText(v any, lo int) error {
 		return fmt.Errorf("%d code points", n)
 	}
 	for _, r := range s {
-		if r < 0x20 || (r >= 0x7F && r < 0xA0) || r == 0xFFFD {
+		if r < 0x20 || (r >= 0x7F && r < 0xA0) || r == 0xFFFD ||
+			r == 0x061C || r == 0x200E || r == 0x200F || (r >= 0x202A && r <= 0x202E) ||
+			(r >= 0x2066 && r <= 0x2069) || r == 0x2028 || r == 0x2029 {
 			return fmt.Errorf("forbidden code point U+%04X", r)
 		}
 	}

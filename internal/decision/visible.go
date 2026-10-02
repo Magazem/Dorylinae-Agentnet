@@ -1,7 +1,6 @@
 package decision
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
@@ -17,22 +16,11 @@ import (
 // H1: variation selectors, the other default-ignorable code points such as
 // the Hangul fillers, every Zs space but U+0020, and U+2800), by the visible
 // ASCII escape \u{XXXX} (uppercase hex of the code point). The JSON file
-// keeps the exact bytes; this is a view.
+// keeps the exact bytes; this is a view. The rule is displaytext.Escape, the
+// one shared set (Docs/protocol/approval.md §Sanitising; R55-F10): U+FFFD is
+// kept and there is no stacked-marks cap (OD-F10-8).
 func Visible(s string, multiLine bool) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		if multiLine && (r == '\n' || r == '\t') {
-			b.WriteRune(r)
-			continue
-		}
-		if displaytext.Hidden(r) { // the one shared set (Docs/protocol/approval.md §Sanitising)
-			fmt.Fprintf(&b, `\u{%X}`, r)
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
+	return displaytext.Escape(s, multiLine)
 }
 
 // TemplateInert is decision.md §Markdown's template rule (review 48 H1),

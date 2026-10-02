@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
 
@@ -80,7 +80,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(peersBody{OK: true, PeersResult: res})
+		writeJSON(stdout, peersBody{OK: true, PeersResult: res})
 		return exitOK
 	}
 	if len(res.Peers) == 0 {
@@ -94,7 +94,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		if p.IntroducedBy != nil {
 			by = *p.IntroducedBy
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", p.Name, p.Harness, skillList(p.Skills), p.PairedAt,
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displaytext.Term(p.Name), displaytext.Term(p.Harness), skillList(p.Skills), p.PairedAt,
 			p.Trust, envelope.FormatFingerprint(p.Fingerprint), p.PublicKey, by)
 	}
 	_ = tw.Flush()
@@ -145,7 +145,7 @@ Exit codes: 0 approval created, 1 error or mismatch, 2 usage, 3 daemon not runni
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(peerVerifyBody{OK: true, Approval: res.Approval})
+		writeJSON(stdout, peerVerifyBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Approval %s: the peer is marked verified once you type the code into the AgentNet approval window.\n", res.Approval.ID)
@@ -187,9 +187,9 @@ Exit codes: 0 removed, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(peerBody{OK: true, PeerResult: res})
+		writeJSON(stdout, peerBody{OK: true, PeerResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "Removed %s (%s)\n", res.Peer.Name, envelope.FormatFingerprint(res.Peer.Fingerprint))
+	_, _ = fmt.Fprintf(stdout, "Removed %s (%s)\n", displaytext.Term(res.Peer.Name), envelope.FormatFingerprint(res.Peer.Fingerprint))
 	return exitOK
 }

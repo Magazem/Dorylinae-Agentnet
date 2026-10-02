@@ -70,7 +70,11 @@ func TestDetectsAgentCardMismatch(t *testing.T) {
 		!strings.Contains(out.String(), "PASS agent_card N15 fails at step 1") ||
 		!strings.Contains(out.String(), "PASS agent_card P2 verifies") ||
 		!strings.Contains(out.String(), "PASS agent_card N16 fails at step 1") ||
-		!strings.Contains(out.String(), "PASS agent_card N17 fails at step 5") {
+		!strings.Contains(out.String(), "PASS agent_card N17 fails at step 5") ||
+		!strings.Contains(out.String(), "PASS agent_card N18 fails at step 5") ||
+		!strings.Contains(out.String(), "PASS agent_card N19 fails at step 5") ||
+		!strings.Contains(out.String(), "PASS agent_card P3 verifies") ||
+		!strings.Contains(out.String(), "PASS agent_card P3 name") {
 		t.Fatalf("agent card checks did not run:\n%s", out.String())
 	}
 	var doc map[string]any

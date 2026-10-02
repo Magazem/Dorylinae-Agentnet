@@ -163,9 +163,12 @@ func TestMigrateCards(t *testing.T) {
 	}
 
 	before := allRows(t, st)
-	bad, err := s.MigrateCards(ctx)
+	bad, legacy, err := s.MigrateCards(ctx)
 	if err != nil {
 		t.Fatalf("MigrateCards: %v", err)
+	}
+	if len(legacy) != 0 {
+		t.Fatalf("legacy = %v, want none", legacy)
 	}
 	if len(bad) != 1 || bad[0].PublicKey != n1Key || bad[0].Fingerprint == "" || bad[0].Reason == "" {
 		t.Fatalf("bad = %+v, want only the N1 row", bad)
@@ -197,7 +200,7 @@ func TestMigrateCards(t *testing.T) {
 	}
 
 	// Idempotent: a second run changes nothing and reports the same row.
-	bad2, err := s.MigrateCards(ctx)
+	bad2, _, err := s.MigrateCards(ctx)
 	if err != nil || len(bad2) != 1 || bad2[0].PublicKey != n1Key {
 		t.Fatalf("second run: %+v, %v", bad2, err)
 	}
@@ -209,7 +212,7 @@ func TestMigrateCards(t *testing.T) {
 	}
 
 	// The read-only check (agentnet doctor) agrees.
-	chk, err := peers.CheckStoredCards(ctx, st.DB())
+	chk, _, err := peers.CheckStoredCards(ctx, st.DB())
 	if err != nil || len(chk) != 1 || chk[0].PublicKey != n1Key {
 		t.Fatalf("CheckStoredCards = %+v, %v", chk, err)
 	}

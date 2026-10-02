@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -26,7 +25,7 @@ func runDebateConstrain(asJSON bool, stdout, stderr io.Writer, id, text string) 
 		return code
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(debateConstrainBody{OK: true, Approval: res.Approval})
+		writeJSON(stdout, debateConstrainBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Approval %s: the constraint is added once you type the code into the AgentNet approval window.\n", res.Approval.ID)

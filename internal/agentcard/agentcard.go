@@ -80,7 +80,7 @@ func New(pub ed25519.PublicKey, name, harness string, skills []Skill, created ti
 		Skills:    skills,
 		Created:   created.UTC().Truncate(time.Second).Format(time.RFC3339),
 	}
-	if err := c.validate(); err != nil {
+	if err := c.validate(false); err != nil {
 		return Card{}, err
 	}
 	// The signature is not known yet; any valid one has the same length.
@@ -109,14 +109,17 @@ func checkSize(s Signed) error {
 	return nil
 }
 
-func (c Card) validate() error {
+// validate checks the schema, text and time rules. legacy selects the legacy
+// text rule of cards stored before R55-F10 (agent-card.md §Cards stored
+// before R55-F10): no bidi-control or line-separator check.
+func (c Card) validate(legacy bool) error {
 	if c.Version != Version {
 		return fmt.Errorf("agentcard: unsupported version %d", c.Version)
 	}
-	if err := checkText("name", c.Name, true); err != nil {
+	if err := checkText("name", c.Name, true, legacy); err != nil {
 		return err
 	}
-	if err := checkText("harness", c.Harness, true); err != nil {
+	if err := checkText("harness", c.Harness, true, legacy); err != nil {
 		return err
 	}
 	if _, err := decodeStrict(c.PublicKey, ed25519.PublicKeySize); err != nil {
@@ -128,16 +131,8 @@ func (c Card) validate() error {
 	if len(c.Skills) > MaxSkills {
 		return fmt.Errorf("agentcard: %d skills, at most %d", len(c.Skills), MaxSkills)
 	}
-	for i, s := range c.Skills {
-		if err := checkText(fmt.Sprintf("skills[%d].id", i), s.ID, true); err != nil {
-			return err
-		}
-		if err := checkText(fmt.Sprintf("skills[%d].name", i), s.Name, true); err != nil {
-			return err
-		}
-		if err := checkText(fmt.Sprintf("skills[%d].description", i), s.Description, false); err != nil {
-			return err
-		}
+	if err := checkSkillTexts(c.Skills, legacy); err != nil {
+		return err
 	}
 	t, err := time.Parse(time.RFC3339, c.Created)
 	if err != nil || t.UTC().Format(time.RFC3339) != c.Created {
@@ -146,7 +141,27 @@ func (c Card) validate() error {
 	return nil
 }
 
-func checkText(field, s string, required bool) error {
+func checkSkillTexts(skills []Skill, legacy bool) error {
+	for i, s := range skills {
+		if err := checkText(fmt.Sprintf("skills[%d].id", i), s.ID, true, legacy); err != nil {
+			return err
+		}
+		if err := checkText(fmt.Sprintf("skills[%d].name", i), s.Name, true, legacy); err != nil {
+			return err
+		}
+		if err := checkText(fmt.Sprintf("skills[%d].description", i), s.Description, false, legacy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkText is agent-card.md §Card, Text. The legacy text rule refuses
+// controls (Cc) and U+FFFD; the text rule (legacy false, R55-F10) also
+// refuses the bidi controls (Bidi_Control: U+061C, U+200E, U+200F,
+// U+202A-U+202E, U+2066-U+2069) and U+2028/U+2029. Other invisible
+// characters stay allowed; every printer escapes them.
+func checkText(field, s string, required, legacy bool) error {
 	if required && s == "" {
 		return fmt.Errorf("agentcard: %s is required", field)
 	}
@@ -157,8 +172,25 @@ func checkText(field, s string, required bool) error {
 		if unicode.IsControl(r) || r == utf8.RuneError {
 			return fmt.Errorf("agentcard: %s contains a control or invalid character", field)
 		}
+		if !legacy && (unicode.Is(unicode.Bidi_Control, r) || r == 0x2028 || r == 0x2029) {
+			return fmt.Errorf("agentcard: %s contains a bidi control or line separator", field)
+		}
 	}
 	return nil
+}
+
+// TextRuleError applies the R55-F10 text rule to a card that already
+// verified (under VerifyStored): nil when Verify would accept its text too,
+// else an error naming the first field that breaks the rule.
+func TextRuleError(c Card) error {
+	for _, f := range []struct {
+		name, s string
+	}{{"name", c.Name}, {"harness", c.Harness}} {
+		if err := checkText(f.name, f.s, false, false); err != nil {
+			return err
+		}
+	}
+	return checkSkillTexts(c.Skills, false)
 }
 
 // Canonical returns the deterministic JSON form of c.
@@ -191,7 +223,7 @@ func Sign(priv ed25519.PrivateKey, c Card) (Signed, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return Signed{}, errors.New("agentcard: bad private key length")
 	}
-	if err := c.validate(); err != nil {
+	if err := c.validate(false); err != nil {
 		return Signed{}, err
 	}
 	if c.PublicKey != b64.EncodeToString(priv.Public().(ed25519.PublicKey)) {
@@ -318,8 +350,24 @@ func stringMember(m map[string]any, name string) (string, error) {
 // generically, so any changed or added member fails. The schema is checked
 // after the signature, on the same generic object and by exact member name:
 // exactly six card members and three per skill. The returned card holds the
-// values read there; the card is never decoded a second time.
+// values read there; the card is never decoded a second time. Verify applies
+// the R55-F10 text rule; it is the check where a card is new to this daemon
+// (pairing, creation, verifycard). See VerifyStored.
 func Verify(data []byte) (*Signed, error) {
+	return verify(data, false)
+}
+
+// VerifyStored is Verify with the legacy text rule (no bidi-control or
+// line-separator check), for cards this daemon already holds or forwards:
+// its own card at start, stored peers rows, forwarded cards and roster
+// intake (agent-card.md §Cards stored before R55-F10, review 76 I3). Only the
+// key holder can re-sign a card, so such a card is kept, not refused. Every
+// other step is Verify's.
+func VerifyStored(data []byte) (*Signed, error) {
+	return verify(data, true)
+}
+
+func verify(data []byte, legacy bool) (*Signed, error) {
 	if len(data) > MaxCardBytes {
 		return nil, fmt.Errorf("agentcard: envelope is %d bytes, over the limit of %d", len(data), MaxCardBytes)
 	}
@@ -363,7 +411,7 @@ func Verify(data []byte) (*Signed, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentcard: card does not match schema: %w", err)
 	}
-	if err := c.validate(); err != nil {
+	if err := c.validate(legacy); err != nil {
 		return nil, err
 	}
 	return &Signed{Card: c, Signature: sigStr}, nil
@@ -401,26 +449,29 @@ func storedPair(doc any) ([]byte, error) {
 // RescueStored re-reads a card stored before R55-F23 (review 68 OD-3). It
 // parses raw with the legacy parse (no surrogate rule, and numbers outside
 // the card are not checked), keeps exactly {card, signature}, canonicalises
-// that pair and verifies the result under the current rules. It fails unless
-// the card verifies and its public_key equals wantKey. On success it returns
-// the canonical stored form; the caller rewrites the row when it differs. So a
-// v1 row whose relay added a member holding a lone surrogate escape or a
-// fraction is rescued rather than reported (review 68b F3).
-func RescueStored(raw []byte, wantKey string) ([]byte, error) {
+// that pair and verifies the result under the current rules, with the legacy
+// text rule (VerifyStored, R55-F10). It fails unless the card verifies and
+// its public_key equals wantKey. On success it returns the canonical stored
+// form and the verified card: the caller rewrites the row when the form
+// differs, and can run TextRuleError on the card without a second parse
+// (review 82b F10). So a v1 row whose relay added a member holding a lone
+// surrogate escape or a fraction is rescued rather than reported (review 68b
+// F3).
+func RescueStored(raw []byte, wantKey string) ([]byte, *Signed, error) {
 	doc, err := parseLegacy(raw)
 	if err != nil {
-		return nil, fmt.Errorf("agentcard: %w", err)
+		return nil, nil, fmt.Errorf("agentcard: %w", err)
 	}
 	canon, err := storedPair(doc)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	sc, err := Verify(canon)
+	sc, err := VerifyStored(canon)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if sc.Card.PublicKey != wantKey {
-		return nil, errors.New("agentcard: stored card is for another key")
+		return nil, nil, errors.New("agentcard: stored card is for another key")
 	}
-	return canon, nil
+	return canon, sc, nil
 }

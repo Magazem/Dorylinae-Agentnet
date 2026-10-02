@@ -96,7 +96,7 @@ Exit codes: 0 queued, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(mailBody{OK: true, MailSubmitResult: res})
+		writeJSON(stdout, mailBody{OK: true, MailSubmitResult: res})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "queued mail %s to %s (%s)\n", res.ID, pos[0], res.State)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -152,7 +151,7 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(notifyTestBody{OK: true, NotifyTestResult: res})
+			writeJSON(stdout, notifyTestBody{OK: true, NotifyTestResult: res})
 			return exitOK
 		}
 		_, _ = fmt.Fprintf(stdout, "Desktop: %s\n", res.Desktop)
@@ -191,7 +190,7 @@ func runNotify(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(notifyBody{OK: true, NotifySetResult: res})
+		writeJSON(stdout, notifyBody{OK: true, NotifySetResult: res})
 		return exitOK
 	}
 	desktopState := "off"
