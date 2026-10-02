@@ -789,11 +789,24 @@ func (m *Manager) store(sc *agentcard.Signed, rawCard []byte, trust string, mbox
 		m.log.Error("could not store peer", "event", "pair_store_error", "error", err)
 		return nil, &Failure{Code: FailStore, Message: "could not store the peer"}
 	}
+	// A re-pair keeps the higher stored trust and the first paired_at.
+	if st, pa, err := m.cfg.Store.stored(sctx, sc.Card.PublicKey); err == nil {
+		trust, at = st, parsePairedAt(pa, at)
+	}
 	fp, _ := envelope.KeyFingerprint(sc.Card.PublicKey)
 	return &Peer{
 		PublicKey: sc.Card.PublicKey, Name: sc.Card.Name, Harness: sc.Card.Harness,
 		Skills: sc.Card.Skills, PairedAt: at.Format(time.RFC3339), Trust: trust, Fingerprint: fp,
 	}, nil
+}
+
+// parsePairedAt reads a stored paired_at, or returns fallback when it is not
+// an RFC 3339 time.
+func parsePairedAt(v string, fallback time.Time) time.Time {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t
+	}
+	return fallback
 }
 
 func choose[T any](c bool, a, b T) T {

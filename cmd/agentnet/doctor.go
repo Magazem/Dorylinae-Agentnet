@@ -6,9 +6,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -156,6 +158,15 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 		relayURL = res.Relay.URL
 	} else if !up {
 		relayURL = os.Getenv(relayURLEnv)
+		if relayURL == "" {
+			// The daemon is down: the relay it was installed with is in the
+			// service definition (R55-131).
+			if exe, _ := siblingDaemonPath(); exe != "" {
+				if st, err := probeService(ctx, run, exe, p.Dir); err == nil {
+					relayURL = st.relay
+				}
+			}
+		}
 	}
 
 	// A single unauthenticated probe (never signs in, review 50 M4) serves
@@ -411,9 +422,13 @@ func checkRelay(url string, daemonUp bool, res daemon.StatusResult, probed *prob
 	if url == "" {
 		return doctorCheck{ID: "relay", State: doctorSkip, Detail: "no relay configured"}
 	}
-	if _, err := relayclient.CheckURL(url, allowInsecureRelay()); err != nil {
-		return doctorCheck{ID: "relay", State: doctorFail, Detail: "relay URL: " + err.Error(),
-			Fix: "a non-loopback relay must use wss://"}
+	// With the daemon up, its own URL rule already accepted the URL (its
+	// DORYLINAE_ALLOW_INSECURE_RELAY, not doctor's, applies: R55-134).
+	if !daemonUp {
+		if _, err := relayclient.CheckURL(url, allowInsecureRelay()); err != nil {
+			return doctorCheck{ID: "relay", State: doctorFail, Detail: "relay URL: " + err.Error(),
+				Fix: "a non-loopback relay must use wss://"}
+		}
 	}
 	if daemonUp {
 		if res.Relay == nil {
@@ -524,6 +539,28 @@ type serviceStatus struct {
 	// matches is whether the definition names exe and home; false when it
 	// could not be determined (never treated as authoritative on its own).
 	matches bool
+	// relay is the --relay URL in the definition ("" when none or unknown).
+	relay string
+}
+
+// relayFlagPattern finds "--relay URL" in a service definition: a command
+// line (Task Scheduler XML, systemd unit; the value may be quoted) or two
+// consecutive launchd <string> elements.
+var relayFlagPattern = regexp.MustCompile(`--relay(?:</string>\s*<string>|\s+)(?:"([^"]*)"|'([^']*)'|([^\s<"']+))`)
+
+// relayFromDefinition returns the relay URL a service definition passes to
+// the daemon, or "".
+func relayFromDefinition(def string) string {
+	m := relayFlagPattern.FindStringSubmatch(def)
+	if m == nil {
+		return ""
+	}
+	for _, v := range m[1:] {
+		if v != "" {
+			return html.UnescapeString(v)
+		}
+	}
+	return ""
 }
 
 // checkService trusts a running daemon it can already reach over IPC (up):
@@ -575,17 +612,23 @@ func probeService(ctx context.Context, run service.Runner, exe, home string) (se
 	}
 }
 
+// scheduledTaskRunning is the ScheduledTaskState value of a running task.
+const scheduledTaskRunning = "4"
+
 func probeServiceWindows(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
 	out, err := run.Run(ctx, []string{"schtasks.exe", "/Query", "/TN", service.TaskName, "/XML"})
 	if err != nil {
 		return serviceStatus{}
 	}
 	s := string(out)
+	// schtasks prints a localised status, so ask the scheduler for the
+	// numeric task state instead (4 = Running; R55-177).
 	running := false
-	if ro, rerr := run.Run(ctx, []string{"schtasks.exe", "/Query", "/TN", service.TaskName, "/FO", "LIST", "/V"}); rerr == nil {
-		running = strings.Contains(string(ro), "Running")
+	script := "[int](Get-ScheduledTask -TaskName '" + service.TaskName + "').State"
+	if ro, rerr := run.Run(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script}); rerr == nil {
+		running = strings.TrimSpace(string(ro)) == scheduledTaskRunning
 	}
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }
 
 func probeServiceDarwin(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
@@ -596,7 +639,7 @@ func probeServiceDarwin(ctx context.Context, run service.Runner, exe, home strin
 	}
 	s := string(out)
 	running := strings.Contains(s, "state = running")
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }
 
 func probeServiceLinux(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
@@ -609,5 +652,5 @@ func probeServiceLinux(ctx context.Context, run service.Runner, exe, home string
 	if ro, rerr := run.Run(ctx, []string{"systemctl", "--user", "is-active", service.SystemdUnit}); rerr == nil {
 		running = strings.TrimSpace(string(ro)) == "active"
 	}
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }
