@@ -24,6 +24,12 @@ const (
 // ErrBadParams marks list parameters the caller got wrong (IPC bad_request).
 var ErrBadParams = errors.New("audit: bad parameters")
 
+// ErrAmbiguous is a session filter r- id that sessions or requests of more
+// than one (direction, peer) have: a request id is unique only per sender
+// (audit.md §agentnet log, R55-F20). The caller maps it to
+// ambiguous_request.
+var ErrAmbiguous = errors.New("audit: the request id matches more than one request; use the s- id")
+
 // ListParams are the params of the audit_list IPC method. Since and Until are
 // RFC 3339 times (the CLI turns "24h" into one); Action is a prefix; Session
 // is an s- or r- id.
@@ -216,49 +222,58 @@ func rawDetail(s string) json.RawMessage {
 // rows of that session (audit.md §agentnet log): rows naming the session, its
 // request together with its peer, its grants, its approvals (subject = the
 // session or one of its grants) and its decision.
+//
+// An r- id is resolved through its sessions and its requests rows together,
+// as (direction, peer) pairs: more than one pair is ErrAmbiguous, and no row
+// at all (pruned) shows the rows naming the request whatever the peer
+// (R55-F20).
 func (l *Log) sessionClause(ctx context.Context, id string) (string, []any, error) {
 	type reqPeer struct{ request, peer string }
 	var (
 		sessions []string
 		reqs     []reqPeer
 	)
-	var q string
 	switch {
 	case strings.HasPrefix(id, "s-"):
-		q = `SELECT id, request_id, peer FROM work_sessions WHERE id = ?`
 		sessions = append(sessions, id)
-	case strings.HasPrefix(id, "r-"):
-		q = `SELECT id, request_id, peer FROM work_sessions WHERE request_id = ?`
-	default:
-		return "", nil, fmt.Errorf("%w: session must be an s- or r- id", ErrBadParams)
-	}
-	rows, err := l.db.QueryContext(ctx, q, id)
-	if err != nil {
-		return "", nil, fmt.Errorf("audit: resolve session: %w", err)
-	}
-	found := false
-	for rows.Next() {
-		var sid, rid, peer string
-		if err := rows.Scan(&sid, &rid, &peer); err != nil {
-			_ = rows.Close()
+		var rid, peer string
+		err := l.db.QueryRowContext(ctx, `SELECT request_id, peer FROM work_sessions WHERE id = ?`, id).Scan(&rid, &peer)
+		switch {
+		case err == nil:
+			reqs = append(reqs, reqPeer{rid, peer})
+		case !errors.Is(err, sql.ErrNoRows):
 			return "", nil, fmt.Errorf("audit: resolve session: %w", err)
 		}
-		found = true
-		if !strings.HasPrefix(id, "s-") {
-			sessions = append(sessions, sid)
+	case strings.HasPrefix(id, "r-"):
+		type pair struct{ direction, peer string }
+		pairs := map[pair]bool{}
+		err := l.scanRows(ctx, `SELECT id, CASE role WHEN 'requester' THEN 'out' ELSE 'in' END, peer FROM work_sessions WHERE request_id = ?`, id,
+			func(vals [3]string) {
+				sessions = append(sessions, vals[0])
+				pairs[pair{vals[1], vals[2]}] = true
+			})
+		if err != nil {
+			return "", nil, err
 		}
-		reqs = append(reqs, reqPeer{rid, peer})
-	}
-	err = rows.Err()
-	if cerr := rows.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return "", nil, fmt.Errorf("audit: resolve session: %w", err)
-	}
-	if !found && strings.HasPrefix(id, "r-") {
-		// A request without a session shows its request rows.
-		reqs = append(reqs, reqPeer{id, ""})
+		err = l.scanRows(ctx, `SELECT '', direction, peer FROM requests WHERE id = ?`, id, func(vals [3]string) {
+			pairs[pair{vals[1], vals[2]}] = true
+		})
+		if err != nil {
+			return "", nil, err
+		}
+		switch len(pairs) {
+		case 0:
+			// Nothing left (pruned): the rows naming the request.
+			reqs = append(reqs, reqPeer{id, ""})
+		case 1:
+			for p := range pairs {
+				reqs = append(reqs, reqPeer{id, p.peer})
+			}
+		default:
+			return "", nil, ErrAmbiguous
+		}
+	default:
+		return "", nil, fmt.Errorf("%w: session must be an s- or r- id", ErrBadParams)
 	}
 
 	grants, err := l.column(ctx, `SELECT id FROM grants WHERE session IN (`+placeholders(len(sessions))+`)`, sessions)
@@ -306,6 +321,26 @@ func (l *Log) sessionClause(ctx context.Context, id string) (string, []any, erro
 	// CASE, not AND: json_extract fails on a tampered, invalid detail, and
 	// SQLite does not promise to short-circuit.
 	return `CASE WHEN json_valid(detail) THEN (` + strings.Join(conds, ` OR `) + `) ELSE 0 END`, args, nil
+}
+
+// scanRows runs q with arg and calls f for each row of three text columns.
+func (l *Log) scanRows(ctx context.Context, q, arg string, f func([3]string)) error {
+	rows, err := l.db.QueryContext(ctx, q, arg)
+	if err != nil {
+		return fmt.Errorf("audit: resolve session: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var v [3]string
+		if err := rows.Scan(&v[0], &v[1], &v[2]); err != nil {
+			return fmt.Errorf("audit: resolve session: %w", err)
+		}
+		f(v)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("audit: resolve session: %w", err)
+	}
+	return nil
 }
 
 func (l *Log) column(ctx context.Context, q string, args []string) ([]string, error) {

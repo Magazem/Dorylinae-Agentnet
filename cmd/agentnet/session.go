@@ -583,13 +583,18 @@ func runWait(args []string, stdout, stderr io.Writer) int {
 			var ie *ipc.Error
 			if errors.As(serr, &ie) && ie.Code == "unknown_session" {
 				var rshown daemon.RequestShowResult
-				if rerr := waitCall(p, "request_show", map[string]any{"id": id}, &rshown); rerr == nil {
+				rerr := waitCall(p, "request_show", map[string]any{"id": id}, &rshown)
+				if rerr == nil {
 					switch rshown.Request.State {
 					case "declined":
 						return printWaitResult(*asJSON, stdout, "declined", nil)
 					case "cancelled":
 						return printWaitResult(*asJSON, stdout, "cancelled", nil)
 					}
+				} else if errors.As(rerr, &ie) && ie.Code != "unknown_request" {
+					// Any other error ends the wait, e.g. ambiguous_request for
+					// an id that an out and an in row share (R55-F20).
+					return failJSON(*asJSON, stdout, stderr, exitError, ie.Code, ie.Message)
 				}
 			} else if errors.As(serr, &ie) {
 				return failJSON(*asJSON, stdout, stderr, exitError, ie.Code, ie.Message)

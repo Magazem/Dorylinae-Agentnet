@@ -35,7 +35,7 @@ func TestEarlyComplete_ClosesOpenSession(t *testing.T) {
 	if err != nil || av.State != StateClosed || av.Outcome != OutcomeCancelled {
 		t.Fatalf("A's session after early complete = %+v, %v", av, err)
 	}
-	arv, err := a.req.Show(context.Background(), reqID, testB)
+	arv, err := a.req.Show(context.Background(), reqID, "")
 	if err != nil || arv.State != "completed" || arv.Note != "done early" || arv.Result == nil || arv.Result.Status != "pass" {
 		t.Fatalf("A's request after early complete = %+v, %v", arv, err)
 	}
@@ -67,7 +67,7 @@ func TestEarlyComplete_AwaitingResultLeftUnchanged(t *testing.T) {
 	// The request mirror still applies Phase 1's rule (completed, by seq),
 	// but B's content is not stored while a result is under review (R55-F18,
 	// review 69b F1): A's close writes A's view.
-	arv, err := a.req.Show(context.Background(), reqID, testB)
+	arv, err := a.req.Show(context.Background(), reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "" {
 		t.Fatalf("A's request = %+v, %v", arv, err)
 	}

@@ -107,9 +107,9 @@ func TestShowKeyExactRow(t *testing.T) {
 	if n := countRows(t, s.DB, `SELECT COUNT(*) FROM requests WHERE id = '`+testID+`'`); n != 2 {
 		t.Fatalf("rows with the id = %d, want 2", n)
 	}
-	// Show by id alone prefers the out row: the ambiguity ShowKey avoids.
-	if v, err := s.Show(t.Context(), testID, ""); err != nil || v.Direction != "out" {
-		t.Fatalf("Show = %s, %v; want the out row", v.Direction, err)
+	// Show by id alone is ambiguous (R55-F20): the ambiguity ShowKey avoids.
+	if _, err := s.Show(t.Context(), testID, ""); !errors.Is(err, ErrAmbiguousRequest) {
+		t.Fatalf("Show = %v; want ErrAmbiguousRequest", err)
 	}
 	k, err := s.FindKey(t.Context(), func(k Key) bool { return k.Direction == "in" })
 	if err != nil || k.Peer != testFrom || k.ID != testID {

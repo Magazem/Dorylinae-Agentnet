@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -580,6 +581,13 @@ func runDebateCancel(asJSON bool, stdout, stderr io.Writer, id, reason string) i
 		return code
 	}
 	if shown.Debate.Phase == "invited" {
+		// Only the initiator's request can be cancelled. The respondent's
+		// request_cancel would hit its own outgoing request with the same id,
+		// if it has one (R55-F20).
+		if shown.Debate.Role != debate.RoleInitiator {
+			return failJSON(asJSON, stdout, stderr, exitError, "bad_state",
+				fmt.Sprintf("you were invited to %s: decline it with agentnet decline %s", shown.Debate.Session, shown.Debate.Request.ID))
+		}
 		var res daemon.RequestCancelResult
 		if code := callDaemon(asJSON, stdout, stderr, statusTimeout, "request_cancel", map[string]any{"id": shown.Debate.Request.ID}, &res); code != exitOK {
 			return code

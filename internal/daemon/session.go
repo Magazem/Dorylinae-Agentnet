@@ -122,6 +122,8 @@ func sessionError(err error) error {
 		return &ipc.Error{Code: CodeNotRequester, Message: "not the requester"}
 	case errors.Is(err, worksession.ErrNotWorker):
 		return &ipc.Error{Code: CodeNotWorker, Message: "not the worker"}
+	case errors.Is(err, worksession.ErrAmbiguousRequest):
+		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the request id matches more than one session; use the s- id"}
 	case errors.As(err, &bse):
 		return &ipc.Error{Code: CodeBadState, Message: bse.Msg}
 	case errors.As(err, &fe):
