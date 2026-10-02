@@ -87,7 +87,7 @@ func (s *Store) Add(ctx context.Context, sc *agentcard.Signed, raw []byte, at ti
 // refreshes its card details and keeps the original paired_at. AddTrusted never
 // lowers the trust of a known key. A direct pairing clears introduced_by.
 func (s *Store) AddTrusted(ctx context.Context, sc *agentcard.Signed, raw []byte, at time.Time, trust string, mbox []byte) (err error) {
-	_, err = s.AddTrustedAudited(ctx, sc, raw, at, trust, mbox, nil)
+	_, _, err = s.AddTrustedAudited(ctx, sc, raw, at, trust, mbox, nil)
 	return err
 }
 
@@ -95,15 +95,15 @@ func (s *Store) AddTrusted(ctx context.Context, sc *agentcard.Signed, raw []byte
 // transaction after the upsert and is given the trust the row holds now (a
 // known peer keeps a higher trust). The pairing call passes it to write its
 // S row, pair.complete, so no row means no stored peer; an error from it
-// rolls the store back. It returns the stored trust.
-func (s *Store) AddTrustedAudited(ctx context.Context, sc *agentcard.Signed, raw []byte, at time.Time, trust string, mbox []byte, onAdded func(ctx context.Context, tx *sql.Tx, stored string) error) (stored string, err error) {
+// rolls the store back. It returns the stored trust and paired_at.
+func (s *Store) AddTrustedAudited(ctx context.Context, sc *agentcard.Signed, raw []byte, at time.Time, trust string, mbox []byte, onAdded func(ctx context.Context, tx *sql.Tx, stored string) error) (stored, pairedAt string, err error) {
 	skills, err := json.Marshal(sc.Card.Skills)
 	if err != nil {
-		return "", fmt.Errorf("peers: marshal skills: %w", err)
+		return "", "", fmt.Errorf("peers: marshal skills: %w", err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", fmt.Errorf("peers: store peer: %w", err)
+		return "", "", fmt.Errorf("peers: store peer: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	var old string
@@ -111,11 +111,11 @@ func (s *Store) AddTrustedAudited(ctx context.Context, sc *agentcard.Signed, raw
 	case errors.Is(err, sql.ErrNoRows):
 		old = "[]"
 	case err != nil:
-		return "", fmt.Errorf("peers: store peer: %w", err)
+		return "", "", fmt.Errorf("peers: store peer: %w", err)
 	}
 	keys, err := mergeMailboxKeys(old, mbox)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO peers (public_key, name, harness, skills, card, paired_at, trust, mailbox_keys)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -128,22 +128,22 @@ ON CONFLICT (public_key) DO UPDATE SET name = excluded.name, harness = excluded.
 		sc.Card.PublicKey, sc.Card.Name, sc.Card.Harness, string(skills), string(raw),
 		at.UTC().Format(time.RFC3339), trust, keys)
 	if err != nil {
-		return "", fmt.Errorf("peers: store peer: %w", err)
+		return "", "", fmt.Errorf("peers: store peer: %w", err)
 	}
-	// The trust the row holds now, read in the transaction: a known peer keeps
-	// a higher trust than the one this pairing offers (R55-118).
-	if err := tx.QueryRowContext(ctx, `SELECT trust FROM peers WHERE public_key = ?`, sc.Card.PublicKey).Scan(&stored); err != nil {
-		return "", fmt.Errorf("peers: store peer: %w", err)
+	// The trust and paired_at the row holds now, read in the transaction: a
+	// known peer keeps a higher trust and its first paired_at (R55-118).
+	if err := tx.QueryRowContext(ctx, `SELECT trust, paired_at FROM peers WHERE public_key = ?`, sc.Card.PublicKey).Scan(&stored, &pairedAt); err != nil {
+		return "", "", fmt.Errorf("peers: store peer: %w", err)
 	}
 	if onAdded != nil {
 		if err := onAdded(ctx, tx, stored); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return "", fmt.Errorf("peers: store peer: %w", err)
+		return "", "", fmt.Errorf("peers: store peer: %w", err)
 	}
-	return stored, nil
+	return stored, pairedAt, nil
 }
 
 // MergeMailboxKeysTx merges the verified canonical announcement ann of peer

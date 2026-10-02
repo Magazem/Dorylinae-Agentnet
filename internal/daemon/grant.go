@@ -1048,7 +1048,7 @@ func revokeForRemovedPeer(capStore *capability.Store, log *audit.Log) func(ctx c
 		if err != nil {
 			return err
 		}
-		if err := auditGrantRevokes(ctx, tx, log, ids, capability.ReasonPeerRemoved); err != nil {
+		if err := auditGrantRevokes(ctx, tx, log, ids, capability.ReasonPeerRemoved, key); err != nil {
 			return err
 		}
 		pols, err := capStore.PolicyDeleteForPeerTx(ctx, tx, key)
@@ -1071,14 +1071,20 @@ func revokeForRemovedPeer(capStore *capability.Store, log *audit.Log) func(ctx c
 
 // auditGrantRevokes writes one grant.revoke row (S-, actor daemon) per grant
 // a session close or a peer removal just revoked, inside that transaction.
-func auditGrantRevokes(ctx context.Context, tx *sql.Tx, log *audit.Log, ids []string, reason string) error {
+// peer is the removed peer, or "" to read each grant's peer. A failing read
+// is reported to the central audit log and the row is written without the
+// peer: reading a row's detail never rolls back a removal (D68, review 97 L3).
+func auditGrantRevokes(ctx context.Context, tx *sql.Tx, log *audit.Log, ids []string, reason, peer string) error {
 	if log == nil {
 		return nil
 	}
 	for _, id := range ids {
-		var peer string
-		if err := tx.QueryRowContext(ctx, `SELECT peer FROM grants WHERE id = ?`, id).Scan(&peer); err != nil {
-			return fmt.Errorf("grant: read revoked grant: %w", err)
+		peer := peer
+		if peer == "" {
+			if err := tx.QueryRowContext(ctx, `SELECT peer FROM grants WHERE id = ?`, id).Scan(&peer); err != nil {
+				audit.ReportFailure("grant.revoke", fmt.Errorf("read revoked grant: %w", err))
+				peer = ""
+			}
 		}
 		if err := audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "grant.revoke", map[string]any{"grant": id, "peer": peer, "reason": reason}); err != nil {
 			return err

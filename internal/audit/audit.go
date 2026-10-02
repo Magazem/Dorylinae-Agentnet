@@ -77,6 +77,11 @@ func logFailure(action string, err error) {
 	}
 }
 
+// ReportFailure logs, like a failed append, that the row of action could not
+// be built (its detail could not be read), with the error and never the
+// detail. The caller still writes what it can and goes on (review 97 L3).
+func ReportFailure(action string, err error) { logFailure(action, err) }
+
 // fail wraps err as a *WriteError and reports it.
 func fail(action string, err error) error {
 	logFailure(action, err)

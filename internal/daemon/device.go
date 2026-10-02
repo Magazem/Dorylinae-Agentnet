@@ -512,45 +512,47 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 			return nil, err
 		}
 		now := ds.Time()
-		tx, err := ds.DB.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, fmt.Errorf("device: begin unlink: %w", err)
-		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
+		// device.unlink is an S- row: written in the unlink's transaction
+		// through a savepoint, and if SQLite lost the transaction the unlink
+		// is retried once without it (audit.RunSoft, review 97 L1).
+		var (
+			revoked []device.Link
+			mailID  string
+		)
+		err = audit.RunSoft(ctx, ds.DB, func(tx *sql.Tx, withRows bool) error {
+			var err error
+			mailID = ""
+			revoked, err = ds.RevokeForPeerTx(ctx, tx, peer.PublicKey, now)
+			if err != nil {
+				return err
 			}
-		}()
-		revoked, err := ds.RevokeForPeerTx(ctx, tx, peer.PublicKey, now)
+			// A local unlink moves the peer's watermark too: an offer it made
+			// before now, delivered late, cannot complete a re-link started
+			// within its 10 minutes (review 55 R55-161).
+			if err := ds.NoteUnlinkTx(ctx, tx, peer.PublicKey, now, now); err != nil {
+				return err
+			}
+			// The mail is sent even when this device holds no active link: each
+			// side activates on its own, so one side can be active while the
+			// other's intent lapsed (Docs/protocol/device.md §Unlink and expiry).
+			body := map[string]any{"at": wireTimeStr(now)}
+			detail := unlinkAudit(revoked, peer.PublicKey, "local")
+			if id, ok := detail["link"].(string); ok {
+				body["link"] = id
+			}
+			sub, err := ob.SubmitTx(ctx, tx, peer.PublicKey, device.KindUnlink, body)
+			if err != nil {
+				return err
+			}
+			mailID = sub.ID
+			if !withRows {
+				return nil
+			}
+			return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.unlink", detail)
+		})
 		if err != nil {
 			return nil, err
 		}
-		// A local unlink moves the peer's watermark too: an offer it made
-		// before now, delivered late, cannot complete a re-link started
-		// within its 10 minutes (review 55 R55-161).
-		if err := ds.NoteUnlinkTx(ctx, tx, peer.PublicKey, now, now); err != nil {
-			return nil, err
-		}
-		// The mail is sent even when this device holds no active link: each
-		// side activates on its own, so one side can be active while the
-		// other's intent lapsed (Docs/protocol/device.md §Unlink and expiry).
-		body := map[string]any{"at": wireTimeStr(now)}
-		detail := unlinkAudit(revoked, peer.PublicKey, "local")
-		if id, ok := detail["link"].(string); ok {
-			body["link"] = id
-		}
-		sub, err := ob.SubmitTx(ctx, tx, peer.PublicKey, device.KindUnlink, body)
-		if err != nil {
-			return nil, err
-		}
-		if err := audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.unlink", detail); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("device: commit unlink: %w", err)
-		}
-		committed = true
 		ob.Wake()
 		// A link attempt still waiting for its code is dead now: close its
 		// approval window too (its Precondition would refuse it anyway),
@@ -566,7 +568,7 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 			_, _ = apprStore.RejectFor(ctx, old, "unlinked")
 		}
 		runner.kick()
-		res := DeviceUnlinkResult{MailID: sub.ID}
+		res := DeviceUnlinkResult{MailID: mailID}
 		if len(revoked) > 0 {
 			l := revoked[0]
 			for _, r := range revoked {

@@ -71,6 +71,14 @@ func init() {
 	}
 }
 
+// actionExtraFile is the one file where each actionExtra kind is allowed, so a
+// new site elsewhere cannot use it (review 97 I7).
+var actionExtraFile = map[string]string{
+	"grant.create":       "internal/daemon/grant.go",
+	"team.invite_issued": "internal/daemon/team.go",
+	"peer.remove":        "internal/daemon/trust.go",
+}
+
 // actionExtra lists the one-off second call kinds.
 var actionExtra = map[string][]string{
 	// grant.create is S on the policy path (AppendTx) and N on the approval
@@ -132,11 +140,16 @@ var wrappers = map[string]wrapper{
 	"auditTx":           {3, "", kTx}, // daemon.auditTx(ctx, tx, actor, action, detail)
 }
 
-// wrapperDefs are the functions whose own bodies forward a variable action.
+// wrapperDefs are the functions whose own bodies forward a variable action,
+// keyed by "<directory>:<function>" so a function elsewhere that merely shares
+// a name is not exempted (review 97 I7). The fixed-action wrappers
+// (createAudit, refuseAudit, auditOpen, auditRemovedTx, auditGrantRevokes)
+// are not listed: their bodies are checked like any other call site.
 var wrapperDefs = map[string]bool{
-	"audit": true, "auditTx": true, "audited": true, "auditLifecycle": true, "fetchAudit": true,
-	"auditRemovedTx": true, "auditOpen": true, "createAudit": true, "refuseAudit": true,
-	"auditGrantRevokes": true, "record": true, "AppendTx": true, "AppendTxSoft": true, "Append": true,
+	"internal/audit:Append": true, "internal/audit:AppendTx": true, "internal/audit:AppendTxSoft": true,
+	"internal/daemon:auditTx": true, "internal/daemon:audit": true, // helperRunner.audit (device_run.go)
+	"internal/debate:audit": true, "internal/peers:audit": true, "internal/team:audited": true,
+	"internal/request:auditLifecycle": true, "internal/capability:record": true,
 }
 
 // noErrWrappers return no audit error (they return an after-commit func or
@@ -256,9 +269,10 @@ func TestAuditClassification(t *testing.T) {
 	var sites []auditSite
 	for _, pf := range files {
 		var stack []ast.Node
+		dir := strings.TrimPrefix(filepath.ToSlash(filepath.Dir(pf.path)), "../../")
 		inDef := func() bool {
 			for _, n := range stack {
-				if fd, ok := n.(*ast.FuncDecl); ok && wrapperDefs[fd.Name.Name] {
+				if fd, ok := n.(*ast.FuncDecl); ok && wrapperDefs[dir+":"+fd.Name.Name] {
 					return true
 				}
 			}
@@ -372,7 +386,10 @@ func TestAuditClassification(t *testing.T) {
 			bad = append(bad, loc+": action "+s.action+" is in no class")
 			continue
 		}
-		kinds := append(append([]string{}, cl.kinds...), actionExtra[s.action]...)
+		kinds := append([]string{}, cl.kinds...)
+		if strings.TrimPrefix(s.file, "../../") == actionExtraFile[s.action] {
+			kinds = append(kinds, actionExtra[s.action]...)
+		}
 		allowed := false
 		for _, k := range kinds {
 			if k == s.kind {

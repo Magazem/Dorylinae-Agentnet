@@ -576,7 +576,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		if err != nil {
 			return err
 		}
-		return auditGrantRevokes(ctx, tx, log, ids, capability.ReasonSessionClosed)
+		return auditGrantRevokes(ctx, tx, log, ids, capability.ReasonSessionClosed, "")
 	}
 	// peers remove revokes all of that peer's grants and policies
 	// (Docs/protocol/grant.md §Session end, §Policies).

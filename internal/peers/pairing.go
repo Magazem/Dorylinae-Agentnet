@@ -791,7 +791,7 @@ func (m *Manager) store(sc *agentcard.Signed, rawCard []byte, trust string, mbox
 	at := m.cfg.Now().UTC().Truncate(time.Second)
 	sctx, cancel := context.WithTimeout(context.Background(), auditWriteBudget)
 	defer cancel()
-	stored, err := m.cfg.Store.AddTrustedAudited(sctx, sc, rawCard, at, trust, mbox, func(ctx context.Context, tx *sql.Tx, stored string) error {
+	stored, pairedAt, err := m.cfg.Store.AddTrustedAudited(sctx, sc, rawCard, at, trust, mbox, func(ctx context.Context, tx *sql.Tx, stored string) error {
 		return audit.AppendTx(ctx, tx, audit.ActorDaemon, ActionPairComplete, map[string]string{
 			"id": id, "role": role, "peer": sc.Card.PublicKey, "trust": stored,
 		})
@@ -800,12 +800,23 @@ func (m *Manager) store(sc *agentcard.Signed, rawCard []byte, trust string, mbox
 		m.log.Error("could not store peer", "event", "pair_store_error", "error", err)
 		return nil, &Failure{Code: FailStore, Message: "could not store the peer"}
 	}
-	trust = stored
+	// A re-pair keeps the higher stored trust and the first paired_at: the row,
+	// not the request, says what is stored (R55-118, review 97 L2).
+	trust, at = stored, parsePairedAt(pairedAt, at)
 	fp, _ := envelope.KeyFingerprint(sc.Card.PublicKey)
 	return &Peer{
 		PublicKey: sc.Card.PublicKey, Name: sc.Card.Name, Harness: sc.Card.Harness,
 		Skills: sc.Card.Skills, PairedAt: at.Format(time.RFC3339), Trust: trust, Fingerprint: fp,
 	}, nil
+}
+
+// parsePairedAt reads a stored paired_at, or returns fallback when it is not
+// an RFC 3339 time.
+func parsePairedAt(v string, fallback time.Time) time.Time {
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t
+	}
+	return fallback
 }
 
 func choose[T any](c bool, a, b T) T {

@@ -189,3 +189,91 @@ the row with an empty `peer`.
   identically on the `main` checkout. As a result, the new R55-200 scan in the phase-2 test
   and the device inventory rows were not exercised here. CI on all three OSes, with `-race`,
   must show them green before merge.
+
+## Fixes applied
+
+The fixes are in the r55-f31 worktree. I made no git writes and kept the files' CRLF line
+endings.
+
+- **M1.**
+  - Change (`internal/daemon/session.go:600`): the `ws.release` lookup ends with
+    `ORDER BY rowid DESC LIMIT 1`.
+  - Why this is the right row: the newest approved release approval of the session is the
+    current one. An older pending approval fails the `seq` precondition once a newer one has
+    released.
+  - New test: `internal/daemon/release_audit_round_test.go`
+    (`TestReleaseRowNamesEachRoundsApproval`) runs two rounds. Each `ws.release` row must
+    name its own round's approval.
+  - I checked the test: it fails with the old query (round 2's row named round 1's approval)
+    and passes with the fix.
+- **L1.** Three daemon-owned removals now run in `audit.RunSoft`, so a lost transaction is
+  retried once without the row:
+  - `device_unlink` (`internal/daemon/device.go`);
+  - `device_scope_clear` (`internal/daemon/device_scope.go`);
+  - team `leave` and `OwnerRemoved` (`internal/team/store.go`). On the retry, the GC's
+    `peer.remove` rows become no-ops through `noRows`.
+
+  The hook and mail-apply sites are unchanged. **Backlog:**
+  - The S- rows in transactions owned by others do not retry yet. These are the
+    session-close `RevokeGrants` hook, the `grant.revoke` and `device.unlink` mail kinds,
+    `grant.revoked_in`, B's `decision.refuse` and the roster GC. The owner of each
+    transaction (worksession close/mirror, the mail receiver's apply) should retry on
+    `*audit.TxLostError`. This follows the spec, so it needs no owner OD.
+- **L2.**
+  - Change (`internal/peers/store.go`): `AddTrustedAudited` now returns the stored `trust`
+    and `paired_at`, read in the transaction.
+  - Change (`internal/peers/pairing.go`): `store()` reports the first `paired_at`, using
+    `parsePairedAt`, which is restored.
+  - New test: `internal/peers/repair_paired_at_test.go`. It re-pairs one hour later, at a
+    lower trust, on a fake clock, and expects the stored trust and the first `paired_at`.
+    It fails without the fix.
+  - Rebase note: main's F30 test `internal/peers/repair_trust_test.go`
+    (`TestStoreReportsStoredTrustOnRepair`) asserts the same two facts, so it agrees with
+    this change. But it calls `m.store(sc, card, trust, nil)`, and on this branch `m.store`
+    takes two more arguments (`id, role`). On rebase it needs `, "", ""` (or a pairing id
+    and role), or it can be dropped in favour of the new test.
+- **L3.**
+  - Change (`internal/daemon/grant.go`): `auditGrantRevokes` takes the peer when it is
+    known, which is a peer removal, so nothing is read. For a session close it reads the
+    peer. If that read fails, it reports the failure through the new
+    `audit.ReportFailure(action, err)` (`internal/audit/audit.go`), which logs the action
+    and the error, never the detail. It then writes the row with an empty `peer`. The
+    removal is never rolled back.
+  - New test: `internal/daemon/grant_revoke_audit_internal_test.go`.
+- **Info, done.**
+  - I7: `TestAuditClassification` keys `wrapperDefs` by `<dir>:<func>`. The fixed-action
+    wrappers are no longer exempt, so their bodies are checked like any call site. The
+    `actionExtra` kinds are pinned to one file each (`actionExtraFile`). I checked that
+    removing one key makes the test fail.
+  - I4: a comment in `audit_fault_test.go` forbids `t.Parallel`.
+- **Info, backlog.**
+  - I3: the CLM stderr detection (4 KiB, after the process exits).
+  - I5: optional `ParseStrict` for the `fetch.req` envelope.
+  - I7: the sweep test matches text only.
+
+### Verification
+
+| Check | Result |
+|---|---|
+| `go build ./...` | ok |
+| `go vet ./...` on windows, linux and darwin | clean |
+| gofmt on the changed files (after removing CR) | clean |
+| `go test` audit, approval, peers, team | all ok |
+| `go test ./internal/device` | fails (see below) |
+| `go test ./internal/daemon -run 'Audit\|Inventory\|Grant\|Approval\|Session\|Device\|Team\|Pair\|Release'` | fails (see below) |
+
+Every failure has the same host cause, `writable_by_others: "C:\\" can be changed by
+Authenticated Users` (this machine's ACL; see "Tests run"):
+- in `internal/device`: `TestCheckTarget` and `TestValidateScopeResolvesArgv0`;
+- in the daemon run: `TestDeviceScopeSetConcurrentSupersedes`, `TestDeviceScopeSummary`,
+  `TestAuditInventoryDevices`, `TestHelperRunSessionOwnedByRunner`,
+  `TestPhase2AuditHasNoContent` and the three `TestHelper*Unlink*` tests.
+
+Everything else in the daemon run passes, including:
+- `TestAuditClassification` and `TestAuditFaultInjection`;
+- the new M1 and L3 tests;
+- `TestPeersRemoveRevokesGrants`;
+- the `TestDeviceUnlink*` e2e tests, which exercise the new `device_unlink` `RunSoft` path.
+
+`device_scope_clear` needs a scope set first, which this host refuses, so it was not
+exercised here. CI on three OSes with `-race` must cover it.

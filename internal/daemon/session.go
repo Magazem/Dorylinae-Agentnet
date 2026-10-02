@@ -594,10 +594,13 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 				}
 				// ws.release is an S row: written here, in the approval's
 				// transaction, not after the commit. The approval id is read
-				// in tx, where Confirm has just marked it approved.
+				// in tx, where Confirm has just marked it approved. Earlier
+				// rounds' release approvals of the same session are approved
+				// too; this one is the newest: an older pending one fails the
+				// seq check above once a newer one released (review 97 M1).
 				if log != nil {
 					var apprID string
-					if err := tx.QueryRowContext(ctx, `SELECT id FROM approvals WHERE kind = ? AND subject = ? AND state = 'approved'`,
+					if err := tx.QueryRowContext(ctx, `SELECT id FROM approvals WHERE kind = ? AND subject = ? AND state = 'approved' ORDER BY rowid DESC LIMIT 1`,
 						approval.KindRelease, sid).Scan(&apprID); err != nil {
 						return nil, fmt.Errorf("session: read approval id: %w", err)
 					}

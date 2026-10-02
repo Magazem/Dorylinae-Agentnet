@@ -64,7 +64,9 @@ func newFaultEnv(t *testing.T) *faultEnv {
 	f.qEnv = e
 	f.dir = qDir(t)
 	// audit.SetErrorLog is process-wide and the last daemon started owns it:
-	// point it at this test's buffer.
+	// point it at this test's buffer. Never mark these tests (or any daemon
+	// test) t.Parallel: another daemon's Run would take the log over
+	// (review 97 I4).
 	audit.SetErrorLog(slog.New(slog.NewTextHandler(f, nil)))
 	t.Cleanup(func() { audit.SetErrorLog(nil) })
 	return f

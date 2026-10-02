@@ -347,19 +347,20 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		if err != nil {
 			return nil, err
 		}
-		tx, err := ds.DB.BeginTx(ctx, nil)
+		// device.scope_clear is an S- row: written in the clear's transaction
+		// through a savepoint, and if SQLite lost the transaction the clear is
+		// retried once without it (audit.RunSoft, review 97 L1).
+		err = audit.RunSoft(ctx, ds.DB, func(tx *sql.Tx, withRows bool) error {
+			if _, err := ds.ClearScopeTx(ctx, tx, link.ID); err != nil {
+				return err
+			}
+			if !withRows {
+				return nil
+			}
+			return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID})
+		})
 		if err != nil {
-			return nil, fmt.Errorf("device: begin scope clear: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := ds.ClearScopeTx(ctx, tx, link.ID); err != nil {
 			return nil, err
-		}
-		if err := audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID}); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("device: commit scope clear: %w", err)
 		}
 		// Narrowing takes effect at once: a scope still waiting for its code
 		// is rejected, and queued runs are dropped.
