@@ -4,7 +4,8 @@
 // vector of Docs/protocol/grant.md, the audit chain of Docs/protocol/audit.md,
 // the debate commitment of Docs/protocol/debate.md, the Decision of
 // Docs/protocol/decision.md, relay auth v2 of Docs/protocol/envelope.md and
-// the Agent Card size vectors P2, N16 and N17 of Docs/protocol/agent-card.md.
+// the Agent Card size vectors P2, N16 and N17 and charset vectors N18, N19
+// and P3 of Docs/protocol/agent-card.md.
 //
 // Pairing values are deterministic. HPKE sealing draws its ephemeral key from
 // crypto/rand, so every run prints a new mail payload; the published payload
@@ -35,6 +36,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
@@ -304,6 +308,69 @@ func main() {
 	printRelayAuthVector(privI, keyI)
 	fmt.Println("== agent card size vectors (R55-F13, agent-card.md §Size vectors)")
 	printCardSizeVectors(privI, cardI)
+	fmt.Println("== agent card charset vectors (R55-F10, agent-card.md §Charset vectors)")
+	printCardCharsetVectors(privI)
+}
+
+// printCardCharsetVectors prints N18 (U+202E in the name, refused at step 5),
+// N19 (U+2028 in a skill description, refused at step 5) and P3 (an emoji ZWJ
+// sequence and VS16 in the name, accepted) of agent-card.md §Charset vectors,
+// each as the {name, envelope, fails_at} case of
+// tools/verifyvectors/vectors.json. The card is the Test vector card with one
+// text member changed, signed with ed25519 directly (agentcard.New refuses
+// N18 and N19). In the envelope every non-ASCII rune that is not a letter is
+// written as a JSON escape, so the published line holds no raw bidi control
+// or line separator (review 82b F8); the signature covers the canonical form,
+// which rule 7 reads the same.
+func printCardCharsetVectors(privI ed25519.PrivateKey) {
+	card := func(name, desc string) []byte {
+		return canonical(map[string]any{
+			"version": 1, "name": name, "harness": "custom", "created": "2026-01-02T03:04:05Z",
+			"public_key": b64u.EncodeToString(privI.Public().(ed25519.PublicKey)),
+			"skills":     []any{map[string]any{"id": "review", "name": "Code review", "description": desc}},
+		})
+	}
+	for _, c := range []struct {
+		name, cardName, desc string
+		failsAt              int
+	}{
+		{"N18", "Ada \u202Etset", "a/b & c", 5},
+		{"N19", `Ada "test" <é>`, "a/b\u2028c", 5},
+		{"P3", "Ada \U0001F469\u200D\U0001F4BB \u2764\uFE0F", "a/b & c", 0},
+	} {
+		// canonical writes strings with encoding/json, which escapes U+2028;
+		// the canonical form (agent-card.md rule 3) writes it raw.
+		cc := bytes.ReplaceAll(card(c.cardName, c.desc), []byte(`\u2028`), []byte("\u2028"))
+		sig := b64u.EncodeToString(ed25519.Sign(privI, append([]byte("dorylinae-agent-card-v1\n"), cc...)))
+		env := escapeNonLetters(canonical(map[string]any{"card": json.RawMessage(cc), "signature": sig}))
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(map[string]any{"name": c.name, "envelope": string(env), "fails_at": c.failsAt}); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("len %s card %d\n", c.name, len(cc))
+		fmt.Print(buf.String())
+	}
+}
+
+// escapeNonLetters writes every non-ASCII rune of b that is not a letter as
+// a lowercase JSON escape (a surrogate pair above U+FFFF). b is canonical
+// JSON, where such runes occur only inside strings.
+func escapeNonLetters(b []byte) []byte {
+	var out bytes.Buffer
+	for _, r := range string(b) {
+		switch {
+		case r < utf8.RuneSelf || unicode.IsLetter(r):
+			out.WriteRune(r)
+		case r > 0xffff:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&out, `\u%04x\u%04x`, hi, lo)
+		default:
+			fmt.Fprintf(&out, `\u%04x`, r)
+		}
+	}
+	return out.Bytes()
 }
 
 // printCardSizeVectors prints P2 (32 skills), N16 (P1, the Test vector card

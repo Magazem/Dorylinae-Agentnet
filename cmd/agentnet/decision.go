@@ -19,6 +19,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 )
 
@@ -97,7 +98,10 @@ func runDecision(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return failJSON(true, stdout, stderr, exitError, "internal", err.Error())
 		}
-		return writeDecisionOutput(stdout, stderr, data, *out, *force)
+		// The Decision holds peer text; hidden runes (bidi controls) are
+		// written as \uXXXX so the terminal shows them in order (review 90
+		// S90-1). decision verify re-canonicalises, so hash and signatures hold.
+		return writeDecisionOutput(stdout, stderr, displaytext.JSON(data), *out, *force)
 	}
 	printDecisionHuman(stdout, res)
 	return exitOK
@@ -156,9 +160,10 @@ func printDecisionHuman(w io.Writer, res daemon.DecisionShowResult) {
 	case res.Signatures.Respondent != "":
 		signedBy = "respondent only (unconfirmed)"
 	}
-	_, _ = fmt.Fprintf(w, "%s  outcome %s (%s)  state %s  signed by %s\n", d.ID, d.Outcome, d.Reason, res.State, signedBy)
-	_, _ = fmt.Fprintf(w, "  initiator: %s (fingerprint %s)\n", res.PeerNames[debate.RoleInitiator], res.PeerFPs[debate.RoleInitiator])
-	_, _ = fmt.Fprintf(w, "  respondent: %s (fingerprint %s)\n", res.PeerNames[debate.RoleRespondent], res.PeerFPs[debate.RoleRespondent])
+	// ID, outcome and reason are read from the Decision bytes (review 82b F5).
+	_, _ = fmt.Fprintf(w, "%s  outcome %s (%s)  state %s  signed by %s\n", displaytext.Term(d.ID), displaytext.Term(d.Outcome), displaytext.Term(d.Reason), res.State, signedBy)
+	_, _ = fmt.Fprintf(w, "  initiator: %s (fingerprint %s)\n", displaytext.Term(res.PeerNames[debate.RoleInitiator]), res.PeerFPs[debate.RoleInitiator])
+	_, _ = fmt.Fprintf(w, "  respondent: %s (fingerprint %s)\n", displaytext.Term(res.PeerNames[debate.RoleRespondent]), res.PeerFPs[debate.RoleRespondent])
 	_, _ = fmt.Fprintf(w, "  hash: %s\n", res.Hash)
 }
 
@@ -236,7 +241,7 @@ func runDecisions(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DecisionListResult
 		}{OK: true, DecisionListResult: res})
@@ -247,7 +252,7 @@ func runDecisions(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	for _, d := range res.Decisions {
-		_, _ = fmt.Fprintf(stdout, "%s  %s  outcome %s  state %s  %s\n", d.ID, d.Peer, d.Outcome, d.State, d.Title)
+		_, _ = fmt.Fprintf(stdout, "%s  %s  outcome %s  state %s  %s\n", d.ID, displaytext.Term(d.Peer), d.Outcome, d.State, displaytext.Term(d.Title))
 	}
 	return exitOK
 }
@@ -330,7 +335,7 @@ func runDecisionVerify(args []string, stdout, stderr io.Writer) int {
 				debate.RoleRespondent: {Key: res.Respondent, Fingerprint: fingerprintOf(res.Respondent)},
 			}
 		}
-		_ = json.NewEncoder(stdout).Encode(out)
+		writeJSON(stdout, out)
 	} else {
 		printDecisionVerifyHuman(stdout, res)
 	}

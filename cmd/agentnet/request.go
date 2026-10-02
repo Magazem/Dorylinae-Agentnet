@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 )
 
@@ -173,23 +173,23 @@ func runRequestSubmit(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(requestBody{OK: true, RequestSubmitResult: res})
+		writeJSON(stdout, requestBody{OK: true, RequestSubmitResult: res})
 		return exitOK
 	}
 	verb := "Queued"
 	if res.Duplicate {
 		verb = "Already queued (duplicate)"
 	}
-	_, _ = fmt.Fprintf(stdout, "%s %s %s request %s to %s (team %s)\n", verb, res.Urgency, pos[1], res.ID, res.Peer.Name, res.Team.Name)
+	_, _ = fmt.Fprintf(stdout, "%s %s %s request %s to %s (team %s)\n", verb, res.Urgency, displaytext.Term(pos[1]), res.ID, displaytext.Term(res.Peer.Name), displaytext.Term(res.Team.Name))
 	if !res.Peer.DaemonOnline {
 		lastSeen := "never"
 		if res.Peer.LastSeen != nil {
 			lastSeen = *res.Peer.LastSeen
 		}
-		_, _ = fmt.Fprintf(stdout, "  %s is offline, last seen %s; it will be delivered when %s is back.\n", res.Peer.Name, lastSeen, res.Peer.Name)
+		_, _ = fmt.Fprintf(stdout, "  %s is offline, last seen %s; it will be delivered when %s is back.\n", displaytext.Term(res.Peer.Name), lastSeen, displaytext.Term(res.Peer.Name))
 	}
 	if res.UrgencyNote != "" {
-		_, _ = fmt.Fprintf(stdout, "  %s\n", res.UrgencyNote)
+		_, _ = fmt.Fprintf(stdout, "  %s\n", displaytext.Term(res.UrgencyNote))
 	}
 	return exitOK
 }
