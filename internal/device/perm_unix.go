@@ -8,6 +8,8 @@ import (
 	"os/user"
 	"strconv"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // adminGroups are the group names whose members administer the machine
@@ -53,6 +55,13 @@ func classifyUnix(p string, uid, gid uint64, perm os.FileMode, euid uint64, grou
 		return &WritableError{Path: p, Who: "the members of group id " + strconv.FormatUint(gid, 10)}
 	}
 	return nil
+}
+
+// canExecute reports whether this user may execute p, as access(2) X_OK
+// does: the mode bits that apply to this user, and on Linux a noexec mount
+// too (review 86b M1).
+func canExecute(p string) bool {
+	return unix.Access(p, unix.X_OK) == nil
 }
 
 // trustedGroup reports whether members of gid may change the program: root's

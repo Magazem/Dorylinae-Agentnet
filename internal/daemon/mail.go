@@ -170,11 +170,28 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 	q := newMailInbox(rcv.Log)
 	mctx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go rcv.RunPrune(mctx)
+	// The jobs and the keys pushes are waited for by stop, so none outlives
+	// the store (review 55 R55-145). A push runs to its end even when stop
+	// has begun: a rotation that committed a new key must still queue its
+	// keys mail. pushMu guards pushClosed, after which no push starts.
+	var jobs, pushes sync.WaitGroup
+	var pushMu sync.Mutex
+	pushClosed := false
+	jobs.Add(1)
+	go func() { defer jobs.Done(); rcv.RunPrune(mctx) }()
 	if rot, ok := keys.(ownKeys); ok {
 		// A new key is pushed to every peer. The job starts after the hook is set.
-		rot.OnRotate(func(ann []byte) { go pusher.PushAll(mctx, ann) })
-		go rot.Run(mctx)
+		rot.OnRotate(func(ann []byte) {
+			pushMu.Lock()
+			defer pushMu.Unlock()
+			if pushClosed {
+				return
+			}
+			pushes.Add(1)
+			go func() { defer pushes.Done(); pusher.PushAll(context.WithoutCancel(mctx), ann) }()
+		})
+		jobs.Add(1)
+		go func() { defer jobs.Done(); rot.Run(mctx) }()
 	}
 	go func() {
 		defer close(done)
@@ -191,6 +208,11 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 	return q.push, func() {
 		cancel()
 		<-done
+		jobs.Wait() // a rotation ending now still starts its push
+		pushMu.Lock()
+		pushClosed = true
+		pushMu.Unlock()
+		pushes.Wait()
 		q.flush()
 		rcv.Flush() // the pending mail_reject and mail_ack_failed lines
 	}

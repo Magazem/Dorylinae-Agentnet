@@ -82,7 +82,14 @@ agentnet device link @laptop --as helper \                agentnet device link @
    older than the `at` of the last `device.unlink` received from that peer is ignored, so
    a delayed offer reordered after an unlink cannot revive the link. The receiver keeps,
    per peer, the latest `device.unlink` `at` it applied (the `settings` row
-   `device.unlinked`; no migration).
+   `device.unlinked`; no migration). A **local** unlink (`device_unlink`) moves the same
+   watermark to this device's own `now` (review 55 R55-161), so an offer the peer made
+   before it, delivered late, cannot complete a re-link started within its 10 minutes.
+   That watermark is this device's clock compared with the peer's `offer.at`, so it holds
+   only up to the skew between the two clocks (review 86 L3): with the peer's clock
+   behind by *s*, a fresh offer made within *s* after the unlink is ignored (the link is
+   then active on the peer only, until the user links again); with it ahead, an offer
+   made just before the unlink but dated after it still counts.
    **Notify (D22, review 36 L5):** on activation, on either path (the offer arriving, or
    the local approval finding a kept offer), the device shows the content-free desktop
    notification `device.linked` ([notify.md](notify.md#triggers)): `<peer name> is now
@@ -151,6 +158,42 @@ refused even when that directory is on neither the stored nor the fully resolved
 (review 41 M1; at most 40 links). The content is not pinned (no hash), so an upgrade of the
 toolchain by the same user or an administrator keeps working.
 
+**Interpreters (Unix, review 55 R55-097, D71).** A script's `#!` interpreter runs it, so
+the interpreter is checked the same way, and so is its own if it is a script too (at most
+4 nested interpreters). The check reads the first 256 bytes and splits the `#!` line on
+spaces and tabs only, as the kernel does (not on other blanks such as a no-break space);
+a control character in the line (a CRLF line's `\r`, `\v`, `\f`, NUL) is refused (review
+86b M2). Only the first word is the interpreter, and it must be an absolute path (a
+relative one would be found from the working directory, the repo). A file this user cannot
+read (an execute-only file, mode `0711`, or set-ID `4111`) is refused, since the kernel
+reads its `#!` line anyway and runs the interpreter it names, and Linux and macOS ignore
+a script's set-ID bits, so it runs as this user. An execute-only file cannot be checked,
+so it cannot be a helper command (review 86 L1, review 86b L2, D72).
+- **`#!/usr/bin/env X`** (or `#!/usr/bin/env -S X …`, as npm, npx, yarn and pnpm use):
+  `env` itself is checked and must not be a script; `X` is found as `env` finds it, on
+  the `PATH` of the environment the run gets (`PATH` is a base name, so it is the helper
+  daemon's), at `device_scope_set` and again at each start: an absolute `X` as it is,
+  otherwise the first `PATH` directory holding a regular file `X` this user may execute
+  (`access(2)` `X_OK`, which on Linux also refuses a `noexec` mount). The program found
+  is checked like an interpreter, its own `#!` chain included. When that `X` fails to run
+  (`EACCES`, or `ENOENT` for a missing ELF loader), `env`'s `execvp` moves on to the next
+  `X` on the `PATH`. So **every** `PATH` directory is checked like the program's directory,
+  including those after `X`, and so is every other `X` file on it, as a file (review 86b
+  M1). A missing `PATH` directory is checked through its nearest existing ancestor, which
+  could create it before the run starts (review 86b L1). The fallback `X` files' own `#!`
+  chains are not followed. On Linux the kernel passes the rest of the `#!` line to `env`
+  as one argument, so without `-S` exactly one word must follow `env`
+  (`#!/usr/bin/env node --flag` is refused; use `env -S`). macOS splits the words and
+  accepts that line. Refused, with an error naming `X` and the path found: `X` not found,
+  a relative `PATH` entry (the run's working directory) anywhere on the `PATH`, no `PATH`,
+  or a `PATH` directory, an `X` on it or the program found failing the check. Any other
+  `env` option (`-i`, `-u`…), a variable `env` would set first (`PATH=…` would move the
+  search) and a quote, escape or `${…}` that `-S` would expand are refused: the check
+  cannot follow them.
+- **Not checked:** interpreter arguments, `argv[1..]` (a script passed as an argument,
+  as in `node /path/npm-cli.js`, is the interpreter's input, not a program), and
+  `binfmt_misc` handlers. Only the `argv[0]` chain is checked.
+
 - **Unix:** each file or directory must be owned by root or this user, must not be
   writable by every user (so a sticky world-writable directory such as `/tmp` is refused
   too), and may be group-writable only when the group is root's (gid 0), an admin group
@@ -217,10 +260,13 @@ above, and `check` names the first that failed.
   (Windows; without `LOCALAPPDATA` the example's `go test` fails with "GOCACHE is not
   defined") and the scope's `env` names, taken from the helper daemon's environment;
   everything else (tokens, `DORYLINAE_*`) is dropped;
-- first re-checks what the scope resolved: the repo path must still resolve to itself (a
+- first re-checks that the run is still allowed (link, scope, expiry), so a revocation
+  that committed after the run left the queue stops it before it starts (review 86 L2),
+  then what the scope resolved: the repo path must still resolve to itself (a
   directory replaced since by a symlink or junction is refused; a UNC or network path is
   refused without being opened) and `argv[0]` must still be
-  a regular file that others cannot change ([§Program ownership](#program-ownership));
+  a regular file that others cannot change ([§Program ownership](#program-ownership), an
+  `env` interpreter's program found on this run's `PATH`);
   otherwise the run is `"<name>: could not start"` (review 40 L5, L11);
 - kills the whole process tree at `timeout_s` (Windows: a job object; Unix: a process group);
   if the helper daemon dies mid-run, Windows ends the tree with the job; on Linux the program
@@ -380,7 +426,7 @@ counts, durations and sizes.
 | `device.unlink` | `{link, peer, side: "local"\|"remote"}` |
 | `device.scope_set` | `{link, types, commands: <count>, repos: <count>, expires_s, approval}` |
 | `device.scope_clear` | `{link}` |
-| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out, cancelled}` (`cancelled`: killed because it was no longer allowed; then `output_bytes` is 0) |
+| `device.run` | `{link, request, session, duration_ms, output_bytes, timed_out, cancelled}` (`cancelled`: killed because it was no longer allowed; then `output_bytes` is 0, and `stop_reason` says why: `revoked` when a check found it no longer allowed, `check_failed` when a check could not be made and the run was stopped to fail closed, review 86 L5) |
 | `device.out_of_scope` | `{request, peer, check}` (`check`: `link`, `scope`, `expired`, `type`, `command`, `created`, `queue`) |
 
 ## Tables
