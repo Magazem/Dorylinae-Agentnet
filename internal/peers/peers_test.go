@@ -39,6 +39,8 @@ func (f *fakeSender) Send(_ context.Context, e envelope.Envelope) error {
 	return nil
 }
 
+func (f *fakeSender) Connected() bool { return true }
+
 func (f *fakeSender) SendControl(_ context.Context, c envelope.Control) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

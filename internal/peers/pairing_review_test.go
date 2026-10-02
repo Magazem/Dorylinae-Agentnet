@@ -35,6 +35,8 @@ func (r *revSender) SendControl(_ context.Context, c envelope.Control) error {
 	return nil
 }
 
+func (r *revSender) Connected() bool { return true }
+
 func (r *revSender) Send(_ context.Context, e envelope.Envelope) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

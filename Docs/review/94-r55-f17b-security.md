@@ -189,3 +189,54 @@ quota.
 - **I3:** `store.go:150`: if `window.Start` panics after it has spawned the window process,
   `handle` is never assigned, and the cleanup cannot kill that window. No code has been made yet, so
   this is not exploitable. It predates the branch and needs no action on it.
+
+## Fixes applied
+
+Applied by R55-F17bsec-Opus in the worktree, uncommitted.
+
+- **M1 (fixed).** `internal/peers/pairing.go`:
+  - `Sender` gains `Connected() bool`, which `*relayclient.Client` already implements.
+  - `precheck` returns `relayclient.ErrNotConnected` while the relay is down.
+  - `beginRedeemer` returns the new `ErrCodeUsed` after its `CodeUsed` check and before
+    `newSession`, so the start has no session, token or audit row, and sends nothing.
+  - `RedeemTagged` turns `ErrCodeUsed` into the unchanged failed status (`code_used`) through
+    `usedCodeStatus`, with a fresh `pairing_id` that is not registered. The CLI and `team_join`
+    contracts stay as they were; team tags act only on completion.
+  - `refundStart` is removed, with its calls in `failSend` and on the used-code path. A send that
+    fails after precheck keeps its token, because it has a session and both audit rows. No refund
+    remains anywhere.
+  - Tests:
+    - `internal/peers/start_refused_test.go` replaces `start_refund_test.go`.
+      `TestPairingStartRefusedBeforeSession` makes 3 × burst starts with the relay down
+      (issuer, v2 and v1) and 3 × burst used-code starts. It checks there are 0 sessions, 0 audit
+      rows and a full bucket, that nothing was sent, and that the burst is then still available.
+    - `TestPairingStartFailedSendKeepsToken` covers the remaining bounded path: 2 rows per start,
+      and the bucket ends empty.
+    - Test fakes now have `Connected()`. `failSender` takes `down`; by default it is connected, so
+      the KDF tests still test failed sends.
+    - `cmd/agentnet/pair_test.go` now expects no audit rows for the refused used-code redemption
+      and for `TestPairRelayDown`.
+  - Docs: `pairing.md` (§ start limits) and `ipc.md` (`pair_status`: the id of a used-code status
+    is unknown).
+- **L1 (fixed).** `evictMinIdle` is now a package `var` (`ipc.go`).
+  `TestServeKeepsRecentConnectionsAtTheCap` sets it to **1 minute** and restores it in
+  `t.Cleanup`. The brief said "shorten", but this test needs the threshold *longer* so that a slow
+  runner cannot age the answered connections past it. The restore runs after `serveOn`'s cleanup
+  has stopped `Serve`, and no ipc test is parallel.
+- **L2 (fixed).** `ipc.md` § Framing now says eviction only reclaims connections left open by
+  mistake and is not a per-client quota. It also names the two ways a client keeps its slots.
+- **I1 (fixed).** The `maxConns` comment (`ipc.go:35-38`) now describes eviction first, then
+  `busy`.
+- **I2 (fixed).** `ipc.md` § Framing: "carries the number of the method's panics not logged since
+  its previous line".
+- **I3:** no change, as recommended.
+
+Verification:
+
+- `GOOS=windows|linux|darwin go vet ./internal/... ./cmd/...`: clean.
+- `go test -count=1` on ipc, approval, peers, session and mailbox: pass.
+- `go test -run 'Pair|Team|Invite|Join'` on `./internal/daemon` and `./cmd/agentnet`: pass.
+- `-count=10 -cpu=1,4` for the eviction and panic-log tests, and `-count=5 -cpu=1,4` for the
+  pairing-start and KDF tests: pass.
+- gofmt is clean on LF copies of the changed files.
+- The race detector was not run, because this machine has no C compiler; CI must cover it.

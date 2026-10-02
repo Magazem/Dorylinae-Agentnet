@@ -61,7 +61,12 @@ func TestListenerEvictsIdleSquatterForCall(t *testing.T) {
 
 // A connection idle for less than evictMinIdle, or one that has not sent its
 // first request, keeps its slot; the new client is answered busy.
+// evictMinIdle is lengthened so that a slow runner (race detector, loaded CI)
+// cannot age the answered connections past it (review 94, L1).
 func TestServeKeepsRecentConnectionsAtTheCap(t *testing.T) {
+	old := evictMinIdle
+	evictMinIdle = time.Minute
+	t.Cleanup(func() { evictMinIdle = old })
 	ln := newChanListener()
 	serveOn(t, pingServer(), ln)
 	held := holdSilent(t, ln, maxConns/2)

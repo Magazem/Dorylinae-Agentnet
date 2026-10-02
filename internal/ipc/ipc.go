@@ -32,8 +32,10 @@ const (
 const (
 	maxLine     = 1 << 20
 	idleTimeout = 30 * time.Second
-	// maxConns bounds the connections served at once; a client past it is
-	// answered CodeBusy and closed at once (review 55, R55-083; review 77, M1).
+	// maxConns bounds the connections served at once; a client past it takes
+	// the slot of the connection idle longest between requests (at least
+	// evictMinIdle), else is answered CodeBusy and closed at once (review 55,
+	// R55-083; review 77, M1; review 77b, R1).
 	maxConns = 64
 	// firstRequestTimeout bounds how long a new connection may take to send
 	// its first complete request line, so silent connections cannot hold
@@ -235,7 +237,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 // request before a new client at the cap may take its slot. Every client in
 // this repository sends one request per connection and closes it, so only a
 // connection kept open between requests is ever evicted (review 77b, R1).
-const evictMinIdle = time.Second
+// It is a variable only so that tests can lengthen it.
+var evictMinIdle = time.Second
 
 // connState is a served connection's place in the eviction order; connTable.mu
 // guards it.
