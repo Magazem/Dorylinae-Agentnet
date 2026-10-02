@@ -211,17 +211,14 @@ const shebangMax = 256
 // file is not a "#!" script or is not a regular file (never read: a FIFO
 // would block).
 //
-// A file this user may not read is refused unless it is set-user-ID or
-// set-group-ID (review 86 L1, review 86b L2). The kernel reads the "#!"
-// line itself, whatever the caller's read permission (Linux
-// fs/binfmt_script.c on the buffer exec reads; macOS likewise), and runs
-// the interpreter it names; only then does the interpreter fail to open
-// the script. Its set-ID bits do not stop that: Linux and macOS ignore
-// them on a script (the credentials come from the interpreter's file), so
-// the interpreter runs as this user. The allowance rests on that: a set-ID
-// script gains nothing, so an execute-only set-ID program (sudo, mode
-// 4111) is a binary in practice. An execute-only set-ID script naming an
-// interpreter others can change is a residual risk.
+// A file this user may not read is refused, set-ID or not (review 86 L1,
+// review 86b L2, D72). The kernel reads the "#!" line itself, whatever the
+// caller's read permission (Linux fs/binfmt_script.c on the buffer exec
+// reads; macOS likewise), and runs the interpreter it names; only then
+// does the interpreter fail to open the script. Set-ID bits do not stop
+// that: Linux and macOS ignore them on a script, so the interpreter runs
+// as this user. An execute-only file cannot be checked, so it cannot be a
+// helper command.
 func scriptInterpreter(path string) (interp, prog string, err error) {
 	fi, err := os.Stat(path) //nolint:gosec // the program being checked; its ownership was checked above
 	if err != nil {
@@ -232,9 +229,6 @@ func scriptInterpreter(path string) (interp, prog string, err error) {
 	}
 	f, err := os.Open(path) //nolint:gosec // the program being checked; its ownership was checked above
 	if errors.Is(err, fs.ErrPermission) {
-		if fi.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
-			return "", "", nil
-		}
 		return "", "", fmt.Errorf("device: the program %s cannot be read, so the check cannot see whether it is a #! script, whose interpreter would run even so; make it readable by this user", DisplayQuote(path))
 	}
 	if err != nil {

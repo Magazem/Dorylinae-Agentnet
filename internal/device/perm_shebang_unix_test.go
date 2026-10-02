@@ -246,9 +246,9 @@ func TestCheckProgramOwnerEnvWholePath(t *testing.T) {
 	}
 }
 
-// Review 86 L1, review 86b L2: a program that can be executed but not read
-// may be a script whose interpreter the kernel would still run: it is
-// refused, unless it is set-user-ID or set-group-ID (sudo, mode 4111).
+// Review 86 L1, review 86b L2, D72: a program that can be executed but not
+// read may be a script whose interpreter the kernel would still run: it is
+// refused, set-user-ID (mode 4111) too.
 func TestCheckProgramOwnerExecuteOnly(t *testing.T) {
 	dir := testutil.PrivateDir(t)
 	prog := filepath.Join(dir, "tool")
@@ -270,7 +270,7 @@ func TestCheckProgramOwnerExecuteOnly(t *testing.T) {
 	if fi, err := os.Stat(prog); err != nil || fi.Mode()&os.ModeSetuid == 0 {
 		t.Skipf("the set-user-ID bit did not stick: %v", err)
 	}
-	if err := CheckProgramOwner(prog); err != nil {
+	if err := CheckProgramOwner(prog); err == nil || !strings.Contains(err.Error(), "cannot be read") {
 		t.Fatalf("an execute-only set-user-ID program: %v", err)
 	}
 }

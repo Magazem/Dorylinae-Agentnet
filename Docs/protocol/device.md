@@ -165,12 +165,10 @@ spaces and tabs only, as the kernel does (not on other blanks such as a no-break
 a control character in the line (a CRLF line's `\r`, `\v`, `\f`, NUL) is refused (review
 86b M2). Only the first word is the interpreter, and it must be an absolute path (a
 relative one would be found from the working directory, the repo). A file this user cannot
-read is refused, since the kernel reads its `#!` line anyway and runs the interpreter it
-names. The exception is a set-user-ID or set-group-ID file (an execute-only `sudo`, mode
-`4111`), which is accepted as no script (review 86 L1, review 86b L2). Linux and macOS
-ignore the set-ID bits of a script, so a set-ID script would gain nothing and is not
-expected. An execute-only set-ID script naming an interpreter others can change is a
-residual risk.
+read (an execute-only file, mode `0711`, or set-ID `4111`) is refused, since the kernel
+reads its `#!` line anyway and runs the interpreter it names, and Linux and macOS ignore
+a script's set-ID bits, so it runs as this user. An execute-only file cannot be checked,
+so it cannot be a helper command (review 86 L1, review 86b L2, D72).
 - **`#!/usr/bin/env X`** (or `#!/usr/bin/env -S X …`, as npm, npx, yarn and pnpm use):
   `env` itself is checked and must not be a script; `X` is found as `env` finds it, on
   the `PATH` of the environment the run gets (`PATH` is a base name, so it is the helper
