@@ -63,7 +63,7 @@ type AuditSink interface {
 // Keys is the daemon's own mailbox key store.
 type Keys struct {
 	dir      string
-	home     string
+	keychain keystore.KeychainEntries
 	mode     string
 	identity ed25519.PublicKey
 	sign     func(msg []byte) ([]byte, error)
@@ -94,7 +94,7 @@ func New(configDir, mode string, identity ed25519.PublicKey, sign func([]byte) (
 	}
 	return &Keys{
 		dir:      filepath.Join(configDir, Dir),
-		home:     configDir,
+		keychain: keystore.KeychainEntriesFor("mailbox-", configDir),
 		mode:     mode,
 		identity: identity,
 		sign:     sign,
@@ -130,7 +130,7 @@ func (k *Keys) keystoreFor(keyID string) (*keystore.Store, error) {
 	file := keystore.NewFile(filepath.Join(k.dir, keyID+".key"))
 	switch k.mode {
 	case "", "auto":
-		backends = []keystore.Backend{keystore.KeychainForEntry("mailbox-", k.home, "-"+keyID), file}
+		backends = []keystore.Backend{k.keychain.Entry("-" + keyID), file}
 	case "file":
 		backends = []keystore.Backend{file}
 	default:

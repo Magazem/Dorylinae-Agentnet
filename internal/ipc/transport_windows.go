@@ -104,7 +104,9 @@ func (l pipeListener) Close() error {
 // changed in review 55 (R55-088), and the daemon takes this lock before it
 // opens the database, so a losing second daemon does not migrate the DB
 // under the running one (review 55 C28-03). A held lock, or a daemon from
-// before the lock answering on the old pipe name, yields ErrAlreadyRunning.
+// before the lock answering on the old pipe name, yields ErrAlreadyRunning;
+// an old pipe name in use that does not answer as ours is refused too (see
+// probeLegacy).
 func LockInstance(dir string) (io.Closer, error) {
 	path := filepath.Join(dir, InstanceLock)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) //nolint:gosec // in our own config dir
@@ -119,13 +121,33 @@ func LockInstance(dir string) (io.Closer, error) {
 		}
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
-	old := legacyEndpoint(dir)
-	if c, err := Dial(context.Background(), old); err == nil {
-		_ = c.Close()
+	if err := probeLegacy(legacyEndpoint(dir)); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("%w: an older agentnetd serves pipe %s", ErrAlreadyRunning, old)
+		return nil, err
 	}
 	return f, nil
+}
+
+// probeLegacy refuses unless nothing serves the old pipe name (review 60b
+// F8b-02). An older daemon may not answer as ours: one started elevated owns
+// its pipe as BUILTIN\Administrators (those pipes had no explicit owner), and
+// a busy one times out. A squatter on the old name denies no more than one on
+// the new name would. The newer CLI dials only the new name, so the error
+// says how to stop an older daemon (F8b-03).
+func probeLegacy(old string) error {
+	const hint = "stop it with the older agentnetd's own \"agentnetd stop\" (from an elevated terminal if it was started from one)"
+	c, err := Dial(context.Background(), old)
+	switch {
+	case err == nil:
+		_ = c.Close()
+		return fmt.Errorf("%w: an older agentnetd serves pipe %s; %s", ErrAlreadyRunning, old, hint)
+	case errors.Is(err, ErrNotRunning):
+		return nil
+	case errors.Is(err, ErrForeignOwner):
+		return fmt.Errorf("the older agentnetd pipe name is in use, by an older agentnetd started elevated or by another user: %w; %s", err, hint)
+	default:
+		return fmt.Errorf("the older agentnetd pipe name %s is in use but did not answer, so an older agentnetd may be running: %w; %s", old, err, hint)
+	}
 }
 
 // legacyEndpoint is the pipe name before review 55 (R55-088): a hash of the

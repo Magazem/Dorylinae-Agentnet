@@ -123,6 +123,12 @@ Phase 3 ones in
   bytes, shorter than Linux's 108) can be exceeded by a long username or a relocated
   `$DORYLINAE_HOME`, and the daemon then fails to bind. Move `$DORYLINAE_HOME` to a shorter
   path if this happens.
+- **Stop the old `agentnetd` before you upgrade.** A new daemon refuses to start next to a
+  running daemon from before review 55 when it can find it (on Windows it says so and asks you
+  to stop it with the old version's own `agentnetd stop`, since the new CLI uses a new pipe
+  name). On Windows it cannot find an old daemon that was started with a different spelling
+  of the config directory (`DORYLINAE_HOME` in another case, a `subst` drive, a short 8.3
+  name), and the two would then share one database. (Review 60b F8b-02)
 
 ## Revisit in a later review
 

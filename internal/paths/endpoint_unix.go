@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // endpoint is the socket inside dir; every spelling of dir reaches the same
@@ -14,9 +16,11 @@ func endpoint(dir string) (string, error) {
 	return filepath.Join(dir, "agentnetd.sock"), nil
 }
 
-// resolveExisting resolves symlinks in the existing path p, then the case of
-// each component: on a case-insensitive volume (macOS by default) EvalSymlinks
-// keeps the case as given, so /Users/A and /users/a would differ.
+// resolveExisting resolves symlinks in the existing path p, then the case and
+// Unicode normalisation of each component: on a case-insensitive volume
+// (macOS by default) EvalSymlinks keeps the case as given, so /Users/A and
+// /users/a would differ, and macOS volumes compare NFC and NFD spellings as
+// one name (review 60b F8b-05).
 func resolveExisting(p string) (string, error) {
 	r, err := filepath.EvalSymlinks(p)
 	if err != nil {
@@ -27,9 +31,9 @@ func resolveExisting(p string) (string, error) {
 
 // onDiskCase replaces each component of the absolute, symlink-free path p
 // that is not listed in its parent as spelled with the entry that matches it
-// case-insensitively. On a case-sensitive volume every component is listed
-// as spelled, so p is unchanged; so is any component whose parent cannot be
-// read.
+// case-insensitively after NFC normalisation. On a case- and
+// normalisation-sensitive volume every component is listed as spelled, so p
+// is unchanged; so is any component whose parent cannot be read.
 func onDiskCase(p string) string {
 	if !filepath.IsAbs(p) {
 		return p
@@ -48,12 +52,12 @@ func entryName(dir, name string) string {
 	if err != nil {
 		return name
 	}
-	match := name
+	match, nfc := name, norm.NFC.String(name)
 	for _, e := range entries {
 		switch {
 		case e.Name() == name:
 			return name
-		case match == name && strings.EqualFold(e.Name(), name):
+		case match == name && strings.EqualFold(norm.NFC.String(e.Name()), nfc):
 			match = e.Name()
 		}
 	}

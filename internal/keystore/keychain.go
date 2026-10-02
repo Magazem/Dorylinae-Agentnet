@@ -43,14 +43,27 @@ func accountFor(prefix, dir string) string {
 // when that differs, the old account stays as a fallback: Get finds a secret
 // stored there and copies it to the new account, and Delete removes both, so
 // an existing key is neither lost nor resurrected after a delete.
-func KeychainFor(prefix, dir string) *Keychain { return KeychainForEntry(prefix, dir, "") }
+func KeychainFor(prefix, dir string) *Keychain { return KeychainEntriesFor(prefix, dir).Entry("") }
 
-// KeychainForEntry is KeychainFor for the account prefix+<hash>+suffix, for
-// stores that keep several entries per home (the mailbox keys).
-func KeychainForEntry(prefix, dir, suffix string) *Keychain {
-	k := &Keychain{account: accountFor(prefix, paths.Canonical(dir)) + suffix}
-	if old := accountFor(prefix, dir) + suffix; old != k.account {
-		k.legacy = []string{old}
+// KeychainEntries names the keychain entries prefix+<hash>+suffix of one home,
+// for stores that keep several entries per home (the mailbox keys). The
+// accounts are derived once, so a later failure to resolve the dir cannot
+// switch an entry to another account mid-run (review 60b F8b-05).
+type KeychainEntries struct {
+	account, legacy string
+}
+
+// KeychainEntriesFor returns the entries of dir under prefix, with the same
+// account and fallback as KeychainFor.
+func KeychainEntriesFor(prefix, dir string) KeychainEntries {
+	return KeychainEntries{account: accountFor(prefix, paths.Canonical(dir)), legacy: accountFor(prefix, dir)}
+}
+
+// Entry returns the keychain backend for the account prefix+<hash>+suffix.
+func (e KeychainEntries) Entry(suffix string) *Keychain {
+	k := &Keychain{account: e.account + suffix}
+	if e.legacy != e.account {
+		k.legacy = []string{e.legacy + suffix}
 	}
 	return k
 }

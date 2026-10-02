@@ -38,12 +38,33 @@ func Listen(endpoint string) (net.Listener, error) {
 	return &lockedListener{Listener: ln, lock: lock}, nil
 }
 
+// socketName is the daemon's socket in the config dir, as paths names it
+// before and since the instance lock.
+const socketName = "agentnetd.sock"
+
 // LockInstance takes the exclusive lock on dir/InstanceLock, held until the
 // returned Closer is closed. The daemon takes it before opening the database,
 // so a losing second daemon does not migrate the DB under the running one
-// (review 55 C28-03). A held lock yields ErrAlreadyRunning.
+// (review 55 C28-03). A held lock, or a daemon from before the lock answering
+// on the socket, yields ErrAlreadyRunning (review 60b F8b-01); a socket served
+// by another user yields ErrForeignOwner, as Listen would.
 func LockInstance(dir string) (io.Closer, error) {
-	return lockFile(filepath.Join(dir, InstanceLock))
+	f, err := lockFile(filepath.Join(dir, InstanceLock))
+	if err != nil {
+		return nil, err
+	}
+	sock := filepath.Join(dir, socketName)
+	c, err := Dial(context.Background(), sock)
+	switch {
+	case err == nil:
+		_ = c.Close()
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: an agentnetd from before the instance lock serves socket %s", ErrAlreadyRunning, sock)
+	case errors.Is(err, ErrForeignOwner):
+		_ = f.Close()
+		return nil, fmt.Errorf("listen on %s: %w", sock, err)
+	}
+	return f, nil
 }
 
 func lockEndpoint(endpoint string) (*os.File, error) { return lockFile(endpoint + ".lock") }
