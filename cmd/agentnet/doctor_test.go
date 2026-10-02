@@ -350,13 +350,13 @@ func TestCheckServiceFailsWhenNothingInstalled(t *testing.T) {
 func TestProbeServiceWindows(t *testing.T) {
 	exe, home := `C:\Program Files\AgentNet\agentnetd.exe`, `C:\Users\x\AppData\Roaming\dorylinae`
 	xmlKey := "schtasks.exe /Query /TN " + service.TaskName + " /XML"
-	verKey := "schtasks.exe /Query /TN " + service.TaskName + " /FO LIST /V"
+	verKey := "powershell.exe -NoProfile -NonInteractive -Command [int](Get-ScheduledTask -TaskName '" + service.TaskName + "').State"
 
 	installedRunning := fakeServiceRunner{
 		ok: map[string]bool{xmlKey: true, verKey: true},
 		out: map[string][]byte{
 			xmlKey: []byte("<Command>" + exe + "</Command><Arguments>run --home " + home + "</Arguments>"),
-			verKey: []byte("Status:           Running"),
+			verKey: []byte("4"), // a localised schtasks says anything but "Running" (R55-177)
 		},
 	}
 	st := probeServiceWindows(context.Background(), installedRunning, exe, home)
@@ -537,4 +537,43 @@ func versionForTest() string {
 	}
 	_ = json.Unmarshal(out.Bytes(), &body)
 	return body.Version
+}
+
+func TestRelayFromDefinition(t *testing.T) {
+	for name, tc := range map[string]struct{ def, want string }{
+		"schtasks": {`<Arguments>run --home C:\h --relay wss://r.example/ws --log-file C:\h\l</Arguments>`, "wss://r.example/ws"},
+		"quoted":   {`run --home "C:\a b" --relay "wss://r.example/a b"`, "wss://r.example/a b"},
+		"systemd":  {"ExecStart=/x/agentnetd run --home /h --relay 'wss://r.example/ws'", "wss://r.example/ws"},
+		"launchd":  {"<string>--relay</string>\n\t\t<string>wss://r.example/?a=1&amp;b=2</string>", "wss://r.example/?a=1&b=2"},
+		"none":     {"run --home /h", ""},
+	} {
+		if got := relayFromDefinition(tc.def); got != tc.want {
+			t.Errorf("%s: relayFromDefinition = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// R55-131: with the daemon down and no env var, doctor learns the relay from
+// the installed service definition.
+func TestProbeServiceReportsRelay(t *testing.T) {
+	exe, home := "/x/agentnetd", "/h"
+	r := fakeServiceRunner{
+		ok:  map[string]bool{"systemctl --user cat " + service.SystemdUnit: true},
+		out: map[string][]byte{"systemctl --user cat " + service.SystemdUnit: []byte("ExecStart=/x/agentnetd run --home /h --relay wss://r.example/ws")},
+	}
+	if st := probeServiceLinux(context.Background(), r, exe, home); st.relay != "wss://r.example/ws" {
+		t.Fatalf("relay = %q", st.relay)
+	}
+}
+
+// R55-134: with the daemon up, its own URL rule applies, not doctor's env.
+func TestCheckRelayDaemonUpIgnoresDoctorInsecureEnv(t *testing.T) {
+	t.Setenv(insecureRelayEnv, "")
+	res := daemon.StatusResult{Relay: &daemon.RelayStatus{URL: "ws://relay.example/ws", Connected: true, Auth: "ok"}}
+	if got := checkRelay("ws://relay.example/ws", true, res, nil); got.State != doctorOK {
+		t.Fatalf("daemon up: %+v", got)
+	}
+	if got := checkRelay("ws://relay.example/ws", false, daemon.StatusResult{}, nil); got.State != doctorFail {
+		t.Fatalf("daemon down, no insecure env: %+v", got)
+	}
 }

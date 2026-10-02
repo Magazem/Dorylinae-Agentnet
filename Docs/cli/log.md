@@ -6,9 +6,9 @@ briefs, results, notes, reasons, paths or commands.
 
 ```
 agentnet log [--since DURATION|TIME] [--until TIME] [--session ID] [--action PREFIX]
-             [--limit N] [--json]
+             [--limit N] [--timeout SECONDS] [--json]
 agentnet log --verify [--anchor ID:HASH]... [--timeout SECONDS] [--json]
-agentnet log --head [--json]
+agentnet log --head [--timeout SECONDS] [--json]
 ```
 
 | Flag | Meaning |
@@ -21,7 +21,7 @@ agentnet log --head [--json]
 | `--verify` | check the whole hash chain (it takes no filters: they are views, `--verify` always checks everything) |
 | `--anchor ID:HASH` | with `--verify`: the row `ID` must still have hash `HASH`. Repeatable |
 | `--head` | print the newest row's `id`, `hash` and time, to keep as an anchor |
-| `--timeout S` | with `--verify`: seconds to wait for the walk (default 120; `audit_verify` is exempt from the 2-second rule) |
+| `--timeout S` | seconds to wait. Default 120 with `--verify` (`audit_verify` is exempt from the 2-second rule), 15 for the list and `--head`. An explicit value applies to every mode |
 | `--json` | machine-readable output on stdout |
 
 ## Exit codes

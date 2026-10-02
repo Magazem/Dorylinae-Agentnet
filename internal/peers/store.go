@@ -125,6 +125,14 @@ ON CONFLICT (public_key) DO UPDATE SET name = excluded.name, harness = excluded.
 	return nil
 }
 
+// stored returns the trust and paired_at of the peers row for key. AddTrusted
+// keeps the higher of the old and the new trust and the first paired_at, so
+// after a re-pair the row, not the request, says what is stored (R55-118).
+func (s *Store) stored(ctx context.Context, key string) (trust, pairedAt string, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT trust, paired_at FROM peers WHERE public_key = ?`, key).Scan(&trust, &pairedAt)
+	return trust, pairedAt, err
+}
+
 // MergeMailboxKeysTx merges the verified canonical announcement ann of peer
 // into peers.mailbox_keys inside tx, by the rule of Docs/protocol/mail.md
 // §Peer storage. A peer that is no longer paired is ignored.

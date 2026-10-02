@@ -205,23 +205,12 @@ const maxBriefFileBytes = 2 * 16384
 
 func readBriefFile(path string) (string, error) {
 	name := path
-	var r io.Reader
 	if path == "-" {
-		name, r = "stdin", requestStdin
-	} else {
-		f, err := os.Open(path) //nolint:gosec // the path is a user-supplied CLI flag, as intended
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", path, err)
-		}
-		defer func() { _ = f.Close() }()
-		r = f
+		name = "stdin"
 	}
-	b, err := io.ReadAll(io.LimitReader(r, maxBriefFileBytes+1))
+	b, err := readBounded(path, requestStdin, maxBriefFileBytes, "the brief")
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", name, err)
-	}
-	if len(b) > maxBriefFileBytes {
-		return "", fmt.Errorf("read %s: over %d bytes; the brief is limited to 16384 bytes", name, maxBriefFileBytes)
+		return "", err
 	}
 	// Checked here: JSON-encoding the IPC params would silently turn invalid
 	// bytes into U+FFFD, so the daemon's UTF-8 check would never see them

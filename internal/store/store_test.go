@@ -69,6 +69,25 @@ func TestOpenRejectsNewerSchema(t *testing.T) {
 	}
 }
 
+// R55-173: a database that another process migrated past this binary after
+// migrate's first read is refused under the write lock, not silently kept.
+func TestApplyRejectsNewerSchemaUnderLock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(testutil.TempDir(t), "t.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.DB().ExecContext(ctx, `INSERT INTO migrations VALUES (999, 'future', 'x')`); err != nil {
+		t.Fatal(err)
+	}
+	err = s.apply(ctx, migrations[len(migrations)-1])
+	if err == nil || !strings.Contains(err.Error(), "newer than this binary") {
+		t.Fatalf("apply on a newer schema = %v, want a newer-than-binary error", err)
+	}
+}
+
 // Migration 8 rebuilds peers: every row keeps all columns, at every trust level.
 func TestMigration8PreservesPeers(t *testing.T) {
 	ctx := context.Background()

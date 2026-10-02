@@ -178,8 +178,13 @@ func TestLogListVerifyHeadAnchor(t *testing.T) {
 		vb.Verify.Status != audit.StatusBroken || vb.Verify.FirstBad != 2 || vb.Verify.Reason != audit.ReasonHashMismatch {
 		t.Fatalf("tampered --verify: %d %q %q %v", code, out, errs, err)
 	}
-	if code, _, errs := runLogCmd("--verify"); code != exitAuditBroken || !strings.Contains(errs, "BROKEN at row 2: hash_mismatch") {
+	code, out, errs = runLogCmd("--verify")
+	if code != exitAuditBroken || !strings.Contains(errs, "BROKEN at row 2: hash_mismatch") {
 		t.Fatalf("tampered --verify human: %d %q", code, errs)
+	}
+	// R55-129: no advice to anchor the head of a broken chain.
+	if strings.Contains(out, "anchor") {
+		t.Fatalf("broken --verify advises anchoring: %q", out)
 	}
 }
 
@@ -297,5 +302,23 @@ func TestLogFormatEventStripsEscapes(t *testing.T) {
 	line := formatEvent(e)
 	if strings.ContainsAny(line, "\x1b\u009b") || !strings.Contains(line, "a=3 b=") || !strings.Contains(line, "x.y") {
 		t.Fatalf("line = %q", line)
+	}
+}
+
+// R55-130: an explicit --timeout applies to the list and --head as well.
+func TestLogWait(t *testing.T) {
+	for _, tc := range []struct {
+		verify, set bool
+		secs        int
+		want        time.Duration
+	}{
+		{false, false, 120, logListTimeout},
+		{true, false, 120, logVerifyTimeout},
+		{false, true, 7, 7 * time.Second},
+		{true, true, 7, 7 * time.Second},
+	} {
+		if got := logWait(tc.verify, tc.set, tc.secs); got != tc.want {
+			t.Errorf("logWait(%v, %v, %d) = %v, want %v", tc.verify, tc.set, tc.secs, got, tc.want)
+		}
 	}
 }
