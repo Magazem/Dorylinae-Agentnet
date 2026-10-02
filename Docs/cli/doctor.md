@@ -49,6 +49,7 @@ from its last handshake.
 
 With no relay configured (no `--relay` given to `agentnetd install`, and
 `$DORYLINAE_RELAY_URL` unset when the daemon is stopped), `relay` and `clock` report `skip`.
+With the daemon stopped and the variable unset, doctor uses the `--relay` of the installed service definition. With the daemon running, the daemon's own URL rule applies, not doctor's environment.
 
 ## Output
 

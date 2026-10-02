@@ -269,7 +269,7 @@ func runDeviceScope(args []string, stdout, stderr io.Writer) int {
 	}
 	var raw []byte
 	if *fromFile != "" {
-		raw, err = os.ReadFile(*fromFile)
+		raw, err = readBounded(*fromFile, os.Stdin, maxScopeFileBytes, "the scope")
 		if err != nil {
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", fmt.Sprintf("--from-file: %v", err))
 		}
