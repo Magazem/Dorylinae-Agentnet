@@ -740,13 +740,15 @@ var errStoredCard = errors.New("team: stored Agent Card no longer verifies")
 // forwardCard returns the generic {card, signature} of a stored card for a
 // roster entry. The card must verify and be the card of key; any other
 // top-level member of the stored envelope is dropped (agent-card.md "Stored
-// and forwarded form", review 55 R55-073).
+// and forwarded form", review 55 R55-073). It verifies with the legacy text
+// rule (agentcard.VerifyStored), so a member whose card predates R55-F10
+// never blocks a roster (review 76 I3).
 func forwardCard(stored []byte, key string) (any, error) {
 	canon, err := agentcard.StoredForm(stored)
 	if err != nil {
 		return nil, err
 	}
-	sc, err := agentcard.Verify(canon)
+	sc, err := agentcard.VerifyStored(canon)
 	if err != nil {
 		return nil, err
 	}

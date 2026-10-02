@@ -64,7 +64,7 @@ type cardCase struct {
 	FailsAt  int    `json:"fails_at"`
 }
 
-// loadCardCases reads the agent-card.md vectors P1, P2 and N1-N17 from
+// loadCardCases reads the agent-card.md vectors P1-P3 and N1-N19 from
 // tools/verifyvectors/vectors.json, where they are transcribed in full.
 func loadCardCases(t *testing.T) []cardCase {
 	t.Helper()
@@ -80,8 +80,8 @@ func loadCardCases(t *testing.T) []cardCase {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		t.Fatal(err)
 	}
-	if len(v.AgentCard.Cases) != 19 {
-		t.Fatalf("want 19 agent_card cases (P1, P2, N1-N17), got %d", len(v.AgentCard.Cases))
+	if len(v.AgentCard.Cases) != 22 {
+		t.Fatalf("want 22 agent_card cases (P1-P3, N1-N19), got %d", len(v.AgentCard.Cases))
 	}
 	return v.AgentCard.Cases
 }
@@ -96,7 +96,11 @@ func TestNegativeVectors(t *testing.T) {
 				if err != nil {
 					t.Fatalf("%s refused: %v", c.Name, err)
 				}
-				if sc.Card.Name != `Ada "test" <é>` || sc.Card.PublicKey != "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg" {
+				wantName := `Ada "test" <é>`
+				if c.Name == "P3" {
+					wantName = p3Name
+				}
+				if sc.Card.Name != wantName || sc.Card.PublicKey != "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg" {
 					t.Fatalf("%s card = %+v", c.Name, sc.Card)
 				}
 				return
@@ -128,6 +132,12 @@ func TestNegativeVectors(t *testing.T) {
 					t.Fatalf("want a step 2 refusal, got %v (parse %v, rule 4 %v)", err, perr, cerr)
 				}
 			case 5:
+				if c.Name == "N18" || c.Name == "N19" { // R55-F10: the text rule
+					if perr != nil || cerr != nil || !strings.Contains(err.Error(), "contains a bidi control or line separator") {
+						t.Fatalf("want a step 5 text refusal, got %v", err)
+					}
+					return
+				}
 				if perr != nil || cerr != nil || !strings.Contains(err.Error(), "does not match schema") {
 					t.Fatalf("want a step 5 refusal, got %v", err)
 				}
@@ -155,7 +165,7 @@ func TestNegativeVectors(t *testing.T) {
 		t.Fatalf("precondition: RawURLEncoding.Strict() is expected to skip the LF: %v", err)
 	}
 	c := Card{Version: 1, Name: "n", PublicKey: pk, Harness: "h", Skills: []Skill{}, Created: "2026-01-02T03:04:05Z"}
-	if err := c.validate(); err == nil {
+	if err := c.validate(false); err == nil {
 		t.Fatal("validate accepted a public_key with an embedded LF")
 	}
 }
@@ -249,17 +259,17 @@ func TestRescueStored(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"P1", "N6", "N7", "N8", "N9", "N15"} {
-		got, err := RescueStored([]byte(byName[n]), key)
-		if err != nil || string(got) != string(want) {
+		got, sc, err := RescueStored([]byte(byName[n]), key)
+		if err != nil || string(got) != string(want) || sc == nil || sc.Card.PublicKey != key {
 			t.Errorf("%s: got %s, %v; want %s", n, got, err, want)
 		}
 	}
 	for _, n := range []string{"N1", "N2", "N3", "N4", "N5", "N10", "N11", "N12", "N13", "N14"} {
-		if got, err := RescueStored([]byte(byName[n]), key); err == nil {
+		if got, _, err := RescueStored([]byte(byName[n]), key); err == nil {
 			t.Errorf("%s: rescued as %s", n, got)
 		}
 	}
-	if _, err := RescueStored([]byte(byName["P1"]), "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"); err == nil {
+	if _, _, err := RescueStored([]byte(byName["P1"]), "Kay64UG8yvCyLhqU000LxzYeUm0L_hLIl5S8kyKWbdc"); err == nil {
 		t.Error("rescued a card for another key")
 	}
 }

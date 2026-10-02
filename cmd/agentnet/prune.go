@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/retention"
 )
@@ -156,10 +157,10 @@ func runPrune(args []string, stdout, stderr io.Writer) int {
 // (Docs/cli/prune.md §--json output).
 func prunePartial(stdout, stderr io.Writer, asJSON bool, code int, errCode, msg string, total retention.Counts) int {
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(pruneErrBody{Error: &ipc.Error{Code: errCode, Message: msg}, Counts: total})
+		writeJSON(stdout, pruneErrBody{Error: &ipc.Error{Code: errCode, Message: msg}, Counts: total})
 		return code
 	}
-	_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
+	_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
 	if !total.Zero() {
 		printPruneTable(stderr, "already removed:", total)
 	}
@@ -168,7 +169,7 @@ func prunePartial(stdout, stderr io.Writer, asJSON bool, code int, errCode, msg 
 
 func printPrune(stdout io.Writer, asJSON bool, cutoff, approvalID string, dryRun bool, c retention.Counts) int {
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(pruneBody{OK: true, DryRun: dryRun, Cutoff: cutoff, Approval: approvalID, Counts: c})
+		writeJSON(stdout, pruneBody{OK: true, DryRun: dryRun, Cutoff: cutoff, Approval: approvalID, Counts: c})
 		return exitOK
 	}
 	if c.Zero() {

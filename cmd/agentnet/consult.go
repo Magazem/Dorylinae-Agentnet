@@ -3,7 +3,6 @@ package main
 // Ticket 2.5: `agentnet consult` (Docs/protocol/consult.md, Docs/cli/consult.md).
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 const consultUsage = `Asks a teammate's agent a question, with optional context files
@@ -124,7 +124,7 @@ func runConsult(args []string, stdout, stderr io.Writer) int {
 	}
 	if !*asJSON {
 		for _, c := range params.Context {
-			_, _ = fmt.Fprintf(stderr, "context: sending %s (%d bytes)\n", c.Name, len(c.Text))
+			_, _ = fmt.Fprintf(stderr, "context: sending %s (%d bytes)\n", displaytext.Term(c.Name), len(c.Text))
 		}
 	}
 
@@ -133,7 +133,7 @@ func runConsult(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(requestBody{OK: true, RequestSubmitResult: res})
+		writeJSON(stdout, requestBody{OK: true, RequestSubmitResult: res})
 		return exitOK
 	}
 	verb := "Queued"
@@ -141,16 +141,16 @@ func runConsult(args []string, stdout, stderr io.Writer) int {
 		verb = "Already queued (duplicate)"
 	}
 	_, _ = fmt.Fprintf(stdout, "%s %s consult %s to %s (team %s)\n  session: %s (wait with 'agentnet wait %s')\n",
-		verb, res.Urgency, res.ID, res.Peer.Name, res.Team.Name, res.Session, res.Session)
+		verb, res.Urgency, res.ID, displaytext.Term(res.Peer.Name), displaytext.Term(res.Team.Name), res.Session, res.Session)
 	if !res.Peer.DaemonOnline {
 		lastSeen := "never"
 		if res.Peer.LastSeen != nil {
 			lastSeen = *res.Peer.LastSeen
 		}
-		_, _ = fmt.Fprintf(stdout, "  %s is offline, last seen %s; it will be delivered when %s is back.\n", res.Peer.Name, lastSeen, res.Peer.Name)
+		_, _ = fmt.Fprintf(stdout, "  %s is offline, last seen %s; it will be delivered when %s is back.\n", displaytext.Term(res.Peer.Name), lastSeen, displaytext.Term(res.Peer.Name))
 	}
 	if res.UrgencyNote != "" {
-		_, _ = fmt.Fprintf(stdout, "  %s\n", res.UrgencyNote)
+		_, _ = fmt.Fprintf(stdout, "  %s\n", displaytext.Term(res.UrgencyNote))
 	}
 	return exitOK
 }

@@ -59,7 +59,7 @@ and one member is added:
 
 | Member | Req. | Type | Rules |
 |---|---|---|---|
-| `debate` | iff `type = debate` | object | `{"commitment", "rounds", "turn_timeout_s"}`, exactly these members. `commitment`: 64 lowercase hex ([Commit–reveal](#commitreveal)). `rounds`: integer 1–5, the maximum number of challenge rounds (default 2 at the CLI). `turn_timeout_s`: integer 300–86400 (default 3600) |
+| `debate` | iff `type = debate` | object | `{"commitment", "rounds", "turn_timeout_s"}`, exactly these members. `commitment`: 64 lowercase hex ([Commit–reveal](#commitreveal)). `rounds`: integer 1–5, the maximum number of challenge rounds. `turn_timeout_s`: integer 300–86400. On the wire both are always present: the sender's daemon fills in the defaults (2 and 3600) when the IPC submit leaves them out ([IPC](#ipc)) |
 
 - `brief` is the **topic** (the request brief rules: 1–16384 bytes). `title` as for every
   request; `agentnet debate` defaults it to the first line of the topic, cut as in
@@ -87,7 +87,10 @@ accepted. **Idempotency (review 43 L11):** the `params_hash` of a `debate` submi
 the canonical `position`, `rounds` and `turn_timeout_s` of the IPC `debate` member. A retry with
 the same key and the same parameters returns the first request and its commitment (no new
 nonce is drawn), and a retry with a different position is `idempotency_conflict`. Otherwise an
-agent could believe it committed to a position that is not the one stored.
+agent could believe it committed to a position that is not the one stored. `rounds` and
+`turn_timeout_s` enter the hash only when the submit gives them, so an absent value and an
+explicit default are different parameters (R55-F29: the hash covers "the IPC params as
+given").
 
 ## Commit–reveal
 
@@ -414,24 +417,77 @@ once a minute) and on every debate IPC call. When the side whose slot is next mi
 | any later slot | `escalated`, reason `timeout`, Decision produced and signed with what exists |
 
 The reveal (slot 0) is automatic on A, so it cannot time out on A. B keeps its own view of
-the deadline only for display (`waiting`, `deadline`); B never closes on time.
+the deadline only for display (`waiting`, `deadline`); B never closes on time. After B
+sends its `answer`, B's view keeps one more display deadline: the answer entry's stored `at`
+plus `turn_timeout_s`, the time after which B may abandon ([Cancel](#cancel-and-abandon)).
+The abandon rule computes it from the entry, not from the stored display deadline, so a
+debate B answered before R55-F29 (no deadline stored) gets the same rule.
+
+**Every debate IPC call** (R55-F29, review 55 R55-169) means `debate_show` (and therefore
+`agentnet wait`), `debate_list` and `debate_submit`. Each applies the timeout rule before it
+reads: `debate_show` and `debate_submit` to the named debate, `debate_list` to every open
+initiator debate (the sweep). So a view never shows `turn: you` past a deadline that has
+already closed the debate. On B these calls change nothing.
+
+**Grace after downtime** (R55-F29, review 55 R55-071). The deadline counts until A *applies*
+B's entry, and B's entry may wait at the relay while A's machine sleeps or is offline. So A
+closes a debate on time only when its relay connection has been up for at least
+**`debate_timeout_grace` = 120 s**, counted from the later of:
+
+- the start of the current relay connection, and
+- the last **resume** A's daemon detected: more than 60 s of wall-clock time since its
+  20-second debate sweep ticker last *finished* a run (a sleep, a suspended VM or a clock
+  jump). The test runs on every tick **and** at the start of every timeout check, so the
+  first `debate_show` after a wake (before the ticker has run) already sees the resume and
+  closes nothing. On a resume the daemon also drops its relay connection and dials again,
+  because a connection from before the sleep may be dead without the client knowing yet.
+
+While that condition does not hold, the timeout rule waits (it does not move the deadline).
+During that time, an entry from either side that arrives or is submitted is applied as usual.
+The relay sends queued mail as soon as the session is ready. So after 120 s of connection,
+anything B sent in time has been applied, and a slot that is still missing really is late.
+While its configured relay is unreachable, A closes nothing on time, and its close could not
+be sent anyway. A daemon started with no relay at all keeps the plain rule. This changes nothing for B, which never
+closes on time, and gives B no new power: B cannot affect A's connection. The **relay** can:
+a relay that never keeps A connected for 120 s (or is unreachable) keeps A's overdue debates
+open. That is no more than the relay's existing power to withhold mail, and A's human still
+sees the past `deadline` and can cancel; B can abandon as in [Cancel](#cancel-and-abandon).
+A late A agent gains at most the grace after each reconnect; the deadline itself never moves.
 
 ## Cancel and abandon
 
-- **A:** `agentnet debate <id> --cancel` (or `session <id> --cancel`) in `invited`: a
-  Phase 1 `request.cancel`. After accept, in `positions`, `rounds` or `converge`: close
-  `cancelled`, no Decision.
+- **A:** `agentnet debate <id> --cancel [--reason R]` (or `session <id> --cancel`) in
+  `invited`: a Phase 1 `request.cancel`, carrying `R` as `request_cancel`'s `reason` when it
+  is given (R55-F29, review 55 R55-127). After accept, in `positions`, `rounds` or
+  `converge`: close `cancelled`, no Decision.
 - **B in `invited`** has nothing to cancel: it declines (`agentnet decline <r-id>`). The
   command refuses with `bad_state` and says so; it never calls `request_cancel`, which
   acts on this daemon's own `out` rows (R55-F20, review 55 R55-063).
 - **B:** after accept, the same command sends the existing `ws.cancel` (reason optional,
   content). A applies it while the debate is open: close `cancelled`. After A decided an
   outcome, it is refused as for sessions.
-- **B abandon:** when A's daemon is silent (no reveal, no entry, no close) past the deadline
-  B displays, `--cancel` on B also closes B's mirror **locally** (`closed`, `cancelled`,
-  audit `debate.abandon {session, peer}`) after sending `ws.cancel`. A later `debate.close`
-  from A is then stored for the record but changes nothing, and B does not sign it. This is
-  B's only protection against a stalled or modified A.
+- **B abandon** (R55-F29, owner decision D14 / OD-F29-1, review 55 R55-221). `--cancel` on B
+  also closes B's mirror **locally** (`closed`, `cancelled`, reason `abandoned`, audit
+  `debate.abandon {session, peer}`) in the transaction that sends `ws.cancel`. A later
+  `debate.close` from A is then stored for the record but changes nothing, and B does not
+  sign it. This is B's only protection against a stalled or modified A. When B may do it
+  depends on whether B has sent its `answer`:
+  - **Before B's answer** (`positions`, `rounds`, or `converge` before the answer): at once.
+    A is still deciding nothing B has not seen, so A applies the `ws.cancel` and closes
+    `cancelled` too, or A was already closing on a timeout. In that race A's Decision
+    stays `awaiting_peer` ([decision.md §If B refuses or never signs](decision.md#signing)).
+  - **After B's answer**: refused with `bad_state` ("you answered: the initiator's daemon
+    closes the debate itself; wait, or cancel after <deadline>"), and nothing is sent. On a
+    correct A the close follows the answer automatically, so a B that abandons here only
+    leaves A with an unconfirmed Decision it would otherwise have had signed. The refusal
+    ends, and the abandon proceeds as above, once (a) A's close is **held** on B
+    (`close_body` set while B's debate is open: a missing A entry or constraint,
+    [decision.md §Signing](decision.md#signing) step 2), or (b) B's display deadline after
+    its answer ([Timeouts](#timeouts)) has passed with no close applied. Either way, A's
+    daemon has been silent (or stuck) past a deadline B displays.
+
+  A modified B can still withhold its signature by never applying the close. This rule
+  protects honest users from a mistaken cancel. It is not a security boundary.
 
 A cancel refunds nothing (D12).
 
@@ -659,9 +715,9 @@ both, the view's size is its canonical size plus a few hundred bytes.
 
 | Method | Params | Result / errors |
 |---|---|---|
-| `request_submit` | gains `debate: {"position", "rounds"?, "turn_timeout_s"?}` for `type = debate` | as Phase 2, plus `session`. The daemon computes nonce and commitment. `bad_request` naming the field; `quarantine_active` |
-| `debate_list` | `{"phase"?, "peer"?}` | `{"debates": [<list view>]}`, newest first |
-| `debate_show` | `{"id"}` (`s-` or `r-`) | `{"debate": <view>}`. `unknown_session` |
+| `request_submit` | gains `debate: {"position", "rounds"?, "turn_timeout_s"?}` for `type = debate` | as Phase 2, plus `session`. The daemon computes nonce and commitment. **Absent** `rounds` / `turn_timeout_s` take the defaults 2 / 3600. A present value outside 1–5 / 300–86400, **including 0**, is `bad_request` naming `debate.rounds` / `debate.turn_timeout_s` (R55-F29, review 55 R55-116). `bad_request` naming the field; `quarantine_active` |
+| `debate_list` | `{"phase"?, "peer"?}` | `{"debates": [<list view>]}`, newest first. Runs the timeout sweep first ([Timeouts](#timeouts)) |
+| `debate_show` | `{"id"}` (`s-` or `r-`) | `{"debate": <view>}`. Applies the timeout rule to that debate first. `unknown_session` |
 | `debate_submit` | `{"id", "kind", "entry"}` | `{"debate": <view>, "mail_id"}`. `bad_state`, `not_your_turn`, `bad_request`, `entry_too_large`, `quarantine_active` (one-step accept); `ambiguous_request` for an `r-` id of more than one debate; the one-step accept's request errors as `request_accept` (`unknown_request`, `bad_state`; `bad_request` for an unpaired peer; R55-128) |
 | `debate_constrain` | `{"id", "text"}` | `{"approval": <approval view>}`. `bad_state`, `bad_request`, `constraint_limit`, the approval errors |
 
@@ -679,7 +735,7 @@ Per-command page `Docs/cli/debate.md` (ticket 3.1b).
 | `agentnet debate <id> [--json]` | `debate_show` | |
 | `agentnet debate <id> --position-file F \| --move-file F \| --propose-file F \| --answer-file F` | `debate_submit` | Each file is the JSON entry of that kind; `-` = stdin. `--position-file` on a pending debate accepts it too |
 | `agentnet debate <id> --constrain TEXT` | `debate_constrain` | Prints the approval id; the human approves in the window |
-| `agentnet debate <id> --cancel [--reason R]` | `ws_cancel` | |
+| `agentnet debate <id> --cancel [--reason R]` | `ws_cancel`; `request_cancel` in `invited` (initiator only) | `R` is passed to whichever method runs ([Cancel](#cancel-and-abandon)) |
 | `agentnet wait <id>` | polls `debate_show` | For a debate: exit 0 with `wait: "turn"` when `turn` becomes `you`, `wait: "closed"` when closed (with the decision summary), `4` on timeout |
 
 `--help` prints the JSON shape of each entry kind with one example each, so an agent needs
@@ -698,8 +754,13 @@ text), all on by default:
   (R55-F20).
 - `debate.escalated` (both, **3.5**): "Debate with <name> needs your decision: no agreement",
   body as above. Fired on A when it closes `escalated`, on B when B applies that close.
-- `debate.broken` (B): "Debate with <name> stopped: the opening position did not match its
-  commitment".
+- `debate.broken` (B only, a bad reveal, [Commit–reveal](#commitreveal)): "Debate with <name>
+  stopped: the opening position did not match its commitment". Nothing else fires it.
+- `debate.refused` (both, R55-F29 / OD-F29-2, review 55 R55-126): "Debate with <name> stopped:
+  the two daemons' records of the Decision differ (see agentnet log)". Fired on B when B
+  refuses A's close, and on A when A applies a refusal (or a `debate.sign` it treats as one),
+  [decision.md §If B refuses or never signs](decision.md#signing). The cause (hash, signature,
+  outcome, time, size) is in the audit row `decision.refuse {reason}`, never in the text.
 
 The invitation itself is `request.received`. Turn changes do not notify (agents poll with
 `wait`). Webhooks carry the event name, request and session ids and the peer only.

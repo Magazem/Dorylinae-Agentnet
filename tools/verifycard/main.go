@@ -228,7 +228,8 @@ func exactMembers(obj map[string]any, names ...string) error {
 }
 
 // text checks a text member (agent-card.md §Card): min-128 code points, no
-// code point of category Cc and no U+FFFD.
+// code point of category Cc, no U+FFFD, and (R55-F10) no bidi control and no
+// U+2028 or U+2029.
 func text(obj map[string]any, member string, minLen int) error {
 	s, ok := obj[member].(string)
 	if !ok {
@@ -238,11 +239,18 @@ func text(obj map[string]any, member string, minLen int) error {
 		return fmt.Errorf("%s must be %d-%d characters", member, minLen, maxText)
 	}
 	for _, r := range s {
-		if r <= 0x1F || (r >= 0x7F && r <= 0x9F) || r == 0xFFFD {
+		if r <= 0x1F || (r >= 0x7F && r <= 0x9F) || r == 0xFFFD || bidiOrLineSep(r) {
 			return fmt.Errorf("%s contains U+%04X", member, r)
 		}
 	}
 	return nil
+}
+
+// bidiOrLineSep reports the code points the R55-F10 text rule adds
+// (agent-card.md §Card, Text): the Bidi_Control set, U+2028 and U+2029.
+func bidiOrLineSep(r rune) bool {
+	return r == 0x061C || r == 0x200E || r == 0x200F || (r >= 0x202A && r <= 0x202E) ||
+		(r >= 0x2066 && r <= 0x2069) || r == 0x2028 || r == 0x2029
 }
 
 // parse decodes one JSON document under the strict parse (agent-card.md

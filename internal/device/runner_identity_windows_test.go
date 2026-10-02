@@ -31,7 +31,7 @@ func TestCheckTargetRefusesJunctionSwap(t *testing.T) {
 	// A C:\ ACL that grants others Modify makes the program-owner step fail
 	// on some PCs (HANDOFF section 0), so only the directory step, which runs
 	// first, is judged here.
-	if err := CheckTarget(prog, repo); err != nil && strings.Contains(err.Error(), "working directory") {
+	if err := CheckTarget(prog, repo, nil); err != nil && strings.Contains(err.Error(), "working directory") {
 		t.Fatalf("unchanged repo refused: %v", err)
 	}
 	if err := os.Remove(repo); err != nil {
@@ -40,7 +40,7 @@ func TestCheckTargetRefusesJunctionSwap(t *testing.T) {
 	if out, err := exec.Command("cmd", "/c", "mklink", "/J", repo, other).CombinedOutput(); err != nil { //nolint:gosec // test: fixed command, temp dirs
 		t.Fatalf("mklink /J: %v %s", err, out)
 	}
-	err = CheckTarget(prog, repo)
+	err = CheckTarget(prog, repo, nil)
 	if err == nil || !strings.Contains(err.Error(), "working directory") {
 		t.Fatalf("a repo swapped for a junction passed the directory re-check: %v", err)
 	}
@@ -60,10 +60,10 @@ func TestUNCProgramRefusedWithoutDial(t *testing.T) {
 		t.Error("lookPath was called on a UNC argv[0]")
 	}
 	prog := filepath.Join(os.Getenv("SystemRoot"), "System32", "whoami.exe")
-	if CheckTarget(unc, testutil.TempDir(t)) == nil {
+	if CheckTarget(unc, testutil.TempDir(t), nil) == nil {
 		t.Error("CheckTarget accepted a UNC program")
 	}
-	if CheckTarget(prog, `\\192.0.2.1\share\repo`) == nil {
+	if CheckTarget(prog, `\\192.0.2.1\share\repo`, nil) == nil {
 		t.Error("CheckTarget accepted a UNC working directory")
 	}
 	if d := time.Since(start); d > time.Second {

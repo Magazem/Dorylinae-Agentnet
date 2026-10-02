@@ -141,7 +141,8 @@ type Resolver struct {
 	// LookPath finds a program; nil uses exec.LookPath.
 	LookPath func(file string) (string, error)
 	// CheckProgram refuses a resolved argv[0] that others can change; nil
-	// uses CheckProgramOwner (review 40 L11).
+	// uses CheckProgramOwnerEnv with the environment the command's runs get
+	// (MinimalEnv, review 40 L11, D71).
 	CheckProgram func(path string) error
 }
 
@@ -187,10 +188,6 @@ func ValidateScope(in Scope, now time.Time, r Resolver) (Scope, error) {
 	lookPath := r.LookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
-	}
-	checkProgram := r.CheckProgram
-	if checkProgram == nil {
-		checkProgram = CheckProgramOwner
 	}
 	out := Scope{}
 	if len(in.Types) < 1 || len(in.Types) > MaxScopeTypes {
@@ -269,9 +266,6 @@ func ValidateScope(in Scope, now time.Time, r Resolver) (Scope, error) {
 		if err != nil {
 			return Scope{}, scopeErr(field+".argv[0]", "%s", err.Error())
 		}
-		if err := checkProgram(prog); err != nil {
-			return Scope{}, scopeErr(field+".argv[0]", "%s", err.Error())
-		}
 		if c.TimeoutS < 1 || c.TimeoutS > MaxTimeoutS {
 			return Scope{}, scopeErr(field+".timeout_s", "must be 1-%d", MaxTimeoutS)
 		}
@@ -294,6 +288,13 @@ func ValidateScope(in Scope, now time.Time, r Resolver) (Scope, error) {
 			}
 			envSeen[key] = true
 			env = append(env, e)
+		}
+		checkProgram := r.CheckProgram
+		if checkProgram == nil {
+			checkProgram = func(p string) error { return CheckProgramOwnerEnv(p, MinimalEnv(env, nil)) }
+		}
+		if err := checkProgram(prog); err != nil {
+			return Scope{}, scopeErr(field+".argv[0]", "%s", err.Error())
 		}
 		argv := append([]string{prog}, c.Argv[1:]...)
 		out.Commands = append(out.Commands, Command{Name: c.Name, Repo: c.Repo, Argv: argv, TimeoutS: c.TimeoutS, Env: env})
