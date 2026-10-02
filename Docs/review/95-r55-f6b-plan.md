@@ -6,8 +6,8 @@ F6S-1, F6S-2 and F6S-3, with owner decision D66. Branch `p4/r55-f6b`.
 ## Plan
 
 All three findings are inside `displayName` (approval.md §Sanitising, steps 4 and 5), which is
-`displaytext.Name` in code. Only `approvaltext` calls `Name`, for the peer name and the team
-name. F10's `displayTerm` (`displaytext.Term`, used by the CLI) **escapes** text and never
+`displaytext.Name` in code. Only `approvaltext` calls `Name`, for the peer name (`approvaltext.go:190`);
+team names go through `plain`/`Quote`, not `Name` (review 96 nit). F10's `displayTerm` (`displaytext.Term`, used by the CLI) **escapes** text and never
 blanks it (OD-F10-3), so it does not change. The card text rule (D70) refuses bidi controls and
 U+2028/9 at pairing time and does not apply here. This ticket reuses F10's shared predicates
 (`Hidden`, `clean`, `isAnyMark`) and adds no second sanitiser. There is no protocol or wire

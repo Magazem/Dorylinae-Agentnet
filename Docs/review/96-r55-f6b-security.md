@@ -174,3 +174,53 @@ so I could tell regressions from pre-existing behaviour.
 `95-r55-f6b-plan.md` line 9 says `approvaltext` calls `Name` "for the peer name and the team
 name". Only the peer name goes through `Name` (`approvaltext.go:190`); team names use
 `plain`/`Quote` (`:409-410`). Correct the sentence; the behaviour is fine.
+
+## Fixes applied
+
+Applied by the reviewer (task 01a0fb7d) on `p4/r55-f6b`, on top of `45570f4` and this review.
+No git command was run. Each new test was checked by mutation: the fix was reverted, the test
+was confirmed to fail, and the file was restored from a backup copy.
+
+- **L1, fixed.**
+  - Code: `maxGroupSeparators` is now 8, the same as step 4 (`displaytext.go`).
+  - Tests: `2ED9 -- TGVE -- R471` and `2ED9 - - - TGVE` are blanked. Gaps of 9 or more
+    separators still do not join groups.
+  - Spec: approval.md step 5 now says "1 to 8". Its residuals list O/I/l for 0/1, and groups
+    more than 8 separators apart.
+  - Accepted cost: `Team 2024 -- Mary Jake` is now `…`.
+- **L2, fixed.**
+  - Code: `joinerLetters` gains U+16C1 `ᛁ`, U+2D4F `ⵏ`, U+A7FE `ꟾ`, U+05D5 `ו` and U+0627 `ا`.
+    All are `Lo` and fold to 0, which the table test checks. It is still a table, not a new
+    rule.
+  - Tests: one decoy code each.
+  - Spec: step 4 lists the new letters. The residual now reads "beyond the joiner letters of
+    step 4".
+- **I1, fixed.**
+  - Code: `fpConfusables` maps `Ⅰ Ⅴ Ⅹ Ⅼ Ⅽ Ⅾ Ⅿ` (U+2160, 2164, 2169, 216C–216F). The small
+    forms fold through their upper case.
+  - Tests:
+    - the table test now accepts `Nl` as well as letters;
+    - `TestFold` checks the small forms;
+    - `2ⅭⅮ9 TGⅤE` and `2ⅽⅾ9 tgⅴe` are blanked.
+  - Spec: step 5 lists them.
+  - `Henry Ⅷ` and `Louis ⅩⅣ` still show.
+- **I2, documented.** approval.md step 4 has a "Known false positives" note: `Google I/O 2024`
+  and `Equipo 12 o 3456`. A test pins both. The rule is unchanged.
+- **I4, fixed.**
+  - Code: `cmd/agentnet/decision.go:165-168` now prints
+    `initiator: fingerprint <fp>, named <Term(name)>`, and the same for the respondent: 2 lines
+    changed plus a comment.
+  - Test: `TestDecisionShowFingerprintBeforeName` in `decision_verify_sanitise_test.go`.
+  - No doc pinned the old line.
+  - Follow-up, not done: `internal/decision/markdown.go:61` (`--md`, Participants line) has the
+    same name-then-fingerprint order. Changing it touches the golden files and decision.md, so
+    it belongs to a separate ticket.
+- **Doc nit, fixed** in `95-r55-f6b-plan.md`.
+
+Verification:
+- `go build ./...`: clean.
+- `go vet ./...` with GOOS windows, linux and darwin: clean.
+- gofmt: clean.
+- `go test -count=1 ./internal/displaytext ./internal/approvaltext ./internal/notify
+  ./internal/approval ./internal/decision`: pass.
+- `go test -count=1 ./cmd/agentnet -run Decision`: pass.

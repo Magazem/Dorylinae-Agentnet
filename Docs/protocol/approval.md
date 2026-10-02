@@ -417,17 +417,23 @@ safe.
    `12345 Ok` are not (review 65 F6S-2). Between two of its numbers there may be **up to 8**
    separator runes (spaces, `P*`, `S*` or **joiner letters**: every `Lm` such as `ˑ` and `ː`,
    and the bar- and dot-shaped `Lo` letters U+01C0–01C3 `ǀ ǁ ǂ ǃ`, U+A78F `ꞏ`, U+318D `ㆍ`,
-   U+119E `ᆞ`, U+11A2 `ᆢ`), so `4 - 8 - 2 - 9 - 1 - 3`, `4 - - 8 - - 2 …` and `4ǀ8ǀ2ǀ9ǀ1ǀ3`
-   count as one run (review 58a, L3; review 64 F5S-2; review 65 F6S-2). Combining marks of any
+   U+119E `ᆞ`, U+11A2 `ᆢ`, U+16C1 `ᛁ`, U+2D4F `ⵏ`, U+A7FE `ꟾ`, U+05D5 `ו`, U+0627 `ا`), so
+   `4 - 8 - 2 - 9 - 1 - 3`, `4 - - 8 - - 2 …`, `4ǀ8ǀ2ǀ9ǀ1ǀ3` and `4ᛁ8ᛁ2ᛁ9ᛁ1ᛁ3` count as one run
+   (review 58a, L3; review 64 F5S-2; review 65 F6S-2; review 96 L2). Combining marks of any
    kind (`Mn`, `Mc`, `Me`) anywhere in the run, on a number or on a separator, are part of it
    and do not count as separators (F5S-2). A run of **6 or more** numbers, at least one of them
    of category `N`, is replaced by one `…`. This is today's `stripLongDigits` (review 26 N4,
    review 36 L2), made to see through invisible characters, combining marks, non-decimal
    digits, look-alike letters and spaced-out digits. The zenity octal form
-   `\064\070\062\071\061\063` is caught as well, because `\` is a separator.
+   `\064\070\062\071\061\063` is caught as well, because `\` is a separator. **Known false
+   positives** (review 96 I2): a standalone `I`, `O` or `o` (English, Spanish) or `з`
+   (Ukrainian) next to 4 or 5 digits makes a run of 6, so `Google I/O 2024` shows as
+   `Google …` and `Equipo 12 o 3456` as `Equipo …`. This is accepted: the fingerprint
+   identifies the peer, and a stricter rule would let `4829 l 3` decoys through.
 5. **Fingerprint-shaped text** (OD-R55F5-9, D66). A **chain** of **2 or more** groups of 4
-   characters of the fingerprint alphabet (case-insensitive), joined by 1 to 3 separator runes
-   (spaces, `P*`, `S*` or joiner letters: `-`, `.`, `_`, `/`, `—`, `--`, `ㆍ`, `ǀ` …), is
+   characters of the fingerprint alphabet (case-insensitive), joined by 1 to 8 separator runes,
+   as in step 4 (spaces, `P*`, `S*` or joiner letters: `-`, `.`, `_`, `/`, `—`, `--`, ` -- `,
+   `ㆍ`, `ǀ` …; review 96 L1), is
    replaced by one `…` when it has **4 or more groups**, or when it has 2 or 3 groups and **at
    least one of its characters is a digit** (D66, review 65 F6S-3: `Mary & Jake`, `Zack.Hart`
    and `Mary & Jake & Zack` are names and show; `Mar7 & Jake` and `TGVE R471` do not). Any run
@@ -440,13 +446,17 @@ safe.
    - the enclosed and dingbat alphanumerics (`②`, `Ⓔ`, `⒟`, `❾`, `🅴`, `🄶` …) and the regional
      indicators;
    - the Cyrillic, Greek, Lisu and Cherokee letters (either case) and the Latin small capitals
-     that look like one of its letters or digits (`Е`, `М`, `Ε`, `З` → `3`, `ꓰ`, `Ꭼ`, `ᴇ`, `ʀ` …).
+     that look like one of its letters or digits (`Е`, `М`, `Ε`, `З` → `3`, `ꓰ`, `Ꭼ`, `ᴇ`, `ʀ` …);
+   - the Roman numerals `Ⅰ Ⅴ Ⅹ Ⅼ Ⅽ Ⅾ Ⅿ` (either case; review 96 I1).
 
    Combining marks inside a group are part of it (review 64 F5S-1, review 65 F6S-1). A peer
    cannot then put the fingerprint of the device it impersonates into its own name (review
-   58a, H1). **Residuals** (review 65): narrow letters of other scripts between digits (Hebrew
-   `ו`, Arabic `ا`), look-alikes that do not stand alone (`4829lO`), fingerprint letters that
-   resemble digits (`S`, `B`), superscript letters, and scripts outside these tables. Against
+   58a, H1). **Residuals** (review 65, review 96): narrow letters of other scripts between
+   digits beyond the joiner letters of step 4, look-alikes that do not stand alone
+   (`4829lO`), fingerprint letters that resemble digits (`S`, `B`), a `0` or `1` written as
+   `O`, `I` or `l` (these are not in the alphabet, so the group breaks: `ABlC DEFG OHJK MNPQ
+   RSTV` shows; folding them in would blank `Windows11` and `John & Mary`), groups more than 8
+   separators apart, superscript letters, and scripts outside these tables. Against
    them the order holds: the real fingerprint comes first, right after `peer`, and a decoy
    code only wastes attempts. A 2- or 3-group fragment of a fingerprint that holds no digit
    (about 5 % of 2-group and 1 % of 3-group fragments) also shows (D66).

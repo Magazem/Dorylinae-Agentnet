@@ -180,11 +180,13 @@ func isSeparator(r rune) bool {
 }
 
 // joinerLetters are the letters (Lo) shaped like a bar or a dot (review 65
-// F6S-1, F6S-2: "4ǀ8ǀ2ǀ9ǀ1ǀ3", "2ED9ㆍTGVE").
+// F6S-1, F6S-2: "4ǀ8ǀ2ǀ9ǀ1ǀ3", "2ED9ㆍTGVE"; review 96 L2: "4ᛁ8ᛁ2ᛁ9ᛁ1ᛁ3").
 var joinerLetters = map[rune]bool{
 	0x01C0: true, 0x01C1: true, 0x01C2: true, 0x01C3: true, // ǀ ǁ ǂ ǃ
 	0xA78F: true,                             // ꞏ
 	0x318D: true, 0x119E: true, 0x11A2: true, // ㆍ ᆞ ᆢ
+	0x16C1: true, 0x2D4F: true, 0xA7FE: true, // ᛁ ⵏ ꟾ
+	0x05D5: true, 0x0627: true, // ו ا
 }
 
 // isJoinerLetter reports a letter that reads as a separator: every modifier
@@ -342,6 +344,10 @@ var fpConfusables = map[rune]rune{
 	0x13B3: 'W', 0x13B7: 'M', 0x13BB: 'H', 0x13C0: 'G', 0x13C3: 'Z', 0x13CE: '4',
 	0x13D2: 'R', 0x13D4: 'W', 0x13D5: 'S', 0x13D9: 'V', 0x13DA: 'S', 0x13DE: 'L',
 	0x13DF: 'C', 0x13E2: 'P', 0x13E6: 'K', 0x13EE: '6', 0x13F4: 'B',
+	// Roman numerals (Nl; review 96 I1); the small forms fold through their
+	// upper case.
+	0x2160: 'I', 0x2164: 'V', 0x2169: 'X', 0x216C: 'L', 0x216D: 'C', 0x216E: 'D',
+	0x216F: 'M',
 }
 
 // fold returns the ASCII digit or upper-case ASCII letter r reads as, or 0:
@@ -423,8 +429,9 @@ func foldFP(r rune) rune {
 }
 
 // maxGroupSeparators is how many separator runes may join two groups of 4
-// (review 64 F5S-1: '.', '_', '/', '—', "--" and " - ").
-const maxGroupSeparators = 3
+// (review 64 F5S-1: '.', '_', '/', '—', "--" and " - "; review 96 L1:
+// " -- ", as many as maxRunSeparators).
+const maxGroupSeparators = 8
 
 // maxDigitlessChain is the longest chain of groups that is blanked only if it
 // holds a digit (D66, review 65 F6S-3: "Mary & Jake" is a name).
@@ -432,7 +439,7 @@ const maxDigitlessChain = 3
 
 // blankFingerprints is step 5 (OD-R55F5-9, review 58a H1, review 64 F5S-1,
 // review 65 F6S-1, D66): a chain of two or more groups of exactly 4
-// fingerprint-alphabet characters, joined by 1 to 3 separator runes (space,
+// fingerprint-alphabet characters, joined by 1 to 8 separator runes (space,
 // P*, S*, joiner letters), becomes "…" when it has 4 or more groups or holds
 // a digit; and any run of 8 or more of them with no separator that holds
 // both a digit and a letter becomes "…". The characters are matched after

@@ -245,6 +245,10 @@ func TestNameBlanksMoreConfusableFingerprints(t *testing.T) {
 		"Desktop 2ED9ㆍTGVEㆍR471",              // U+318D (Lo)
 		"Desktop 2ED9ǀTGVEǀR471",              // U+01C0 (Lo)
 		"Desktop 2ED9ˑTGVEˑR471",              // U+02D1 (Lm)
+		"Desktop 2ED9 -- TGVE -- R471",        // review 96 L1: 4 separators
+		"Desktop 2ED9 - - - TGVE",             // 7 separators
+		"Desktop 2ⅭⅮ9 TGⅤE",                   // review 96 I1: Roman numerals
+		"Desktop 2ⅽⅾ9 tgⅴe",                   // small Roman numerals
 	} {
 		if got := Name(name); got != "Desktop …" {
 			t.Errorf("Name(%q) = %q: the fingerprint survives", name, got)
@@ -266,6 +270,12 @@ func TestNameBlanksLetterDecoyCodes(t *testing.T) {
 		"Code 48291б", // Cyrillic be
 		"Code 4829l3", // lower-case L
 		"Code 4 O 8 2 9 1",
+		// Review 96 L2: more bar-shaped Lo letters.
+		"Code 4ᛁ8ᛁ2ᛁ9ᛁ1ᛁ3",   // U+16C1 Runic
+		"Code 4ⵏ8ⵏ2ⵏ9ⵏ1ⵏ3",   // U+2D4F Tifinagh
+		"Code 4ꟾ8ꟾ2ꟾ9ꟾ1ꟾ3",   // U+A7FE
+		"Code 4ו8ו2ו9ו1ו3",   // U+05D5 Hebrew vav
+		"Code 4ا8ا2ا9ا1ا3",   // U+0627 Arabic alef
 		"Code 4́ ĺ 8 2 9 1", // marks around the look-alike
 	} {
 		if got := Name(name); got != "Code …" {
@@ -280,6 +290,16 @@ func TestNameBlanksLetterDecoyCodes(t *testing.T) {
 	} {
 		if got := Name(in); got != in {
 			t.Errorf("Name(%q) = %q, want it unchanged", in, got)
+		}
+	}
+	// Known false positives (review 96 I2, approval.md step 4): a standalone
+	// I, O or o next to 4 or 5 digits makes a run of 6.
+	for in, want := range map[string]string{
+		"Google I/O 2024":  "Google …",
+		"Equipo 12 o 3456": "Equipo …",
+	} {
+		if got := Name(in); got != want {
+			t.Errorf("Name(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -308,10 +328,12 @@ func TestNameFingerprintChainsNeedADigit(t *testing.T) {
 		// Blanked: 4 or more groups, digit or not.
 		"Our Mary & Jake & Zack & Hart": "Our …",
 		"ABCD EFGH JKMN PQRS TVWX":      "…",
-		// Not chains: one group, or groups not joined by 1 to 3 separators.
-		"Mary 7":        "Mary 7",
-		"Mar7 and Jake": "Mar7 and Jake",
-		"TGVE    R471":  "…", // spaces collapse first
+		// Not chains: one group, or groups not joined by 1 to 8 separators.
+		"Mary 7":                "Mary 7",
+		"Mar7 and Jake":         "Mar7 and Jake",
+		"TGVE    R471":          "…", // spaces collapse first
+		"TGVE - - - - - R471":   "TGVE - - - - - R471",
+		"TGVE -- -- -- -- R471": "TGVE -- -- -- -- R471",
 	} {
 		if got := Name(in); got != want {
 			t.Errorf("Name(%q) = %q, want %q", in, got, want)
@@ -332,14 +354,15 @@ func TestFold(t *testing.T) {
 		0x1F100: '0', 0x1F101: '0', 0x1F10A: '9', 0x1F110: 'A', 0x1F12A: 0, 0x1F130: 'A',
 		0x1F150: 'A', 0x1F170: 'A', 0x1F189: 'Z', 0x1F1E6: 'A', 0x1F1FF: 'Z',
 		0xFF10: '0', 0xFF41: 'A', 'q': 'Q', '7': '7', '-': 0, 0x00E9: 0,
+		0x2174: 'V', 0x217D: 'C', 0x217E: 'D', 0x217F: 'M', 0x2179: 'X', 0x2170: 'I', 0x217C: 'L',
 	} {
 		if got := fold(r); got != want {
 			t.Errorf("fold(U+%04X) = %q, want %q", r, got, want)
 		}
 	}
 	for r, c := range fpConfusables {
-		if !unicode.IsLetter(r) {
-			t.Errorf("fpConfusables: U+%04X is not a letter", r)
+		if !unicode.IsLetter(r) && !unicode.Is(unicode.Nl, r) {
+			t.Errorf("fpConfusables: U+%04X is not a letter or Roman numeral", r)
 		}
 		if fold(r) != c {
 			t.Errorf("fold(U+%04X) = %q, want %q", r, fold(r), c)
