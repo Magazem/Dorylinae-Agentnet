@@ -175,8 +175,80 @@ func TestCheckProgramOwnerResolvesEnvOnRunPath(t *testing.T) {
 	}
 }
 
-// Review 86 L1: a program that can be executed but not read is not a
-// script the check can read, and the kernel runs it: it is accepted.
+// Review 86b M1, L1: env's execvp moves on to the next X on the PATH when
+// one fails to run, so X is the first one this user may execute
+// (access X_OK), every directory on the PATH is checked, the ones after X
+// too, and a missing one is checked through its nearest existing ancestor,
+// which could create it before the run starts. A relative directory
+// anywhere on the PATH is refused.
+func TestCheckProgramOwnerEnvWholePath(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/env"); err != nil {
+		t.Skip("no /usr/bin/env")
+	}
+	dir := testutil.PrivateDir(t)
+	write := func(p, body string, perm os.FileMode) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(body), 0o700); err != nil { //nolint:gosec // an executable test file
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, perm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir := func(name string, perm os.FileMode) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, perm); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	private := mkdir("private", 0o700)
+	first := mkdir("first", 0o700)
+	shared := mkdir("shared", 0o777)
+	write(filepath.Join(private, "node"), "x", 0o700)
+	write(filepath.Join(shared, "node"), "x", 0o700)
+	script := filepath.Join(dir, "npm-cli.js")
+	write(script, "#!/usr/bin/env node\n", 0o700)
+	runEnv := func(path string) []string { return []string{"HOME=" + dir, "PATH=" + path} }
+
+	var we *WritableError
+	if err := CheckProgramOwnerEnv(script, runEnv(private+":"+shared)); !errors.As(err, &we) || we.Path != shared ||
+		!strings.Contains(err.Error(), filepath.Join(private, "node")) {
+		t.Fatalf("env node, a directory others can write after node: %v", err)
+	}
+	missing := filepath.Join(shared, "later", "bin")
+	if err := CheckProgramOwnerEnv(script, runEnv(missing+":"+private)); !errors.As(err, &we) || we.Path != shared {
+		t.Fatalf("env node, a missing PATH directory others could create: %v", err)
+	}
+	if err := CheckProgramOwnerEnv(script, runEnv(filepath.Join(private, "later", "bin")+":"+private)); err != nil {
+		t.Fatalf("env node, a missing PATH directory under a private one: %v", err)
+	}
+	if err := CheckProgramOwnerEnv(script, runEnv(private+":bin")); err == nil || !strings.Contains(err.Error(), "relative") {
+		t.Fatalf("env node, a relative PATH entry after node: %v", err)
+	}
+
+	// A node this user may not execute (owner bits rw-, others --x) is
+	// skipped as execvp skips it: the next one is the program found.
+	if os.Geteuid() == 0 {
+		t.Skip("root may execute a file with any execute bit")
+	}
+	write(filepath.Join(first, "node"), "#!"+filepath.Join(shared, "node")+"\n", 0o611)
+	if err := CheckProgramOwnerEnv(script, runEnv(first+":"+shared)); !errors.As(err, &we) || we.Path != shared ||
+		!strings.Contains(err.Error(), filepath.Join(shared, "node")) {
+		t.Fatalf("env node, the first node not executable by this user: %v", err)
+	}
+	if err := CheckProgramOwnerEnv(script, runEnv(first+":"+private)); err != nil {
+		t.Fatalf("env node, the first node not executable, then a private one: %v", err)
+	}
+}
+
+// Review 86 L1, review 86b L2: a program that can be executed but not read
+// may be a script whose interpreter the kernel would still run: it is
+// refused, unless it is set-user-ID or set-group-ID (sudo, mode 4111).
 func TestCheckProgramOwnerExecuteOnly(t *testing.T) {
 	dir := testutil.PrivateDir(t)
 	prog := filepath.Join(dir, "tool")
@@ -189,7 +261,16 @@ func TestCheckProgramOwnerExecuteOnly(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root reads every file")
 	}
-	if err := CheckProgramOwner(prog); err != nil {
+	if err := CheckProgramOwner(prog); err == nil || !strings.Contains(err.Error(), "cannot be read") {
 		t.Fatalf("an execute-only program: %v", err)
+	}
+	if err := os.Chmod(prog, os.ModeSetuid|0o111); err != nil { //nolint:gosec // execute-only set-ID: the point of the test
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(prog); err != nil || fi.Mode()&os.ModeSetuid == 0 {
+		t.Skipf("the set-user-ID bit did not stick: %v", err)
+	}
+	if err := CheckProgramOwner(prog); err != nil {
+		t.Fatalf("an execute-only set-user-ID program: %v", err)
 	}
 }

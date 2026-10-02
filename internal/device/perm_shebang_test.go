@@ -10,35 +10,50 @@ import (
 // is refused; a file that is not a "#!" script has none. For env, the program
 // it runs is returned too, to be found on the run's PATH (D71); env options,
 // variables and -S expansions that the check cannot follow are refused.
+// The line is split on spaces and tabs only, a control character in it is
+// refused, and on Linux (linux) env without -S names one word (review 86b
+// M2).
 func TestParseShebang(t *testing.T) {
 	for _, tc := range []struct {
 		head, want, prog, err string
+		linux                 bool
 	}{
-		{"\x7fELF\x02\x01", "", "", ""},
-		{"#!/bin/sh\necho hi\n", "/bin/sh", "", ""},
-		{"#! /opt/tools/node/bin/node --max-old-space-size=64\n", "/opt/tools/node/bin/node", "", ""},
-		{"#!/usr/bin/python3\r\nprint(1)\r\n", "/usr/bin/python3", "", ""},
-		{"#!/bin/sh", "/bin/sh", "", ""},
-		{"#!/usr/bin/env python3\n", "/usr/bin/env", "python3", ""},
-		{"#!/usr/bin/env node\n", "/usr/bin/env", "node", ""},
-		{"#!/usr/bin/env -S python3 -u\n", "/usr/bin/env", "python3", ""},
-		{"#!/usr/bin/env /opt/node/bin/node\n", "/usr/bin/env", "/opt/node/bin/node", ""},
-		{"#!/usr/bin/env\n", "", "", "names no program"},
-		{"#!/usr/bin/env -S\n", "", "", "names no program"},
-		{"#!/usr/bin/env -i node\n", "", "", "option"},
-		{"#!/usr/bin/env -S -u HOME node\n", "", "", "option"},
-		{"#!/usr/bin/env PATH=/tmp node\n", "", "", "cannot be checked"},
-		{"#!/usr/bin/env -S ${HOME}/bin/node\n", "", "", "expand"},
-		{"#!/usr/bin/env ./node\n", "", "", "not an absolute path"},
-		{"#!python3\n", "", "", "not an absolute path"},
-		{"#!./tool\n", "", "", "not an absolute path"},
-		{"#!\n", "", "", "no interpreter"},
-		{"#!   \t\n", "", "", "no interpreter"},
+		{"\x7fELF\x02\x01", "", "", "", false},
+		{"#!/bin/sh\necho hi\n", "/bin/sh", "", "", false},
+		{"#! /opt/tools/node/bin/node --max-old-space-size=64\n", "/opt/tools/node/bin/node", "", "", false},
+		{"#!/usr/bin/python3\r\nprint(1)\r\n", "", "", "control character", false},
+		{"#!/usr/bin/env node\r\n", "", "", "control character", true},
+		{"#!/usr/bin/env -S node\v--x\n", "", "", "control character", false},
+		{"#!/usr/bin/env no\x00de\n", "", "", "control character", false},
+		{"#!/usr/bin/env node\n", "/usr/bin/env node", "", "", false},
+		{"#!/usr/bin/env node --x\n", "/usr/bin/env", "node --x", "", true},
+		{"#!/usr/bin/env\tnode \t\n", "/usr/bin/env", "node", "", true},
+		{"#!/usr/bin/env node --flag\n", "/usr/bin/env", "node", "", false},
+		{"#!/usr/bin/env node --flag\n", "", "", "one program name", true},
+		{"#!/usr/bin/env node\t--flag\n", "", "", "one program name", true},
+		{"#!/usr/bin/env -S node --flag\n", "/usr/bin/env", "node", "", true},
+		{"#! /opt/tools/node/bin/node --max-old-space-size=64 -x\n", "/opt/tools/node/bin/node", "", "", true},
+		{"#!/bin/sh", "/bin/sh", "", "", false},
+		{"#!/usr/bin/env python3\n", "/usr/bin/env", "python3", "", false},
+		{"#!/usr/bin/env node\n", "/usr/bin/env", "node", "", false},
+		{"#!/usr/bin/env -S python3 -u\n", "/usr/bin/env", "python3", "", false},
+		{"#!/usr/bin/env /opt/node/bin/node\n", "/usr/bin/env", "/opt/node/bin/node", "", false},
+		{"#!/usr/bin/env\n", "", "", "names no program", false},
+		{"#!/usr/bin/env -S\n", "", "", "names no program", false},
+		{"#!/usr/bin/env -i node\n", "", "", "option", false},
+		{"#!/usr/bin/env -S -u HOME node\n", "", "", "option", false},
+		{"#!/usr/bin/env PATH=/tmp node\n", "", "", "cannot be checked", false},
+		{"#!/usr/bin/env -S ${HOME}/bin/node\n", "", "", "expand", false},
+		{"#!/usr/bin/env ./node\n", "", "", "not an absolute path", false},
+		{"#!python3\n", "", "", "not an absolute path", false},
+		{"#!./tool\n", "", "", "not an absolute path", false},
+		{"#!\n", "", "", "no interpreter", false},
+		{"#!   \t\n", "", "", "no interpreter", false},
 	} {
-		got, prog, err := parseShebang([]byte(tc.head))
+		got, prog, err := parseShebang([]byte(tc.head), tc.linux)
 		switch {
 		case tc.err == "" && err != nil:
-			t.Errorf("parseShebang(%q): %v", tc.head, err)
+			t.Errorf("parseShebang(%q, %v): %v", tc.head, tc.linux, err)
 		case tc.err != "" && (err == nil || !strings.Contains(err.Error(), tc.err)):
 			t.Errorf("parseShebang(%q): err = %v, want one naming %q", tc.head, err, tc.err)
 		case got != tc.want || prog != tc.prog:

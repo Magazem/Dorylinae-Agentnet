@@ -148,6 +148,10 @@ func classifyACE(aceType, aceFlags uint8, mask uint32, sid, owner, self string, 
 	return sidName(sid)
 }
 
+// canExecute is not used on Windows, where no "#!" line is followed: the
+// program must be an .exe or .com.
+func canExecute(string) bool { return false }
+
 // checkPathOwner reads p's owner and DACL and refuses p when the owner is not
 // this user or an administrator SID, when it has no DACL (everyone has full
 // access), or when an ACE lets another SID change it (classifyACE).

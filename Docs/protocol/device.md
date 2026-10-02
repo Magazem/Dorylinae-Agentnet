@@ -161,22 +161,37 @@ toolchain by the same user or an administrator keeps working.
 **Interpreters (Unix, review 55 R55-097, D71).** A script's `#!` interpreter runs it, so
 the interpreter is checked the same way, and so is its own if it is a script too (at most
 4 nested interpreters). The check reads the first 256 bytes and splits the `#!` line on
-blanks and tabs, as the kernel does; only the first word is the interpreter, and it must
-be an absolute path (a relative one would be found from the working directory, the repo).
-A file that cannot be read (an execute-only binary, mode `0711`) is not read and counts as
-no script (review 86 L1).
+spaces and tabs only, as the kernel does (not on other blanks such as a no-break space);
+a control character in the line (a CRLF line's `\r`, `\v`, `\f`, NUL) is refused (review
+86b M2). Only the first word is the interpreter, and it must be an absolute path (a
+relative one would be found from the working directory, the repo). A file this user cannot
+read is refused, since the kernel reads its `#!` line anyway and runs the interpreter it
+names. The exception is a set-user-ID or set-group-ID file (an execute-only `sudo`, mode
+`4111`), which is accepted as no script (review 86 L1, review 86b L2). Linux and macOS
+ignore the set-ID bits of a script, so a set-ID script would gain nothing and is not
+expected. An execute-only set-ID script naming an interpreter others can change is a
+residual risk.
 - **`#!/usr/bin/env X`** (or `#!/usr/bin/env -S X …`, as npm, npx, yarn and pnpm use):
   `env` itself is checked and must not be a script; `X` is found as `env` finds it, on
   the `PATH` of the environment the run gets (`PATH` is a base name, so it is the helper
   daemon's), at `device_scope_set` and again at each start: an absolute `X` as it is,
-  otherwise the first `PATH` directory holding an executable regular file `X`. The
-  program found is checked like an interpreter, its own `#!` chain included, and every
-  existing `PATH` directory searched before it is checked like its directory, so nobody
-  else can put another `X` there. Refused, with an error naming `X` and the path found:
-  `X` not found, a relative `PATH` entry (the run's working directory) searched first, no
-  `PATH`, or the program found failing the check. Any other `env` option (`-i`, `-u`…), a
-  variable `env` would set first (`PATH=…` would move the search) and a quote, escape or
-  `${…}` that `-S` would expand are refused: the check cannot follow them.
+  otherwise the first `PATH` directory holding a regular file `X` this user may execute
+  (`access(2)` `X_OK`, which on Linux also refuses a `noexec` mount). The program found
+  is checked like an interpreter, its own `#!` chain included. When that `X` fails to run
+  (`EACCES`, or `ENOENT` for a missing ELF loader), `env`'s `execvp` moves on to the next
+  `X` on the `PATH`. So **every** `PATH` directory is checked like the program's directory,
+  including those after `X`, and so is every other `X` file on it, as a file (review 86b
+  M1). A missing `PATH` directory is checked through its nearest existing ancestor, which
+  could create it before the run starts (review 86b L1). The fallback `X` files' own `#!`
+  chains are not followed. On Linux the kernel passes the rest of the `#!` line to `env`
+  as one argument, so without `-S` exactly one word must follow `env`
+  (`#!/usr/bin/env node --flag` is refused; use `env -S`). macOS splits the words and
+  accepts that line. Refused, with an error naming `X` and the path found: `X` not found,
+  a relative `PATH` entry (the run's working directory) anywhere on the `PATH`, no `PATH`,
+  or a `PATH` directory, an `X` on it or the program found failing the check. Any other
+  `env` option (`-i`, `-u`…), a variable `env` would set first (`PATH=…` would move the
+  search) and a quote, escape or `${…}` that `-S` would expand are refused: the check
+  cannot follow them.
 - **Not checked:** interpreter arguments, `argv[1..]` (a script passed as an argument,
   as in `node /path/npm-cli.js`, is the interpreter's input, not a program), and
   `binfmt_misc` handlers. Only the `argv[0]` chain is checked.

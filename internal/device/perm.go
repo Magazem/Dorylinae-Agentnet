@@ -68,9 +68,10 @@ func CheckProgramOwner(path string) error {
 // "#!/usr/bin/env X" (or "env -S X ..."), env is checked, X is found as env
 // finds it, on the PATH of env, the environment the run gets, and the
 // program found is checked like an interpreter, its own "#!" chain included
-// (D71). Every existing directory searched before it is checked too, so no
-// one else can put another X there. X is refused when it is not found, or
-// when a relative directory (the run's working directory) is searched first.
+// (D71). Every directory on that PATH is checked too, and every other X on
+// it, since env moves on to the next X when one fails to run (lookPath). X
+// is refused when it is not found, or when the PATH has a relative
+// directory (the run's working directory).
 func CheckProgramOwnerEnv(path string, env []string) error {
 	w := ownerWalk{seen: map[string]bool{}}
 	via := ""
@@ -127,9 +128,16 @@ func (w *ownerWalk) checkProgram(p string) error {
 
 // lookPath finds prog, which a "#!" line runs through env, as env does: an
 // absolute prog as it is, otherwise in the first directory on env's PATH
-// that holds an executable regular file of that name. Every existing
-// directory searched before it is checked like the program's own
-// directory, so that no one else can put another prog there.
+// that holds a regular file of that name this user may execute
+// (access(2) X_OK, which also refuses a file on a noexec mount). env's
+// execvp does not stop there: when that file fails to run (EACCES, or
+// ENOENT for a missing ELF loader) it tries the next prog on the PATH
+// (review 86b M1). So every directory on the PATH is checked like the
+// program's own directory, a missing one through its nearest existing
+// ancestor, which could create it (review 86b L1), and every other prog
+// on the PATH is checked as a file; the program found is then checked in
+// full by the caller. A relative directory (the run's working directory)
+// anywhere on the PATH is refused.
 func (w *ownerWalk) lookPath(prog string, env []string) (string, error) {
 	if filepath.IsAbs(prog) {
 		return prog, nil
@@ -138,22 +146,44 @@ func (w *ownerWalk) lookPath(prog string, env []string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("device: the script's #! env runs %s, but the run has no PATH to find it on", DisplayQuote(prog))
 	}
-	for _, dir := range filepath.SplitList(list) {
+	dirs := filepath.SplitList(list)
+	found := ""
+	for _, dir := range dirs {
 		if !filepath.IsAbs(dir) {
-			return "", fmt.Errorf("device: the script's #! env runs %s, but the run's PATH searches the relative directory %s (the run's working directory) first", DisplayQuote(prog), DisplayQuote(dir))
+			return "", fmt.Errorf("device: the script's #! env runs %s, but the run's PATH has the relative directory %s (the run's working directory)", DisplayQuote(prog), DisplayQuote(dir))
 		}
-		dir = filepath.Clean(dir)
-		p := filepath.Join(dir, prog)
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0 { //nolint:gosec // a PATH entry of the run, checked next
-			return p, nil
-		}
-		if fi, err := os.Stat(dir); err == nil && fi.IsDir() { //nolint:gosec // a PATH entry of the run, being checked
-			if err := w.check(dir, 1); err != nil {
-				return "", fmt.Errorf("%w (searched on the run's PATH for %s, which the script's #! env runs)", err, DisplayQuote(prog))
-			}
+		p := filepath.Join(filepath.Clean(dir), prog)
+		if fi, err := os.Stat(p); found == "" && err == nil && fi.Mode().IsRegular() && canExecute(p) { //nolint:gosec // a PATH entry of the run, checked next
+			found = p
 		}
 	}
-	return "", fmt.Errorf("device: the script's #! env runs %s, which is not found on the run's PATH", DisplayQuote(prog))
+	if found == "" {
+		return "", fmt.Errorf("device: the script's #! env runs %s, which is not found on the run's PATH", DisplayQuote(prog))
+	}
+	for _, dir := range dirs {
+		dir = filepath.Clean(dir)
+		err := w.check(existingAncestor(dir), 1)
+		if p := filepath.Join(dir, prog); err == nil {
+			if _, lerr := os.Lstat(p); lerr == nil { //nolint:gosec // a PATH entry of the run, being checked
+				err = w.check(p, 0)
+			}
+		}
+		if err != nil {
+			return "", fmt.Errorf("%w (searched on the run's PATH for %s, which the script's #! env runs, found at %s)", err, DisplayQuote(prog), DisplayQuote(found))
+		}
+	}
+	return found, nil
+}
+
+// existingAncestor returns p if it exists, otherwise the nearest directory
+// above it that does.
+func existingAncestor(p string) string {
+	for _, q := range pathChain(p) {
+		if _, err := os.Lstat(q); err == nil {
+			return q
+		}
+	}
+	return p
 }
 
 // envValue returns the value of name in env, the last one if it is set more
@@ -178,10 +208,20 @@ const shebangMax = 256
 
 // scriptInterpreter returns the "#!" interpreter of the file at path and,
 // when it is env, the program env runs (parseShebang). Both are "" when the
-// file is not a "#!" script, is not a regular file (never read: a FIFO
-// would block), or cannot be read: the kernel runs a binary that is
-// executable but not readable (mode 0711), while a script that cannot be
-// read fails in its interpreter (review 86 L1).
+// file is not a "#!" script or is not a regular file (never read: a FIFO
+// would block).
+//
+// A file this user may not read is refused unless it is set-user-ID or
+// set-group-ID (review 86 L1, review 86b L2). The kernel reads the "#!"
+// line itself, whatever the caller's read permission (Linux
+// fs/binfmt_script.c on the buffer exec reads; macOS likewise), and runs
+// the interpreter it names; only then does the interpreter fail to open
+// the script. Its set-ID bits do not stop that: Linux and macOS ignore
+// them on a script (the credentials come from the interpreter's file), so
+// the interpreter runs as this user. The allowance rests on that: a set-ID
+// script gains nothing, so an execute-only set-ID program (sudo, mode
+// 4111) is a binary in practice. An execute-only set-ID script naming an
+// interpreter others can change is a residual risk.
 func scriptInterpreter(path string) (interp, prog string, err error) {
 	fi, err := os.Stat(path) //nolint:gosec // the program being checked; its ownership was checked above
 	if err != nil {
@@ -192,7 +232,10 @@ func scriptInterpreter(path string) (interp, prog string, err error) {
 	}
 	f, err := os.Open(path) //nolint:gosec // the program being checked; its ownership was checked above
 	if errors.Is(err, fs.ErrPermission) {
-		return "", "", nil
+		if fi.Mode()&(os.ModeSetuid|os.ModeSetgid) != 0 {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("device: the program %s cannot be read, so the check cannot see whether it is a #! script, whose interpreter would run even so; make it readable by this user", DisplayQuote(path))
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("device: check the program: %w", err)
@@ -203,7 +246,7 @@ func scriptInterpreter(path string) (interp, prog string, err error) {
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return "", "", fmt.Errorf("device: check the program: %w", err)
 	}
-	return parseShebang(buf[:n])
+	return parseShebang(buf[:n], runtime.GOOS == "linux")
 }
 
 // parseShebang returns the interpreter named by a "#!" line at the start of
@@ -212,7 +255,15 @@ func scriptInterpreter(path string) (interp, prog string, err error) {
 // the program it runs, from "env X" or "env -S X ..."; any other env option,
 // a variable env would set first (PATH=... would change where X is found),
 // and a quote, escape or ${...} that -S would expand are refused.
-func parseShebang(head []byte) (interp, prog string, err error) {
+//
+// The line is split as the kernel splits it, on spaces and tabs only, not
+// on Go's or Unicode's other blanks (review 86b M2). A control character
+// in it (a CRLF line's \r, \v, \f, NUL) is refused: the kernel keeps it
+// in the name, and env -S splits on some of them. With oneArg (Linux) the
+// kernel passes everything after the interpreter to it as one argument,
+// so "env X Y" makes env look for a program named "X Y": without -S, env
+// must name exactly one word.
+func parseShebang(head []byte, oneArg bool) (interp, prog string, err error) {
 	line, ok := bytes.CutPrefix(head, []byte("#!"))
 	if !ok {
 		return "", "", nil
@@ -220,7 +271,12 @@ func parseShebang(head []byte) (interp, prog string, err error) {
 	if i := bytes.IndexByte(line, '\n'); i >= 0 {
 		line = line[:i]
 	}
-	fields := strings.Fields(string(line))
+	for _, c := range line {
+		if c != '\t' && (c < 0x20 || c == 0x7f) {
+			return "", "", fmt.Errorf("device: the script's #! line has the control character %q, which the check cannot follow (a CRLF line ending?)", c)
+		}
+	}
+	fields := strings.FieldsFunc(string(line), func(r rune) bool { return r == ' ' || r == '\t' })
 	if len(fields) == 0 {
 		return "", "", errors.New("device: the script's #! line names no interpreter")
 	}
@@ -234,6 +290,8 @@ func parseShebang(head []byte) (interp, prog string, err error) {
 	rest := fields[1:]
 	if len(rest) > 0 && (rest[0] == "-S" || rest[0] == "--split-string") {
 		rest = rest[1:]
+	} else if oneArg && len(rest) > 1 {
+		return "", "", fmt.Errorf("device: the script's #! line passes %s the words %s as one program name on Linux, which cannot be checked; use env X, or env -S X and its arguments", DisplayQuote(interp), DisplayQuote(strings.Join(rest, " ")))
 	}
 	if len(rest) == 0 {
 		return "", "", fmt.Errorf("device: the script's #! interpreter %s names no program to run", DisplayQuote(interp))
