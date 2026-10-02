@@ -274,6 +274,10 @@ type live struct {
 	// concurrent approval_open cannot start a second one (at most one window
 	// per approval, review 30, M3).
 	opening bool
+	// attempts counts the wrong codes this process saw, whatever the DB
+	// write did, so a failing wrong-code transaction cannot lift the
+	// MaxAttempts cap (review 89, F1).
+	attempts int
 }
 
 // Store persists approval metadata and audits every decision. The code

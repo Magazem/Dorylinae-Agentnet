@@ -46,7 +46,14 @@ func wrongCodesIn(ctx context.Context, db settingsDB, now time.Time) ([]time.Tim
 	}
 	var stored []string
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return nil, fmt.Errorf("approval: decode wrong codes: %w", err)
+		// An undecodable window cannot prove fewer than MaxWrongPerDay wrong
+		// codes, so treat it as full (locked) instead of failing every wrong
+		// code (review 89, F1). The next write replaces the value.
+		out := make([]time.Time, MaxWrongPerDay)
+		for i := range out {
+			out[i] = now
+		}
+		return out, nil
 	}
 	cutoff := now.Add(-WrongCodeWindow)
 	out := make([]time.Time, 0, len(stored))

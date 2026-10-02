@@ -309,10 +309,32 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 	if !hmac.Equal(want[:], entry.mac[:]) {
 		handle := entry.handle
 		entry.handle = nil // the dialog already exited after sending this answer
+		entry.attempts++
 		attemptsLeft, rejected, locked, err := s.recordBadCode(ctx, id, via, now)
 		if err != nil {
+			// Fail closed in memory: the wrong code counted whatever the DB
+			// said, so a failing write cannot keep the approval confirmable
+			// (review 89, F1). The row is settled best effort by rejectRow,
+			// else by the expiry sweep.
+			if entry.timer != nil {
+				entry.timer.Stop()
+			}
+			if entry.watchCancel != nil {
+				entry.watchCancel()
+			}
+			delete(s.pending, id)
 			release()
+			if handle != nil {
+				handle.Kill()
+			}
+			s.rejectRow(ctx, id, "attempts", via)
+			runOnReject(ctx, entry.action.OnReject)
 			return nil, err
+		}
+		settleRow := false
+		if !rejected && entry.attempts >= MaxAttempts {
+			// The DB count ran behind the in-memory one: still reject.
+			rejected, attemptsLeft, settleRow = true, 0, true
 		}
 		var rejectedHandle WindowHandle
 		if rejected {
@@ -332,6 +354,9 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		release()
 		if rejectedHandle != nil {
 			rejectedHandle.Kill()
+		}
+		if settleRow {
+			s.rejectRow(ctx, id, "attempts", via)
 		}
 		if rejected {
 			runOnReject(ctx, entry.action.OnReject)
