@@ -676,6 +676,11 @@ func (s *Store) apply(ctx context.Context, m migration) (err error) {
 	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM migrations`).Scan(&current); err != nil {
 		return err
 	}
+	// The newer-schema check is repeated under the write lock: another process
+	// may have migrated past this binary since migrate's first read (R55-173).
+	if current > len(migrations) {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", current, len(migrations))
+	}
 	if current < m.version {
 		if current != m.version-1 {
 			return fmt.Errorf("schema version %d, expected %d", current, m.version-1)
