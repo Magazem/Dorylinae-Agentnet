@@ -126,8 +126,26 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	s.pending[id] = &live{action: action, reserved: true}
 	release()
 
-	expires := now.Add(TTL)
+	// A panic from here on (the window runner, newCode, the notifier),
+	// recovered by the IPC server, must not leak the reservation: nothing
+	// else removes a reserved slot, and MaxPending leaks would refuse every
+	// Create until a restart (review 77b, R2). Every return sets settled.
 	var handle WindowHandle
+	settled := false
+	defer func() {
+		if settled {
+			return
+		}
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
+		if s.notifier != nil {
+			s.notifier.Remove(context.WithoutCancel(ctx), id)
+		}
+	}()
+
+	expires := now.Add(TTL)
 	if s.window != nil {
 		handle, err = s.window.Start(ctx, id, tagOf(id), kind, summary, "", expires)
 		if err != nil || !handle.Ready(ctx) {
@@ -135,6 +153,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 			if handle != nil {
 				handle.Kill()
 			}
+			settled = true
 			return View{}, ErrUnavailable
 		}
 		release = s.lock()
@@ -151,6 +170,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, err
 	}
 	mac := codeMAC(s.key, id, code)
@@ -160,6 +180,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, ErrUnavailable
 	}
 	title, body := deliveryText(s.window != nil, tagOf(id), summary, code)
@@ -171,6 +192,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, ErrUnavailable
 	}
 
@@ -189,6 +211,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 			handle.Kill()
 		}
 		s.notifier.Remove(ctx, id)
+		settled = true
 		if locked, lerr := s.settings.Locked(ctx, s.now()); lerr == nil && locked {
 			return View{}, ErrLocked
 		}
@@ -204,11 +227,13 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 			handle.Kill()
 		}
 		s.notifier.Remove(ctx, id)
+		settled = true
 		return View{}, fmt.Errorf("approval: insert: %w", err)
 	}
 	entry.mac = mac
 	entry.reserved = false
 	entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
+	settled = true
 	release()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
@@ -238,11 +263,13 @@ func deliveryText(desktop bool, tag, summary, code string) (title, body string) 
 }
 
 // dropReserved removes id's reserved (possibly not-yet-coded) pending slot,
-// used when Create fails after reserving it.
+// used when Create fails after reserving it. A finalised entry is kept.
 func (s *Store) dropReserved(id string) {
 	release := s.lock()
 	defer release()
-	delete(s.pending, id)
+	if e, ok := s.pending[id]; ok && e.reserved {
+		delete(s.pending, id)
+	}
 	release()
 }
 

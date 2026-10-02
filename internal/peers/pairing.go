@@ -100,6 +100,11 @@ var (
 	// ErrTooManyStarts means too many pairings were started recently. It
 	// matches ErrTooMany.
 	ErrTooManyStarts = fmt.Errorf("%w: too many pairings started recently", ErrTooMany)
+	// ErrCodeUsed means this daemon already sent a tag for the code in the
+	// last 24 hours. beginRedeemer returns it before any session, token or
+	// audit row exists; RedeemTagged reports it as a failed status with
+	// FailCodeUsed (review 94, M1).
+	ErrCodeUsed = errors.New("peers: this code was already used from this daemon")
 )
 
 // Failure is why a pairing failed. Code is the relay's error code when the
@@ -130,6 +135,9 @@ type Status struct {
 type Sender interface {
 	SendControl(ctx context.Context, ctl envelope.Control) error
 	Send(ctx context.Context, e envelope.Envelope) error
+	// Connected reports whether the relay connection is up; a start is
+	// refused before it begins while it is not (review 94, M1).
+	Connected() bool
 }
 
 // Config configures a Manager.
@@ -342,6 +350,9 @@ func (m *Manager) RedeemTagged(ctx context.Context, rawCode string, allowV1 bool
 	} else {
 		s, err = m.beginRedeemerV1(wctx, code, tag)
 	}
+	if errors.Is(err, ErrCodeUsed) {
+		return usedCodeStatus()
+	}
 	if err != nil {
 		return Status{}, err
 	}
@@ -350,6 +361,18 @@ func (m *Manager) RedeemTagged(ctx context.Context, rawCode string, allowV1 bool
 	case <-wctx.Done():
 	}
 	return m.settledSnapshot(wctx, s), nil
+}
+
+// usedCodeStatus is the failed status of a redemption refused because its
+// code was already used. No session backs it, so pair_status does not know
+// its id.
+func usedCodeStatus() (Status, error) {
+	id, err := newID()
+	if err != nil {
+		return Status{}, err
+	}
+	return Status{ID: id, Role: RoleRedeemer, State: StateFailed,
+		Error: &Failure{Code: FailCodeUsed, Message: "this code was already used from this daemon; ask for a new one"}}, nil
 }
 
 // settledSnapshot is snapshot, except that a pairing that has ended is
@@ -374,9 +397,15 @@ func (m *Manager) snapshot(s *session) Status {
 	return s.st
 }
 
+// precheck refuses a start that would fail before any relay reply, before
+// it has a session, a start token or an audit row, so a loop of such starts
+// costs nothing to refuse and leaves no trace to flood (review 94, M1).
 func (m *Manager) precheck() error {
 	if m.cfg.Sender == nil {
 		return ErrNoRelay
+	}
+	if !m.cfg.Sender.Connected() {
+		return relayclient.ErrNotConnected
 	}
 	return nil
 }
@@ -549,6 +578,9 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string, tag Tag) (*ses
 	if err != nil {
 		return nil, err
 	}
+	if used {
+		return nil, ErrCodeUsed
+	}
 	mbox, err := m.ownMaterial()
 	if err != nil {
 		return nil, err
@@ -562,10 +594,6 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string, tag Tag) (*ses
 		return nil, err
 	}
 	m.audit(ctx, audit.ActorCLI, ActionPairStart, map[string]any{"id": s.st.ID, "role": RoleRedeemer, "version": 2})
-	if used {
-		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailCodeUsed, Message: "this code was already used from this daemon; ask for a new one"})
-		return s, nil
-	}
 	m.mu.Lock()
 	m.newKDFLocked(s)
 	lookup := s.lookup

@@ -205,27 +205,7 @@ func currentOf(rows []row) *row {
 // The private key is in the keystore and the row is in the table before the
 // announcement is returned.
 func (k *Keys) Announcement() ([]byte, error) {
-	ctx := context.Background()
-	k.mu.Lock()
-	now := k.now()
-	rows, err := k.live(ctx)
-	if err != nil {
-		k.mu.Unlock()
-		return nil, err
-	}
-	if cur := currentOf(rows); cur != nil {
-		ok, err := k.usable(cur, now)
-		if err != nil {
-			k.mu.Unlock()
-			return nil, err
-		}
-		if ok {
-			k.mu.Unlock()
-			return cur.announced, nil
-		}
-	}
-	ann, hook, err := k.createLocked(ctx, now, rows)
-	k.mu.Unlock()
+	ann, hook, err := k.announce(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +213,30 @@ func (k *Keys) Announcement() ([]byte, error) {
 		hook(ann)
 	}
 	return ann, nil
+}
+
+// announce is Announcement's work under k.mu; hook, if set, is run by the
+// caller without the lock. k.mu is unlocked by defer here and in rotate:
+// both do crypto and DB work and are reached from IPC handlers, so a
+// recovered panic must not leave it held (review 77b).
+func (k *Keys) announce(ctx context.Context) ([]byte, func([]byte), error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := k.now()
+	rows, err := k.live(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cur := currentOf(rows); cur != nil {
+		ok, err := k.usable(cur, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			return cur.announced, nil, nil
+		}
+	}
+	return k.createLocked(ctx, now, rows)
 }
 
 // usable reports whether r is not about to expire and its private key is in
@@ -351,18 +355,23 @@ func (k *Keys) forgetLocked(keyID string) {
 // than 3 would be live. It returns the announcement of the newly created key,
 // or nil if none was created.
 func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
+	ann, hook, err := k.rotate(ctx)
+	if hook != nil && ann != nil {
+		hook(ann)
+	}
+	return ann, err
+}
+
+// rotate is Rotate's work under k.mu; hook, if set, is run by the caller
+// without the lock.
+func (k *Keys) rotate(ctx context.Context) (ann []byte, hook func([]byte), cerr error) {
 	k.mu.Lock()
+	defer k.mu.Unlock()
 	now := k.now()
 	rows, err := k.live(ctx)
 	if err != nil {
-		k.mu.Unlock()
-		return nil, err
+		return nil, nil, err
 	}
-	var (
-		ann  []byte
-		hook func([]byte)
-		cerr error
-	)
 	cur := currentOf(rows)
 	need := cur == nil || !cur.created.Add(RotateAfter).After(now)
 	if !need {
@@ -375,11 +384,7 @@ func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
 	} else if cerr == nil {
 		cerr = k.sweepLocked(ctx, now, rows)
 	}
-	k.mu.Unlock()
-	if hook != nil && ann != nil {
-		hook(ann)
-	}
-	return ann, cerr
+	return ann, hook, cerr
 }
 
 // createLocked makes a new current key, retires the previous one and then

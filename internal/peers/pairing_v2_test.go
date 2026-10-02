@@ -269,6 +269,8 @@ func (b *bus) lookupNode(key string) *node {
 	return b.nodes[key]
 }
 
+func (s busSender) Connected() bool { return true }
+
 func (s busSender) SendControl(_ context.Context, c envelope.Control) error {
 	b := s.b
 	raw, _ := json.Marshal(c)

@@ -32,8 +32,10 @@ const (
 const (
 	maxLine     = 1 << 20
 	idleTimeout = 30 * time.Second
-	// maxConns bounds the connections served at once; a client past it is
-	// answered CodeBusy and closed at once (review 55, R55-083; review 77, M1).
+	// maxConns bounds the connections served at once; a client past it takes
+	// the slot of the connection idle longest between requests (at least
+	// evictMinIdle), else is answered CodeBusy and closed at once (review 55,
+	// R55-083; review 77, M1; review 77b, R1).
 	maxConns = 64
 	// firstRequestTimeout bounds how long a new connection may take to send
 	// its first complete request line, so silent connections cannot hold
@@ -92,6 +94,9 @@ type Server struct {
 	// Logger receives handler panics and failing Accept calls; nil means
 	// slog.Default().
 	Logger *slog.Logger
+
+	panicMu sync.Mutex
+	panics  map[string]*panicLog
 }
 
 func (s *Server) logger() *slog.Logger {
@@ -125,15 +130,14 @@ func (s *Server) Methods() []string {
 }
 
 // Serve accepts connections until ctx is cancelled or ln is closed; other
-// Accept errors are retried. It serves at most maxConns connections at once
-// and answers any further client CodeBusy, so a listener instance is always
+// Accept errors are retried. It serves at most maxConns connections at once;
+// a further client takes the slot of the connection idle longest between
+// requests, else is answered CodeBusy, so a listener instance is always
 // waiting and a client never hangs. It closes ln and waits for in-flight
 // connections before returning.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	var wg sync.WaitGroup
-	conns := map[net.Conn]struct{}{}
-	var cmu sync.Mutex
-	closing := false
+	t := &connTable{conns: map[net.Conn]*connState{}}
 
 	stop := make(chan struct{})
 	defer close(stop)
@@ -143,12 +147,12 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		case <-stop:
 		}
 		_ = ln.Close()
-		cmu.Lock()
-		closing = true
-		for c := range conns {
+		t.mu.Lock()
+		t.closing = true
+		for c := range t.conns {
 			_ = c.Close()
 		}
-		cmu.Unlock()
+		t.mu.Unlock()
 	}()
 
 	slots := make(chan struct{}, maxConns)
@@ -179,13 +183,20 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 			s.logger().Info("ipc: accept recovered", "event", "ipc_accept_recovered", "failures", failures)
 		}
 		retry, failures = 0, 0
-		// A slot for serving, else a busy answer, else a plain close.
-		var serve func(context.Context, net.Conn)
+		// A slot for serving, else the slot of the connection idle longest
+		// between requests, else a busy answer, else a plain close.
+		var serve func(context.Context, net.Conn, *connState)
 		var free chan struct{}
 		select {
 		case slots <- struct{}{}:
 			serve, free = s.serveConn, slots
 		default:
+			if t.evictIdlest(time.Now()) {
+				// The evicted connection's goroutine hands its slot over
+				// instead of releasing it.
+				serve, free = s.serveConn, slots
+				break
+			}
 			select {
 			case busy <- struct{}{}:
 				serve, free = refuseBusy, busy
@@ -194,31 +205,103 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 				continue
 			}
 		}
-		cmu.Lock()
-		if closing {
+		st := &connState{t: t}
+		t.mu.Lock()
+		if t.closing {
 			// Accepted just as shutdown began: the closer above already
 			// swept conns, so this one would sit in its read until the idle
 			// timeout and hold wg.Wait.
-			cmu.Unlock()
+			t.mu.Unlock()
 			_ = c.Close()
 			<-free
 			continue
 		}
-		conns[c] = struct{}{}
-		cmu.Unlock()
+		t.conns[c] = st
+		t.mu.Unlock()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-free }()
-			serve(ctx, c)
-			cmu.Lock()
-			delete(conns, c)
-			cmu.Unlock()
+			serve(ctx, c, st)
+			t.mu.Lock()
+			delete(t.conns, c)
+			evicted := st.evicted
+			t.mu.Unlock()
+			if !evicted {
+				<-free
+			}
 		}()
 	}
 }
 
-func (s *Server) serveConn(ctx context.Context, c net.Conn) {
+// evictMinIdle is how long a connection must have waited for its next
+// request before a new client at the cap may take its slot. Every client in
+// this repository sends one request per connection and closes it, so only a
+// connection kept open between requests is ever evicted (review 77b, R1).
+// It is a variable only so that tests can lengthen it.
+var evictMinIdle = time.Second
+
+// connState is a served connection's place in the eviction order; connTable.mu
+// guards it.
+type connState struct {
+	t *connTable
+	// idle is set while the connection waits for a request after it has
+	// been answered at least once; idleSince is when that wait began, and
+	// idleSeq orders waits that began within one clock tick.
+	idle      bool
+	idleSince time.Time
+	idleSeq   uint64
+	// evicted means the accept loop closed the connection and gave its slot
+	// to a new client.
+	evicted bool
+}
+
+// connTable tracks Serve's open connections.
+type connTable struct {
+	mu      sync.Mutex
+	conns   map[net.Conn]*connState
+	closing bool
+	seq     uint64
+}
+
+// evictIdlest closes the connection that has waited longest for its next
+// request, when that wait is at least evictMinIdle, and reports whether it
+// did. The evicted connection keeps its slot for the caller.
+func (t *connTable) evictIdlest(now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var oldest net.Conn
+	var seq uint64
+	for c, st := range t.conns {
+		if st.idle && !st.evicted && now.Sub(st.idleSince) >= evictMinIdle && (oldest == nil || st.idleSeq < seq) {
+			oldest, seq = c, st.idleSeq
+		}
+	}
+	if oldest == nil {
+		return false
+	}
+	t.conns[oldest].evicted = true
+	_ = oldest.Close()
+	return true
+}
+
+// setIdle marks st as waiting for its next request (idle) or as serving one.
+// It reports false when the connection was evicted, which then must not
+// serve the request it just read.
+func (st *connState) setIdle(idle bool) bool {
+	st.t.mu.Lock()
+	defer st.t.mu.Unlock()
+	if st.evicted {
+		return false
+	}
+	st.idle = idle
+	if idle {
+		st.t.seq++
+		st.idleSince, st.idleSeq = time.Now(), st.t.seq
+	}
+	return true
+}
+
+func (s *Server) serveConn(ctx context.Context, c net.Conn, st *connState) {
 	defer func() { _ = c.Close() }()
 	r := bufio.NewReaderSize(c, 4096)
 	// HTML escaping stays off on the wire too: Response.Result is already
@@ -237,9 +320,15 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 			}
 			return
 		}
+		if !st.setIdle(false) {
+			return
+		}
 		resp := s.dispatch(ctx, line)
 		_ = c.SetWriteDeadline(time.Now().Add(idleTimeout))
 		if err := enc.Encode(resp); err != nil {
+			return
+		}
+		if !st.setIdle(true) {
 			return
 		}
 	}
@@ -248,7 +337,7 @@ func (s *Server) serveConn(ctx context.Context, c net.Conn) {
 // refuseBusy answers a client over maxConns with CodeBusy and closes it. It
 // reads the client's first request, when one arrives within busyTimeout, so
 // the answer carries its id and the close does not reset an unread request.
-func refuseBusy(_ context.Context, c net.Conn) {
+func refuseBusy(_ context.Context, c net.Conn, _ *connState) {
 	defer func() { _ = c.Close() }()
 	_ = c.SetDeadline(time.Now().Add(busyTimeout))
 	resp := Response{Error: &Error{Code: CodeBusy, Message: "the daemon is serving too many connections; try again"}}
@@ -305,12 +394,45 @@ var errHandlerPanic = errors.New("ipc: handler panicked")
 func (s *Server) callHandler(ctx context.Context, method string, h HandlerFunc, params json.RawMessage) (res any, err error) {
 	defer func() {
 		if v := recover(); v != nil {
-			s.logger().Error("ipc: handler panicked", "event", "ipc_handler_panic", "method", method,
-				"panic", panicSummary(v), "stack", string(debug.Stack()))
+			if suppressed, ok := s.panicLogDue(method, time.Now()); ok {
+				s.logger().Error("ipc: handler panicked", "event", "ipc_handler_panic", "method", method,
+					"panic", panicSummary(v), "suppressed", suppressed, "stack", string(debug.Stack()))
+			}
 			res, err = nil, errHandlerPanic
 		}
 	}()
 	return h(ctx, params)
+}
+
+// panicLogEvery bounds the panic log: one line per method per interval, so a
+// caller that can trigger a panic at will cannot flood the log with stacks
+// (review 77b, I1).
+const panicLogEvery = time.Minute
+
+// panicLog is the panic log state of one method.
+type panicLog struct {
+	last       time.Time
+	suppressed int
+}
+
+// panicLogDue reports whether a panic in method is logged now and, if so,
+// how many panics of it went unlogged since the last line.
+func (s *Server) panicLogDue(method string, now time.Time) (suppressed int, ok bool) {
+	s.panicMu.Lock()
+	defer s.panicMu.Unlock()
+	if s.panics == nil {
+		s.panics = map[string]*panicLog{}
+	}
+	pl := s.panics[method]
+	if pl == nil {
+		pl = &panicLog{}
+		s.panics[method] = pl
+	} else if now.Sub(pl.last) < panicLogEvery {
+		pl.suppressed++
+		return 0, false
+	}
+	suppressed, pl.suppressed, pl.last = pl.suppressed, 0, now
+	return suppressed, true
 }
 
 // panicSummary describes a panic value without its content: a runtime
