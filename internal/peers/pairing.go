@@ -469,6 +469,16 @@ func (m *Manager) takeStartLocked(now time.Time) bool {
 	return true
 }
 
+// refundStart returns the token a start took when it failed locally, before
+// any relay reply (the relay unreachable, a code already used), so a local
+// agent's failing starts, or a user retrying while the relay is down, do not
+// drain the bucket for honest pairings (review 77b, R3).
+func (m *Manager) refundStart() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.startTokens = min(startBurst, m.startTokens+1)
+}
+
 // newSession registers a pending session. Caller holds no lock.
 func (m *Manager) newSession(role string, tag Tag, mutate func(*session)) (*session, error) {
 	id, err := newID()
@@ -564,6 +574,7 @@ func (m *Manager) beginRedeemer(ctx context.Context, code string, tag Tag) (*ses
 	m.audit(ctx, audit.ActorCLI, ActionPairStart, map[string]any{"id": s.st.ID, "role": RoleRedeemer, "version": 2})
 	if used {
 		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailCodeUsed, Message: "this code was already used from this daemon; ask for a new one"})
+		m.refundStart()
 		return s, nil
 	}
 	m.mu.Lock()
@@ -599,6 +610,7 @@ func (m *Manager) sendControl(ctx context.Context, ctl envelope.Control) error {
 
 func (m *Manager) failSend(s *session, err error) error {
 	m.finish(s.st.ID, StateFailed, nil, &Failure{Code: failUnavailable, Message: "could not reach the relay"})
+	m.refundStart()
 	if errors.Is(err, relayclient.ErrNotConnected) {
 		return relayclient.ErrNotConnected
 	}

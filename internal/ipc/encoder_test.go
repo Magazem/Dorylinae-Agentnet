@@ -21,7 +21,7 @@ func TestServeConnKeepsHTMLUnescaped(t *testing.T) {
 	})
 	a, b := net.Pipe()
 	defer func() { _ = a.Close() }()
-	go s.serveConn(context.Background(), b)
+	go s.serveConn(context.Background(), b, &connState{t: &connTable{}})
 	_ = a.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := a.Write([]byte(`{"id":"1","method":"x"}` + "\n")); err != nil {
 		t.Fatal(err)

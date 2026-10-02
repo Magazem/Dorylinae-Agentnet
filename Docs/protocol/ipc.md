@@ -54,14 +54,18 @@ request line and reads one response line; a connection may carry several
 request/response pairs in sequence. Lines are limited to 1 MiB. The server
 closes connections that stay idle for more than 30 s, and a new connection that has not
 sent a complete first request line within **5 s**. It serves at most **64** connections at
-once. A client past that is answered one line with error `busy` (with its request's `id`
-when the request arrives within 2 s) and closed at once, so it fails fast instead of
-waiting; at most 16 such answers are in progress, past that the connection is closed
-without one. An `accept` error other than the listener closing (for example too many open
+once. A new client past that takes the slot of the connection that has waited longest
+(at least 1 s) for its next request after an answer; that connection is closed. Clients
+should therefore send one request per connection, or not leave one open between
+requests. When no connection qualifies, the new client is answered one line with error
+`busy` (with its request's `id` when the request arrives within 2 s) and closed at once,
+so it fails fast instead of waiting; at most 16 such answers are in progress, past that
+the connection is closed without one. An `accept` error other than the listener closing (for example too many open
 files) is retried after a delay of 5 ms doubling up to 1 s, not fatal; the daemon logs the
 first failure of a run and then at most once a minute. A handler that panics answers
-`internal`; the daemon logs the method and the stack, never the params (review 55,
-R55-083, R55-143; review 77, M1-M2, L3).
+`internal`; the daemon logs the method and the stack, never the params, at most once a
+minute per method with the count of panics left out (review 55, R55-083, R55-143;
+review 77, M1-M2, L3; review 77b, R1, I1).
 
 **Phase 3 draft (ticket 3.1b, review 43 M7):** the server encodes results with
 HTML escaping **off** (`json.Encoder.SetEscapeHTML(false)`). With the default
