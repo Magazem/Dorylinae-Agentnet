@@ -58,7 +58,9 @@ type Kind struct {
 	// logs an Apply error's text either way (errClass).
 	Apply func(ctx context.Context, tx *sql.Tx, op *Opened) error
 	// After runs once after the commit of a mail that was not a duplicate. It
-	// must not block for long; it may be nil.
+	// must not block for long; it may be nil. It runs at most once: a crash
+	// between the commit and After loses its effects, as the resend is a
+	// duplicate (R55-158); effects that must not be lost belong in Apply.
 	After func(ctx context.Context, op *Opened)
 }
 
@@ -201,6 +203,9 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 		return rerr
 	}
 	dup := res == seenDup
+	// The mail is committed: its audit row, After hook and ack must not be lost
+	// to a shutdown cancelling ctx now, as no resend would redo them (R55-100).
+	ctx = context.WithoutCancel(ctx)
 	if !dup && kind != "keys" && r.Audit != nil {
 		// A kind this daemon does not register is peer-chosen text: audited
 		// as "unknown" (Docs/protocol/mail.md §Audit, R55-F14).

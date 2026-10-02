@@ -168,7 +168,10 @@ func startMail(ctx context.Context, rcv *mail.Receiver, pusher *mail.Pusher, cli
 		return err
 	}
 	q := newMailInbox(rcv.Log)
-	mctx, cancel := context.WithCancel(ctx)
+	// The mail context is cancelled by stop only, which the daemon calls after the
+	// relay client has stopped: cancelling it with ctx would cut a just-committed
+	// mail off from its After effects and ack (review 55 R55-100).
+	mctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	done := make(chan struct{})
 	// The jobs and the keys pushes are waited for by stop, so none outlives
 	// the store (review 55 R55-145). A push runs to its end even when stop
