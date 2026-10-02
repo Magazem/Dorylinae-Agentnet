@@ -300,18 +300,32 @@ func (m *Manager) Handle(typ string, h DataHandler) {
 func (m *Manager) SendData(ctx context.Context, peer string, pt []byte) error {
 	m.sendMu.Lock()
 	defer m.sendMu.Unlock()
-	m.mu.Lock()
-	sid, ok := m.current[peer]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNoSession
-	}
-	env, err := m.sealLocked(m.sessions[sid], pt, "")
-	m.mu.Unlock()
+	env, err := m.sealCurrent(peer, pt)
 	if err != nil {
 		return err
 	}
 	return m.send(ctx, env)
+}
+
+// sealCurrent seals pt on peer's current open session.
+func (m *Manager) sealCurrent(peer string, pt []byte) (envelope.Envelope, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sid, ok := m.current[peer]
+	if !ok {
+		return envelope.Envelope{}, ErrNoSession
+	}
+	return m.sealLocked(m.sessions[sid], pt, "")
+}
+
+// withLock runs f with m.mu held. The send paths that IPC handlers reach
+// (ping, fetch, device, debate) take m.mu only through it or a deferred
+// unlock, so a panic the IPC server recovers never leaves m.mu held, which
+// would stop the worker and with it every inbound envelope (review 77b).
+func (m *Manager) withLock(f func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	f()
 }
 
 // Send encrypts pt to peer on its current session, or queues it and starts a
@@ -399,15 +413,16 @@ func (m *Manager) HandleError(ef envelope.ErrorFrame) {
 
 // Ping sends an encrypted ping to peer and waits up to Config.Wait for the pong.
 func (m *Manager) Ping(ctx context.Context, peer PeerRef) (PingStatus, error) {
-	m.mu.Lock()
-	snd := m.sender
+	var snd Sender
 	pending := 0
-	for _, p := range m.pings {
-		if p.st.State == StatePending {
-			pending++
+	m.withLock(func() {
+		snd = m.sender
+		for _, p := range m.pings {
+			if p.st.State == StatePending {
+				pending++
+			}
 		}
-	}
-	m.mu.Unlock()
+	})
 	switch {
 	case snd == nil:
 		return PingStatus{}, ErrNoRelay
@@ -419,16 +434,16 @@ func (m *Manager) Ping(ctx context.Context, peer PeerRef) (PingStatus, error) {
 
 	id := "ping-" + randHex(8)
 	p := &ping{st: PingStatus{ID: id, Peer: peer, State: StatePending}, done: make(chan struct{})}
-	m.mu.Lock()
-	m.pings[id] = p
-	p.timer = time.AfterFunc(m.cfg.PingTimeout, func() { m.pingTimeout(id) })
-	m.mu.Unlock()
+	m.withLock(func() {
+		m.pings[id] = p
+		p.timer = time.AfterFunc(m.cfg.PingTimeout, func() { m.pingTimeout(id) })
+	})
 
 	pt, _ := json.Marshal(message{Type: "ping", ID: id})
 	if err := m.sendApp(ctx, peer.PublicKey, pt, id); err != nil {
-		m.mu.Lock()
-		m.finishLocked(p, &Failure{Code: FailSend, Message: "could not send to the relay"})
-		m.mu.Unlock()
+		m.withLock(func() {
+			m.finishLocked(p, &Failure{Code: FailSend, Message: "could not send to the relay"})
+		})
 	}
 
 	wctx, cancel := context.WithTimeout(ctx, m.cfg.Wait)
@@ -470,41 +485,44 @@ func (m *Manager) snapshot(id string) (PingStatus, error) {
 func (m *Manager) sendApp(ctx context.Context, peer string, pt []byte, pingID string) error {
 	m.sendMu.Lock()
 	defer m.sendMu.Unlock()
+	env, ok, err := m.prepareApp(peer, pt, pingID)
+	if err != nil || !ok {
+		return err
+	}
+	return m.send(ctx, env)
+}
+
+// prepareApp is sendApp's work under m.mu: it seals pt on peer's current
+// session, or queues it and, unless a handshake is already under way,
+// builds the Init. ok reports whether env is to be sent.
+func (m *Manager) prepareApp(peer string, pt []byte, pingID string) (env envelope.Envelope, ok bool, err error) {
 	m.mu.Lock()
-	if sid, ok := m.current[peer]; ok {
-		s := m.sessions[sid]
-		env, err := m.sealLocked(s, pt, pingID)
-		m.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		return m.send(ctx, env)
+	defer m.mu.Unlock()
+	if sid, cur := m.current[peer]; cur {
+		env, err = m.sealLocked(m.sessions[sid], pt, pingID)
+		return env, err == nil, err
 	}
 	q := m.queue[peer]
 	if len(q) >= maxQueuePerPeer {
-		m.mu.Unlock()
-		return errors.New("session: too many messages waiting for a handshake")
+		return envelope.Envelope{}, false, errors.New("session: too many messages waiting for a handshake")
 	}
 	m.queue[peer] = append(q, queued{pt: pt, pingID: pingID})
 	if p := m.pings[pingID]; p != nil {
 		p.st.Handshake = true
 	}
-	if sid, ok := m.dialing[peer]; ok {
+	if sid, dialing := m.dialing[peer]; dialing {
 		if p := m.pings[pingID]; p != nil {
 			p.sid = sid
 		}
-		m.mu.Unlock()
-		return nil
+		return envelope.Envelope{}, false, nil
 	}
 	hs, err := noise.NewHandshake(m.cfg.Static, peer, true)
 	if err != nil {
-		m.mu.Unlock()
-		return err
+		return envelope.Envelope{}, false, err
 	}
 	msg, _, err := hs.Write()
 	if err != nil {
-		m.mu.Unlock()
-		return err
+		return envelope.Envelope{}, false, err
 	}
 	sid := randBytes(SIDSize)
 	m.sessions[string(sid)] = &sess{sid: sid, peer: peer, initiator: true, hs: hs, created: time.Now()}
@@ -512,9 +530,7 @@ func (m *Manager) sendApp(ctx context.Context, peer string, pt []byte, pingID st
 	if p := m.pings[pingID]; p != nil {
 		p.sid = string(sid)
 	}
-	env := m.envelopeLocked(peer, TypeInit, append(sid, msg...))
-	m.mu.Unlock()
-	return m.send(ctx, env)
+	return m.envelopeLocked(peer, TypeInit, append(sid, msg...)), true, nil
 }
 
 // sealLocked builds a session.data envelope for pt on s.
@@ -563,9 +579,8 @@ func (m *Manager) envelopeLocked(to, typ string, payload []byte) envelope.Envelo
 
 // send writes env to the relay. Caller holds sendMu, not mu.
 func (m *Manager) send(ctx context.Context, env envelope.Envelope) error {
-	m.mu.Lock()
-	snd := m.sender
-	m.mu.Unlock()
+	var snd Sender
+	m.withLock(func() { snd = m.sender })
 	if snd == nil {
 		return ErrNoRelay
 	}

@@ -56,8 +56,17 @@ For a key created at time `t`:
   key's `created ≤ now − 7 d`, it creates a new key, retires the previous current key, audits
   `mailbox.rotate {key_id, retired}`, and pushes the new announcement to every peer with a
   non-empty `mailbox_keys` as a [`keys` mail](#kind-keys) (outboxed and acked like any mail).
+  A current key whose private half is missing from the keystore is replaced at once; one that
+  cannot be read because the keychain is unavailable (locked, timed out) is kept, and is
+  replaced at the latest by the 7-day rotation (review 55 R55-092).
 - In the same job, every key with `not_after + 7 d ≤ now` is deleted from the keystore, and
-  its row gets `deleted` set. The row itself is kept for audit.
+  its row gets `deleted` set. The row itself is kept for audit. While the keychain is locked
+  or times out, the delete fails and the row stays live, so the next run retries it
+  (review 87 M2). The row records the backend the key was saved to (`key_backend`): a key
+  saved to the keychain is not marked deleted while the daemon sees no keychain service
+  (for example when it runs without the desktop session's D-Bus bus), because the key may
+  still be in the user's keychain; the row stays live and the delete is retried (review 87b
+  N3). Rows from before migration 26 have no `key_backend` and are deleted as before.
 - A key is **live** when it is not deleted. This schedule never has more than **3 live keys**
   (ages below 7, 14 and 21 days). The job also enforces the limit: if a 4th would be live, the
   oldest is deleted early.
@@ -518,7 +527,8 @@ CREATE TABLE mailbox_keys_own (
     not_after    TEXT NOT NULL,
     retired      TEXT,                            -- NULL while current
     deleted      TEXT,                            -- NULL while the private key is live
-    announcement TEXT NOT NULL CHECK (json_valid(announcement))   -- canonical signed announcement
+    announcement TEXT NOT NULL CHECK (json_valid(announcement)),  -- canonical signed announcement
+    key_backend  TEXT                             -- migration 26: "keychain" or "file"; NULL before
 );
 
 -- 1.0d

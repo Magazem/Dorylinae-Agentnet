@@ -214,7 +214,14 @@ func TestPairingStartsRateLimited(t *testing.T) {
 	}
 }
 
-type failSender struct{ err error }
+// failSender fails every send. Unless down is set it reports itself
+// connected, so a start passes precheck and fails at the send, as when the
+// relay connection drops between the two.
+type failSender struct {
+	err  error
+	down bool
+}
 
 func (f *failSender) SendControl(context.Context, envelope.Control) error { return f.err }
 func (f *failSender) Send(context.Context, envelope.Envelope) error       { return f.err }
+func (f *failSender) Connected() bool                                     { return !f.down }

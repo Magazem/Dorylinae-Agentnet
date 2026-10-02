@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 )
 
@@ -20,8 +22,11 @@ const identityLoadRetry = time.Second
 // and the mail receiver, the outbox, the presence sender and the relay
 // signer each used to read it on every use. Priv hands out a copy, because
 // its callers clear the key after use. A failed read is not kept: the next
-// use reads again, at most once per second.
+// use reads again, at most once per second. It is the only holder of the
+// identity key in the daemon: the Noise binding, the relay challenge and the
+// mailbox announcements all sign through it (review 87b N2).
 type identityKey struct {
+	dir string // the config dir (identity.LoadKey)
 	ks  *keystore.Store
 	pub ed25519.PublicKey // the agent card's key; the stored key must match
 	now func() time.Time
@@ -32,8 +37,8 @@ type identityKey struct {
 	err    error
 }
 
-func newIdentityKey(ks *keystore.Store, pub ed25519.PublicKey) *identityKey {
-	return &identityKey{ks: ks, pub: pub, now: time.Now}
+func newIdentityKey(dir string, ks *keystore.Store, pub ed25519.PublicKey) *identityKey {
+	return &identityKey{dir: dir, ks: ks, pub: pub, now: time.Now}
 }
 
 // loadLocked returns the cached key, reading it on first use.
@@ -58,7 +63,12 @@ func (k *identityKey) read() (ed25519.PrivateKey, error) {
 	if k.ks == nil {
 		return nil, errors.New("no identity keystore")
 	}
-	seed, _, err := k.ks.Load()
+	if len(k.pub) != ed25519.PublicKeySize {
+		return nil, errors.New("no identity public key")
+	}
+	// The same checks as at start-up: only the copy matching the agent card,
+	// and none while the keychain holds another (review 87 M1, 87b N1).
+	seed, _, err := identity.LoadKey(k.dir, k.ks, base64.RawURLEncoding.EncodeToString(k.pub))
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
 	}
@@ -67,7 +77,7 @@ func (k *identityKey) read() (ed25519.PrivateKey, error) {
 		return nil, errors.New("stored identity key has the wrong length")
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
-	if len(k.pub) == ed25519.PublicKeySize && !priv.Public().(ed25519.PublicKey).Equal(k.pub) {
+	if !priv.Public().(ed25519.PublicKey).Equal(k.pub) {
 		clear(priv)
 		return nil, errors.New("stored identity key does not match the agent card")
 	}

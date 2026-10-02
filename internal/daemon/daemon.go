@@ -366,7 +366,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		mailboxMode = "file"
 	}
 	// The identity private key is read from the keystore once (R55-F13).
-	idKey := newIdentityKey(ks, idPub)
+	idKey := newIdentityKey(p.Dir, ks, idPub)
 	mailboxKeys := mailbox.New(p.Dir, mailboxMode, idPub, idKey.Sign, nil)
 	if err := mailboxKeys.Attach(ctx, st.DB(), log, opts.Logger); err != nil {
 		_ = ln.Close()
@@ -391,7 +391,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	rejects := newRejectSummary(log, opts.Logger, nil)
 	rejects.start(ctx)
 	defer rejects.stop(ctx)
-	sessions, err := newSessions(id, ks, log, st.DB(), opts, rejects.countSession)
+	sessions, err := newSessions(id, idKey.Sign, log, st.DB(), opts, rejects.countSession)
 	if err != nil {
 		_ = ln.Close()
 		return err

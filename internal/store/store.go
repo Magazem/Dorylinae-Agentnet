@@ -598,6 +598,13 @@ DROP TABLE approvals;
 ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_state ON approvals (state, expires);
 `},
+	// The keystore backend each mailbox key was saved to (review 87b N3):
+	// "keychain" or "file", NULL for rows from before this migration. A
+	// keychain key is marked deleted only once a process that can reach the
+	// keychain deleted it.
+	{26, "mailbox_key_backend", `
+ALTER TABLE mailbox_keys_own ADD COLUMN key_backend TEXT;
+`},
 }
 
 // Store is an open SQLite database with migrations applied.
@@ -675,6 +682,11 @@ func (s *Store) apply(ctx context.Context, m migration) (err error) {
 	var current int
 	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM migrations`).Scan(&current); err != nil {
 		return err
+	}
+	// The newer-schema check is repeated under the write lock: another process
+	// may have migrated past this binary since migrate's first read (R55-173).
+	if current > len(migrations) {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", current, len(migrations))
 	}
 	if current < m.version {
 		if current != m.version-1 {

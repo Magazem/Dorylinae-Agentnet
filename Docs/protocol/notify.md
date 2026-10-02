@@ -42,11 +42,12 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
                    "debate.escalated": true, "debate.broken": true,
                    "debate.refused": true}
 "notify.desktop": {"enabled": true}
-"notify.webhook": {"url": "https://...", "format": "generic", "title": false}
+"notify.webhook": {"url": "https://...", "format": "generic", "title": false, "secret_sha256": "<hex>"}
 ```
 
 `notify.webhook` is absent when no webhook is set. The webhook **secret** is not in SQLite
-([Secret](#secret)).
+([Secret](#secret)); `secret_sha256` is the hex SHA-256 of it, written whenever the secret is
+created or rotated, so the delivery worker signs only with that secret (review 87 M1).
 
 ## Text and sanitising
 
@@ -127,7 +128,9 @@ need no cgo and no new dependency.
 
 Keystore secret (same backends as the identity): keychain service `dorylinae`, account
 `webhook` (there is one webhook per daemon), or file `<config dir>/webhook.key` (owner-only).
-The value is the raw 32 bytes. Rotation replaces it at once. Pending retries are signed with
+The value is the raw 32 bytes. When the keychain and the file hold different secrets, the
+one matching `secret_sha256` is used ([Key storage](agent-card.md#key-storage)). Rotation
+replaces it at once. Pending retries are signed with
 the new secret, so the receiver must be updated before the next attempt.
 
 ### Payload

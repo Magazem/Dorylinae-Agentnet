@@ -500,7 +500,29 @@ func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatu
 		id: randHexID("ft-", 8), req: randHexID("f-", 16), peer: rec.Peer, p: p, token: json.RawMessage(rec.Token),
 		deadline: now.Add(timeout), state: fetchPending, done: make(chan struct{}),
 	}
+	pt, err := c.admit(op, now)
+	if err != nil {
+		return FetchStatus{}, err
+	}
+
+	if err := c.send(ctx, op.peer, pt); err != nil {
+		c.forget(op)
+		var ie *ipc.Error
+		if e := pingError(err); errors.As(e, &ie) {
+			return FetchStatus{}, ie
+		}
+		return FetchStatus{}, &ipc.Error{Code: capability.CodeIO, Message: "could not send the fetch request"}
+	}
+	return c.wait(ctx, op, callStart), nil
+}
+
+// admit registers op unless too many fetches are in progress and returns its
+// first request. Like every fetch client section an IPC handler reaches, it
+// unlocks c.mu by defer, so a recovered panic never leaves it held (review
+// 77b).
+func (c *fetchClient) admit(op *fetchOp, now time.Time) ([]byte, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	inflight, pending, kept := 0, 0, 0
 	var oldest *fetchOp
 	for _, o := range c.ops {
@@ -517,36 +539,34 @@ func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatu
 		}
 	}
 	if inflight >= fetchMaxPerPeer || pending >= fetchMaxLive {
-		c.mu.Unlock()
-		return FetchStatus{}, &ipc.Error{Code: capability.CodeRateLimited, Message: "too many fetches in progress; wait for one to finish"}
+		return nil, &ipc.Error{Code: capability.CodeRateLimited, Message: "too many fetches in progress; wait for one to finish"}
 	}
 	if kept >= fetchMaxKept {
 		delete(c.ops, oldest.id)
 	}
 	c.ops[op.id] = op
 	c.reqs[op.req] = op
-	pt := c.wireLocked(op, now)
-	c.mu.Unlock()
+	return c.wireLocked(op, now), nil
+}
 
-	if err := c.send(ctx, op.peer, pt); err != nil {
-		c.mu.Lock()
-		delete(c.ops, op.id)
-		delete(c.reqs, op.req)
-		c.mu.Unlock()
-		var ie *ipc.Error
-		if e := pingError(err); errors.As(e, &ie) {
-			return FetchStatus{}, ie
-		}
-		return FetchStatus{}, &ipc.Error{Code: capability.CodeIO, Message: "could not send the fetch request"}
-	}
-	return c.wait(ctx, op, callStart), nil
+// forget removes op, whose request could not be sent.
+func (c *fetchClient) forget(op *fetchOp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.ops, op.id)
+	delete(c.reqs, op.req)
+}
+
+// lookup returns the fetch with id, or nil.
+func (c *fetchClient) lookup(id string) *fetchOp {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ops[id]
 }
 
 func (c *fetchClient) status(ctx context.Context, id string) (FetchStatus, error) {
 	callStart := time.Now()
-	c.mu.Lock()
-	op := c.ops[id]
-	c.mu.Unlock()
+	op := c.lookup(id)
 	if op == nil {
 		return FetchStatus{}, &ipc.Error{Code: capability.CodeNotFound, Message: "no fetch with that id (finished fetches are kept for 60 s)"}
 	}

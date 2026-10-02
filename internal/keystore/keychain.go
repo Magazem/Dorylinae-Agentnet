@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
@@ -60,6 +61,9 @@ func NewKeychain(account string) *Keychain { return &Keychain{account: account} 
 // Name implements Backend.
 func (*Keychain) Name() string { return "keychain" }
 
+// Location implements Locator: the service and account of the entry.
+func (k *Keychain) Location() string { return "entry " + Service + "/" + k.account }
+
 // Get implements Backend.
 func (k *Keychain) Get() ([]byte, error) {
 	b, err := get(k.account)
@@ -88,7 +92,7 @@ func get(account string) ([]byte, error) {
 		if errors.Is(err, keyring.ErrNotFound) {
 			return nil, ErrNotFound
 		}
-		return nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
+		return nil, unavailable(err)
 	}
 	b, err := base64.RawURLEncoding.DecodeString(v)
 	if err != nil {
@@ -104,7 +108,9 @@ func (k *Keychain) Set(secret []byte) error {
 }
 
 // Delete removes the entry, under its current and legacy accounts. It
-// returns ErrNotFound when none held it.
+// returns ErrNotFound when none held it. Other failures wrap ErrUnavailable,
+// like Get's, and ErrNoService when the host has no keychain service
+// (review 55 R55-092, review 87 M2).
 func (k *Keychain) Delete() error {
 	found := false
 	var errs []error
@@ -118,12 +124,46 @@ func (k *Keychain) Delete() error {
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		return err
+		return unavailable(err)
 	}
 	if !found {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// unavailable wraps a keychain failure in ErrNoService when it says the host
+// has no keychain service at all, and in ErrUnavailable otherwise (a locked
+// keychain, a dismissed unlock prompt, a timeout): those may still hold the
+// secret (review 87 M2, L2). Only failures that cannot mean "locked" count as
+// no service.
+func unavailable(err error) error {
+	if noService(err) {
+		return fmt.Errorf("%w: %w", ErrNoService, err)
+	}
+	return fmt.Errorf("%w: %w", ErrUnavailable, err)
+}
+
+// noServiceSigns are the messages of go-keyring and godbus when the host has
+// no D-Bus session bus or no Secret Service on it.
+var noServiceSigns = []string{
+	"couldn't determine address of session bus",
+	"org.freedesktop.DBus.Error.ServiceUnknown",
+	"was not provided by any .service files",
+	"dbus-launch",
+}
+
+func noService(err error) bool {
+	if errors.Is(err, keyring.ErrUnsupportedPlatform) {
+		return true
+	}
+	msg := err.Error()
+	for _, sign := range noServiceSigns {
+		if strings.Contains(msg, sign) {
+			return true
+		}
+	}
+	return false
 }
 
 func withTimeout(f func() error) error {

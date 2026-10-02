@@ -392,7 +392,16 @@ no derivation. It runs at most **4** derivations at once (4 × 64 MiB); a deriva
 waiting for its turn when its pairing ends is dropped. A daemon starts at most **10**
 pairings (`pair --new`, `pair <code>`, team invites and joins together) at once and
 **10 per minute** after that; past that a start is refused with `too_many_pairings`
-(review 55, R55-031; review 77, M3).
+(review 55, R55-031; review 77, M3). A start that would fail before any relay reply is
+refused before it starts: with the relay not connected it is refused with
+`relay_unavailable`, and with a code already used from this daemon it fails with
+`code_used`. Such a refusal does not count, creates no pairing and writes no audit
+row. A start whose send fails after that check (the connection dropped in between)
+does count, and is audited `pair.start` and `pair.fail` (review 77b, R3; review 94,
+M1). The limit is global:
+a local agent that keeps starting pairings the relay answers, for example by redeeming
+random codes, can still hold it empty, as it could hold all 16 pending slots before; the
+daemon has no caller identity to budget per client (review 77b, R3).
 
 ### Failure codes (daemon)
 

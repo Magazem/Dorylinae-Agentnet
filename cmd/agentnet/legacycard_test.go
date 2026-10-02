@@ -73,7 +73,9 @@ func (l *logBuffer) String() string {
 func TestOwnLegacyCard(t *testing.T) {
 	t.Setenv(identity.KeystoreEnv, "file")
 	p := shortHome(t)
-	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
+	// Ensure, not MkdirAll: on Windows the dir must carry the private DACL
+	// before it holds files, or the daemon's Ensure refuses it as shared.
+	if err := p.Ensure(); err != nil {
 		t.Fatal(err)
 	}
 	ks, err := identity.NewKeystore(p.Dir, "file")

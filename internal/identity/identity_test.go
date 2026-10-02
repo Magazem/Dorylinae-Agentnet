@@ -2,6 +2,7 @@ package identity_test
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"os"
@@ -157,6 +158,116 @@ func TestKeyLostIsAnErrorNotARotation(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, identity.KeyFile)); !os.IsNotExist(err) {
 		t.Fatal("a key must not be created when the card exists")
+	}
+}
+
+// Review 55 R55-092: a keychain that holds the key but cannot be read now
+// (locked, timed out) is not a lost key: start-up fails without advising to
+// delete the card, and nothing is created or changed.
+func TestKeychainOutageIsNotKeyLost(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	ks, err := identity.NewKeystore(dir, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); err != nil {
+		t.Fatal(err)
+	}
+	card, err := os.ReadFile(filepath.Join(dir, identity.CardFile)) //nolint:gosec // test reads its own temp dir
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	defer keyring.MockInit()
+	_, _, err = identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err == nil || errors.Is(err, identity.ErrKeyLost) || !errors.Is(err, keystore.ErrUnavailable) {
+		t.Fatalf("want an unavailable error, not ErrKeyLost: %v", err)
+	}
+	if strings.Contains(err.Error(), "delete") {
+		t.Fatalf("the error advises deleting the card: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, identity.CardFile)); err != nil || string(got) != string(card) { //nolint:gosec // test reads its own temp dir
+		t.Fatalf("card changed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, identity.KeyFile)); !os.IsNotExist(err) {
+		t.Fatal("a key must not be created during an outage")
+	}
+}
+
+// Review 87 M1: with the identity key in the keychain, a process that can
+// write files in the config dir but not reach the keychain plants its own
+// identity.key. With the card present the key matching the card is used;
+// with the card removed (or the keychain locked) nothing is adopted.
+func TestPlantedKeyFileDoesNotReplaceIdentity(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	ks, err := identity.NewKeystore(dir, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id.KeyBackend() != "keychain" {
+		t.Skipf("key went to %s", id.KeyBackend())
+	}
+	pub := id.Card().Card.PublicKey
+	// MockInit empties the mock keychain, so the entry is put back after a lock.
+	entry, err := keyring.Get(keystore.Service, keystore.AccountFor(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock := func() {
+		keyring.MockInit()
+		if err := keyring.Set(keystore.Service, keystore.AccountFor(dir), entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, planted, _ := ed25519.GenerateKey(rand.Reader)
+	if err := keystore.NewFile(filepath.Join(dir, identity.KeyFile)).Set(planted.Seed()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Card present: the keychain key matches it, the planted file is ignored.
+	id2, rep, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err != nil || id2.Card().Card.PublicKey != pub || id2.KeyBackend() != "keychain" || rep.Created {
+		t.Fatalf("card present: %v (backend %v)", err, id2)
+	}
+
+	// Card present, keychain locked: the planted key does not match, and the
+	// keychain may hold the right one.
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	defer keyring.MockInit()
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); !errors.Is(err, keystore.ErrUnavailable) {
+		t.Fatalf("locked keychain with a planted file = %v, want ErrUnavailable", err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, identity.CardFile)); err != nil {
+		t.Fatal(err)
+	}
+	// No card, keychain locked: the file key is not adopted.
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); err == nil {
+		t.Fatal("no card, locked keychain: the planted file key was adopted")
+	}
+	// No card, two different keys: neither is adopted.
+	unlock()
+	_, _, err = identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err == nil {
+		t.Fatal("no card, two different keys: one was adopted")
+	}
+	if _, err := os.Stat(filepath.Join(dir, identity.CardFile)); !os.IsNotExist(err) {
+		t.Fatalf("a card was written: %v", err)
+	}
+	// The real key is still in the keychain: removing the planted file
+	// restores the identity (a new card for the same key).
+	if err := os.Remove(filepath.Join(dir, identity.KeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	id3, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err != nil || id3.Card().Card.PublicKey != pub {
+		t.Fatalf("after removing the planted file: %v", err)
 	}
 }
 

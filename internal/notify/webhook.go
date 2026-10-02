@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -70,16 +73,35 @@ func PrintableSecret(secret []byte) string {
 }
 
 // RotateSecret generates a new secret and saves it, returning the printable
-// form.
-func (w *Webhook) RotateSecret() (string, error) {
+// form and its SecretHash, which the caller stores in WebhookConfig.
+func (w *Webhook) RotateSecret() (printable, hash string, err error) {
 	secret, err := GenerateSecret()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if _, _, err := w.Secret.Save(secret); err != nil {
-		return "", fmt.Errorf("notify: save webhook secret: %w", err)
+		return "", "", fmt.Errorf("notify: save webhook secret: %w", err)
 	}
-	return PrintableSecret(secret), nil
+	return PrintableSecret(secret), SecretHash(secret), nil
+}
+
+// SecretHash is the hex SHA-256 of secret, kept in WebhookConfig so the
+// delivery worker signs only with the secret that was set, not with a copy
+// another process left in a key backend (review 87 M1).
+func SecretHash(secret []byte) string {
+	sum := sha256.Sum256(secret)
+	return hex.EncodeToString(sum[:])
+}
+
+// secretMatches returns the keystore check for cfg's stored hash, or nil
+// when the config predates it.
+func secretMatches(cfg WebhookConfig) func([]byte) bool {
+	if cfg.SecretSHA256 == "" {
+		return nil
+	}
+	return func(secret []byte) bool {
+		return subtle.ConstantTimeCompare([]byte(SecretHash(secret)), []byte(cfg.SecretSHA256)) == 1
+	}
 }
 
 // DeleteSecret removes the stored secret ("--webhook off").
@@ -181,7 +203,7 @@ func (w *Webhook) attempt(ctx context.Context, row queueRow) {
 		w.finish(ctx, row, 0, "bad_webhook", now, false)
 		return
 	}
-	secret, _, err := w.Secret.Load()
+	secret, _, err := w.Secret.LoadMatching(secretMatches(cfg))
 	if err != nil {
 		w.finish(ctx, row, 0, "no_secret", now, true)
 		return
