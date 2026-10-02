@@ -119,11 +119,30 @@ func (e *NotPrivateError) Error() string {
 // contents that others can access, and left its access list alone.
 type SharedDirError struct {
 	*NotPrivateError
+	// Self is the current user's SID, for the fix commands.
+	Self string
+}
+
+// FixCommands are the commands that restrict the directory to the current
+// user. They name the user by SID ("*S-1-5-..."), with no %VAR% or $env:
+// variable, so they run unchanged in cmd and in PowerShell (review 87b N4).
+// The first drops every explicit entry (a grant to Users or a group stays
+// otherwise), the second the inherited ones, leaving one entry for the user.
+func (e *SharedDirError) FixCommands() []string {
+	user := "<your user>"
+	if e.Self != "" {
+		user = "*" + e.Self
+	}
+	return []string{
+		`icacls "` + e.Path + `" /reset`,
+		`icacls "` + e.Path + `" /inheritance:r /grant:r "` + user + `:(OI)(CI)F"`,
+	}
 }
 
 func (e *SharedDirError) Error() string {
+	c := e.FixCommands()
 	return e.NotPrivateError.Error() + "; it already holds files, so its access list is not changed: restrict it to your own user " +
-		"(icacls \"" + e.Path + "\" /inheritance:r /grant:r \"%USERNAME%:(OI)(CI)F\") or set " + HomeEnv + " to a new directory"
+		"by running, in cmd or PowerShell, " + c[0] + " and then " + c[1] + ", or set " + HomeEnv + " to a new directory"
 }
 
 func (e *SharedDirError) Unwrap() error { return e.NotPrivateError }

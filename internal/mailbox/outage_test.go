@@ -39,7 +39,7 @@ func TestKeychainOutageDoesNotRotate(t *testing.T) {
 	if _, _, err := idks.Save(priv.Seed()); err != nil {
 		t.Fatal(err)
 	}
-	sign := relayclient.NewKeystoreSigner(idks, pub).Sign
+	sign := relayclient.NewKeySigner(priv).Sign
 	k := mailbox.New(dir, "auto", pub, sign, func() time.Time { return now })
 	if err := k.Attach(context.Background(), db, nil, nil); err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func TestLockedKeychainDeletionIsRetried(t *testing.T) {
 	if _, _, err := idks.Save(priv.Seed()); err != nil {
 		t.Fatal(err)
 	}
-	sign := relayclient.NewKeystoreSigner(idks, pub).Sign
+	sign := relayclient.NewKeySigner(priv).Sign
 	k := mailbox.New(dir, "auto", pub, sign, func() time.Time { return now })
 	locked := false
 	mailbox.WrapBackends(k, func(b keystore.Backend) keystore.Backend {

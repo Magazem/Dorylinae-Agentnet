@@ -1,11 +1,16 @@
 package paths
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"unicode/utf16"
 
 	"golang.org/x/sys/windows"
 
@@ -172,4 +177,53 @@ func sddl(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return sd.String()
+}
+
+// Review 87b N4: the commands SharedDirError gives make a shared dir with an
+// explicit grant to Users private, run as typed in cmd and in PowerShell.
+func TestSharedDirFixCommandsWork(t *testing.T) {
+	for _, shell := range []string{"cmd", "powershell"} {
+		t.Run(shell, func(t *testing.T) {
+			dir := filepath.Join(testutil.TempDir(t), "shared")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "team-notes.txt"), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			grantUsers(t, dir, windows.GENERIC_READ)
+			p, err := In(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var se *SharedDirError
+			if err := p.Ensure(); !errors.As(err, &se) || se.Self == "" {
+				t.Fatalf("Ensure = %v, want a SharedDirError with the user's SID", err)
+			}
+			for _, line := range se.FixCommands() {
+				var cmd *exec.Cmd
+				if shell == "cmd" {
+					cmd = exec.Command("cmd.exe")
+					cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: "cmd.exe /c " + line}
+				} else {
+					u := utf16.Encode([]rune(line))
+					b := make([]byte, 2*len(u))
+					for i, c := range u {
+						binary.LittleEndian.PutUint16(b[2*i:], c)
+					}
+					//nolint:gosec // runs the fix commands Ensure gave, on the test's own temp dir
+					cmd = exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", base64.StdEncoding.EncodeToString(b))
+				}
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("%s: %v\n%s", line, err, out)
+				}
+			}
+			if err := CheckPrivate(dir); err != nil {
+				t.Fatalf("after the fix commands: %v", err)
+			}
+			if err := p.Ensure(); err != nil {
+				t.Fatalf("Ensure after the fix commands: %v", err)
+			}
+		})
+	}
 }

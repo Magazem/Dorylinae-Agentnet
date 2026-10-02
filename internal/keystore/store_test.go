@@ -239,3 +239,43 @@ func (brokenBackend) Get() ([]byte, error) {
 	return nil, errors.New("key file k.key has mode 0644; it must not be accessible by group or others (chmod 600)")
 }
 func (brokenBackend) Set([]byte) error { return errors.New("read-only") }
+
+// Review 87b N3: "no keychain service" is what this process sees, not the
+// host. DeleteSaved skips it only for a backend the secret was not saved to.
+func TestDeleteSavedKeepsKeychainSecretWithoutService(t *testing.T) {
+	keyring.MockInitWithError(errors.New("dbus: couldn't determine address of session bus"))
+	defer keyring.MockInit()
+	st := New(NewKeychain("review87b"), NewFile(filepath.Join(testutil.TempDir(t), "k.key")))
+	if err := st.DeleteSaved("keychain"); !errors.Is(err, ErrNoService) {
+		t.Fatalf("DeleteSaved(keychain) without a service = %v, want an ErrNoService error", err)
+	}
+	for _, saved := range []string{"file", ""} {
+		if err := st.DeleteSaved(saved); err != nil {
+			t.Fatalf("DeleteSaved(%q) without a service = %v, want nil", saved, err)
+		}
+	}
+}
+
+// Review 87b N2: without a check, differing copies are a conflict that names
+// where each copy lives.
+func TestConflictNamesEachCopy(t *testing.T) {
+	keyring.MockInit()
+	defer keyring.MockInit()
+	path := filepath.Join(testutil.TempDir(t), "k.key")
+	kc := NewKeychain("review87b")
+	if err := kc.Set([]byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	if err := NewFile(path).Set([]byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := New(kc, NewFile(path)).Load()
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Load = %v, want ErrConflict", err)
+	}
+	for _, want := range []string{"keychain entry " + Service + "/review87b", "file " + path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("conflict error does not name %q: %v", want, err)
+		}
+	}
+}

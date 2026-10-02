@@ -141,7 +141,8 @@ func secureDir(dir string, created bool) error {
 			return err
 		}
 		if len(entries) > 0 {
-			return &SharedDirError{NotPrivateError: np}
+			self, _ := currentUserSID() // CheckPrivate has already read it
+			return &SharedDirError{NotPrivateError: np, Self: self}
 		}
 	}
 	return rewriteDACL(dir)

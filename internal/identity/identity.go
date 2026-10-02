@@ -30,6 +30,10 @@ const (
 	KeyFile = "identity.key"
 	// CardFile caches the signed Agent Card inside the config dir.
 	CardFile = "agent-card.json"
+	// KeychainMarkerFile records that this config dir's identity key has
+	// been kept in the OS keychain (review 87b N1). While the keychain cannot
+	// be read, a key found only in the file is then not used on its own.
+	KeychainMarkerFile = "identity.keychain"
 
 	// KeystoreEnv selects the key storage: "auto" (default) or "file".
 	KeystoreEnv = "DORYLINAE_KEYSTORE"
@@ -115,16 +119,24 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 	haveCard := cardErr == nil
 
 	if haveCard {
-		// Only a key matching the card is the identity's: a copy in another
-		// backend (a key file planted by a process that cannot reach the
-		// keychain) is ignored (review 87 M1).
-		seed, backend, err := ks.LoadMatching(SeedMatches(existing.Card.PublicKey))
+		seed, backend, noService, err := loadKey(dir, ks, existing.Card.PublicKey)
 		switch {
 		case err == nil:
 			defer clear(seed)
+			if backend == "keychain" {
+				if err := markKeychain(dir); err != nil {
+					return nil, Report{}, err
+				}
+			}
 			return &Identity{card: *existing, keyBackend: backend}, Report{}, nil
+		case errors.Is(err, keystore.ErrConflict), errors.Is(err, errKeychainUnread):
+			return nil, Report{}, err
 		case errors.Is(err, keystore.ErrMismatch):
 			return nil, Report{}, fmt.Errorf("identity: no stored private key matches the key in %s, nothing was changed (%w); restore the key or delete %s to start a new identity", cardPath, err, cardPath)
+		case errors.Is(err, keystore.ErrNotFound) && noService:
+			// This process sees no keychain service, which does not mean the
+			// user has none (review 87b N3): a new identity is not the first fix.
+			return nil, Report{}, fmt.Errorf("%w (%w); the key may be in a keychain this session cannot reach (start the daemon from the desktop session), otherwise restore it or delete %s to start a new identity", ErrKeyLost, err, cardPath)
 		case errors.Is(err, keystore.ErrNotFound):
 			return nil, Report{}, fmt.Errorf("%w (%w); restore it or delete %s to start a new identity", ErrKeyLost, err, cardPath)
 		case errors.Is(err, keystore.ErrUnavailable):
@@ -141,14 +153,20 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 	// while another backend could not be read, nothing says which is ours, and
 	// adopting a key a file-only writer planted would hand it the identity
 	// (review 87 M1).
+	// A keychain this process sees no service for counts as not read when
+	// this dir has kept its key there before (review 87b N1, N3).
 	c := ks.Read()
 	defer c.Clear()
+	unread := append(append([]error(nil), c.Unavailable...), c.Broken...)
+	if keychainUsed(dir) {
+		unread = append(unread, c.NoService...)
+	}
 	switch {
 	case c.Distinct():
-		return nil, Report{}, fmt.Errorf("identity: %s is missing and %s hold different private keys, nothing was changed; restore the card, or remove the key that is not this agent's", cardPath, backendList(c))
-	case len(c.Copies) > 0 && len(c.Unavailable)+len(c.Broken) > 0:
+		return nil, Report{}, fmt.Errorf("identity: %s is missing and %s hold different private keys, nothing was changed; restore the card, or remove the key that is not this agent's", cardPath, strings.Join(c.Locations(), " and "))
+	case len(c.Copies) > 0 && len(unread) > 0:
 		return nil, Report{}, fmt.Errorf("identity: %s is missing and a private key is stored in %s, but other key storage could not be read (%w), nothing was changed; unlock the keychain (or fix the key file) and start again, or restore the card",
-			cardPath, backendList(c), errors.Join(append(c.Unavailable, c.Broken...)...))
+			cardPath, strings.Join(c.Locations(), " and "), errors.Join(unread...))
 	case len(c.Copies) > 0:
 		// Key without a card (interrupted first run): re-create the card for the same key.
 		priv, err := privFromSeed(c.Copies[0].Secret)
@@ -156,6 +174,11 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 			return nil, Report{}, err
 		}
 		defer clear(priv)
+		if c.Copies[0].Backend == "keychain" {
+			if err := markKeychain(dir); err != nil {
+				return nil, Report{}, err
+			}
+		}
 		return finish(cardPath, priv, c.Copies[0].Backend, false, nil, opts, now)
 	case len(c.Broken) > 0:
 		return nil, Report{}, errors.Join(c.Broken...)
@@ -171,6 +194,11 @@ func LoadOrCreate(dir string, ks *keystore.Store, opts Options, now time.Time) (
 	backend, skipped, err := ks.Save(priv.Seed())
 	if err != nil {
 		return nil, Report{}, fmt.Errorf("identity: store private key: %w", err)
+	}
+	if backend == "keychain" {
+		if err := markKeychain(dir); err != nil {
+			return nil, Report{}, err
+		}
 	}
 	return finish(cardPath, priv, backend, true, skipped, opts, now)
 }
@@ -236,12 +264,108 @@ func SeedMatches(pub string) func(seed []byte) bool {
 	}
 }
 
-func backendList(c keystore.Contents) string {
-	var names []string
-	for _, cp := range c.Copies {
-		names = append(names, cp.Backend)
+// errKeychainUnread is the error of LoadKey when the matching key is only in
+// the file while the keychain, which this dir has used, cannot be read.
+var errKeychainUnread = fmt.Errorf("%w: the keychain could not be read", keystore.ErrUnavailable)
+
+// LoadKey returns the identity seed whose public key is pub (the agent card's,
+// base64url) and the backend that held it. It is the only way the daemon reads
+// its identity key (start-up, signing, doctor; review 87b N2). The card is a
+// file, self-signed, as writable as identity.key, so matching it is not
+// enough (review 87b N1):
+//
+//   - When a more preferred backend (the keychain) answered with a different
+//     key, the error wraps keystore.ErrConflict and names both copies: a
+//     process that can write files but not the keychain may have replaced
+//     the card and the key file. A different key in a less preferred backend
+//     (a stray identity.key next to the keychain key) is ignored.
+//   - When the key is found only in the file while the keychain cannot be
+//     read (locked, timed out, or no service in this process) and this dir
+//     has kept its key in the keychain before (KeychainMarkerFile), the
+//     error wraps keystore.ErrUnavailable: the file copy cannot be compared
+//     with the keychain's. The marker is a file too, so this narrows the
+//     window but cannot close it (Docs/protocol/agent-card.md §Key storage).
+//
+// The caller clears the seed.
+func LoadKey(dir string, ks *keystore.Store, pub string) (seed []byte, backend string, err error) {
+	seed, backend, _, err = loadKey(dir, ks, pub)
+	return seed, backend, err
+}
+
+// loadKey is LoadKey; noService also reports whether a backend said this
+// process has no keychain service.
+func loadKey(dir string, ks *keystore.Store, pub string) (seed []byte, backend string, noService bool, err error) {
+	c := ks.Read()
+	defer c.Clear()
+	noService = len(c.NoService) > 0
+	match := SeedMatches(pub)
+	seed, backend, err = c.Pick(match)
+	if err != nil {
+		return nil, "", noService, err
 	}
-	return strings.Join(names, " and ")
+	var chosen keystore.Copy
+	for _, cp := range c.Copies {
+		if match(cp.Secret) {
+			chosen = cp
+			break
+		}
+	}
+	// Copies are in backend order: a first copy that is not the chosen one
+	// is in a more preferred backend and holds a different key.
+	if first := c.Copies[0]; first.Backend != chosen.Backend {
+		clear(seed)
+		card := filepath.Join(dir, CardFile)
+		return nil, "", noService, fmt.Errorf("identity: the agent card's key is in the %s, but the %s holds a different key, nothing was changed (%w). "+
+			"A process that can write files but not the keychain may have replaced %s and the key file: unless you created this identity while the keychain was unavailable, "+
+			"delete %s and the key file so that the keychain key is used again. If this identity is yours, delete the keychain entry instead",
+			chosen.Location, first.Location, keystore.ErrConflict, card, card)
+	}
+	if order := ks.Backends(); len(order) > 1 && order[0] != chosen.Backend && contains(c.Unread, order[0]) && keychainUsed(dir) {
+		clear(seed)
+		return nil, "", noService, fmt.Errorf("identity: the agent card's key is only in the %s and the %s could not be read, nothing was changed (%w: %s). "+
+			"This config dir has kept its key in the keychain before (%s), so the file copy is not used on its own: unlock the keychain and start again. "+
+			"If the key now lives only in the file for good, set %s=file",
+			chosen.Location, order[0], errKeychainUnread, unreadErrs(c), filepath.Join(dir, KeychainMarkerFile), KeystoreEnv)
+	}
+	return seed, backend, noService, nil
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func unreadErrs(c keystore.Contents) string {
+	var msgs []string
+	for _, errs := range [][]error{c.Unavailable, c.NoService, c.Broken} {
+		for _, e := range errs {
+			msgs = append(msgs, e.Error())
+		}
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// keychainUsed reports whether KeychainMarkerFile exists in dir. A marker
+// that cannot be checked counts as present (the stricter answer).
+func keychainUsed(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, KeychainMarkerFile))
+	return !errors.Is(err, os.ErrNotExist)
+}
+
+// markKeychain writes KeychainMarkerFile, once.
+func markKeychain(dir string) error {
+	path := filepath.Join(dir, KeychainMarkerFile)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	if err := keystore.WriteOwnerOnly(path, []byte("This config dir's identity key is kept in the OS keychain.\n")); err != nil {
+		return fmt.Errorf("identity: write %s: %w", path, err)
+	}
+	return nil
 }
 
 func pubString(priv ed25519.PrivateKey) string {

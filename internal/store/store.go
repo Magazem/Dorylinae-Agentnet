@@ -598,6 +598,13 @@ DROP TABLE approvals;
 ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_state ON approvals (state, expires);
 `},
+	// The keystore backend each mailbox key was saved to (review 87b N3):
+	// "keychain" or "file", NULL for rows from before this migration. A
+	// keychain key is marked deleted only once a process that can reach the
+	// keychain deleted it.
+	{26, "mailbox_key_backend", `
+ALTER TABLE mailbox_keys_own ADD COLUMN key_backend TEXT;
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

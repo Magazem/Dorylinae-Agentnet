@@ -21,6 +21,9 @@ func NewFile(path string) *File { return &File{Path: path} }
 // Name implements Backend.
 func (*File) Name() string { return "file" }
 
+// Location implements Locator.
+func (f *File) Location() string { return f.Path }
+
 // Get implements Backend. A file accessible by anyone but the owner is
 // refused, like ssh does for private keys (on Windows also one owned by
 // another user; review 55 R55-089).

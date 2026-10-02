@@ -62,7 +62,11 @@ For a key created at time `t`:
 - In the same job, every key with `not_after + 7 d ≤ now` is deleted from the keystore, and
   its row gets `deleted` set. The row itself is kept for audit. While the keychain is locked
   or times out, the delete fails and the row stays live, so the next run retries it
-  (review 87 M2).
+  (review 87 M2). The row records the backend the key was saved to (`key_backend`): a key
+  saved to the keychain is not marked deleted while the daemon sees no keychain service
+  (for example when it runs without the desktop session's D-Bus bus), because the key may
+  still be in the user's keychain; the row stays live and the delete is retried (review 87b
+  N3). Rows from before migration 26 have no `key_backend` and are deleted as before.
 - A key is **live** when it is not deleted. This schedule never has more than **3 live keys**
   (ages below 7, 14 and 21 days). The job also enforces the limit: if a 4th would be live, the
   oldest is deleted early.
@@ -523,7 +527,8 @@ CREATE TABLE mailbox_keys_own (
     not_after    TEXT NOT NULL,
     retired      TEXT,                            -- NULL while current
     deleted      TEXT,                            -- NULL while the private key is live
-    announcement TEXT NOT NULL CHECK (json_valid(announcement))   -- canonical signed announcement
+    announcement TEXT NOT NULL CHECK (json_valid(announcement)),  -- canonical signed announcement
+    key_backend  TEXT                             -- migration 26: "keychain" or "file"; NULL before
 );
 
 -- 1.0d

@@ -44,26 +44,27 @@ func (c *countingKeystore) setFail(v bool) {
 	c.mu.Unlock()
 }
 
-func countingIdentity(t *testing.T) (*countingKeystore, *keystore.Store, ed25519.PublicKey) {
+func countingIdentity(t *testing.T) (string, *countingKeystore, *keystore.Store, ed25519.PublicKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	file := keystore.NewFile(filepath.Join(testutil.TempDir(t), "identity.key"))
+	dir := testutil.TempDir(t)
+	file := keystore.NewFile(filepath.Join(dir, "identity.key"))
 	if err := file.Set(priv.Seed()); err != nil {
 		t.Fatal(err)
 	}
 	c := &countingKeystore{Backend: file}
-	return c, keystore.New(c), pub
+	return dir, c, keystore.New(c), pub
 }
 
 // R55-F13 (review 55 R55-051): the identity key is read from the keystore
 // once, shared by the mail receiver, the pusher, the outbox and the signer,
 // and a caller clearing its copy does not wipe the cached key.
 func TestIdentityKeyLoadedOnce(t *testing.T) {
-	c, ks, pub := countingIdentity(t)
-	idKey := newIdentityKey(ks, pub)
+	dir, c, ks, pub := countingIdentity(t)
+	idKey := newIdentityKey(dir, ks, pub)
 	rcv, pusher := newMailReceiver(nil, nil, idKey, pub, nil, nil, nil, nil, nil, nil)
 	ob := newOutbox(nil, nil, idKey, nil)
 	loaders := []func() (ed25519.PrivateKey, error){rcv.Priv, pusher.Priv, ob.Priv, idKey.Priv}
@@ -90,8 +91,8 @@ func TestIdentityKeyLoadedOnce(t *testing.T) {
 // A failed read is not cached, but is retried at most once per second; a
 // stored key that does not match the card is refused.
 func TestIdentityKeyLoadErrorRetriedOncePerSecond(t *testing.T) {
-	c, ks, pub := countingIdentity(t)
-	idKey := newIdentityKey(ks, pub)
+	dir, c, ks, pub := countingIdentity(t)
+	idKey := newIdentityKey(dir, ks, pub)
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	idKey.now = func() time.Time { return now }
 	c.setFail(true)
@@ -113,7 +114,7 @@ func TestIdentityKeyLoadErrorRetriedOncePerSecond(t *testing.T) {
 	}
 
 	other, _, _ := ed25519.GenerateKey(rand.Reader)
-	if _, err := newIdentityKey(ks, other).Sign([]byte("x")); err == nil {
+	if _, err := newIdentityKey(dir, ks, other).Sign([]byte("x")); err == nil {
 		t.Fatal("a stored key that does not match the card signed")
 	}
 }

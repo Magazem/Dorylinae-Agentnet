@@ -44,10 +44,19 @@ type Store struct {
 // New returns a Store over backends, most preferred first.
 func New(backends ...Backend) *Store { return &Store{backends: backends} }
 
+// Locator is implemented by backends that can say where their copy lives (a
+// file path, a keychain entry), for error messages.
+type Locator interface {
+	Location() string
+}
+
 // Copy is the secret as one backend holds it.
 type Copy struct {
 	Backend string
-	Secret  []byte
+	// Location says where the copy is (a file path, a keychain entry), or
+	// repeats Backend when the backend cannot say.
+	Location string
+	Secret   []byte
 }
 
 // Contents is what every backend of a Store returned.
@@ -62,6 +71,9 @@ type Contents struct {
 	// Broken are the backends whose copy is unusable (a key file others can
 	// read, a corrupt entry).
 	Broken []error
+	// Unread names the backends counted in Unavailable, NoService or Broken:
+	// those that did not say whether, or what, they hold.
+	Unread []string
 }
 
 // Clear wipes every copy.
@@ -88,22 +100,41 @@ func (s *Store) Read() Contents {
 		v, err := b.Get()
 		switch {
 		case err == nil:
-			c.Copies = append(c.Copies, Copy{Backend: b.Name(), Secret: v})
+			c.Copies = append(c.Copies, Copy{Backend: b.Name(), Location: location(b), Secret: v})
 		case errors.Is(err, ErrNotFound):
 		case errors.Is(err, ErrNoService):
 			c.NoService = append(c.NoService, fmt.Errorf("%s: %w", b.Name(), err))
+			c.Unread = append(c.Unread, b.Name())
 		case errors.Is(err, ErrUnavailable):
 			c.Unavailable = append(c.Unavailable, fmt.Errorf("%s: %w", b.Name(), err))
+			c.Unread = append(c.Unread, b.Name())
 		default:
 			c.Broken = append(c.Broken, fmt.Errorf("keystore: read %s: %w", b.Name(), err))
+			c.Unread = append(c.Unread, b.Name())
 		}
 	}
 	return c
 }
 
+func location(b Backend) string {
+	if l, ok := b.(Locator); ok {
+		return b.Name() + " " + l.Location()
+	}
+	return b.Name()
+}
+
 // Load is LoadMatching without a check: it returns the secret only when every
 // copy found is the same.
 func (s *Store) Load() (secret []byte, backend string, err error) { return s.LoadMatching(nil) }
+
+// Backends names the backends of s, most preferred first.
+func (s *Store) Backends() []string {
+	names := make([]string, len(s.backends))
+	for i, b := range s.backends {
+		names[i] = b.Name()
+	}
+	return names
+}
 
 // LoadMatching returns the secret and the name of the backend that held it.
 // It reads every backend and returns the first copy that match accepts (any
@@ -125,8 +156,16 @@ func (s *Store) Load() (secret []byte, backend string, err error) { return s.Loa
 func (s *Store) LoadMatching(match func([]byte) bool) (secret []byte, backend string, err error) {
 	c := s.Read()
 	defer c.Clear()
+	return c.Pick(match)
+}
+
+// Pick is LoadMatching over contents already read. The secret returned is a
+// copy the caller owns.
+func (c Contents) Pick(match func([]byte) bool) (secret []byte, backend string, err error) {
 	if match == nil && c.Distinct() {
-		return nil, "", fmt.Errorf("%w (%s); remove the stale copy", ErrConflict, strings.Join(c.backendNames(), ", "))
+		// Nothing says which copy is right, so each is named with where it
+		// lives (review 87b N2).
+		return nil, "", fmt.Errorf("%w (%s), and nothing says which one is right; keep the right copy and delete the other", ErrConflict, strings.Join(c.Locations(), "; "))
 	}
 	for _, cp := range c.Copies {
 		// Without a check, a broken backend may hold the right secret.
@@ -161,6 +200,15 @@ func (c Contents) backendNames() []string {
 		names[i] = cp.Backend
 	}
 	return names
+}
+
+// Locations says where each copy lives, most preferred backend first.
+func (c Contents) Locations() []string {
+	locs := make([]string, len(c.Copies))
+	for i, cp := range c.Copies {
+		locs[i] = cp.Location
+	}
+	return locs
 }
 
 func joinErrs(errs []error) string {
@@ -223,14 +271,27 @@ type Deleter interface {
 // timed out may still hold the secret, so that is an error and the caller
 // retries later (review 87 M2: the mailbox marks a key deleted only once
 // Delete succeeds). Every backend is tried before the failures are returned.
-func (s *Store) Delete() error {
+func (s *Store) Delete() error { return s.DeleteSaved("") }
+
+// DeleteSaved is Delete for a secret that Save put in the backend named
+// savedIn. "No keychain service" is judged by this process (a daemon started
+// without the desktop session's D-Bus bus sees none), so it is skipped only
+// for the other backends: when savedIn itself reports no service, the secret
+// may still be there and the delete fails, to be retried (review 87b N3).
+// An empty savedIn (not recorded) is Delete.
+func (s *Store) DeleteSaved(savedIn string) error {
 	var errs []error
 	for _, b := range s.backends {
 		d, ok := b.(Deleter)
 		if !ok {
 			continue
 		}
-		if err := d.Delete(); err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoService) {
+		err := d.Delete()
+		if errors.Is(err, ErrNoService) && savedIn != "" && b.Name() == savedIn {
+			errs = append(errs, fmt.Errorf("keystore: delete from %s, where the secret was saved: %w", b.Name(), err))
+			continue
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrNoService) {
 			errs = append(errs, fmt.Errorf("keystore: delete from %s: %w", b.Name(), err))
 		}
 	}

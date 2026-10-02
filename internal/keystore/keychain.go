@@ -61,6 +61,9 @@ func NewKeychain(account string) *Keychain { return &Keychain{account: account} 
 // Name implements Backend.
 func (*Keychain) Name() string { return "keychain" }
 
+// Location implements Locator: the service and account of the entry.
+func (k *Keychain) Location() string { return "entry " + Service + "/" + k.account }
+
 // Get implements Backend.
 func (k *Keychain) Get() ([]byte, error) {
 	b, err := get(k.account)

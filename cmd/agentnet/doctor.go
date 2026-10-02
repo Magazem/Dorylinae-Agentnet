@@ -338,23 +338,31 @@ func displayRelTo(home, path string) string {
 }
 
 // checkKeychain reports which backend holds the identity key, without ever
-// creating one (doctor only reads). With an agent card, only the key matching
-// it counts, as at start-up (review 87 M1).
+// creating one (doctor only reads). With an agent card, the key is read with
+// the same checks as at start-up (review 87 M1, 87b N1).
 func checkKeychain(p paths.Paths) doctorCheck {
 	ks, err := identity.NewKeystoreFromEnv(p.Dir)
 	if err != nil {
 		return doctorCheck{ID: "keychain", State: doctorFail, Detail: "could not open the key storage"}
 	}
-	var match func([]byte) bool
+	var (
+		seed    []byte
+		backend string
+	)
 	card, cardErr := identity.ReadCard(p.Dir)
 	if cardErr == nil {
-		match = identity.SeedMatches(card.Card.PublicKey)
+		seed, backend, err = identity.LoadKey(p.Dir, ks, card.Card.PublicKey)
+	} else {
+		seed, backend, err = ks.Load()
 	}
-	seed, backend, err := ks.LoadMatching(match)
 	clear(seed)
 	switch {
 	case err == nil:
 		return doctorCheck{ID: "keychain", State: doctorOK, Detail: "identity key readable from " + backend}
+	case errors.Is(err, keystore.ErrConflict) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the key file matches the agent card but the keychain holds a different identity key (the card and key file may have been replaced)",
+			Fix:    "unless you created this identity while the keychain was unavailable, delete agent-card.json and identity.key; otherwise delete the keychain entry"}
 	case errors.Is(err, keystore.ErrConflict), errors.Is(err, keystore.ErrMismatch):
 		return doctorCheck{ID: "keychain", State: doctorFail,
 			Detail: "no stored identity key matches the agent card, or the keychain and the key file hold different keys",
@@ -369,7 +377,7 @@ func checkKeychain(p paths.Paths) doctorCheck {
 			Fix:    "run `agentnetd install` (or start `agentnetd`) to create one"}
 	case errors.Is(err, keystore.ErrUnavailable):
 		return doctorCheck{ID: "keychain", State: doctorWarn,
-			Detail: "the keychain is unavailable and no key file holds the identity key",
+			Detail: "the keychain is unavailable, and the identity key cannot be read or checked without it",
 			Fix:    "unlock the keychain (or check that its service is running) and run doctor again"}
 	default:
 		return doctorCheck{ID: "keychain", State: doctorFail,

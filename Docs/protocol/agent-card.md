@@ -253,8 +253,14 @@ directory or it is empty: an existing directory that already holds files and
 that others can access (for example a shared folder `DORYLINAE_HOME` points
 at) is never rewritten, because that would lock everyone else out of it. The
 daemon refuses to start instead, and the error gives the fix: restrict the
-directory to your own user (`icacls <dir> /inheritance:r /grant:r
-"%USERNAME%:(OI)(CI)F"`) or point `DORYLINAE_HOME` at a new directory.
+directory to your own user, or point `DORYLINAE_HOME` at a new directory.
+The error spells out two commands that work unchanged in cmd and in
+PowerShell, because they name the user by SID rather than through
+`%USERNAME%` (cmd only) or `$env:USERNAME` (PowerShell only):
+`icacls "<dir>" /reset` drops every explicit entry (a grant to `Users` or a
+team group), then `icacls "<dir>" /inheritance:r /grant:r
+"*<your SID>:(OI)(CI)F"` drops the inherited ones and leaves a single entry
+for you (review 87b N4).
 `agentnet doctor` warns when someone else can read it.
 
 Setting `DORYLINAE_KEYSTORE=file` skips the keychain (headless servers, CI,
@@ -264,16 +270,47 @@ audit event. Saving to one backend removes the copies in the others. A copy
 in a keychain that is unavailable at that moment cannot be removed. A key
 found only in the file is not migrated automatically.
 
-Loading reads every backend and never prefers one by its place in the order:
-a process that can write files in the config directory but cannot reach the
-keychain could otherwise plant its own key and take over the identity. When
-the backends hold different values, the copy used is the one that matches
-data the daemon already trusts:
+Loading reads every backend and never takes a copy just because its backend
+comes first: a process that can write files in the config directory but
+cannot reach the keychain could otherwise plant its own key. When the
+backends hold different values, the copy used is the one that matches data
+the daemon already trusts:
 
-- the identity key: the copy whose public key is in `agent-card.json`. With
-  no card, a stored key is adopted only when every backend could be read and
-  they all hold the same key; otherwise the daemon refuses to start and
-  changes nothing;
+- the identity key: the copy whose public key is in `agent-card.json`. The
+  card is itself a file, self-signed, so a process that can plant
+  `identity.key` can also replace the card with one its key signs. Matching
+  the card is therefore not enough (review 87b N1):
+  - When the keychain answered with a key different from the one matching
+    the card, the daemon refuses to start and changes nothing. The error
+    names both copies (the keychain entry and the file path). If the card and
+    key file were not created by you during a keychain outage, delete both;
+    the keychain key is then adopted again with a new card. If they were,
+    delete the keychain entry. A different key in the *file* next to a
+    keychain key matching the card is a stray copy and is ignored.
+  - The marker file `<config dir>/identity.keychain` is written whenever the
+    identity key is stored in or loaded from the keychain. While the
+    keychain cannot be read (locked, timed out, or no keychain service seen
+    by this process) and the marker exists, a key found only in the file is
+    not used: the daemon refuses to start until the keychain is unlocked.
+    Without the marker (the key has only ever been in the file, for example
+    because the keychain failed at the first run) the file key is used as
+    before. `DORYLINAE_KEYSTORE=file` never consults the keychain or the
+    marker, so file-only setups keep working; it is also the way out when a
+    dir that used the keychain must now run without it.
+  - With no card, a stored key is adopted only when every backend could be
+    read and they all hold the same key. A keychain with no service in this
+    process counts as unread once the marker exists. Otherwise the daemon
+    refuses to start and changes nothing.
+
+  **Accepted limit.** The marker is a file in the same directory, so a
+  process that can write files there can delete it. While the keychain is
+  locked (or unreachable from the daemon's session), that process can then
+  delete the marker, replace the card and plant a matching key file, and
+  the daemon runs as that key. A locked keychain's copy cannot be compared,
+  and nothing outside the config directory records which key is this
+  agent's. The marker narrows this to the time the keychain is unreadable;
+  it does not close it. With the keychain readable, the substitution is
+  always refused;
 - a mailbox key: the copy whose public key is the one in its
   `mailbox_keys_own` row;
 - the webhook secret: the copy whose SHA-256 is stored with the webhook
@@ -283,7 +320,14 @@ data the daemon already trusts:
 A copy that does not match is ignored but left in place. A key file that is
 unusable (readable by others, corrupt) does not hide a matching copy in the
 keychain. Without a matching copy, the error names the file and the backend
-that holds a copy, so the fix (deleting the file) is clear.
+that holds a copy, so the fix (deleting the file) is clear. When nothing
+says which of two different copies is right, the error names where each
+lives (the keychain entry `dorylinae/<account>`, the file path).
+
+The daemon reads its identity key once, with the checks above, and every
+identity signature (the Noise binding of sessions, the relay challenge, the
+mailbox announcements, mail) goes through that one key. There is no second
+path that reads the keystore on its own (review 87b N2).
 
 An *unavailable* keychain (locked, an unlock prompt dismissed, a call timing
 out after 5 s) is not the same as a *missing* key: the key may be in it.
@@ -292,10 +336,17 @@ reports the keychain as unavailable, not the key as lost. A host with *no
 keychain service* (no D-Bus session bus or Secret Service on Linux, an
 unsupported platform) is different again: nothing can be stored there, so
 it counts as an absence. A key missing from the file is then reported as
-lost, and a mailbox key is replaced at once. Deleting skips a keychain only
-when the host has no keychain service. A locked keychain makes the delete
-fail, so it is retried later; the mailbox's hourly job keeps the key live
-until the delete succeeds. These rules apply to every secret kept this way
+lost (for the identity, the error first says the key may be in a keychain
+this session cannot reach), and a mailbox key is replaced at once. "No
+service" is what the daemon's process sees, not the host: a daemon started
+without the desktop session's D-Bus bus sees none while the user's keychain
+holds keys. Deleting skips a keychain with no service only when the secret
+was not saved there: a mailbox key row records its backend (`key_backend`,
+migration 26), and a keychain key is kept live and retried until a process
+that can reach the keychain deletes it (review 87b N3). Rows from before
+migration 26 do not record it and are deleted as before. A locked keychain
+makes the delete fail, so it is retried later; the mailbox's hourly job
+keeps the key live until the delete succeeds. These rules apply to every secret kept this way
 (the mailbox keys and the webhook secret too).
 
 The signed card is cached at `<config dir>/agent-card.json`. Lifecycle on
@@ -307,7 +358,9 @@ daemon start:
 | present | present, valid, key matches | Reuse; no audit event |
 | present | missing | Re-create the card for the same key, audit `identity.create` |
 | present | invalid | Daemon fails to start; nothing is overwritten |
-| present, but no copy matches the card | present | Daemon fails to start; nothing is overwritten. A copy that does not match (a stray `identity.key`) is ignored when another backend holds the matching key |
+| present, but no copy matches the card | present | Daemon fails to start; nothing is overwritten. A copy that does not match (a stray `identity.key`) is ignored when the keychain holds the matching key |
+| file matches the card, keychain holds a different key | present | Daemon fails to start; nothing is changed. The error names both copies: delete the card and the key file to return to the keychain key, or the keychain entry if the file key is yours |
+| file matches the card, keychain unavailable, `identity.keychain` present | present | Daemon fails to start; nothing is changed. Unlock the keychain, or set `DORYLINAE_KEYSTORE=file` if the key now lives only in the file |
 | different keys in keychain and file, or a key while the other backend is unavailable | missing | Daemon fails to start; nothing is changed. Restore the card or remove the key that is not this agent's |
 | missing | present | Daemon fails to start (key lost; silently rotating the identity would break peers). Delete `agent-card.json` to start a new identity |
 | keychain unavailable, file has none | present | Daemon fails to start; nothing is changed. The error says the keychain could not be read, not that the key is lost |
