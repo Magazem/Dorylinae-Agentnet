@@ -24,8 +24,8 @@ agentnet debate <peer> (--topic TEXT | --topic-from-file F) --position-file P
 | `--topic TEXT` / `--topic-from-file F` | The topic, 1–16384 bytes (the request brief). Exactly one is required |
 | `--position-file P` | Your opening position: a JSON object (`-` = stdin), see [Position](#entry-files). The daemon commits to it and never sends it before the peer's own position has left the peer's daemon ([Commit–reveal](../protocol/debate.md#commitreveal)) |
 | `--context-file F` | Repeatable, up to 8; same rules as [`agentnet consult`](consult.md) |
-| `--rounds N` | 1–5, default 2: the maximum number of challenge rounds |
-| `--turn-timeout D` | A Go duration (`90m`, `2h`) or `Nd`, 300 s–86400 s, default 1h. A missed turn ends the debate (`timeout`) |
+| `--rounds N` | 1–5, default 2: the maximum number of challenge rounds. Sent only when given, so `--rounds 0` is refused (`bad_request`, exit 1) and never means the default |
+| `--turn-timeout D` | A Go duration (`90m`, `2h`) or `Nd`, 300 s–86400 s, default 1h. A missed turn ends the debate (`timeout`). `D` must be a positive whole number of seconds: `500ms`, `0d`, `-1h` or `300.5s` is a usage error (exit 2), never the default. A value out of range is `bad_request` (exit 1) |
 | `--title T` | Default: the first line of the topic, cut to 120 characters as in `agentnet consult` |
 | `--urgency`, `--urgency-reason`, `--team`, `--idempotency-key` | As for [`agentnet request`](request.md) |
 | `--json` | Machine-readable output on stdout |
@@ -165,15 +165,21 @@ within `--timeout` seconds (default 300, max 3600).
 agentnet debate <id> --cancel [--reason R]
 ```
 
-- **Before the peer accepts** (`invited`): a Phase 1 `request.cancel` (there is no session yet).
-  Only the initiator can do this. Invited to a debate, you decline it instead
-  (`agentnet decline <r-id>`); `--cancel` then fails with `bad_state` (R55-F20).
+- **Before the peer accepts** (`invited`): a Phase 1 `request.cancel` (there is no session yet),
+  with `--reason` passed on to the peer. Only the initiator can do this. Invited to a debate,
+  you decline it instead (`agentnet decline <r-id>`); `--cancel` then fails with `bad_state`
+  (R55-F20).
 - **After accept, while open**: closes your own debate `cancelled`, no Decision. On the
   initiator this refuses further entries and completes the request on both sides. On the
   respondent, since a debate carries no `ws.state`, **the same command also closes your own
   mirror locally** (`debate.abandon`, [§Cancel and abandon](../protocol/debate.md#cancel-and-abandon)):
   this is your only protection if the initiator's daemon goes silent. A later close from the
   initiator is then stored for the record and changes nothing.
+- **Respondent, after your answer**: the initiator's daemon closes the debate by itself, and
+  cancelling now would leave it with a Decision you never sign. So `--cancel` fails with
+  `bad_state` and sends nothing, until the initiator's close is held on your side (an entry or
+  constraint from it is missing) or the `deadline` your view shows after the answer (answer
+  time + the turn timeout) has passed. After that it abandons as above (R55-F29).
 - A cancel refunds nothing.
 
 ## Human constraints
@@ -243,4 +249,5 @@ Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running, 4 (`agentnet wait` o
 
 Content-free, all on by default: `debate.constraint` (the other side added one), `debate.agreed`
 and `debate.escalated` (both sides, body = the request title), `debate.broken` (the respondent,
-a bad reveal). Turn changes do not notify; poll with `agentnet wait`.
+a bad reveal), `debate.refused` (both sides: the two records of the Decision differ; the cause is
+in `agentnet log`). Turn changes do not notify; poll with `agentnet wait`.
