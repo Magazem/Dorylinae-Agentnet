@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -474,7 +475,7 @@ func runDebateStart(asJSON bool, stdout, stderr io.Writer, peer string, f debate
 		return code
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(requestBody{OK: true, RequestSubmitResult: res})
+		writeJSON(stdout, requestBody{OK: true, RequestSubmitResult: res})
 		return exitOK
 	}
 	verb := "Started"
@@ -482,7 +483,7 @@ func runDebateStart(asJSON bool, stdout, stderr io.Writer, peer string, f debate
 		verb = "Already started (duplicate)"
 	}
 	_, _ = fmt.Fprintf(stdout, "%s debate %s with %s (team %s)\n  session: %s (wait with 'agentnet wait %s')\n",
-		verb, res.ID, res.Peer.Name, res.Team.Name, res.Session, res.Session)
+		verb, res.ID, displaytext.Term(res.Peer.Name), displaytext.Term(res.Team.Name), res.Session, res.Session)
 	return exitOK
 }
 
@@ -492,7 +493,7 @@ func runDebateShow(asJSON bool, stdout, stderr io.Writer, id string) int {
 		return code
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DebateShowResult
 		}{OK: true, DebateShowResult: res})
@@ -512,7 +513,7 @@ func runDebateSubmit(asJSON bool, stdout, stderr io.Writer, id, kind string, ent
 		return failJSON(asJSON, stdout, stderr, code, errCode, msg)
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DebateSubmitResult
 		}{OK: true, DebateSubmitResult: res})
@@ -585,7 +586,7 @@ func runDebateCancel(asJSON bool, stdout, stderr io.Writer, id, reason string) i
 			return code
 		}
 		if asJSON {
-			_ = json.NewEncoder(stdout).Encode(struct {
+			writeJSON(stdout, struct {
 				OK bool `json:"ok"`
 				daemon.RequestCancelResult
 			}{OK: true, RequestCancelResult: res})
@@ -607,7 +608,7 @@ func runDebateCancel(asJSON bool, stdout, stderr io.Writer, id, reason string) i
 		for k, v := range raw {
 			out[k] = v
 		}
-		_ = json.NewEncoder(stdout).Encode(out)
+		writeJSON(stdout, out)
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Cancelled %s\n", shown.Debate.Session)
@@ -616,26 +617,27 @@ func runDebateCancel(asJSON bool, stdout, stderr io.Writer, id, reason string) i
 
 func printDebateHuman(w io.Writer, d daemon.DebateView) {
 	_, _ = fmt.Fprintf(w, "%s  role %s  phase %s  turn %s\n", d.Session, d.Role, d.Phase, d.Turn)
-	_, _ = fmt.Fprintf(w, "  peer:    %s\n", d.Peer.Name)
-	_, _ = fmt.Fprintf(w, "  request: %s (%s)\n", d.Request.Title, d.Request.ID)
+	_, _ = fmt.Fprintf(w, "  peer:    %s\n", displaytext.Term(d.Peer.Name))
+	_, _ = fmt.Fprintf(w, "  request: %s (%s)\n", displaytext.Term(d.Request.Title), d.Request.ID)
 	_, _ = fmt.Fprintf(w, "  rounds:  %d/%d\n", d.Rounds.Current, d.Rounds.Max)
 	if d.Expect != "" {
-		_, _ = fmt.Fprintf(w, "  expect:  %s\n", d.Expect)
+		_, _ = fmt.Fprintf(w, "  expect:  %s\n", displaytext.Term(d.Expect))
 	}
 	if d.Waiting != "" {
-		_, _ = fmt.Fprintf(w, "  waiting: %s\n", d.Waiting)
+		_, _ = fmt.Fprintf(w, "  waiting: %s\n", displaytext.Term(d.Waiting))
 	}
 	if d.Deadline != "" {
 		_, _ = fmt.Fprintf(w, "  deadline: %s\n", d.Deadline)
 	}
 	if d.Outcome != "" {
-		_, _ = fmt.Fprintf(w, "  outcome: %s (%s)\n", d.Outcome, d.Reason)
+		_, _ = fmt.Fprintf(w, "  outcome: %s (%s)\n", d.Outcome, displaytext.Term(d.Reason))
 	}
 	if d.Topic != "" {
-		_, _ = fmt.Fprintf(w, "  topic:   %s\n", d.Topic)
+		// Multi-line, indented under the label (displaytext.Block, R55-F10).
+		_, _ = fmt.Fprintf(w, "  topic:   %s\n", displaytext.Block(d.Topic, "           "))
 	}
 	for _, e := range d.Transcript {
-		_, _ = fmt.Fprintf(w, "  [%d] %s %s at %s\n", e.Slot, e.Author, e.Kind, e.At)
+		_, _ = fmt.Fprintf(w, "  [%d] %s %s at %s\n", e.Slot, displaytext.Term(e.Author), e.Kind, e.At)
 	}
 }
 
@@ -692,7 +694,7 @@ func runDebates(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DebateListResult
 		}{OK: true, DebateListResult: res})
@@ -703,7 +705,7 @@ func runDebates(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	for _, d := range res.Debates {
-		_, _ = fmt.Fprintf(stdout, "%s  %s  role %s  phase %s  turn %s  %s\n", d.Session, d.Peer.Name, d.Role, d.Phase, d.Turn, d.Request.Title)
+		_, _ = fmt.Fprintf(stdout, "%s  %s  role %s  phase %s  turn %s  %s\n", d.Session, displaytext.Term(d.Peer.Name), d.Role, d.Phase, d.Turn, displaytext.Term(d.Request.Title))
 	}
 	return exitOK
 }

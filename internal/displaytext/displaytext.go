@@ -4,6 +4,9 @@
 // builder, device.DisplayQuote and decision.Visible, the two renderings Name
 // and Quote, and the display-safe check the approval store and window apply.
 // Line is the one-line rendering of untrusted diagnostic text (R55-F9).
+// Escape, Term, Block and JSON are the terminal renderings of every agentnet
+// print site and of --json output (R55-F10; approval.md §Sanitising:
+// displayTerm, displayBlock, JSON output).
 // It imports only the standard library, so every package can use it.
 package displaytext
 
@@ -421,4 +424,120 @@ func Quote(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// Escape is decision.md §Markdown's rule (moved from decision.Visible,
+// R55-F10): every hidden rune becomes the visible ASCII escape \u{XXXX}
+// (uppercase hex of the code point); \n and \t are kept when multiLine is
+// true. U+FFFD is kept, as decision.Visible keeps it (review 82b F1).
+func Escape(s string, multiLine bool) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if multiLine && (r == '\n' || r == '\t') {
+			b.WriteRune(r)
+			continue
+		}
+		if Hidden(r) {
+			fmt.Fprintf(&b, `\u{%X}`, r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// Term is displayTerm of Docs/protocol/approval.md §Sanitising, for peer
+// text on a terminal that must stay exact (names, titles, file names,
+// branches): Escape(s, false), and U+FFFD (so invalid UTF-8) and every
+// combining mark (Mn, Me) after the 2nd on one base also become \u{XXXX}.
+// Nothing is removed or cut; ASCII and ordinary Unicode text is unchanged,
+// and Term(Term(s)) == Term(s).
+func Term(s string) string {
+	return term(s, false)
+}
+
+// term is Term; keepTab keeps '\t' as itself (Block's lines).
+func term(s string, keepTab bool) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	marks := 0
+	for _, r := range s { // invalid UTF-8 decodes as U+FFFD
+		if keepTab && r == '\t' {
+			marks = 0
+			b.WriteRune(r)
+			continue
+		}
+		escape := r == utf8.RuneError || Hidden(r)
+		if isMark(r) {
+			marks++
+			if marks > maxMarks {
+				escape = true
+			}
+		} else {
+			marks = 0
+		}
+		if escape {
+			fmt.Fprintf(&b, `\u{%X}`, r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// Block is displayBlock of Docs/protocol/approval.md §Sanitising, for the
+// few multi-line fields (a request's reason and output, a debate topic): s
+// is split at "\n" (one final "\n" dropped), each line is rendered by Term
+// with '\t' kept, and every line after the first is prefixed by indent, so
+// a line of s cannot pose as one of the command's own field lines.
+func Block(s, indent string) string {
+	lines := strings.Split(strings.TrimSuffix(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = term(l, true)
+	}
+	return strings.Join(lines, "\n"+indent)
+}
+
+// JSON rewrites encoded JSON (Docs/protocol/approval.md §Sanitising, JSON
+// output) so that every hidden rune from U+007F up is written as \uXXXX
+// (lowercase hex, a surrogate pair above U+FFFF). encoding/json escapes C0,
+// U+2028 and U+2029 but writes U+007F, C1, bidi controls and the other
+// hidden runes raw (review 82b F3). Such runes can occur only inside JSON
+// strings, and every other byte is copied, so the decoded value is
+// unchanged. Input without such a rune is returned as is.
+func JSON(b []byte) []byte {
+	var out []byte
+	for i := 0; i < len(b); {
+		if b[i] < 0x7F {
+			if out != nil {
+				out = append(out, b[i])
+			}
+			i++
+			continue
+		}
+		r, n := utf8.DecodeRune(b[i:])
+		if (r == utf8.RuneError && n <= 1) || !Hidden(r) {
+			if out != nil {
+				out = append(out, b[i:i+n]...)
+			}
+			i += n
+			continue
+		}
+		if out == nil {
+			out = make([]byte, i, len(b)+16)
+			copy(out, b[:i])
+		}
+		if r > 0xffff {
+			hi, lo := utf16.EncodeRune(r)
+			out = fmt.Appendf(out, `\u%04x\u%04x`, hi, lo)
+		} else {
+			out = fmt.Appendf(out, `\u%04x`, r)
+		}
+		i += n
+	}
+	if out == nil {
+		return b
+	}
+	return out
 }

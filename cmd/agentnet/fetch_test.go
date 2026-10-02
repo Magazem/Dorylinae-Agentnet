@@ -356,7 +356,8 @@ func TestFetchOutReplacesTheFile(t *testing.T) {
 	}
 }
 
-// Names chosen by the grantor cannot write control sequences to the terminal.
+// Names chosen by the grantor cannot write control sequences to the terminal:
+// they are escaped by displaytext.Term (R55-F10), not Go-quoted.
 func TestFetchListQuotesControlCharacters(t *testing.T) {
 	p := shortHome(t)
 	evil := "a\x1b]52;c;aGk=\x07b\xe2\x80\xae" // ESC, BEL, RIGHT-TO-LEFT OVERRIDE
@@ -373,7 +374,7 @@ func TestFetchListQuotesControlCharacters(t *testing.T) {
 		if code := run(args, &out, &errb); code != exitOK {
 			t.Fatalf("%v: code %d, stderr %q", args, code, errb.String())
 		}
-		if strings.ContainsAny(out.String(), "\x1b\x07\xe2\x80\xae") || !strings.Contains(out.String(), `\x1b`) {
+		if strings.ContainsAny(out.String(), "\x1b\x07\u202e") || !strings.Contains(out.String(), `a\u{1B}]52;c;aGk=\u{7}b\u{202E}`) {
 			t.Fatalf("%v: output %q carries raw control characters", args, out.String())
 		}
 		if args[2] == "--list" && !strings.Contains(out.String(), "plain é") {

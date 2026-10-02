@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 const deviceUsage = `Link two of your own devices: a controller and a helper (Docs/protocol/device.md).
@@ -116,7 +116,7 @@ Exit codes: 0 approval created, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DeviceLinkResult
 		}{OK: true, DeviceLinkResult: res})
@@ -129,9 +129,9 @@ Exit codes: 0 approval created, 1 error, 2 usage, 3 daemon not running.
 
 func devicePeerLabel(p daemon.GrantPeerRef) string {
 	if p.Name != "" {
-		return p.Name
+		return displaytext.Term(p.Name)
 	}
-	return p.PublicKey
+	return displaytext.Term(p.PublicKey)
 }
 
 func runDeviceList(args []string, stdout, stderr io.Writer) int {
@@ -171,7 +171,7 @@ Exit codes: 0 ok, 1 error, 2 usage, 3 daemon not running.
 		res.Links = []daemon.DeviceLinkView{}
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DeviceListResult
 		}{OK: true, DeviceListResult: res})
@@ -234,7 +234,7 @@ Exit codes: 0 done, 1 error, 2 usage, 3 daemon not running.
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DeviceUnlinkResult
 		}{OK: true, DeviceUnlinkResult: res})
