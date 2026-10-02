@@ -66,3 +66,19 @@ func TestArmAfterCloseStartsNoDrain(t *testing.T) {
 		t.Fatal("startDrain started a drain on a closed server")
 	}
 }
+
+// Review 88 F3: once Close has begun, every connection is draining, so a frame
+// routed to a peer is queued instead of sent into a buffer that is closing.
+func TestCloseMarksEveryConnDraining(t *testing.T) {
+	s := New(Options{})
+	c := newConn(wsConn(t), "peer", 4, "")
+	c.ctx = context.Background()
+	c.draining = false
+	s.mu.Lock()
+	s.conns["peer"] = c
+	s.mu.Unlock()
+	s.Close()
+	if got := c.direct([]byte("f")); got != directDraining {
+		t.Fatalf("direct after Close = %v, want directDraining", got)
+	}
+}

@@ -27,6 +27,9 @@ func (s Schtasks) Install(spec Spec, env Env) (Plan, error) {
 	if !isWindowsAbs(spec.Executable) || !isWindowsAbs(spec.Home) {
 		return Plan{}, errors.New("schtasks: executable and home must be absolute Windows paths")
 	}
+	if err := checkSpecText(spec, true); err != nil {
+		return Plan{}, fmt.Errorf("schtasks: %w", err)
+	}
 	if env.User == "" {
 		return Plan{}, errors.New("schtasks: current user name is unknown")
 	}

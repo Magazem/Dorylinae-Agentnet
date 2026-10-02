@@ -22,11 +22,22 @@ type Settings struct{ db *sql.DB }
 // NewSettings wraps db.
 func NewSettings(db *sql.DB) *Settings { return &Settings{db: db} }
 
+// settingsDB is what the wrong-code window reads and writes through: the
+// pool, or a transaction that must also count the wrong code (R55-147).
+type settingsDB interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // wrongCodes returns the stored timestamps, pruned to the rolling window as
 // of now, without writing anything back.
 func (s *Settings) wrongCodes(ctx context.Context, now time.Time) ([]time.Time, error) {
+	return wrongCodesIn(ctx, s.db, now)
+}
+
+func wrongCodesIn(ctx context.Context, db settingsDB, now time.Time) ([]time.Time, error) {
 	var raw string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, keyWrongCodes).Scan(&raw)
+	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, keyWrongCodes).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -35,7 +46,14 @@ func (s *Settings) wrongCodes(ctx context.Context, now time.Time) ([]time.Time, 
 	}
 	var stored []string
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return nil, fmt.Errorf("approval: decode wrong codes: %w", err)
+		// An undecodable window cannot prove fewer than MaxWrongPerDay wrong
+		// codes, so treat it as full (locked) instead of failing every wrong
+		// code (review 89, F1). The next write replaces the value.
+		out := make([]time.Time, MaxWrongPerDay)
+		for i := range out {
+			out[i] = now
+		}
+		return out, nil
 	}
 	cutoff := now.Add(-WrongCodeWindow)
 	out := make([]time.Time, 0, len(stored))
@@ -51,7 +69,7 @@ func (s *Settings) wrongCodes(ctx context.Context, now time.Time) ([]time.Time, 
 	return out, nil
 }
 
-func (s *Settings) save(ctx context.Context, times []time.Time, now time.Time) error {
+func saveWrongCodes(ctx context.Context, db settingsDB, times []time.Time, now time.Time) error {
 	strs := make([]string, len(times))
 	for i, t := range times {
 		strs[i] = t.UTC().Format(storeTimeFmt)
@@ -60,7 +78,7 @@ func (s *Settings) save(ctx context.Context, times []time.Time, now time.Time) e
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = db.ExecContext(ctx, `
 INSERT INTO settings (key, value, updated) VALUES (?, ?, ?)
 ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated = excluded.updated`,
 		keyWrongCodes, string(raw), now.UTC().Format(storeTimeFmt))
@@ -84,12 +102,20 @@ func (s *Settings) Locked(ctx context.Context, now time.Time) (bool, error) {
 // wrong code is the one that reaches MaxWrongPerDay (Docs/protocol/approval.md
 // §Object).
 func (s *Settings) recordWrongCode(ctx context.Context, now time.Time) (locked bool, err error) {
-	times, err := s.wrongCodes(ctx, now)
+	return recordWrongCodeIn(ctx, s.db, now)
+}
+
+// recordWrongCodeIn is recordWrongCode through db, so recordBadCode can
+// count the wrong code in the transaction that bumps the approval's own
+// attempts: the daily cap never misses a wrong code the attempts counter
+// kept (review 55 R55-147).
+func recordWrongCodeIn(ctx context.Context, db settingsDB, now time.Time) (locked bool, err error) {
+	times, err := wrongCodesIn(ctx, db, now)
 	if err != nil {
 		return false, err
 	}
 	times = append(times, now)
-	if err := s.save(ctx, times, now); err != nil {
+	if err := saveWrongCodes(ctx, db, times, now); err != nil {
 		return false, err
 	}
 	return len(times) >= MaxWrongPerDay, nil

@@ -19,6 +19,8 @@
 # Usage: tests/phase1-smoke.sh [BIN_DIR]     (default: ../bin relative to this script; built if missing)
 # Exit code: 0 if all steps passed, 1 otherwise.
 set -u
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+export DORYLINAE_KEYSTORE=file
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
@@ -193,9 +195,9 @@ ag B presence --human on --json
 # 5. request with brief/artifacts/urgency, queued while B is stopped, then delivered
 stop_d B
 ag B status; [ "$CODE" -eq 3 ]; step "status: B not running before offline request (exit 3)" $? "code=$CODE"
-ag A request "$refB" task --title "Offline artifact request" \
+ag A request "$refB" task --title "SMOKEMARKTITLE Offline artifact request" \
   --brief "$(printf 'What: SMOKEMARKBRIEF check the artifact\nWhy: smoke test\nDone when: reviewed')" \
-  --urgency blocking --urgency-reason "smoke test needs a blocking sample" \
+  --urgency blocking --urgency-reason "SMOKEMARKREASON smoke test needs a blocking sample" \
   --artifact "url=https://example.test/x branch=main commit=abcdef1234567890 path=foo/bar" \
   --idempotency-key p1smoke-offline-1 --json
 offReqId="$(jget id)"
@@ -412,7 +414,7 @@ import sys, sqlite3, json
 needed = ["request.submit", "request.in", "request.accept", "request.decline",
           "request.defer", "request.complete", "team.create", "team.join", "notify.config"]
 markers = ["SMOKEMARKBRIEF", "SMOKEMARKDECLINE", "SMOKEMARKNOTE", "SMOKEMARKSUMMARY",
-           "SMOKEMARKOUTPUT", "SMOKEMARKCANCEL"]
+           "SMOKEMARKOUTPUT", "SMOKEMARKCANCEL", "SMOKEMARKTITLE", "SMOKEMARKREASON"]
 
 actions = set()
 leak = ""
@@ -435,8 +437,12 @@ PYEOF
 )"
 missing_line="$(printf '%s\n' "$audit_out" | grep '^MISSING:' | cut -d: -f2-)"
 leak_line="$(printf '%s\n' "$audit_out" | grep '^LEAK:' | cut -d: -f2-)"
-[ -z "$missing_line" ]; step "audit: all expected P1 actions are present across A and B" $? "missing: $missing_line"
-[ -z "$leak_line" ]; step "audit: no request content (title/brief/reason/note/summary/output) leaks into audit_events" $? "$leak_line"
+audit_ok=0; printf '%s
+' "$audit_out" | grep -q '^MISSING:' && printf '%s
+' "$audit_out" | grep -q '^LEAK:' && audit_ok=1
+[ "$audit_ok" -eq 1 ]; step "audit: DB read succeeded (MISSING/LEAK lines present)" $? "$audit_out"
+[ "$audit_ok" -eq 1 ] && [ -z "$missing_line" ]; step "audit: all expected P1 actions are present across A and B" $? "missing: $missing_line"
+[ "$audit_ok" -eq 1 ] && [ -z "$leak_line" ]; step "audit: no request content (title/brief/reason/note/summary/output) leaks into audit_events" $? "$leak_line"
 
 elapsed=$((SECONDS - start))
 echo "elapsed: ${elapsed}s"

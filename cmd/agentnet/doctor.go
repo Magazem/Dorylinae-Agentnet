@@ -177,6 +177,7 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 	return []doctorCheck{
 		checkBinary(up, res.Version, relayMinClient(res)),
 		checkConfig(p),
+		checkProgram(exe, device.CheckProgramOwner),
 		checkKeychain(p),
 		checkService(ctx, run, exe, p.Dir, up),
 		checkSocket(p, up),
@@ -311,6 +312,29 @@ func checkConfigWith(p paths.Paths, checkOwner, checkPrivate func(string) error)
 		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check who can read the config directory"}
 	}
 	return doctorCheck{ID: "config", State: doctorOK, Detail: displayRelHome(p.Dir) + " exists and is owner-only"}
+}
+
+// checkProgram reports a daemon binary (or its folder) that other users can
+// change: the per-user service runs it at every login (review 85 F3, D69).
+// exe is the best-effort sibling path; a missing file is skipped, since the
+// service check already covers "agentnetd not installed".
+func checkProgram(exe string, checkOwner func(string) error) doctorCheck {
+	if exe == "" {
+		return doctorCheck{ID: "program", State: doctorSkip, Detail: "agentnetd's location is unknown"}
+	}
+	if _, err := os.Stat(exe); err != nil {
+		return doctorCheck{ID: "program", State: doctorSkip, Detail: "no agentnetd binary next to agentnet"}
+	}
+	if err := checkOwner(exe); err != nil {
+		var we *device.WritableError
+		if errors.As(err, &we) {
+			return doctorCheck{ID: "program", State: doctorWarn,
+				Detail: fmt.Sprintf("agentnetd or its folder can be changed by %s", we.Who),
+				Fix:    "move agentnetd to a folder only you (and Administrators/root) can write to, then run `agentnetd install` again"}
+		}
+		return doctorCheck{ID: "program", State: doctorWarn, Detail: "could not check who can change the agentnetd binary"}
+	}
+	return doctorCheck{ID: "program", State: doctorOK, Detail: "the agentnetd binary and its folder are owner-only"}
 }
 
 // displayRelHome renders path relative to the user's home (as "~/...") so

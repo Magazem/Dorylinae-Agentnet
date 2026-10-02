@@ -421,6 +421,9 @@ the deadline only for display (`waiting`, `deadline`); B never closes on time.
 - **A:** `agentnet debate <id> --cancel` (or `session <id> --cancel`) in `invited`: a
   Phase 1 `request.cancel`. After accept, in `positions`, `rounds` or `converge`: close
   `cancelled`, no Decision.
+- **B in `invited`** has nothing to cancel: it declines (`agentnet decline <r-id>`). The
+  command refuses with `bad_state` and says so; it never calls `request_cancel`, which
+  acts on this daemon's own `out` rows (R55-F20, review 55 R55-063).
 - **B:** after accept, the same command sends the existing `ws.cancel` (reason optional,
   content). A applies it while the debate is open: close `cancelled`. After A decided an
   outcome, it is refused as for sessions.
@@ -659,7 +662,7 @@ both, the view's size is its canonical size plus a few hundred bytes.
 | `request_submit` | gains `debate: {"position", "rounds"?, "turn_timeout_s"?}` for `type = debate` | as Phase 2, plus `session`. The daemon computes nonce and commitment. `bad_request` naming the field; `quarantine_active` |
 | `debate_list` | `{"phase"?, "peer"?}` | `{"debates": [<list view>]}`, newest first |
 | `debate_show` | `{"id"}` (`s-` or `r-`) | `{"debate": <view>}`. `unknown_session` |
-| `debate_submit` | `{"id", "kind", "entry"}` | `{"debate": <view>, "mail_id"}`. `bad_state`, `not_your_turn`, `bad_request`, `entry_too_large`, `quarantine_active` (one-step accept) |
+| `debate_submit` | `{"id", "kind", "entry"}` | `{"debate": <view>, "mail_id"}`. `bad_state`, `not_your_turn`, `bad_request`, `entry_too_large`, `quarantine_active` (one-step accept); `ambiguous_request` for an `r-` id of more than one debate; the one-step accept's request errors as `request_accept` (`unknown_request`, `bad_state`; `bad_request` for an unpaired peer; R55-128) |
 | `debate_constrain` | `{"id", "text"}` | `{"approval": <approval view>}`. `bad_state`, `bad_request`, `constraint_limit`, the approval errors |
 
 Cancel is `ws_cancel`. New error codes: `not_your_turn`, `entry_too_large`,
@@ -690,7 +693,9 @@ text), all on by default:
 
 - `debate.constraint` (peer's side): "<name> added a constraint to your debate".
 - `debate.agreed` (both): "Debate with <name> ended in agreement", body = the request title
-  (cleaned on B, where it is peer text).
+  (cleaned on B, where it is peer text). The title is read from the request row of the
+  debate's own direction (`out` on A, `in` on B), never from another row with the same id
+  (R55-F20).
 - `debate.escalated` (both, **3.5**): "Debate with <name> needs your decision: no agreement",
   body as above. Fired on A when it closes `escalated`, on B when B applies that close.
 - `debate.broken` (B): "Debate with <name> stopped: the opening position did not match its

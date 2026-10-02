@@ -16,6 +16,8 @@
 #                                        [--sender-harness claude|agy|codex]
 #                                        [--recipient-harness claude|agy|codex]
 set -uo pipefail
+# Throwaway daemons must never write to the owner's real OS keychain (R55-139).
+export DORYLINAE_KEYSTORE=file
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BRANCH="p2/harness-p2"
@@ -92,9 +94,8 @@ step "run directory: $ROOT_RUN"
 cli_json() { # cli_json <home> <args...>  -> prints JSON on stdout, sets CLI_EXIT
   local home="$1"; shift
   local out
-  out=$(DORYLINAE_HOME="$home" "$AGENTNET" "$@" --json 2>/tmp/agentnet-stderr.$$)
+  out=$(DORYLINAE_HOME="$home" "$AGENTNET" "$@" --json 2>/dev/null)
   CLI_EXIT=$?
-  rm -f /tmp/agentnet-stderr.$$
   echo "$out"
 }
 export AGENTNET PYTHON
@@ -190,7 +191,7 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
     *) echo "unknown harness $tool"; return 1 ;;
   esac
   if [ "$rc" -eq 124 ]; then echo "$tool timed out after ${timeout}s"; return 1; fi
-  if grep -qiE "usage limit|rate limit|not logged in|authentic|quota" "$out" "$err" 2>/dev/null; then
+  if grep -qiE "usage limit|rate limit|not logged in|authentic|quota" "$err" 2>/dev/null; then
     echo "$tool reported an auth/usage-limit error (see $out / $err)"
     return 1
   fi
@@ -238,11 +239,11 @@ run_round() { # run_round <round-num> <sender-tool> <recipient-tool> <relay-port
 
   local relay_url="ws://127.0.0.1:$port"
   step "starting daemon A and B with DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1"
-  ( cd "$a_home" && DORYLINAE_HOME="$a_home" DORYLINAE_AGENT_NAME="agent-a" \
+  ( cd "$a_home" && exec env DORYLINAE_HOME="$a_home" DORYLINAE_AGENT_NAME="agent-a" \
       DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1 "$DAEMON" --relay "$relay_url" \
       <"$a_in_fifo" >"$run_dir/daemonA.out.log" 2>"$a_err_fifo" ) &
   a_pid=$!
-  ( cd "$b_home" && DORYLINAE_HOME="$b_home" DORYLINAE_AGENT_NAME="agent-b" \
+  ( cd "$b_home" && exec env DORYLINAE_HOME="$b_home" DORYLINAE_AGENT_NAME="agent-b" \
       DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1 "$DAEMON" --relay "$relay_url" \
       <"$b_in_fifo" >"$run_dir/daemonB.out.log" 2>"$b_err_fifo" ) &
   b_pid=$!

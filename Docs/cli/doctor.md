@@ -27,6 +27,7 @@ agentnet doctor [--json]
 | id | What it checks | Needs the daemon? |
 |----|-----------------|--------------------|
 | `binary` | `agentnet` and `agentnetd` report the same version, and it is not older than the relay's `min_client` (4.4a; from the daemon's `status`, so only once it has connected). A dev build cannot be compared: `warn` | yes (`skip` otherwise) |
+| `program` | The `agentnetd` binary next to `agentnet`, and its folder, cannot be changed by other users (same check as `agentnetd install`, which refuses otherwise); `warn` with a fix when they can; skipped when no sibling binary exists | no |
 | `config` | The config directory exists and is owner-only (D24/L11); a drive-root ACL like `Authenticated Users:(M)` is a `warn` with a fix | no |
 | `keychain` | The identity key is readable and matches `agent-card.json`, and from where (OS keychain or the owner-only file fallback); fails when no stored key matches the card or the card's key is lost | no |
 | `service` | The per-user service (Task Scheduler task / systemd user unit / launchd agent) is installed and running | fails cleanly without it |
@@ -35,7 +36,7 @@ agentnet doctor [--json]
 | `account` | Not implemented yet: always `skip`. Added by ticket 4.2c (bound/unbound/suspended, quota group, quota state) | — |
 | `git` | Git is at least 2.32 (D23); older is a `warn`, not a `fail` (`git.read` grants are refused, but `fs` grants and everything else still works) | no |
 | `clock` | The local clock is within 2 minutes of the relay's (estimated from the challenge's `expires`) | no (probes directly) |
-| `peers` | Every stored peer Agent Card still verifies under the current card rules (review 68 OD-3). The daemon keeps a card that does not at start and logs it; this row names it by public key as `warn`, with the fix: re-pair, `agentnet peers remove <key>`, or `agentnet team remove <team> <key>`. No database yet: `skip` | no (reads the database read-only) |
+| `peers` | Every stored peer Agent Card still verifies under the current card rules (review 68 OD-3). The daemon keeps a card that does not at start and logs it; this row names it by public key as `warn`, with the fix: re-pair, `agentnet peers remove <key>`, or `agentnet team remove <team> <key>`. A card that verifies only under the legacy text rule (a bidi control or a line separator in a text member, allowed before R55-F10, [agent-card.md](../protocol/agent-card.md#cards-stored-before-r55-f10)) is not a failure: the row stays `ok` with the detail `every stored peer card verifies (N with characters refused at new pairings since R55-F10; shown escaped)`. No database yet: `skip` | no (reads the database read-only) |
 
 `relay` and `clock` never authenticate to the relay with the identity key: the relay keeps
 one connection per key and replaces the older one, so a doctor login would kick the running
