@@ -52,8 +52,9 @@ Decision uses (R55-F29, review 55 R55-170):
 `approach.positions` takes the claim of slot 0 and slot 1 from the covered entries only, and is
 absent when neither is covered. `rounds_used` counts the covered moves. `worked` and
 `failed.remaining_disagreement_points` are read from the Decision this side stored at the close
-(A's at `closing`, B's signed or refused one), never by scanning the transcript. A
-`cancelled` debate has no Decision, so it has neither member.
+(A's at `closing`, B's signed one), never by scanning the transcript. A `cancelled` record
+has neither member, including B's `decision_refused` close: its outcome is `cancelled`, and
+B's own unsigned Decision appears only as `acceptance.decision`.
 
 **Never in the record** (enforced by the builder and tested with markers):
 

@@ -418,8 +418,10 @@ once a minute) and on every debate IPC call. When the side whose slot is next mi
 
 The reveal (slot 0) is automatic on A, so it cannot time out on A. B keeps its own view of
 the deadline only for display (`waiting`, `deadline`); B never closes on time. After B
-sends its `answer`, B's view keeps one more display deadline: the answer's time plus
-`turn_timeout_s`, the time after which B may abandon ([Cancel](#cancel-and-abandon)).
+sends its `answer`, B's view keeps one more display deadline: the answer entry's stored `at`
+plus `turn_timeout_s`, the time after which B may abandon ([Cancel](#cancel-and-abandon)).
+The abandon rule computes it from the entry, not from the stored display deadline, so a
+debate B answered before R55-F29 (no deadline stored) gets the same rule.
 
 **Every debate IPC call** (R55-F29, review 55 R55-169) means `debate_show` (and therefore
 `agentnet wait`), `debate_list` and `debate_submit`. Each applies the timeout rule before it
@@ -433,10 +435,12 @@ closes a debate on time only when its relay connection has been up for at least
 **`debate_timeout_grace` = 120 s**, counted from the later of:
 
 - the start of the current relay connection, and
-- the last **resume** A's daemon detected: a gap of more than 60 s of wall-clock time between
-  two runs of its 20-second debate sweep ticker (a sleep, a suspended VM or a clock jump).
-  On a resume the daemon also drops its relay connection and dials again, because a
-  connection from before the sleep may be dead without the client knowing yet.
+- the last **resume** A's daemon detected: more than 60 s of wall-clock time since its
+  20-second debate sweep ticker last *finished* a run (a sleep, a suspended VM or a clock
+  jump). The test runs on every tick **and** at the start of every timeout check, so the
+  first `debate_show` after a wake (before the ticker has run) already sees the resume and
+  closes nothing. On a resume the daemon also drops its relay connection and dials again,
+  because a connection from before the sleep may be dead without the client knowing yet.
 
 While that condition does not hold, the timeout rule waits (it does not move the deadline).
 During that time, an entry from either side that arrives or is submitted is applied as usual.
@@ -444,7 +448,11 @@ The relay sends queued mail as soon as the session is ready. So after 120 s of c
 anything B sent in time has been applied, and a slot that is still missing really is late.
 While its configured relay is unreachable, A closes nothing on time, and its close could not
 be sent anyway. A daemon started with no relay at all keeps the plain rule. This changes nothing for B, which never
-closes on time, and gives B no new power: B cannot affect A's connection.
+closes on time, and gives B no new power: B cannot affect A's connection. The **relay** can:
+a relay that never keeps A connected for 120 s (or is unreachable) keeps A's overdue debates
+open. That is no more than the relay's existing power to withhold mail, and A's human still
+sees the past `deadline` and can cancel; B can abandon as in [Cancel](#cancel-and-abandon).
+A late A agent gains at most the grace after each reconnect; the deadline itself never moves.
 
 ## Cancel and abandon
 
