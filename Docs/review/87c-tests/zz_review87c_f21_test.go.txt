@@ -1,0 +1,66 @@
+package identity_test
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/zalando/go-keyring"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
+)
+
+// Review 87c probes (mock keychain only).
+
+// Documented residual: marker deleted + planted card and key file while the
+// keychain is locked -> the planted identity is used.
+func TestReview87cResidualMarkerDeletedLocked(t *testing.T) {
+	dir, ks, realKey := keychainIdentity(t)
+	planted := plant(t, dir, true)
+	if err := os.Remove(filepath.Join(dir, identity.KeychainMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	id, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now)
+	if err != nil {
+		t.Logf("refused: %v", err)
+		return
+	}
+	t.Logf("RESIDUAL: runs as planted=%v (real %s) from %s", id.Card().Card.PublicKey == planted, realKey, id.KeyBackend())
+}
+
+// Keychain reachable: deleting the marker does not help the attacker.
+func TestReview87cMarkerDeletedKeychainReachable(t *testing.T) {
+	dir, ks, _ := keychainIdentity(t)
+	plant(t, dir, true)
+	if err := os.Remove(filepath.Join(dir, identity.KeychainMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := identity.LoadOrCreate(dir, ks, identity.Options{}, now); !errors.Is(err, keystore.ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+}
+
+// A stray file key is never used for the real card, even with the keychain
+// locked and the marker deleted, through LoadKey (daemon signer, doctor).
+func TestReview87cStrayFileKeyNeverUsed(t *testing.T) {
+	dir, ks, realKey := keychainIdentity(t)
+	plant(t, dir, false)
+	if err := os.Remove(filepath.Join(dir, identity.KeychainMarkerFile)); err != nil {
+		t.Fatal(err)
+	}
+	seed, backend, err := identity.LoadKey(dir, ks, realKey)
+	if err != nil || backend != "keychain" || !identity.SeedMatches(realKey)(seed) {
+		t.Fatalf("reachable: backend %q err %v", backend, err)
+	}
+	keyring.MockInitWithError(errors.New("keychain locked"))
+	if seed, backend, err := identity.LoadKey(dir, ks, realKey); err == nil {
+		t.Fatalf("stray key used from %s (matches card: %v)", backend, identity.SeedMatches(realKey)(seed))
+	}
+	keyring.MockInitWithError(errors.New("dbus: couldn't determine address of session bus"))
+	if seed, backend, err := identity.LoadKey(dir, ks, realKey); err == nil {
+		t.Fatalf("stray key used from %s (matches card: %v)", backend, identity.SeedMatches(realKey)(seed))
+	}
+}

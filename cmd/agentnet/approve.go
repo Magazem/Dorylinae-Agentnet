@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -103,7 +102,7 @@ func runApproveList(asJSON bool, stdout, stderr io.Writer) int {
 		if res.Approvals == nil {
 			res.Approvals = []approval.View{}
 		}
-		_ = json.NewEncoder(stdout).Encode(approvalListBody{OK: true, ApprovalListResult: res})
+		writeJSON(stdout, approvalListBody{OK: true, ApprovalListResult: res})
 		return exitOK
 	}
 	if len(res.Approvals) == 0 {
@@ -127,7 +126,7 @@ func runApproveReject(asJSON bool, stdout, stderr io.Writer, id string) int {
 		return code
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(approvalViewBody{OK: true, Approval: res.Approval})
+		writeJSON(stdout, approvalViewBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Rejected %s (%s)\n", res.Approval.Kind, res.Approval.ID)
@@ -142,7 +141,7 @@ func runApproveOpen(asJSON bool, stdout, stderr io.Writer, id string) int {
 		return code
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(approvalViewBody{OK: true, Approval: res.Approval})
+		writeJSON(stdout, approvalViewBody{OK: true, Approval: res.Approval})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Approval %s: window %s\n", res.Approval.ID, res.Approval.Window)

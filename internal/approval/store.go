@@ -126,8 +126,26 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 	s.pending[id] = &live{action: action, reserved: true}
 	release()
 
-	expires := now.Add(TTL)
+	// A panic from here on (the window runner, newCode, the notifier),
+	// recovered by the IPC server, must not leak the reservation: nothing
+	// else removes a reserved slot, and MaxPending leaks would refuse every
+	// Create until a restart (review 77b, R2). Every return sets settled.
 	var handle WindowHandle
+	settled := false
+	defer func() {
+		if settled {
+			return
+		}
+		s.dropReserved(id)
+		if handle != nil {
+			handle.Kill()
+		}
+		if s.notifier != nil {
+			s.notifier.Remove(context.WithoutCancel(ctx), id)
+		}
+	}()
+
+	expires := now.Add(TTL)
 	if s.window != nil {
 		handle, err = s.window.Start(ctx, id, tagOf(id), kind, summary, "", expires)
 		if err != nil || !handle.Ready(ctx) {
@@ -135,6 +153,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 			if handle != nil {
 				handle.Kill()
 			}
+			settled = true
 			return View{}, ErrUnavailable
 		}
 		release = s.lock()
@@ -151,6 +170,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, err
 	}
 	mac := codeMAC(s.key, id, code)
@@ -160,6 +180,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, ErrUnavailable
 	}
 	title, body := deliveryText(s.window != nil, tagOf(id), summary, code)
@@ -171,6 +192,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		if handle != nil {
 			handle.Kill()
 		}
+		settled = true
 		return View{}, ErrUnavailable
 	}
 
@@ -189,6 +211,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 			handle.Kill()
 		}
 		s.notifier.Remove(ctx, id)
+		settled = true
 		if locked, lerr := s.settings.Locked(ctx, s.now()); lerr == nil && locked {
 			return View{}, ErrLocked
 		}
@@ -204,11 +227,13 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 			handle.Kill()
 		}
 		s.notifier.Remove(ctx, id)
+		settled = true
 		return View{}, fmt.Errorf("approval: insert: %w", err)
 	}
 	entry.mac = mac
 	entry.reserved = false
 	entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
+	settled = true
 	release()
 	if s.audit != nil {
 		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
@@ -238,11 +263,13 @@ func deliveryText(desktop bool, tag, summary, code string) (title, body string) 
 }
 
 // dropReserved removes id's reserved (possibly not-yet-coded) pending slot,
-// used when Create fails after reserving it.
+// used when Create fails after reserving it. A finalised entry is kept.
 func (s *Store) dropReserved(id string) {
 	release := s.lock()
 	defer release()
-	delete(s.pending, id)
+	if e, ok := s.pending[id]; ok && e.reserved {
+		delete(s.pending, id)
+	}
 	release()
 }
 
@@ -309,10 +336,32 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 	if !hmac.Equal(want[:], entry.mac[:]) {
 		handle := entry.handle
 		entry.handle = nil // the dialog already exited after sending this answer
-		attemptsLeft, rejected, err := s.recordBadCode(ctx, id, via)
+		entry.attempts++
+		attemptsLeft, rejected, locked, err := s.recordBadCode(ctx, id, via, now)
 		if err != nil {
+			// Fail closed in memory: the wrong code counted whatever the DB
+			// said, so a failing write cannot keep the approval confirmable
+			// (review 89, F1). The row is settled best effort by rejectRow,
+			// else by the expiry sweep.
+			if entry.timer != nil {
+				entry.timer.Stop()
+			}
+			if entry.watchCancel != nil {
+				entry.watchCancel()
+			}
+			delete(s.pending, id)
 			release()
+			if handle != nil {
+				handle.Kill()
+			}
+			s.rejectRow(ctx, id, "attempts", via)
+			runOnReject(ctx, entry.action.OnReject)
 			return nil, err
+		}
+		settleRow := false
+		if !rejected && entry.attempts >= MaxAttempts {
+			// The DB count ran behind the in-memory one: still reject.
+			rejected, attemptsLeft, settleRow = true, 0, true
 		}
 		var rejectedHandle WindowHandle
 		if rejected {
@@ -322,9 +371,8 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 			delete(s.pending, id)
 			rejectedHandle = handle
 		}
-		locked, lerr := s.settings.recordWrongCode(ctx, now)
 		var lockedEntries []lockedEntry
-		if lerr == nil && locked {
+		if locked {
 			// Drop every pending entry before releasing s.mu, so no other
 			// Confirm can test a code between the 10th wrong code and the
 			// lock (review 26, M-2).
@@ -334,11 +382,11 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 		if rejectedHandle != nil {
 			rejectedHandle.Kill()
 		}
+		if settleRow {
+			s.rejectRow(ctx, id, "attempts", via)
+		}
 		if rejected {
 			runOnReject(ctx, entry.action.OnReject)
-		}
-		if lerr != nil {
-			return nil, lerr
 		}
 		if locked {
 			s.lockAll(ctx, lockedEntries)
@@ -480,12 +528,20 @@ func (s *Store) checkExpiryLocked(ctx context.Context, id string, now time.Time)
 }
 
 // recordBadCode bumps id's attempt counter, rejecting it once attempts
-// reach MaxAttempts (Docs/protocol/approval.md §Object). Caller does not
-// hold s.mu.
-func (s *Store) recordBadCode(ctx context.Context, id, via string) (attemptsLeft int, rejected bool, err error) {
+// reach MaxAttempts (Docs/protocol/approval.md §Object), and adds the wrong
+// code to the rolling daily window; locked reports that it reached
+// MaxWrongPerDay. Both counts are written in one transaction, so a failed
+// write counts neither and the daily cap never misses a wrong code the
+// attempts counter kept (review 55 R55-147).
+func (s *Store) recordBadCode(ctx context.Context, id, via string, now time.Time) (attemptsLeft int, rejected, locked bool, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, false, false, fmt.Errorf("approval: begin bad code: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
 	var attempts int
-	if err := s.db.QueryRowContext(ctx, `SELECT attempts FROM approvals WHERE id = ?`, id).Scan(&attempts); err != nil {
-		return 0, false, fmt.Errorf("approval: read attempts: %w", err)
+	if err := tx.QueryRowContext(ctx, `SELECT attempts FROM approvals WHERE id = ?`, id).Scan(&attempts); err != nil {
+		return 0, false, false, fmt.Errorf("approval: read attempts: %w", err)
 	}
 	attempts++
 	attemptsLeft = MaxAttempts - attempts
@@ -499,8 +555,15 @@ func (s *Store) recordBadCode(ctx context.Context, id, via string) (attemptsLeft
 		state = StateRejected
 		decided = s.now().UTC().Format(storeTimeFmt)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE approvals SET attempts = ?, state = ?, decided = ? WHERE id = ?`, attempts, state, decided, id); err != nil {
-		return 0, false, fmt.Errorf("approval: write attempts: %w", err)
+	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET attempts = ?, state = ?, decided = ? WHERE id = ?`, attempts, state, decided, id); err != nil {
+		return 0, false, false, fmt.Errorf("approval: write attempts: %w", err)
+	}
+	locked, err = recordWrongCodeIn(ctx, tx, now)
+	if err != nil {
+		return 0, false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, false, false, fmt.Errorf("approval: commit bad code: %w", err)
 	}
 	kind, subject := s.kindSubject(ctx, id)
 	if s.audit != nil {
@@ -509,7 +572,7 @@ func (s *Store) recordBadCode(ctx context.Context, id, via string) (attemptsLeft
 			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "attempts", "via": via})
 		}
 	}
-	return attemptsLeft, rejected, nil
+	return attemptsLeft, rejected, locked, nil
 }
 
 // lockedEntry is what dropAllLocked hands to lockAll: enough to reject the

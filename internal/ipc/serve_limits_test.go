@@ -273,16 +273,37 @@ func TestServeKeepsServingAfterPanics(t *testing.T) {
 	ln := newChanListener()
 	serveOn(t, s, ln)
 	for i := 0; i < maxConns+5; i++ {
-		a := offer(ln)
-		if resp := roundTrip(t, a, "boom"); resp.Error == nil || resp.Error.Code != CodeInternal {
-			t.Fatalf("call %d: %+v", i, resp)
+		// A closed connection's slot is freed by its server goroutine, which
+		// may lag the close; a busy answer just means that release is pending,
+		// so retry it within a bound. Any other answer fails at once.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			a := offer(ln)
+			resp := roundTrip(t, a, "boom")
+			_ = a.Close()
+			if resp.Error != nil && resp.Error.Code == CodeBusy && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+				continue
+			}
+			if resp.Error == nil || resp.Error.Code != CodeInternal {
+				t.Fatalf("call %d: %+v", i, resp)
+			}
+			break
 		}
-		_ = a.Close()
 	}
-	a := offer(ln)
-	defer func() { _ = a.Close() }()
-	if resp := roundTrip(t, a, "ping"); !resp.OK {
-		t.Fatalf("after %d panics: %+v", maxConns+5, resp)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		a := offer(ln)
+		resp := roundTrip(t, a, "ping")
+		_ = a.Close()
+		if !resp.OK && resp.Error != nil && resp.Error.Code == CodeBusy && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		if !resp.OK {
+			t.Fatalf("after %d panics: %+v", maxConns+5, resp)
+		}
+		break
 	}
 }
 

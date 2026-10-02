@@ -10,14 +10,12 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"text/tabwriter"
 	"time"
-	"unicode"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 const (
@@ -228,7 +226,7 @@ func fetchFile(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		if outFile == "" {
 			body.Data = base64.StdEncoding.EncodeToString(data)
 		}
-		_ = json.NewEncoder(stdout).Encode(body)
+		writeJSON(stdout, body)
 	case outFile != "":
 		_, _ = fmt.Fprintf(stdout, "Wrote %d bytes to %s\n", size, outFile)
 	default:
@@ -262,15 +260,6 @@ func writeFileAtomic(name string, data []byte) error {
 	return err
 }
 
-// termSafe quotes s when it holds a character that is not printable, so that
-// a name chosen by the grantor cannot send escape sequences to the terminal.
-func termSafe(s string) string {
-	if strings.IndexFunc(s, func(r rune) bool { return !unicode.IsPrint(r) }) >= 0 {
-		return strconv.QuoteToGraphic(s)
-	}
-	return s
-}
-
 func fetchList(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantID, dir string) int {
 	var entries []capability.Entry
 	var commit, cursor string
@@ -302,7 +291,7 @@ func fetchList(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		entries = []capability.Entry{}
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK      bool               `json:"ok"`
 			Path    string             `json:"path"`
 			Entries []capability.Entry `json:"entries"`
@@ -317,7 +306,8 @@ func fetchList(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		if e.Size != nil {
 			size = fmt.Sprint(*e.Size)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", termSafe(e.Name), termSafe(e.Type), size)
+		// A name chosen by the grantor is shown exact but escaped (R55-F10).
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", displaytext.Term(e.Name), displaytext.Term(e.Type), size)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -333,7 +323,7 @@ func fetchStat(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 		return failJSON(asJSON, stdout, stderr, exitError, "io_error", "the daemon returned a malformed result")
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK     bool             `json:"ok"`
 			Path   string           `json:"path"`
 			Entry  capability.Entry `json:"entry"`
@@ -345,6 +335,6 @@ func fetchStat(asJSON bool, stdout, stderr io.Writer, deadline time.Time, grantI
 	if r.Entry.Size != nil {
 		size = fmt.Sprint(*r.Entry.Size)
 	}
-	_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", termSafe(r.Entry.Name), termSafe(r.Entry.Type), size)
+	_, _ = fmt.Fprintf(stdout, "%s\t%s\t%s\n", displaytext.Term(r.Entry.Name), displaytext.Term(r.Entry.Type), size)
 	return exitOK
 }

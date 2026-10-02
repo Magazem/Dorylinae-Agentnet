@@ -18,6 +18,8 @@
 #                                        [--initiator-harness claude|agy|codex]
 #                                        [--respondent-harness claude|agy|codex]
 set -uo pipefail
+# Throwaway daemons must never write to the owner's real OS keychain (R55-139).
+export DORYLINAE_KEYSTORE=file
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SKIP_BUILD=0
@@ -92,9 +94,8 @@ step "run directory: $ROOT_RUN"
 cli_json() { # cli_json <home> <args...>  -> prints JSON on stdout, sets CLI_EXIT
   local home="$1"; shift
   local out
-  out=$(DORYLINAE_HOME="$home" "$AGENTNET" "$@" --json 2>/tmp/agentnet-stderr.$$)
+  out=$(DORYLINAE_HOME="$home" "$AGENTNET" "$@" --json 2>/dev/null)
   CLI_EXIT=$?
-  rm -f /tmp/agentnet-stderr.$$
   echo "$out"
 }
 export AGENTNET PYTHON
@@ -167,7 +168,7 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
       command -v claude >/dev/null 2>&1 || { echo "claude executable not found"; return 1; }
       ( cd "$workdir" && DORYLINAE_HOME="$home" PATH="$bindir:$PATH" \
         timeout "${timeout}s" claude "$prompt" -p --restricted --tools Bash,Skill --model claude-opus-5-5 \
-          --allowedTools "Bash(agentnet *)" "Bash(sleep *)" "Bash(cat *)" --permission-prompts none --output-format json \
+          --allowedTools "Bash(agentnet *)" "Bash(sleep *)" "Bash(cat NOTES.md)" --permission-prompts none --output-format json \
           --strict-mcp-config --mcp-config '{"mcpServers":{}}' --setting-sources project \
           >"$out" 2>"$err" )
       rc=$?
@@ -192,7 +193,7 @@ invoke_agent() { # invoke_agent <tool> <prompt> <workdir> <bindir> <home> <timeo
     *) echo "unknown harness $tool"; return 1 ;;
   esac
   if [ "$rc" -eq 124 ]; then echo "$tool timed out after ${timeout}s"; return 1; fi
-  if grep -qiE "usage limit|rate limit|not logged in|authentic|quota" "$out" "$err" 2>/dev/null; then
+  if grep -qiE "usage limit|rate limit|not logged in|authentic|quota" "$err" 2>/dev/null; then
     echo "$tool reported an auth/usage-limit error (see $out / $err)"
     return 1
   fi
@@ -305,11 +306,11 @@ run_round() { # run_round <round-num> <initiator> <respondent> <scenario> <relay
 
   local relay_url="ws://127.0.0.1:$port"
   step "starting daemon A and B with DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1"
-  ( cd "$a_home" && DORYLINAE_HOME="$a_home" DORYLINAE_AGENT_NAME="agent-a" \
+  ( cd "$a_home" && exec env DORYLINAE_HOME="$a_home" DORYLINAE_AGENT_NAME="agent-a" \
       DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1 "$DAEMON" --relay "$relay_url" \
       <"$a_in_fifo" >"$run_dir/daemonA.out.log" 2>"$a_err_fifo" ) &
   a_pid=$!
-  ( cd "$b_home" && DORYLINAE_HOME="$b_home" DORYLINAE_AGENT_NAME="agent-b" \
+  ( cd "$b_home" && exec env DORYLINAE_HOME="$b_home" DORYLINAE_AGENT_NAME="agent-b" \
       DORYLINAE_APPROVAL=terminal DORYLINAE_DEBUG=1 "$DAEMON" --relay "$relay_url" \
       <"$b_in_fifo" >"$run_dir/daemonB.out.log" 2>"$b_err_fifo" ) &
   b_pid=$!
@@ -502,6 +503,10 @@ print(ds[0]['session'] if ds else '')")
   decision_id=$(echo "$final_a" | "$PYTHON" -c "import json,sys; print(json.load(sys.stdin)['debate'].get('decision',{}).get('id',''))")
   [ "$phase" = "closed" ] || { fail "debate ended phase $phase, not closed"; return 1; }
   case "$outcome" in agreed|escalated) ;; *) fail "unexpected outcome $outcome"; return 1 ;; esac
+  # The stand-in scenarios are deterministic (R55-137): require the exact outcome.
+  if [ "$initiator" = "standin" ] && [ "$outcome" != "$scenario" ]; then
+    fail "stand-in scenario $scenario closed with outcome $outcome"; return 1
+  fi
   [ "$rounds_current" -le 2 ] || { fail "rounds.current $rounds_current exceeds 2"; return 1; }
   [ -n "$decision_id" ] || { fail "no decision id on the closed debate"; return 1; }
 

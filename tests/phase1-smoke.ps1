@@ -21,6 +21,8 @@ param(
     [switch]$Build
 )
 $ErrorActionPreference = 'Stop'
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+$env:DORYLINAE_KEYSTORE = 'file'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BinDir = [System.IO.Path]::GetFullPath($BinDir)
 $scriptStart = Get-Date
@@ -212,7 +214,7 @@ try {
 
     $inv3 = AgJson 'B' @('presence', '--invisible')
     Step 'presence --invisible: B reports invisible' ($inv3.Json.mode -eq 'invisible') $inv3.Out
-    $seenOffline = Wait-Until { $s = AgJson 'A' @('status', '--team', 'backend'); $m = $s.Json.team.members | Where-Object { $_.public_key -eq $refB }; -not $m.daemon_online } 15
+    $seenOffline = Wait-Until { $s = AgJson 'A' @('status', '--team', 'backend'); $m = $s.Json.team.members | Where-Object { $_.public_key -eq $refB }; $m -and (-not $m.daemon_online) } 15
     Step 'presence: A sees B go offline at once after --invisible' $seenOffline
 
     $vis = AgJson 'B' @('presence', '--visible')
@@ -240,9 +242,9 @@ try {
     # 5. request with brief/artifacts/urgency, queued while B is stopped, then delivered
     Stop-Bg 'B'
     Step 'status: B not running before offline request (exit 3)' ((Ag 'B' @('status')).Code -eq 3)
-    $offReq = AgJson 'A' @('request', $refB, 'task', '--title', 'Offline artifact request', `
+    $offReq = AgJson 'A' @('request', $refB, 'task', '--title', 'SMOKEMARKTITLE Offline artifact request', `
             '--brief', "What: SMOKEMARKBRIEF check the artifact`nWhy: smoke test`nDone when: reviewed", `
-            '--urgency', 'blocking', '--urgency-reason', 'smoke test needs a blocking sample', `
+            '--urgency', 'blocking', '--urgency-reason', 'SMOKEMARKREASON smoke test needs a blocking sample', `
             '--artifact', 'url=https://example.test/x branch=main commit=abcdef1234567890 path=foo/bar', `
             '--idempotency-key', 'p1smoke-offline-1')
     # Presence considers a killed daemon "online" until its heartbeat times out (up to ~75s;
@@ -435,7 +437,7 @@ try {
         $missing = $needed | Where-Object { $actions -notcontains $_ }
         Step 'audit: all expected P1 actions are present across A and B' ($missing.Count -eq 0) "missing: $($missing -join ', ')"
 
-        $markers = @('SMOKEMARKBRIEF', 'SMOKEMARKDECLINE', 'SMOKEMARKNOTE', 'SMOKEMARKSUMMARY', 'SMOKEMARKOUTPUT', 'SMOKEMARKCANCEL')
+        $markers = @('SMOKEMARKBRIEF', 'SMOKEMARKDECLINE', 'SMOKEMARKNOTE', 'SMOKEMARKSUMMARY', 'SMOKEMARKOUTPUT', 'SMOKEMARKCANCEL', 'SMOKEMARKTITLE', 'SMOKEMARKREASON')
         $leak = $false; $leakDetail = ''
         foreach ($row in $allRows) {
             foreach ($m in $markers) {

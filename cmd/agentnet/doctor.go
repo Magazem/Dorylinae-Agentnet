@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -133,7 +134,7 @@ Exit codes: 0 no check failed (warn/skip still exit 0), 1 a check failed, 2 usag
 	}
 
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(result)
+		writeJSON(stdout, result)
 		return exit
 	}
 	for _, c := range checks {
@@ -157,6 +158,15 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 		relayURL = res.Relay.URL
 	} else if !up {
 		relayURL = os.Getenv(relayURLEnv)
+		if relayURL == "" {
+			// The daemon is down: the relay it was installed with is in the
+			// service definition (R55-131).
+			if exe, _ := siblingDaemonPath(); exe != "" {
+				if st, err := probeService(ctx, run, exe, p.Dir); err == nil {
+					relayURL = st.relay
+				}
+			}
+		}
 	}
 
 	// A single unauthenticated probe (never signs in, review 50 M4) serves
@@ -177,6 +187,7 @@ func runDoctorChecks(ctx context.Context, p paths.Paths, run service.Runner, now
 	return []doctorCheck{
 		checkBinary(up, res.Version, relayMinClient(res)),
 		checkConfig(p),
+		checkProgram(exe, device.CheckProgramOwner),
 		checkKeychain(p),
 		checkService(ctx, run, exe, p.Dir, up),
 		checkSocket(p, up),
@@ -202,17 +213,27 @@ func checkPeers(ctx context.Context, p paths.Paths) doctorCheck {
 			Fix: "run agentnet doctor again once agentnetd has started"}
 	}
 	defer func() { _ = db.Close() }()
-	bad, err := peers.CheckStoredCards(ctx, db)
+	bad, legacy, err := peers.CheckStoredCards(ctx, db)
 	if err != nil {
 		return doctorCheck{ID: "peers", State: doctorWarn, Detail: "could not read the peers table",
 			Fix: "run agentnet doctor again once agentnetd has started"}
 	}
-	if len(bad) == 0 {
-		return doctorCheck{ID: "peers", State: doctorOK, Detail: "every stored peer card verifies"}
+	// R55-F10: a card that passes only the legacy text rule is kept and is
+	// not bad (Docs/cli/doctor.md, agent-card.md §Cards stored before
+	// R55-F10); it is counted in the detail.
+	legacyNote := ""
+	if len(legacy) > 0 {
+		legacyNote = fmt.Sprintf(" (%d with characters refused at new pairings since R55-F10; shown escaped)", len(legacy))
 	}
-	msgs := make([]string, 0, len(bad))
+	if len(bad) == 0 {
+		return doctorCheck{ID: "peers", State: doctorOK, Detail: "every stored peer card verifies" + legacyNote}
+	}
+	msgs := make([]string, 0, len(bad)+1)
 	for _, b := range bad {
 		msgs = append(msgs, "peer "+b.PublicKey+" has a card that no longer verifies")
+	}
+	if len(legacy) > 0 {
+		msgs = append(msgs, fmt.Sprintf("%d with characters refused at new pairings since R55-F10 (kept)", len(legacy)))
 	}
 	return doctorCheck{ID: "peers", State: doctorWarn, Detail: strings.Join(msgs, "; "),
 		Fix: "re-pair, or run agentnet peers remove <key> (or agentnet team remove <team> <key>)"}
@@ -274,17 +295,19 @@ func checkBinaryFor(cliVersion string, daemonUp bool, daemonVersion, minClient s
 }
 
 // checkConfig is the existing D24/L11 owner-only check (internal/device),
-// reused here; a drive-root ACL like "Authenticated Users:(M)" is a warn with
-// a fix, not a hard failure. Paths are printed relative to ~ (never a bare
-// absolute path outside it).
+// reused here, followed by a check that nobody else can read the directory
+// (review 55 R55-089: checking writers only said "owner-only" of a directory
+// others could read); either finding is a warn with a fix, not a hard
+// failure. Paths are printed relative to ~ (never a bare absolute path
+// outside it).
 func checkConfig(p paths.Paths) doctorCheck {
-	return checkConfigWith(p, device.CheckProgramOwner)
+	return checkConfigWith(p, device.CheckProgramOwner, paths.CheckPrivate)
 }
 
-// checkConfigWith is checkConfig with the ownership check injected, so a test
-// can exercise the warn branch without building a real writable-by-others
-// directory (OS-specific ACLs).
-func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
+// checkConfigWith is checkConfig with the ownership and privacy checks
+// injected, so a test can exercise the warn branches without building a
+// real directory others can access (OS-specific ACLs).
+func checkConfigWith(p paths.Paths, checkOwner, checkPrivate func(string) error) doctorCheck {
 	if fi, err := os.Stat(p.Dir); err != nil || !fi.IsDir() {
 		return doctorCheck{ID: "config", State: doctorFail,
 			Detail: "the config directory does not exist",
@@ -299,7 +322,39 @@ func checkConfigWith(p paths.Paths, checkOwner func(string) error) doctorCheck {
 		}
 		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check the config directory's owner"}
 	}
+	if err := checkPrivate(p.Dir); err != nil {
+		var np *paths.NotPrivateError
+		if errors.As(err, &np) {
+			return doctorCheck{ID: "config", State: doctorWarn,
+				Detail: displayRelHome(p.Dir) + " can be read by someone other than you",
+				Fix:    "restrict the directory to your own user (agentnetd does this on start when you own it; on Windows only while it is empty)"}
+		}
+		return doctorCheck{ID: "config", State: doctorFail, Detail: "could not check who can read the config directory"}
+	}
 	return doctorCheck{ID: "config", State: doctorOK, Detail: displayRelHome(p.Dir) + " exists and is owner-only"}
+}
+
+// checkProgram reports a daemon binary (or its folder) that other users can
+// change: the per-user service runs it at every login (review 85 F3, D69).
+// exe is the best-effort sibling path; a missing file is skipped, since the
+// service check already covers "agentnetd not installed".
+func checkProgram(exe string, checkOwner func(string) error) doctorCheck {
+	if exe == "" {
+		return doctorCheck{ID: "program", State: doctorSkip, Detail: "agentnetd's location is unknown"}
+	}
+	if _, err := os.Stat(exe); err != nil {
+		return doctorCheck{ID: "program", State: doctorSkip, Detail: "no agentnetd binary next to agentnet"}
+	}
+	if err := checkOwner(exe); err != nil {
+		var we *device.WritableError
+		if errors.As(err, &we) {
+			return doctorCheck{ID: "program", State: doctorWarn,
+				Detail: fmt.Sprintf("agentnetd or its folder can be changed by %s", we.Who),
+				Fix:    "move agentnetd to a folder only you (and Administrators/root) can write to, then run `agentnetd install` again"}
+		}
+		return doctorCheck{ID: "program", State: doctorWarn, Detail: "could not check who can change the agentnetd binary"}
+	}
+	return doctorCheck{ID: "program", State: doctorOK, Detail: "the agentnetd binary and its folder are owner-only"}
 }
 
 // displayRelHome renders path relative to the user's home (as "~/...") so
@@ -327,20 +382,47 @@ func displayRelTo(home, path string) string {
 }
 
 // checkKeychain reports which backend holds the identity key, without ever
-// creating one (doctor only reads).
+// creating one (doctor only reads). With an agent card, the key is read with
+// the same checks as at start-up (review 87 M1, 87b N1).
 func checkKeychain(p paths.Paths) doctorCheck {
 	ks, err := identity.NewKeystoreFromEnv(p.Dir)
 	if err != nil {
 		return doctorCheck{ID: "keychain", State: doctorFail, Detail: "could not open the key storage"}
 	}
-	_, backend, err := ks.Load()
+	var (
+		seed    []byte
+		backend string
+	)
+	card, cardErr := identity.ReadCard(p.Dir)
+	if cardErr == nil {
+		seed, backend, err = identity.LoadKey(p.Dir, ks, card.Card.PublicKey)
+	} else {
+		seed, backend, err = ks.Load()
+	}
+	clear(seed)
 	switch {
 	case err == nil:
 		return doctorCheck{ID: "keychain", State: doctorOK, Detail: "identity key readable from " + backend}
+	case errors.Is(err, keystore.ErrConflict) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the key file matches the agent card but the keychain holds a different identity key (the card and key file may have been replaced)",
+			Fix:    "unless you created this identity while the keychain was unavailable, delete agent-card.json and identity.key; otherwise delete the keychain entry"}
+	case errors.Is(err, keystore.ErrConflict), errors.Is(err, keystore.ErrMismatch):
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "no stored identity key matches the agent card, or the keychain and the key file hold different keys",
+			Fix:    "remove the key that is not this agent's (often a stray identity.key), or restore the agent card"}
+	case errors.Is(err, keystore.ErrNotFound) && cardErr == nil:
+		return doctorCheck{ID: "keychain", State: doctorFail,
+			Detail: "the agent card exists but its private key was not found",
+			Fix:    "restore the key, or delete agent-card.json to start a new identity"}
 	case errors.Is(err, keystore.ErrNotFound):
 		return doctorCheck{ID: "keychain", State: doctorWarn,
 			Detail: "no identity key yet",
 			Fix:    "run `agentnetd install` (or start `agentnetd`) to create one"}
+	case errors.Is(err, keystore.ErrUnavailable):
+		return doctorCheck{ID: "keychain", State: doctorWarn,
+			Detail: "the keychain is unavailable, and the identity key cannot be read or checked without it",
+			Fix:    "unlock the keychain (or check that its service is running) and run doctor again"}
 	default:
 		return doctorCheck{ID: "keychain", State: doctorFail,
 			Detail: "the identity key is not readable",
@@ -378,9 +460,13 @@ func checkRelay(url string, daemonUp bool, res daemon.StatusResult, probed *prob
 	if url == "" {
 		return doctorCheck{ID: "relay", State: doctorSkip, Detail: "no relay configured"}
 	}
-	if _, err := relayclient.CheckURL(url, allowInsecureRelay()); err != nil {
-		return doctorCheck{ID: "relay", State: doctorFail, Detail: "relay URL: " + err.Error(),
-			Fix: "a non-loopback relay must use wss://"}
+	// With the daemon up, its own URL rule already accepted the URL (its
+	// DORYLINAE_ALLOW_INSECURE_RELAY, not doctor's, applies: R55-134).
+	if !daemonUp {
+		if _, err := relayclient.CheckURL(url, allowInsecureRelay()); err != nil {
+			return doctorCheck{ID: "relay", State: doctorFail, Detail: "relay URL: " + err.Error(),
+				Fix: "a non-loopback relay must use wss://"}
+		}
 	}
 	if daemonUp {
 		if res.Relay == nil {
@@ -491,6 +577,28 @@ type serviceStatus struct {
 	// matches is whether the definition names exe and home; false when it
 	// could not be determined (never treated as authoritative on its own).
 	matches bool
+	// relay is the --relay URL in the definition ("" when none or unknown).
+	relay string
+}
+
+// relayFlagPattern finds "--relay URL" in a service definition: a command
+// line (Task Scheduler XML, systemd unit; the value may be quoted) or two
+// consecutive launchd <string> elements.
+var relayFlagPattern = regexp.MustCompile(`--relay(?:</string>\s*<string>|\s+)(?:"([^"]*)"|'([^']*)'|([^\s<"']+))`)
+
+// relayFromDefinition returns the relay URL a service definition passes to
+// the daemon, or "".
+func relayFromDefinition(def string) string {
+	m := relayFlagPattern.FindStringSubmatch(def)
+	if m == nil {
+		return ""
+	}
+	for _, v := range m[1:] {
+		if v != "" {
+			return html.UnescapeString(v)
+		}
+	}
+	return ""
 }
 
 // checkService trusts a running daemon it can already reach over IPC (up):
@@ -542,17 +650,23 @@ func probeService(ctx context.Context, run service.Runner, exe, home string) (se
 	}
 }
 
+// scheduledTaskRunning is the ScheduledTaskState value of a running task.
+const scheduledTaskRunning = "4"
+
 func probeServiceWindows(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
 	out, err := run.Run(ctx, []string{"schtasks.exe", "/Query", "/TN", service.TaskName, "/XML"})
 	if err != nil {
 		return serviceStatus{}
 	}
 	s := string(out)
+	// schtasks prints a localised status, so ask the scheduler for the
+	// numeric task state instead (4 = Running; R55-177).
 	running := false
-	if ro, rerr := run.Run(ctx, []string{"schtasks.exe", "/Query", "/TN", service.TaskName, "/FO", "LIST", "/V"}); rerr == nil {
-		running = strings.Contains(string(ro), "Running")
+	script := "[int](Get-ScheduledTask -TaskName '" + service.TaskName + "').State"
+	if ro, rerr := run.Run(ctx, []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script}); rerr == nil {
+		running = strings.TrimSpace(string(ro)) == scheduledTaskRunning
 	}
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }
 
 func probeServiceDarwin(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
@@ -563,7 +677,7 @@ func probeServiceDarwin(ctx context.Context, run service.Runner, exe, home strin
 	}
 	s := string(out)
 	running := strings.Contains(s, "state = running")
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }
 
 func probeServiceLinux(ctx context.Context, run service.Runner, exe, home string) serviceStatus {
@@ -576,5 +690,5 @@ func probeServiceLinux(ctx context.Context, run service.Runner, exe, home string
 	if ro, rerr := run.Run(ctx, []string{"systemctl", "--user", "is-active", service.SystemdUnit}); rerr == nil {
 		running = strings.TrimSpace(string(ro)) == "active"
 	}
-	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home)}
+	return serviceStatus{installed: true, running: running, matches: strings.Contains(s, exe) && strings.Contains(s, home), relay: relayFromDefinition(s)}
 }

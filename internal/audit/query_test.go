@@ -96,6 +96,7 @@ func TestQueryFilters(t *testing.T) {
 	// Time window: rewrite ts through the drop-triggers path so the rows are far apart.
 	dropTriggers(t, s.DB())
 	exec(t, s.DB(),
+		`UPDATE audit_events SET ts = '2026-09-01T00:00:00Z' WHERE id = 1`,
 		`UPDATE audit_events SET ts = '2026-10-01T09:00:00.5Z' WHERE id = 2`,
 		`UPDATE audit_events SET ts = '2026-10-01T09:00:00Z' WHERE id = 3`,
 		`UPDATE audit_events SET ts = '2026-10-02T00:00:00Z' WHERE id = 4`,
@@ -115,7 +116,7 @@ func TestQueryFilters(t *testing.T) {
 	if g := ids(query(t, l, ListParams{Since: "2026-10-02T00:00:00Z"})); g != "4,5" {
 		t.Fatalf("since ids = %s", g)
 	}
-	if g := ids(query(t, l, ListParams{Until: "2026-10-01T09:00:00Z"})); g != "1,3" { // row 1 is the chain start, written now
+	if g := ids(query(t, l, ListParams{Until: "2026-10-01T09:00:00Z"})); g != "1,3" { // row 1 is the chain start, rewritten to an earlier fixed time
 		t.Fatalf("until ids = %s", g)
 	}
 	if _, err := l.Query(ctx, ListParams{Since: "yesterday"}); !errors.Is(err, ErrBadParams) {

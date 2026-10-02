@@ -13,6 +13,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/device"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // defaultTimeoutS is a command's timeout when --timeout does not name it.
@@ -178,15 +179,23 @@ func buildScope(types string, repos, commands, timeouts, envs []string, expires 
 }
 
 func printScope(w io.Writer, sc device.Scope) {
-	_, _ = fmt.Fprintf(w, "Types: %s\nExpires: %s\n", strings.Join(sc.Types, ", "), sc.Expires)
+	types := make([]string, len(sc.Types))
+	for i, t := range sc.Types {
+		types[i] = displaytext.Term(t)
+	}
+	_, _ = fmt.Fprintf(w, "Types: %s\nExpires: %s\n", strings.Join(types, ", "), displaytext.Term(sc.Expires))
 	for _, c := range sc.Commands {
 		dir, _ := sc.RepoPath(c.Repo)
 		// Quoted and escaped: a path or argv holding a control or bidi
 		// character cannot drive the terminal or change how the line reads
 		// (review 40 L6).
-		_, _ = fmt.Fprintf(w, "  %s  in %s (%s)\n      runs %s, timeout %d s", c.Name, c.Repo, device.DisplayQuote(dir), device.DisplayArgv(c.Argv), c.TimeoutS)
+		_, _ = fmt.Fprintf(w, "  %s  in %s (%s)\n      runs %s, timeout %d s", displaytext.Term(c.Name), displaytext.Term(c.Repo), device.DisplayQuote(dir), device.DisplayArgv(c.Argv), c.TimeoutS)
 		if len(c.Env) > 0 {
-			_, _ = fmt.Fprintf(w, ", env %s", strings.Join(c.Env, " "))
+			env := make([]string, len(c.Env))
+			for i, e := range c.Env {
+				env[i] = displaytext.Term(e)
+			}
+			_, _ = fmt.Fprintf(w, ", env %s", strings.Join(env, " "))
 		}
 		_, _ = fmt.Fprintln(w)
 	}
@@ -235,7 +244,7 @@ func runDeviceScope(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(struct {
+			writeJSON(stdout, struct {
 				OK bool `json:"ok"`
 				daemon.DeviceScopeClearResult
 			}{OK: true, DeviceScopeClearResult: res})
@@ -249,7 +258,7 @@ func runDeviceScope(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(struct {
+			writeJSON(stdout, struct {
 				OK bool `json:"ok"`
 				daemon.DeviceScopeShowResult
 			}{OK: true, DeviceScopeShowResult: res})
@@ -260,7 +269,7 @@ func runDeviceScope(args []string, stdout, stderr io.Writer) int {
 	}
 	var raw []byte
 	if *fromFile != "" {
-		raw, err = os.ReadFile(*fromFile)
+		raw, err = readBounded(*fromFile, os.Stdin, maxScopeFileBytes, "the scope")
 		if err != nil {
 			return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", fmt.Sprintf("--from-file: %v", err))
 		}
@@ -279,7 +288,7 @@ func runDeviceScope(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(struct {
+		writeJSON(stdout, struct {
 			OK bool `json:"ok"`
 			daemon.DeviceScopeSetResult
 		}{OK: true, DeviceScopeSetResult: res})

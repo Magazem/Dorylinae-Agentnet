@@ -15,6 +15,7 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 )
@@ -83,7 +84,7 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 		if res.Sessions == nil {
 			res.Sessions = []daemon.SessionView{}
 		}
-		_ = json.NewEncoder(stdout).Encode(sessionListBody{OK: true, SessionListResult: res})
+		writeJSON(stdout, sessionListBody{OK: true, SessionListResult: res})
 		return exitOK
 	}
 	if len(res.Sessions) == 0 {
@@ -93,7 +94,7 @@ func runSessions(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 2, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "ID\tROLE\tSTATE\tPEER\tREQUEST\tROUND")
 	for _, s := range res.Sessions {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", s.ID, s.Role, s.State, s.Peer.Name, s.Request.Title, s.Round)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n", s.ID, s.Role, s.State, displaytext.Term(s.Peer.Name), displaytext.Term(s.Request.Title), s.Round)
 	}
 	_ = tw.Flush()
 	return exitOK
@@ -201,7 +202,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(struct {
+			writeJSON(stdout, struct {
 				OK bool `json:"ok"`
 				daemon.SessionCancelResult
 			}{OK: true, SessionCancelResult: res})
@@ -225,7 +226,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 		}
 		if *asJSON {
 			out := map[string]any{"ok": true, "approval": view}
-			_ = json.NewEncoder(stdout).Encode(out)
+			writeJSON(stdout, out)
 			return exitOK
 		}
 		_, _ = fmt.Fprintf(stdout, "Approval %s pending; answer it in the approval window ('agentnet approve --open %s' shows it again).\n", view.ID, view.ID)
@@ -237,7 +238,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 			return code
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(sessionShowBody{OK: true, SessionShowResult: res})
+			writeJSON(stdout, sessionShowBody{OK: true, SessionShowResult: res})
 			return exitOK
 		}
 		printSessionHuman(stdout, res.Session)
@@ -247,7 +248,7 @@ func runSession(args []string, stdout, stderr io.Writer) int {
 
 func printSessionAction(asJSON bool, stdout io.Writer, verb string, res daemon.SessionResult) int {
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(sessionActionBody{OK: true, SessionResult: res})
+		writeJSON(stdout, sessionActionBody{OK: true, SessionResult: res})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "%s %s (now %s)\n", verb, res.Session.ID, res.Session.State)
@@ -256,10 +257,10 @@ func printSessionAction(asJSON bool, stdout io.Writer, verb string, res daemon.S
 
 func printSessionHuman(w io.Writer, s daemon.SessionView) {
 	_, _ = fmt.Fprintf(w, "%s  role %s  state %s  round %d\n", s.ID, s.Role, s.State, s.Round)
-	_, _ = fmt.Fprintf(w, "  peer:    %s\n", s.Peer.Name)
-	_, _ = fmt.Fprintf(w, "  request: %s (%s)\n", s.Request.Title, s.Request.ID)
+	_, _ = fmt.Fprintf(w, "  peer:    %s\n", displaytext.Term(s.Peer.Name))
+	_, _ = fmt.Fprintf(w, "  request: %s (%s)\n", displaytext.Term(s.Request.Title), s.Request.ID)
 	if s.Outcome != "" {
-		_, _ = fmt.Fprintf(w, "  outcome: %s\n", s.Outcome)
+		_, _ = fmt.Fprintf(w, "  outcome: %s\n", displaytext.Term(s.Outcome))
 	}
 	if s.Quarantine != nil {
 		_, _ = fmt.Fprintf(w, "  quarantined: status %s, %d result bytes, %d output bytes, %d artifacts (run 'agentnet session %s --release')\n",
@@ -268,11 +269,11 @@ func printSessionHuman(w io.Writer, s daemon.SessionView) {
 	if s.Result != nil {
 		_, _ = fmt.Fprintf(w, "  result: status %s\n", s.Result.Status)
 		if s.Result.Summary != "" {
-			_, _ = fmt.Fprintf(w, "    summary: %s\n", s.Result.Summary)
+			_, _ = fmt.Fprintf(w, "    summary: %s\n", displaytext.Term(s.Result.Summary))
 		}
 	}
 	if s.Cancel != "" {
-		_, _ = fmt.Fprintf(w, "  cancel: %s\n", s.Cancel)
+		_, _ = fmt.Fprintf(w, "  cancel: %s\n", displaytext.Term(s.Cancel))
 	}
 }
 
@@ -395,7 +396,7 @@ func runResult(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(sessionActionBody{OK: true, SessionResult: res})
+		writeJSON(stdout, sessionActionBody{OK: true, SessionResult: res})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Submitted result for %s (%s)\n", res.Session.ID, res.Session.State)
@@ -453,7 +454,7 @@ func runAcceptResult(args []string, stdout, stderr io.Writer) int {
 		var view approval.View
 		_ = json.Unmarshal(raw, &view)
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"ok": true, "approval": view})
+			writeJSON(stdout, map[string]any{"ok": true, "approval": view})
 			return exitOK
 		}
 		_, _ = fmt.Fprintf(stdout, "Approval %s pending; answer it in the approval window ('agentnet approve --open %s' shows it again).\n", view.ID, view.ID)
@@ -467,7 +468,7 @@ func runAcceptResult(args []string, stdout, stderr io.Writer) int {
 		_ = json.Unmarshal(raw, &sessionRaw.MailID)
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(sessionActionBody{OK: true, SessionResult: sessionRaw})
+		writeJSON(stdout, sessionActionBody{OK: true, SessionResult: sessionRaw})
 		return exitOK
 	}
 	_, _ = fmt.Fprintf(stdout, "Accepted result for %s (now %s)\n", sessionRaw.Session.ID, sessionRaw.Session.State)
@@ -632,13 +633,13 @@ func printWaitResult(asJSON bool, stdout io.Writer, reason string, sv *daemon.Se
 		code = exitWaitTimeout
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(waitBody{OK: true, Wait: reason, Session: sv})
+		writeJSON(stdout, waitBody{OK: true, Wait: reason, Session: sv})
 		return code
 	}
 	if sv != nil {
-		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", reason, sv.ID, sv.State)
+		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", displaytext.Term(reason), sv.ID, sv.State)
 	} else {
-		_, _ = fmt.Fprintf(stdout, "%s\n", reason)
+		_, _ = fmt.Fprintf(stdout, "%s\n", displaytext.Term(reason))
 	}
 	return code
 }
@@ -692,13 +693,13 @@ func printDebateWaitResult(asJSON bool, stdout io.Writer, reason string, dv *dae
 		code = exitWaitTimeout
 	}
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(debateWaitBody{OK: true, Wait: reason, Debate: dv})
+		writeJSON(stdout, debateWaitBody{OK: true, Wait: reason, Debate: dv})
 		return code
 	}
 	if dv != nil {
-		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", reason, dv.Session, dv.Phase)
+		_, _ = fmt.Fprintf(stdout, "%s: %s (%s)\n", displaytext.Term(reason), dv.Session, dv.Phase)
 	} else {
-		_, _ = fmt.Fprintf(stdout, "%s\n", reason)
+		_, _ = fmt.Fprintf(stdout, "%s\n", displaytext.Term(reason))
 	}
 	return code
 }

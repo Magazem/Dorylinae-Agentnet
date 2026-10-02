@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
 // Ticket 1.6b: `agentnet inbox`, `accept`, `decline`, `defer`, `complete`
@@ -55,7 +55,7 @@ func runInbox(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(inboxBody{OK: true, RequestListResult: res})
+		writeJSON(stdout, inboxBody{OK: true, RequestListResult: res})
 		return exitOK
 	}
 	printInbox(stdout, res.Requests)
@@ -97,7 +97,7 @@ func printInbox(w io.Writer, requests []daemon.RequestView) {
 				age = formatAge(now.Sub(t))
 			}
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.ID, v.Peer.Name, v.Type, v.Urgency, prio, age, v.Title)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.ID, displaytext.Term(v.Peer.Name), v.Type, v.Urgency, prio, age, displaytext.Term(v.Title))
 	}
 	_ = tw.Flush()
 }
@@ -366,10 +366,10 @@ func idFromParam(id, from string) map[string]any {
 
 func printLifecycleResult(asJSON bool, stdout io.Writer, verb string, res daemon.RequestLifecycleResult) int {
 	if asJSON {
-		_ = json.NewEncoder(stdout).Encode(lifecycleBody{OK: true, RequestLifecycleResult: res})
+		writeJSON(stdout, lifecycleBody{OK: true, RequestLifecycleResult: res})
 		return exitOK
 	}
-	_, _ = fmt.Fprintf(stdout, "%s %s from %s\n", verb, res.Request.ID, res.Request.Peer.Name)
+	_, _ = fmt.Fprintf(stdout, "%s %s from %s\n", verb, res.Request.ID, displaytext.Term(res.Request.Peer.Name))
 	return exitOK
 }
 
@@ -381,25 +381,22 @@ var completeStdin io.Reader = os.Stdin
 // §Result).
 var csiPattern = regexp.MustCompile("\x1b\\[[0-9:;<=>?]*[ -/]*[@-~]")
 
+// maxOutputFileBytes bounds the raw bytes --output-from-file reads; the
+// stored output is at most 32 KiB after ANSI stripping, so this leaves room
+// for escape sequences while keeping a pipe or huge file from being slurped.
+const maxOutputFileBytes = 1 << 20
+
 // readOutputFile reads F ("-" = stdin), turns CRLF into LF, strips ANSI CSI
 // sequences, and rejects any other control character (except tab) or invalid
 // UTF-8 (Docs/cli/inbox.md §Result).
 func readOutputFile(path string) (string, error) {
 	name := path
-	var r io.Reader
 	if path == "-" {
-		name, r = "stdin", completeStdin
-	} else {
-		f, err := os.Open(path) //nolint:gosec // the path is a user-supplied CLI flag, as intended
-		if err != nil {
-			return "", fmt.Errorf("read %s: %w", path, err)
-		}
-		defer func() { _ = f.Close() }()
-		r = f
+		name = "stdin"
 	}
-	b, err := io.ReadAll(r)
+	b, err := readBounded(path, completeStdin, maxOutputFileBytes, "the output")
 	if err != nil {
-		return "", fmt.Errorf("read %s: %w", name, err)
+		return "", err
 	}
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
 	s = csiPattern.ReplaceAllString(s, "")

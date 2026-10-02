@@ -40,6 +40,11 @@ const runWatchEvery = time.Minute
 // ended or its scope was cleared, replaced without it, or expired.
 var errRunRevoked = errors.New("device: the run is no longer allowed")
 
+// errRunCheckFailed is the cause of a running command's context when a sweep
+// could not confirm it is still allowed (review 55 R55-098): stopped like a
+// revoked run, but audited apart (review 86 L5).
+var errRunCheckFailed = errors.New("device: the run's permission could not be checked")
+
 // activeRun is the command being run: its session, what stops it, what it
 // runs and when its scope expires (kept current by each sweep, so a scope
 // replaced with a later expiry moves the watch's next check).
@@ -150,6 +155,12 @@ type helperRunner struct {
 	// curMu guards cur, the command running now (nil when none).
 	curMu sync.Mutex
 	cur   *activeRun
+	// kicks counts the sweeps kick started, so that the daemon waits for
+	// them before closing the store (review 55 R55-145); kickMu guards
+	// kicksClosed, set by wait, after which kick starts none.
+	kickMu      sync.Mutex
+	kicksClosed bool
+	kicks       sync.WaitGroup
 }
 
 func newHelperRunner(db *sql.DB, ds *device.Store, ws *worksession.Store, log *audit.Log, self string, logger *slog.Logger) *helperRunner {
@@ -169,27 +180,74 @@ func (r *helperRunner) signal() {
 // and a running one is stopped. It never blocks, so it may be called inside
 // a transaction: the sweep's own transaction waits for that one to end.
 func (r *helperRunner) kick() {
-	go r.sweep(context.Background())
+	r.kickMu.Lock()
+	defer r.kickMu.Unlock()
+	if r.kicksClosed {
+		// The daemon is stopping: the running command is stopped with it,
+		// and the next start's recoverAfterRestart checks what is left.
+		return
+	}
+	r.kicks.Add(1)
+	go func() {
+		defer r.kicks.Done()
+		r.sweep(context.Background())
+	}()
+}
+
+// wait makes later kicks do nothing and waits for the sweeps already
+// started, so that none outlives the store (review 55 R55-145).
+func (r *helperRunner) wait() {
+	r.kickMu.Lock()
+	r.kicksClosed = true
+	r.kickMu.Unlock()
+	r.kicks.Wait()
 }
 
 // sweep drops the queued runs that are no longer allowed, stops the running
-// one if it is no longer allowed, and wakes the runner.
+// one if it is no longer allowed, and wakes the runner. A sweep that cannot
+// confirm the running command is still allowed stops it (review 55
+// R55-098): a revocation must kill it at once (Docs/protocol/device.md
+// §Running), not at its timeout because the check failed. It stops only the
+// command that was running when the sweep began, not one that a take
+// validated and started since (review 86 L5).
 func (r *helperRunner) sweep(ctx context.Context) {
 	r.sweepMu.Lock()
 	defer r.sweepMu.Unlock()
-	if _, _, err := r.take(ctx, false); err != nil && r.logger != nil {
-		r.logger.Warn("device: sweep run queue", "error", err)
+	session := r.runningSession()
+	if _, _, err := r.take(ctx, false); err != nil {
+		if r.logger != nil {
+			r.logger.Warn("device: sweep run queue", "error", err)
+		}
+		if ctx.Err() == nil && session != "" {
+			r.stopSession(session, errRunCheckFailed)
+		}
 	}
 	r.signal()
+}
+
+// runningSession returns the session of the running command, "" when none.
+func (r *helperRunner) runningSession() string {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	if r.cur == nil {
+		return ""
+	}
+	return r.cur.session
 }
 
 // stopRunning stops the running command if it is still the one of session:
 // its context ends with errRunRevoked, and device.Run kills its process tree.
 func (r *helperRunner) stopRunning(session string) {
+	r.stopSession(session, errRunRevoked)
+}
+
+// stopSession stops the running command with cause if it is still the one
+// of session.
+func (r *helperRunner) stopSession(session string, cause error) {
 	r.curMu.Lock()
 	defer r.curMu.Unlock()
 	if r.cur != nil && r.cur.session == session {
-		r.cur.stop(errRunRevoked)
+		r.cur.stop(cause)
 	}
 }
 
@@ -210,6 +268,13 @@ func (r *helperRunner) stillRunning(session string, plan device.RunPlan) {
 		return
 	}
 	r.cur.expires = plan.Expires
+}
+
+// executing reports whether a command is running now.
+func (r *helperRunner) executing() bool {
+	r.curMu.Lock()
+	defer r.curMu.Unlock()
+	return r.cur != nil
 }
 
 // runExpires is when the running command's scope expires, as of the last
@@ -312,6 +377,17 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 	if err != nil {
 		return nil, device.RunPlan{}, err
 	}
+	// Only loop starts runs, one at a time, so a job still marked running
+	// when it asks for the next one was left by a finish that failed after
+	// its result: clear it, or no queued run would start before a restart
+	// (review 55 R55-099).
+	stale := start && st.Running != nil && !r.executing()
+	if stale {
+		if r.logger != nil {
+			r.logger.Warn("device: clear a finished run left marked running", "session", st.Running.Session)
+		}
+		st.Running = nil
+	}
 	stop := ""
 	var runningPlan device.RunPlan
 	if st.Running != nil {
@@ -342,7 +418,7 @@ func (r *helperRunner) take(ctx context.Context, start bool) (*runJob, device.Ru
 			keep = append(keep, j)
 		}
 	}
-	if len(dropped) > 0 || next != nil {
+	if len(dropped) > 0 || next != nil || stale {
 		st.Queued = keep
 		if next != nil {
 			st.Running = next
@@ -496,6 +572,11 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	r.curMu.Lock()
 	r.cur = &activeRun{session: j.Session, stop: stop, plan: plan, expires: plan.Expires}
 	r.curMu.Unlock()
+	// One check before anything starts: a revocation that committed after
+	// take started this run but before cur was set found nothing to stop, so
+	// without it the command could start before watch's first check (review
+	// 86 L2). A revocation that commits later stops it through cur.
+	r.sweep(ctx)
 	watched := make(chan struct{})
 	go func() { defer close(watched); r.watch(ctx, runCtx) }()
 	defer func() {
@@ -515,7 +596,7 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 		run = device.Run
 	}
 	var res device.RunResult
-	if err := device.CheckTarget(spec.Path, spec.Dir); err != nil {
+	if err := device.CheckTarget(spec.Path, spec.Dir, spec.Env); err != nil {
 		// Changed on disk since the human approved it, or others can now
 		// change the program: "could not start".
 		if r.logger != nil {
@@ -527,14 +608,19 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	if ctx.Err() != nil {
 		return
 	}
-	if errors.Is(context.Cause(runCtx), errRunRevoked) {
+	if cause := context.Cause(runCtx); errors.Is(cause, errRunRevoked) || errors.Is(cause, errRunCheckFailed) {
 		if err := r.finish(ctx); err != nil && r.logger != nil {
 			r.logger.Warn("device: finish run", "error", err)
 		}
 		r.cancel(ctx, j)
+		reason := "revoked"
+		if errors.Is(cause, errRunCheckFailed) {
+			reason = "check_failed"
+		}
 		r.audit(ctx, "device.run", map[string]any{
 			"link": plan.Link.ID, "request": j.Request, "session": j.Session,
 			"duration_ms": res.Duration.Milliseconds(), "output_bytes": 0, "timed_out": false, "cancelled": true,
+			"stop_reason": reason,
 		})
 		return
 	}
@@ -551,7 +637,9 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 		}
 		break
 	}
-	if err := r.finish(ctx); err != nil && r.logger != nil {
+	// Not cut short by the daemon stopping just after the result: the next
+	// start would report the run as interrupted (review 55 R55-099).
+	if err := r.finish(context.WithoutCancel(ctx)); err != nil && r.logger != nil {
 		r.logger.Warn("device: finish run", "error", err)
 	}
 	r.audit(ctx, "device.run", map[string]any{
@@ -560,9 +648,9 @@ func (r *helperRunner) execute(ctx context.Context, j runJob, plan device.RunPla
 	})
 }
 
-// watch re-checks the running command's scope until runCtx ends: at once
-// (a revocation that committed just before the run was registered in cur),
-// when the scope expires, and at least every watchEvery. A check that fails
+// watch re-checks the running command's scope until runCtx ends, after
+// execute's own check before the start (review 86 L2): when the scope
+// expires, and at least every watchEvery. A check that fails
 // stops the run (sweep → take → stopRunning). The expiry is the one the last
 // sweep saw (stillRunning): with the plan's own, a scope replaced with a
 // later expiry made every wait after the old one 10 ms (review 41 M3). An
@@ -574,7 +662,6 @@ func (r *helperRunner) watch(ctx, runCtx context.Context) {
 		every = runWatchEvery
 	}
 	for {
-		r.sweep(ctx)
 		wait := every
 		switch d := r.runExpires().Sub(r.ds.Time()); {
 		case d <= 0:
@@ -590,6 +677,7 @@ func (r *helperRunner) watch(ctx, runCtx context.Context) {
 			return
 		case <-t.C:
 		}
+		r.sweep(ctx)
 	}
 }
 

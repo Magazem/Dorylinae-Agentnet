@@ -319,7 +319,9 @@ func TestPairTwoDaemons(t *testing.T) {
 	if got := auditActions(t, a, issued.Code, norm[5:], "card"); strings.Join(got, ",") != strings.Join(wantA, ",") {
 		t.Errorf("alice audit = %v, want %v", got, wantA)
 	}
-	wantB := []string{"pair.start", "pair.complete", "pair.start", "pair.fail"}
+	// The refused second redemption leaves no rows: a used code is refused
+	// before the pairing starts (review 94, M1).
+	wantB := []string{"pair.start", "pair.complete"}
 	if got := auditActions(t, b, issued.Code, norm[5:], "card"); strings.Join(got, ",") != strings.Join(wantB, ",") {
 		t.Errorf("bob audit = %v, want %v", got, wantB)
 	}
@@ -505,7 +507,8 @@ func TestPairRelayDown(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("too slow")
 	}
-	if got := auditActions(t, n); strings.Join(got, ",") != "pair.start,pair.fail" {
+	// Refused before the pairing starts, so nothing is audited (review 94, M1).
+	if got := auditActions(t, n); len(got) != 0 {
 		t.Errorf("audit = %v", got)
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/keystore"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/noise"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/relayclient"
@@ -44,12 +43,14 @@ type PingStatusParams struct {
 
 // newSessions binds a fresh Noise static key to the identity and returns the
 // session manager (Docs/protocol/session.md). Only paired peers may talk to it.
-func newSessions(id *identity.Identity, ks *keystore.Store, log *audit.Log, db *sql.DB, opts Options, countReject func(reason string)) (*session.Manager, error) {
+// sign is the daemon's identityKey.Sign: the binding is signed with the one
+// verified identity key, not a second keystore read (review 87b N2).
+func newSessions(id *identity.Identity, sign func([]byte) ([]byte, error), log *audit.Log, db *sql.DB, opts Options, countReject func(reason string)) (*session.Manager, error) {
 	pub, err := envelope.ParseKey(id.Card().Card.PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("agent card public key: %w", err)
 	}
-	static, err := noise.NewStatic(pub, relayclient.NewKeystoreSigner(ks, pub).Sign)
+	static, err := noise.NewStatic(pub, sign)
 	if err != nil {
 		return nil, err
 	}

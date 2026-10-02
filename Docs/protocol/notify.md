@@ -22,7 +22,7 @@ crosses the relay.
 | `session.result` | The requester's daemon applies a `ws.result` for the current round without quarantine, so it waits for accept-result or request-changes ([work-session.md §Notifications](work-session.md#notifications), D25). Not sent for a quarantined result (`session.quarantined` covers it) nor after a release. Content-free: the peer name and the request title | on |
 | `session.changes` | The worker's daemon applies a `ws.state` that starts a new round with a `changes` text (D25). Content-free: the peer name and the request title, never the changes text | on |
 | `device.linked` | An own-device link becomes `active` on this device ([device.md §Link flow](device.md#link-flow), D22). Content-free: the peer name and its role only. **Desktop only**: never sent to the webhook, because it is news about this person's own devices | on |
-| `debate.constraint`, `debate.agreed`, `debate.escalated`, `debate.broken` | A debate reaches that point ([debate.md §Notifications](debate.md)). Content-free: the peer name and the request title, never the topic, entries or constraint text. In the webhook payload they carry `request.session` and an empty `request.type` and `request.state` | on |
+| `debate.constraint`, `debate.agreed`, `debate.escalated`, `debate.broken`, `debate.refused` | A debate reaches that point ([debate.md §Notifications](debate.md)). Content-free: the peer name and the request title, never the topic, entries or constraint text. In the webhook payload they carry `request.session` and an empty `request.type` and `request.state` | on |
 
 A mirror update that is ignored (`seq` not higher) fires nothing. The trigger runs in the mail
 kind's `After` hook ([mail.md](mail.md), `internal/mail.Kind.After`). It enqueues work and
@@ -39,13 +39,15 @@ Settings live in the `settings` table (migration 10, [presence.md](presence.md#t
                    "session.quarantined": true, "session.result": true,
                    "session.changes": true, "device.linked": true,
                    "debate.constraint": true, "debate.agreed": true,
-                   "debate.escalated": true, "debate.broken": true}
+                   "debate.escalated": true, "debate.broken": true,
+                   "debate.refused": true}
 "notify.desktop": {"enabled": true}
-"notify.webhook": {"url": "https://...", "format": "generic", "title": false}
+"notify.webhook": {"url": "https://...", "format": "generic", "title": false, "secret_sha256": "<hex>"}
 ```
 
 `notify.webhook` is absent when no webhook is set. The webhook **secret** is not in SQLite
-([Secret](#secret)).
+([Secret](#secret)); `secret_sha256` is the hex SHA-256 of it, written whenever the secret is
+created or rotated, so the delivery worker signs only with that secret (review 87 M1).
 
 ## Text and sanitising
 
@@ -126,7 +128,9 @@ need no cgo and no new dependency.
 
 Keystore secret (same backends as the identity): keychain service `dorylinae`, account
 `webhook` (there is one webhook per daemon), or file `<config dir>/webhook.key` (owner-only).
-The value is the raw 32 bytes. Rotation replaces it at once. Pending retries are signed with
+The value is the raw 32 bytes. When the keychain and the file hold different secrets, the
+one matching `secret_sha256` is used ([Key storage](agent-card.md#key-storage)). Rotation
+replaces it at once. Pending retries are signed with
 the new secret, so the receiver must be updated before the next attempt.
 
 ### Payload

@@ -68,7 +68,7 @@ VALUES (?, ?, ?, ?, 'task', 'normal', 'normal', ?, ?, 'pending', 0, '2026-09-25T
 	if err := wh.Settings.SetWebhook(ctx, notify.WebhookConfig{URL: srv.URL, Format: notify.FormatGeneric, Title: true}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wh.RotateSecret(); err != nil {
+	if _, _, err := wh.RotateSecret(); err != nil {
 		t.Fatal(err)
 	}
 	trigger := &notify.Trigger{Webhook: wh, Show: func(context.Context, string, string) error { return nil }}

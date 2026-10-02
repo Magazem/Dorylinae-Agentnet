@@ -646,6 +646,14 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			if err := recheckIssuanceTx(ctx, tx, wsStore, p.Session, peer.PublicKey, nonLoopbackRelay); err != nil {
 				return nil, err
 			}
+			// Match read the policy outside this transaction: a
+			// grant_policy_remove, or the policy's until, between the two
+			// would still issue under an ended policy. Policies are never
+			// edited, so re-reading the matched one by id here is enough
+			// (review 55 R55-104).
+			if err := recheckPolicyTx(ctx, tx, match.ID, time.Now()); err != nil {
+				return nil, err
+			}
 			// The policy path never activates a sensitive grant to a peer
 			// with an open debate (review 43 M5).
 			if err := capability.CheckSensitiveGrant(ctx, tx, peer.PublicKey, sensitive); err != nil {
@@ -974,6 +982,32 @@ func recheckIssuanceTx(ctx context.Context, tx *sql.Tx, wsStore *worksession.Sto
 	}
 	if nonLoopbackRelay && trust == peers.TrustRelay {
 		return &ipc.Error{Code: CodeUnverifiedPeer, Message: "the peer's trust is \"relay\" on a non-loopback relay"}
+	}
+	return nil
+}
+
+// recheckPolicyTx confirms, inside the issuing tx, that the policy Match
+// returned still exists and has not reached its until as of now
+// (Docs/protocol/grant.md §Policies, "an ended policy matches nothing").
+// It returns an *ipc.Error when the policy has ended; a read error is
+// returned as is, so the grant is never issued on a failed read.
+func recheckPolicyTx(ctx context.Context, tx *sql.Tx, id string, now time.Time) error {
+	var until sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT until FROM grant_policies WHERE id = ?`, id).Scan(&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &ipc.Error{Code: CodeBadState, Message: "the matching policy was removed; run grant_create again"}
+	}
+	if err != nil {
+		return fmt.Errorf("grant: read policy: %w", err)
+	}
+	// Match never returns a policy with a NULL until (a pre-2.2c row); one
+	// here fails the parse and so refuses.
+	end, err := time.Parse(time.RFC3339Nano, until.String)
+	if err != nil {
+		return fmt.Errorf("grant: read policy until: %w", err)
+	}
+	if !now.Before(end) {
+		return &ipc.Error{Code: CodeBadState, Message: "the matching policy has ended; run grant_create again"}
 	}
 	return nil
 }

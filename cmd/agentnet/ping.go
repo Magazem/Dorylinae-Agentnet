@@ -1,13 +1,13 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/session"
 )
 
@@ -81,7 +81,7 @@ Exit codes: 0 ok (including pending), 1 error or ping failed, 2 usage,
 		return code
 	}
 	if *asJSON {
-		_ = json.NewEncoder(stdout).Encode(pingBody{OK: res.State != session.StateFailed, PingStatus: res})
+		writeJSON(stdout, pingBody{OK: res.State != session.StateFailed, PingStatus: res})
 	}
 	switch res.State {
 	case session.StateComplete:
@@ -98,7 +98,7 @@ Exit codes: 0 ok (including pending), 1 error or ping failed, 2 usage,
 			if res.Error != nil {
 				msg = fmt.Sprintf("ping to %s failed: %s", peerLabel(res.Peer), failureText(res.Error.Code, res.Error.Message))
 			}
-			_, _ = fmt.Fprintln(stderr, "agentnet: "+msg)
+			_, _ = fmt.Fprintln(stderr, "agentnet: "+displaytext.Term(msg))
 		}
 		return exitError
 	}
@@ -107,7 +107,7 @@ Exit codes: 0 ok (including pending), 1 error or ping failed, 2 usage,
 
 func peerLabel(p session.PeerRef) string {
 	if p.Name != "" {
-		return "@" + p.Name
+		return "@" + displaytext.Term(p.Name)
 	}
-	return p.PublicKey
+	return displaytext.Term(p.PublicKey)
 }

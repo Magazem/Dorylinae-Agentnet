@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // HomeEnv overrides the config directory when set.
@@ -85,16 +84,65 @@ func Canonical(dir string) string {
 	}
 }
 
-// Ensure creates the config directory with owner-only permissions.
+// Ensure creates the config directory with owner-only permissions: mode 0700,
+// or on Windows a protected DACL for the current user when anyone else had
+// access. A directory owned by another user is refused (review 55 R55-089).
+// On Windows the access list of an existing directory that is not empty is
+// never replaced: it may be a shared folder $DORYLINAE_HOME points at, and
+// the rewrite would lock everyone else out of it (review 87 L4). Ensure then
+// fails with a *SharedDirError naming the fix.
 func (p Paths) Ensure() error {
+	_, err := os.Stat(p.Dir)
+	created := errors.Is(err, fs.ErrNotExist)
 	if err := os.MkdirAll(p.Dir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		// Directory needs the x bit; 0700 is owner-only.
-		if err := os.Chmod(p.Dir, 0o700); err != nil { //nolint:gosec // see above
-			return fmt.Errorf("secure config dir: %w", err)
-		}
+	if err := secureDir(p.Dir, created); err != nil {
+		return fmt.Errorf("secure config dir: %w", err)
 	}
 	return nil
 }
+
+// NotPrivateError means a path that must be private to the current user is
+// not: Who can read or change it, or (Owner) it belongs to someone else.
+type NotPrivateError struct {
+	Path  string
+	Who   string
+	Owner bool
+}
+
+func (e *NotPrivateError) Error() string {
+	return e.Path + " is not private to the current user: accessible by " + e.Who
+}
+
+// SharedDirError means Ensure found an existing config directory with
+// contents that others can access, and left its access list alone.
+type SharedDirError struct {
+	*NotPrivateError
+	// Self is the current user's SID, for the fix commands.
+	Self string
+}
+
+// FixCommands are the commands that restrict the directory to the current
+// user. They name the user by SID ("*S-1-5-..."), with no %VAR% or $env:
+// variable, so they run unchanged in cmd and in PowerShell (review 87b N4).
+// The first drops every explicit entry (a grant to Users or a group stays
+// otherwise), the second the inherited ones, leaving one entry for the user.
+func (e *SharedDirError) FixCommands() []string {
+	user := "<your user>"
+	if e.Self != "" {
+		user = "*" + e.Self
+	}
+	return []string{
+		`icacls "` + e.Path + `" /reset`,
+		`icacls "` + e.Path + `" /inheritance:r /grant:r "` + user + `:(OI)(CI)F"`,
+	}
+}
+
+func (e *SharedDirError) Error() string {
+	c := e.FixCommands()
+	return e.NotPrivateError.Error() + "; it already holds files, so its access list is not changed: restrict it to your own user " +
+		"by running, in cmd or PowerShell, " + c[0] + " and then " + c[1] + ", or set " + HomeEnv + " to a new directory"
+}
+
+func (e *SharedDirError) Unwrap() error { return e.NotPrivateError }

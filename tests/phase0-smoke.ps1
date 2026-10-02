@@ -13,6 +13,8 @@ param(
     [switch]$Build
 )
 $ErrorActionPreference = 'Stop'
+# Throwaway daemons must not write to the real OS keychain (R55-139).
+$env:DORYLINAE_KEYSTORE = 'file'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BinDir = [System.IO.Path]::GetFullPath($BinDir)
 

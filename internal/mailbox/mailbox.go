@@ -1,7 +1,7 @@
 // Package mailbox holds the daemon's own mailbox keys (Docs/protocol/mail.md
 // §Mailbox keys). The private halves live in the keystore, one secret per key.
 // The public halves, their signed announcements and their lifecycle live in the
-// mailbox_keys_own table (migration 6). Keys rotate every 7 days, a retired key
+// mailbox_keys_own table (migrations 6 and 26). Keys rotate every 7 days, a retired key
 // still decrypts, and its private key is deleted 21 days after creation, with
 // never more than 3 keys live.
 package mailbox
@@ -151,6 +151,7 @@ type row struct {
 	notAfter  time.Time
 	retired   bool
 	announced []byte
+	backend   string // where Save put the private key; "" when not recorded
 }
 
 func (k *Keys) errNoDB() error { return errors.New("mailbox: no database attached") }
@@ -160,7 +161,7 @@ func (k *Keys) live(ctx context.Context) ([]row, error) {
 	if k.db == nil {
 		return nil, k.errNoDB()
 	}
-	rs, err := k.db.QueryContext(ctx, `SELECT key_id, created, not_after, retired IS NOT NULL, announcement
+	rs, err := k.db.QueryContext(ctx, `SELECT key_id, created, not_after, retired IS NOT NULL, announcement, COALESCE(key_backend, '')
 FROM mailbox_keys_own WHERE deleted IS NULL ORDER BY created, key_id`)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox: list keys: %w", err)
@@ -172,7 +173,7 @@ FROM mailbox_keys_own WHERE deleted IS NULL ORDER BY created, key_id`)
 			r        row
 			c, n, an string
 		)
-		if err := rs.Scan(&r.keyID, &c, &n, &r.retired, &an); err != nil {
+		if err := rs.Scan(&r.keyID, &c, &n, &r.retired, &an, &r.backend); err != nil {
 			return nil, fmt.Errorf("mailbox: scan key: %w", err)
 		}
 		var e1, e2 error
@@ -204,27 +205,7 @@ func currentOf(rows []row) *row {
 // The private key is in the keystore and the row is in the table before the
 // announcement is returned.
 func (k *Keys) Announcement() ([]byte, error) {
-	ctx := context.Background()
-	k.mu.Lock()
-	now := k.now()
-	rows, err := k.live(ctx)
-	if err != nil {
-		k.mu.Unlock()
-		return nil, err
-	}
-	if cur := currentOf(rows); cur != nil {
-		ok, err := k.usable(cur, now)
-		if err != nil {
-			k.mu.Unlock()
-			return nil, err
-		}
-		if ok {
-			k.mu.Unlock()
-			return cur.announced, nil
-		}
-	}
-	ann, hook, err := k.createLocked(ctx, now, rows)
-	k.mu.Unlock()
+	ann, hook, err := k.announce(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -234,22 +215,58 @@ func (k *Keys) Announcement() ([]byte, error) {
 	return ann, nil
 }
 
+// announce is Announcement's work under k.mu; hook, if set, is run by the
+// caller without the lock. k.mu is unlocked by defer here and in rotate:
+// both do crypto and DB work and are reached from IPC handlers, so a
+// recovered panic must not leave it held (review 77b).
+func (k *Keys) announce(ctx context.Context) ([]byte, func([]byte), error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	now := k.now()
+	rows, err := k.live(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cur := currentOf(rows); cur != nil {
+		ok, err := k.usable(cur, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			return cur.announced, nil, nil
+		}
+	}
+	return k.createLocked(ctx, now, rows)
+}
+
 // usable reports whether r is not about to expire and its private key is in
 // the keystore and matches. A keystore failure other than "not found" is an
 // error: rotating then would orphan a key that may still be there (review L5).
+// An unavailable keystore (a locked keychain) counts as usable: the key is
+// most likely still there, and a needless rotation would announce a new key
+// to every peer (review 55 R55-092). A key that is really gone is then
+// replaced at the latest by the scheduled rotation. A host without a keychain
+// service is not "unavailable": the key can only be in the file, so a missing
+// file means a lost key (review 87 L2).
 func (k *Keys) usable(r *row, now time.Time) (bool, error) {
 	if !r.notAfter.After(now.Add(renewBefore)) {
 		return false, nil
 	}
-	priv, err := k.load(r.keyID)
-	switch {
-	case errors.Is(err, keystore.ErrNotFound):
+	pub, err := k.rowPub(r)
+	if err != nil {
 		return false, nil
+	}
+	_, err = k.load(r.keyID, pub)
+	switch {
+	case errors.Is(err, keystore.ErrNotFound), errors.Is(err, keystore.ErrMismatch):
+		return false, nil
+	case errors.Is(err, keystore.ErrUnavailable):
+		k.log.Warn("mailbox: keystore unavailable, keeping the current key", "event", "mailbox_error", "key_id", r.keyID, "error", err)
+		return true, nil
 	case err != nil:
 		return false, err
 	}
-	pub, _ := k.rowPub(r)
-	return pub != nil && string(priv.PublicKey().Bytes()) == string(pub), nil
+	return true, nil
 }
 
 func (k *Keys) rowPub(r *row) ([]byte, error) {
@@ -260,13 +277,18 @@ func (k *Keys) rowPub(r *row) ([]byte, error) {
 	return ann.Pub, nil
 }
 
-// load reads the private key of keyID from the keystore.
-func (k *Keys) load(keyID string) (*ecdh.PrivateKey, error) {
+// load reads the private key of keyID whose public key is pub from the
+// keystore. A copy with another public key (a key file planted by a process
+// that cannot reach the keychain) is ignored (review 87 M1).
+func (k *Keys) load(keyID string, pub []byte) (*ecdh.PrivateKey, error) {
 	ks, err := k.keystoreFor(keyID)
 	if err != nil {
 		return nil, err
 	}
-	seed, _, err := ks.Load()
+	seed, _, err := ks.LoadMatching(func(seed []byte) bool {
+		priv, err := ecdh.X25519().NewPrivateKey(seed)
+		return err == nil && string(priv.PublicKey().Bytes()) == string(pub)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +319,11 @@ func (k *Keys) MailboxKey(id mail.KeyID) (*ecdh.PrivateKey, bool) {
 		if t, ok := k.failed[r.keyID]; ok && now.Sub(t) < loadRetry && !now.Before(t) {
 			return nil, false
 		}
-		priv, err := k.load(r.keyID)
+		pub, err := k.rowPub(&r)
+		var priv *ecdh.PrivateKey
+		if err == nil {
+			priv, err = k.load(r.keyID, pub)
+		}
 		if err != nil {
 			if k.failed == nil {
 				k.failed = map[string]time.Time{}
@@ -329,18 +355,23 @@ func (k *Keys) forgetLocked(keyID string) {
 // than 3 would be live. It returns the announcement of the newly created key,
 // or nil if none was created.
 func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
+	ann, hook, err := k.rotate(ctx)
+	if hook != nil && ann != nil {
+		hook(ann)
+	}
+	return ann, err
+}
+
+// rotate is Rotate's work under k.mu; hook, if set, is run by the caller
+// without the lock.
+func (k *Keys) rotate(ctx context.Context) (ann []byte, hook func([]byte), cerr error) {
 	k.mu.Lock()
+	defer k.mu.Unlock()
 	now := k.now()
 	rows, err := k.live(ctx)
 	if err != nil {
-		k.mu.Unlock()
-		return nil, err
+		return nil, nil, err
 	}
-	var (
-		ann  []byte
-		hook func([]byte)
-		cerr error
-	)
 	cur := currentOf(rows)
 	need := cur == nil || !cur.created.Add(RotateAfter).After(now)
 	if !need {
@@ -353,11 +384,7 @@ func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
 	} else if cerr == nil {
 		cerr = k.sweepLocked(ctx, now, rows)
 	}
-	k.mu.Unlock()
-	if hook != nil && ann != nil {
-		hook(ann)
-	}
-	return ann, cerr
+	return ann, hook, cerr
 }
 
 // createLocked makes a new current key, retires the previous one and then
@@ -387,7 +414,8 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 	if err != nil {
 		return nil, nil, err
 	}
-	if _, _, err := ks.Save(seed); err != nil {
+	backend, _, err := ks.Save(seed)
+	if err != nil {
 		return nil, nil, fmt.Errorf("mailbox: store private key: %w", err)
 	}
 	at := now.UTC().Format(timeFmt)
@@ -405,8 +433,8 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 		_ = ks.Delete()
 		return nil, nil, fmt.Errorf("mailbox: retire: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_keys_own (key_id, pub, created, not_after, announcement) VALUES (?, ?, ?, ?, ?)`,
-		keyID, b64(pub), ann.Created.UTC().Format(timeFmt), ann.NotAfter.UTC().Format(timeFmt), string(signed)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_keys_own (key_id, pub, created, not_after, announcement, key_backend) VALUES (?, ?, ?, ?, ?, ?)`,
+		keyID, b64(pub), ann.Created.UTC().Format(timeFmt), ann.NotAfter.UTC().Format(timeFmt), string(signed), backend); err != nil {
 		_ = ks.Delete()
 		return nil, nil, fmt.Errorf("mailbox: record key: %w", err)
 	}
@@ -420,7 +448,7 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 		}
 	}
 	// Sweep with the new key included. A failed deletion is retried by the next run.
-	rows = append(retire(rows), row{keyID: keyID, created: ann.Created, notAfter: ann.NotAfter, announced: signed})
+	rows = append(retire(rows), row{keyID: keyID, created: ann.Created, notAfter: ann.NotAfter, announced: signed, backend: backend})
 	if err := k.sweepLocked(ctx, now, rows); err != nil {
 		k.log.Warn("mailbox: sweep failed", "event", "mailbox_error", "error", err)
 	}
@@ -447,13 +475,13 @@ func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error
 			keep = append(keep, r)
 			continue
 		}
-		if err := k.deleteKey(ctx, r.keyID, now); err != nil {
+		if err := k.deleteKey(ctx, r, now); err != nil {
 			errs = append(errs, err)
 			keep = append(keep, r) // still there, so it still counts as live
 		}
 	}
 	for len(keep) > MaxLive {
-		if err := k.deleteKey(ctx, keep[0].keyID, now); err != nil {
+		if err := k.deleteKey(ctx, keep[0], now); err != nil {
 			errs = append(errs, err)
 			break
 		}
@@ -463,14 +491,18 @@ func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error
 }
 
 // deleteKey removes the private key from the keystore and the cache and marks
-// the row. The row stays for audit.
-func (k *Keys) deleteKey(ctx context.Context, keyID string, now time.Time) error {
+// the row. The row stays for audit. A key saved to the keychain is not marked
+// deleted while this process sees no keychain service: the key may still be
+// in the user's keychain, so the row stays live and the delete is retried
+// (review 87b N3).
+func (k *Keys) deleteKey(ctx context.Context, r row, now time.Time) error {
+	keyID := r.keyID
 	k.forgetLocked(keyID)
 	ks, err := k.keystoreFor(keyID)
 	if err != nil {
 		return err
 	}
-	if err := ks.Delete(); err != nil {
+	if err := ks.DeleteSaved(r.backend); err != nil {
 		return fmt.Errorf("mailbox: delete key %s: %w", keyID, err)
 	}
 	if _, err := k.db.ExecContext(ctx, `UPDATE mailbox_keys_own SET deleted = ? WHERE key_id = ?`,
@@ -534,8 +566,8 @@ func (k *Keys) importLegacy(ctx context.Context) error {
 		}
 		return os.Remove(path)
 	}
-	if priv, err := k.load(keyID); err != nil || string(priv.PublicKey().Bytes()) != string(ann.Pub) {
-		if err != nil && !errors.Is(err, keystore.ErrNotFound) {
+	if _, err := k.load(keyID, ann.Pub); err != nil {
+		if !errors.Is(err, keystore.ErrNotFound) && !errors.Is(err, keystore.ErrMismatch) {
 			return fmt.Errorf("mailbox: import current.json: %w", err) // keep the file, try again
 		}
 		return os.Remove(path)

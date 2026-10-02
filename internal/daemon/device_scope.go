@@ -67,12 +67,48 @@ type DeviceScopeView struct {
 // controller, keyed on the controller's key (never the link id, review 36
 // L6), so a newer scope_set, a scope_clear or an unlink rejects the older
 // one. An approval's OnReject hook removes its entry (review 36 L8).
+//
+// A device_scope_set holds its controller's set lock from rejecting the older
+// approval until it has recorded its own, so that concurrent sets supersede
+// each other in turn, never both stay pending (review 55 R55-085). take waits
+// for that lock too, so a clear or an unlink cannot miss an approval being
+// created.
 type scopeApprovals struct {
-	mu sync.Mutex
-	m  map[string]string // controller key -> approval id
+	mu   sync.Mutex
+	m    map[string]string   // controller key -> approval id
+	sets map[string]*setLock // controller key -> its set lock, while used
 }
 
-func newScopeApprovals() *scopeApprovals { return &scopeApprovals{m: map[string]string{}} }
+// setLock is one controller's set lock; n counts its holders and waiters.
+type setLock struct {
+	mu sync.Mutex
+	n  int
+}
+
+func newScopeApprovals() *scopeApprovals {
+	return &scopeApprovals{m: map[string]string{}, sets: map[string]*setLock{}}
+}
+
+// lock takes peer's set lock and returns its release.
+func (s *scopeApprovals) lock(peer string) (unlock func()) {
+	s.mu.Lock()
+	l := s.sets[peer]
+	if l == nil {
+		l = &setLock{}
+		s.sets[peer] = l
+	}
+	l.n++
+	s.mu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if l.n--; l.n == 0 {
+			delete(s.sets, peer)
+		}
+	}
+}
 
 func (s *scopeApprovals) put(peer, id string) {
 	s.mu.Lock()
@@ -80,7 +116,15 @@ func (s *scopeApprovals) put(peer, id string) {
 	s.m[peer] = id
 }
 
+// take removes and returns peer's pending approval, after any
+// device_scope_set of peer under way has recorded its own.
 func (s *scopeApprovals) take(peer string) string {
+	defer s.lock(peer)()
+	return s.takeLocked(peer)
+}
+
+// takeLocked is take for a caller that holds peer's set lock.
+func (s *scopeApprovals) takeLocked(peer string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := s.m[peer]
@@ -217,8 +261,10 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		if err != nil {
 			return nil, err
 		}
-		// A newer scope supersedes one still waiting for its code.
-		if old := pending.take(peer.PublicKey); old != "" {
+		// A newer scope supersedes one still waiting for its code. The set
+		// lock is held until this approval is recorded (R55-085).
+		defer pending.lock(peer.PublicKey)()
+		if old := pending.takeLocked(peer.PublicKey); old != "" {
 			_, _ = apprStore.Reject(ctx, old, "superseded")
 		}
 		peerKey, linkID := peer.PublicKey, link.ID

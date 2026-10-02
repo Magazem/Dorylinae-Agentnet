@@ -206,6 +206,21 @@
     "name": "N17",
     "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"\",\"id\":\"s01\",\"name\":\"Skill 01\"},{\"description\":\"\",\"id\":\"s02\",\"name\":\"Skill 02\"},{\"description\":\"\",\"id\":\"s03\",\"name\":\"Skill 03\"},{\"description\":\"\",\"id\":\"s04\",\"name\":\"Skill 04\"},{\"description\":\"\",\"id\":\"s05\",\"name\":\"Skill 05\"},{\"description\":\"\",\"id\":\"s06\",\"name\":\"Skill 06\"},{\"description\":\"\",\"id\":\"s07\",\"name\":\"Skill 07\"},{\"description\":\"\",\"id\":\"s08\",\"name\":\"Skill 08\"},{\"description\":\"\",\"id\":\"s09\",\"name\":\"Skill 09\"},{\"description\":\"\",\"id\":\"s10\",\"name\":\"Skill 10\"},{\"description\":\"\",\"id\":\"s11\",\"name\":\"Skill 11\"},{\"description\":\"\",\"id\":\"s12\",\"name\":\"Skill 12\"},{\"description\":\"\",\"id\":\"s13\",\"name\":\"Skill 13\"},{\"description\":\"\",\"id\":\"s14\",\"name\":\"Skill 14\"},{\"description\":\"\",\"id\":\"s15\",\"name\":\"Skill 15\"},{\"description\":\"\",\"id\":\"s16\",\"name\":\"Skill 16\"},{\"description\":\"\",\"id\":\"s17\",\"name\":\"Skill 17\"},{\"description\":\"\",\"id\":\"s18\",\"name\":\"Skill 18\"},{\"description\":\"\",\"id\":\"s19\",\"name\":\"Skill 19\"},{\"description\":\"\",\"id\":\"s20\",\"name\":\"Skill 20\"},{\"description\":\"\",\"id\":\"s21\",\"name\":\"Skill 21\"},{\"description\":\"\",\"id\":\"s22\",\"name\":\"Skill 22\"},{\"description\":\"\",\"id\":\"s23\",\"name\":\"Skill 23\"},{\"description\":\"\",\"id\":\"s24\",\"name\":\"Skill 24\"},{\"description\":\"\",\"id\":\"s25\",\"name\":\"Skill 25\"},{\"description\":\"\",\"id\":\"s26\",\"name\":\"Skill 26\"},{\"description\":\"\",\"id\":\"s27\",\"name\":\"Skill 27\"},{\"description\":\"\",\"id\":\"s28\",\"name\":\"Skill 28\"},{\"description\":\"\",\"id\":\"s29\",\"name\":\"Skill 29\"},{\"description\":\"\",\"id\":\"s30\",\"name\":\"Skill 30\"},{\"description\":\"\",\"id\":\"s31\",\"name\":\"Skill 31\"},{\"description\":\"\",\"id\":\"s32\",\"name\":\"Skill 32\"},{\"description\":\"\",\"id\":\"s33\",\"name\":\"Skill 33\"}],\"version\":1},\"signature\":\"0ouqXvsFbA9vVXVDizSQktby6mS3VqQfi2dIAq_2yrY1BgC0KRSJylOdSTYH3XKHjfg6Wo4QyK3C8Sp-xA7oBw\"}",
     "fails_at": 5
+   },
+   {
+    "name": "N18",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\u202etset\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"HufKwTnEGRZEvhvEm874U66Jpt_BxzOkPI9wi1IrZ9HwezQXVylvCFz045n8TPpGfKT35o3UAImuU1U720k8DA\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "N19",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\\"test\\\" <é>\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b\\u2028c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"xd-mXEG-KehZtTVaZ9vT-dGWLKDpTtLkCEv0yeyX5WhDTonzLoC4UgxD6yyYcDCKpSqZ2UNrJUggjWQfxSZKCw\"}",
+    "fails_at": 5
+   },
+   {
+    "name": "P3",
+    "envelope": "{\"card\":{\"created\":\"2026-01-02T03:04:05Z\",\"harness\":\"custom\",\"name\":\"Ada \\ud83d\\udc69\\u200d\\ud83d\\udcbb \\u2764\\ufe0f\",\"public_key\":\"A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg\",\"skills\":[{\"description\":\"a/b & c\",\"id\":\"review\",\"name\":\"Code review\"}],\"version\":1},\"signature\":\"PO0Kh7tfYN0cC5qJMOz6SYAkbfKJazGC6UyF3e_jz9a8nm0S0ClJiSlxSd-FzonDmxmcJH5iOydFvmIcYoS9Bg\"}",
+    "fails_at": 0
    }
   ]
  }

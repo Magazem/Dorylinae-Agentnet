@@ -526,6 +526,12 @@ func registerDevice(srv *ipc.Server, ds *device.Store, apprStore *approval.Store
 		if err != nil {
 			return nil, err
 		}
+		// A local unlink moves the peer's watermark too: an offer it made
+		// before now, delivered late, cannot complete a re-link started
+		// within its 10 minutes (review 55 R55-161).
+		if err := ds.NoteUnlinkTx(ctx, tx, peer.PublicKey, now, now); err != nil {
+			return nil, err
+		}
 		// The mail is sent even when this device holds no active link: each
 		// side activates on its own, so one side can be active while the
 		// other's intent lapsed (Docs/protocol/device.md §Unlink and expiry).

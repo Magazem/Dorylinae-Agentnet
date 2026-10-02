@@ -598,10 +598,13 @@ DROP TABLE approvals;
 ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_state ON approvals (state, expires);
 `},
-	// PLACEHOLDER: version 26 is reserved for R55-F21 (unmerged branch) so that
-	// versions stay consecutive. Replace this entry with the real migration at
-	// merge.
-	{26, "reserved_r55_f21", `SELECT 1;`},
+	// The keystore backend each mailbox key was saved to (review 87b N3):
+	// "keychain" or "file", NULL for rows from before this migration. A
+	// keychain key is marked deleted only once a process that can reach the
+	// keychain deleted it.
+	{26, "mailbox_key_backend", `
+ALTER TABLE mailbox_keys_own ADD COLUMN key_backend TEXT;
+`},
 	// A request id is unique only per sender, so receive and submit look for a
 	// row with the same id alone (R55-F20, OD-F20-7 (b), review 91 S1): without
 	// this index that is a full scan (22.8 ms at 100k rows).
@@ -617,7 +620,7 @@ type Store struct {
 
 // Open opens (creating if needed) the database at path and applies migrations.
 func Open(ctx context.Context, path string) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)"
+	dsn := fileURI(path) + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -685,6 +688,11 @@ func (s *Store) apply(ctx context.Context, m migration) (err error) {
 	var current int
 	if err = conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM migrations`).Scan(&current); err != nil {
 		return err
+	}
+	// The newer-schema check is repeated under the write lock: another process
+	// may have migrated past this binary since migrate's first read (R55-173).
+	if current > len(migrations) {
+		return fmt.Errorf("database schema version %d is newer than this binary (%d)", current, len(migrations))
 	}
 	if current < m.version {
 		if current != m.version-1 {

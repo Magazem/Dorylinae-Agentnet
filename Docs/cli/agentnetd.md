@@ -5,7 +5,7 @@ registers itself as a per-user service ([agentnetd-install.md](agentnetd-install
 
 ```
 agentnetd [run] [--home DIR] [--relay URL] [--relay-ca FILE] [--log-file PATH] [--version]
-agentnetd install   [--home DIR] [--relay URL] [--relay-ca FILE] [--dry-run]
+agentnetd install   [--home DIR] [--relay URL] [--relay-ca FILE] [--allow-writable-program] [--dry-run]
 agentnetd uninstall [--home DIR] [--dry-run]
 agentnetd stop      [--home DIR]
 agentnetd version   [--json]

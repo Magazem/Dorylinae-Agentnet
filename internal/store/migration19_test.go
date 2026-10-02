@@ -111,7 +111,8 @@ func TestMigration19RebuildKeepsRows(t *testing.T) {
 		`DROP TABLE debate_constraints`,
 		`DROP TABLE decisions`,
 		`DROP TABLE experience_records`,
-		`DROP INDEX mail_inbox_received`, // migration 24; requests is rebuilt by 19
+		`ALTER TABLE mailbox_keys_own DROP COLUMN key_backend`, // migration 26
+		`DROP INDEX mail_inbox_received`,                       // migration 24; requests is rebuilt by 19
 		`DELETE FROM migrations WHERE version > 18`,
 	}
 	for _, q := range rewind {

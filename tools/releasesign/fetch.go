@@ -49,19 +49,71 @@ var (
 // ghTimeout bounds one gh call (an archive download included).
 var ghTimeout = 10 * time.Minute
 
+// Size caps (review 62 F3S-01): every gh output is read into memory, so each
+// is bounded. A draft asset whose listed size is over its cap is refused
+// before it is downloaded; a download that grows past the cap anyway stops
+// gh and is refused. The six archives are a few tens of MiB each.
+var (
+	maxAPIBytes     int64 = 32 << 20  // one API answer, all pages
+	maxLogBytes     int64 = 16 << 20  // one job log
+	maxSumsBytes    int64 = 64 << 10  // SHA256SUMS
+	maxArchiveBytes int64 = 200 << 20 // one release archive
+)
+
 // gh runs the GitHub CLI with an argv list, never through a shell, and
-// returns its stdout. Any non-zero exit (an API error, a page that failed
-// mid-pagination) is an error.
-func gh(args ...string) ([]byte, error) {
+// returns its stdout, at most maxAPIBytes of it. Any non-zero exit (an API
+// error, a page that failed mid-pagination) is an error.
+func gh(args ...string) ([]byte, error) { return ghCapped(maxAPIBytes, args...) }
+
+// capWriter buffers at most limit bytes; one byte more stops the gh process.
+type capWriter struct {
+	buf    bytes.Buffer
+	limit  int64
+	over   bool
+	cancel context.CancelFunc
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	if int64(w.buf.Len())+int64(len(p)) > w.limit {
+		w.over = true
+		w.cancel()
+		return 0, errors.New("size cap exceeded")
+	}
+	return w.buf.Write(p)
+}
+
+// maxStderrBytes bounds the gh stderr kept for an error message.
+const maxStderrBytes = 64 << 10
+
+// headWriter keeps the first limit bytes and silently discards the rest.
+type headWriter struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (w *headWriter) Write(p []byte) (int, error) {
+	if room := w.limit - w.buf.Len(); room > 0 {
+		w.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+// ghCapped is gh with a cap of limit bytes on stdout.
+func ghCapped(limit int64, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...) //nolint:gosec // fixed program; every argument is validated; no shell
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, printable(strings.TrimSpace(errb.String())))
+	out := &capWriter{limit: limit, cancel: cancel}
+	errb := &headWriter{limit: maxStderrBytes}
+	cmd.Stdout, cmd.Stderr = out, errb
+	err := cmd.Run()
+	if out.over {
+		return nil, fmt.Errorf("gh %s: the output is larger than the %d-byte cap; refusing", strings.Join(args, " "), limit)
 	}
-	return out.Bytes(), nil
+	if err != nil {
+		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, printable(strings.TrimSpace(errb.buf.String())))
+	}
+	return out.buf.Bytes(), nil
 }
 
 // printable drops control characters (terminal escapes) from text that came
@@ -150,8 +202,9 @@ type ghJobsPage struct {
 }
 
 type ghAsset struct {
-	ID   json.Number `json:"id"`
-	Name string      `json:"name"`
+	ID   json.Number  `json:"id"`
+	Name string       `json:"name"`
+	Size *json.Number `json:"size"`
 }
 
 type ghRelease struct {
@@ -234,7 +287,7 @@ func cmdFetch(args []string, stdout io.Writer) error {
 	}
 	logged := map[string]bool{}
 	for _, j := range sumsJobs {
-		raw, err := gh("api", "--allow-escape-sequences", "repos/"+f.repo+"/actions/jobs/"+j+"/logs")
+		raw, err := ghCapped(maxLogBytes, "api", "--allow-escape-sequences", "repos/"+f.repo+"/actions/jobs/"+j+"/logs")
 		if err != nil {
 			return fmt.Errorf("log check: sums job %s: %w", j, err)
 		}
@@ -255,7 +308,7 @@ func cmdFetch(args []string, stdout io.Writer) error {
 	}
 	goLine := "unavailable"
 	if buildJob != "" {
-		if raw, err := gh("api", "--allow-escape-sequences", "repos/"+f.repo+"/actions/jobs/"+buildJob+"/logs"); err == nil {
+		if raw, err := ghCapped(maxLogBytes, "api", "--allow-escape-sequences", "repos/"+f.repo+"/actions/jobs/"+buildJob+"/logs"); err == nil {
 			if m := goVersionRe.Find(raw); m != nil {
 				goLine = string(m)
 			}
@@ -373,8 +426,11 @@ func (f fetcher) checkRun(r ghRun) (string, error) {
 // checkJobs checks the jobs of EVERY attempt of the run (a "re-run failed
 // jobs" attempt reuses earlier jobs and their artifacts, spec review 57a-1):
 // each job that got a runner ran on a GitHub-hosted one, and every job of the
-// latest attempt succeeded. It returns the ids of the sums jobs of all
-// attempts and one build job (for the Go version line).
+// latest attempt succeeded. A successful job with no runner field set at all
+// is accepted only as a reused job: the same job id, under the same name,
+// succeeded with runner data in an earlier attempt (review 62 F3S-02,
+// review 93 L-1). It returns the ids of the sums jobs of
+// all attempts and one build job (for the Go version line).
 func (f fetcher) checkJobs(runID string, attemptN json.Number) ([]string, string, error) {
 	attempts, err := strconv.Atoi(string(attemptN))
 	if err != nil || attempts < 1 || attempts > maxAttempts || !idRe.MatchString(string(attemptN)) {
@@ -382,6 +438,7 @@ func (f fetcher) checkJobs(runID string, attemptN json.Number) ([]string, string
 	}
 	var sums []string
 	seenSums := map[string]bool{}
+	ranOK := map[string]string{} // job id -> name, for jobs that succeeded on a checked runner in an earlier attempt
 	build := ""
 	for n := 1; n <= attempts; n++ {
 		raw, err := gh("api", "--paginate", fmt.Sprintf("repos/%s/actions/runs/%s/attempts/%d/jobs?per_page=100", f.repo, runID, n))
@@ -399,13 +456,17 @@ func (f fetcher) checkJobs(runID string, attemptN json.Number) ([]string, string
 		if total, err := strconv.Atoi(string(pages[0].TotalCount)); err != nil || total != len(jobs) || total == 0 {
 			return nil, "", fmt.Errorf("job check: attempt %d: the job list is incomplete (%d jobs, total_count %q); refusing", n, len(jobs), printable(string(pages[0].TotalCount)))
 		}
+		ranNow := map[string]string{}
 		for _, j := range jobs {
 			jid, err := apiID("job", j.ID)
 			if err != nil {
 				return nil, "", fmt.Errorf("job check: %w", err)
 			}
 			ran := j.RunnerName != "" || (j.RunnerID != nil && *j.RunnerID != "0" && *j.RunnerID != "")
-			if ran {
+			// Any runner field set (a group included) gets the full runner
+			// check, so only a job with none of them can be vouched for
+			// (review 93 L-1).
+			if ran || j.RunnerGroupID != nil || j.RunnerGroupName != "" {
 				if j.RunnerGroupName != hostedGroup || j.RunnerGroupID == nil || *j.RunnerGroupID != "0" {
 					gid := "null"
 					if j.RunnerGroupID != nil {
@@ -414,8 +475,13 @@ func (f fetcher) checkJobs(runID string, attemptN json.Number) ([]string, string
 					return nil, "", fmt.Errorf("runner check: attempt %d job %q ran on runner %q in group %q (id %s), not a GitHub-hosted runner; %s",
 						n, printable(j.Name), printable(j.RunnerName), printable(j.RunnerGroupName), printable(gid), refuseHint)
 				}
-			} else if j.Conclusion == "success" {
-				return nil, "", fmt.Errorf("runner check: attempt %d job %q succeeded but reports no runner; refusing", n, printable(j.Name))
+			}
+			if ran && j.Conclusion == "success" {
+				ranNow[jid] = j.Name
+			} else if !ran && j.Conclusion == "success" {
+				if name, ok := ranOK[jid]; !ok || name != j.Name {
+					return nil, "", fmt.Errorf("runner check: attempt %d job %q (%s) succeeded but reports no runner, and no earlier attempt ran it under that name; refusing", n, printable(j.Name), jid)
+				}
 			}
 			if n == attempts && (j.Status != "completed" || j.Conclusion != "success") {
 				return nil, "", fmt.Errorf("job check: job %q of attempt %d is %q/%q, want completed/success", printable(j.Name), n, printable(j.Status), printable(j.Conclusion))
@@ -427,6 +493,9 @@ func (f fetcher) checkJobs(runID string, attemptN json.Number) ([]string, string
 			if build == "" && strings.HasPrefix(j.Name, "build (") {
 				build = jid
 			}
+		}
+		for jid, name := range ranNow {
+			ranOK[jid] = name
 		}
 	}
 	if len(sums) == 0 {
@@ -491,6 +560,7 @@ func (f fetcher) fetchDraft(logged map[string]bool) (string, map[string][]byte, 
 		return "", nil, "", fmt.Errorf("release check: release %s (%s) is not a draft; %s", f.tag, relID, refuseHint)
 	}
 	assets := map[string]string{}
+	sizes := map[string]int64{}
 	for _, a := range rel.Assets {
 		aid, err := apiID("asset", a.ID)
 		if err != nil {
@@ -499,13 +569,21 @@ func (f fetcher) fetchDraft(logged map[string]bool) (string, map[string][]byte, 
 		if _, dup := assets[a.Name]; dup {
 			return "", nil, "", fmt.Errorf("release check: the draft has two assets named %q", printable(a.Name))
 		}
+		if a.Size == nil {
+			return "", nil, "", fmt.Errorf("release check: API returned no size for asset %q; refusing", printable(a.Name))
+		}
+		size, err := strconv.ParseInt(string(*a.Size), 10, 64)
+		if err != nil || size < 0 {
+			return "", nil, "", fmt.Errorf("release check: API returned a malformed size %q for asset %q; refusing", printable(string(*a.Size)), printable(a.Name))
+		}
 		assets[a.Name] = aid
+		sizes[a.Name] = size
 	}
 	sumsID, ok := assets["SHA256SUMS"]
 	if !ok {
 		return "", nil, "", errors.New("release check: the draft has no SHA256SUMS")
 	}
-	sums, err := f.asset(sumsID)
+	sums, err := f.asset("SHA256SUMS", sumsID, sizes["SHA256SUMS"], maxSumsBytes)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("release check: SHA256SUMS: %w", err)
 	}
@@ -538,7 +616,7 @@ func (f fetcher) fetchDraft(logged map[string]bool) (string, map[string][]byte, 
 	}
 	files := map[string][]byte{"SHA256SUMS": sums}
 	for name, sum := range want {
-		b, err := f.asset(assets[name])
+		b, err := f.asset(name, assets[name], sizes[name], maxArchiveBytes)
 		if err != nil {
 			return "", nil, "", fmt.Errorf("release check: %s: %w", name, err)
 		}
@@ -550,8 +628,21 @@ func (f fetcher) fetchDraft(logged map[string]bool) (string, map[string][]byte, 
 	return relID, files, digest, nil
 }
 
-func (f fetcher) asset(id string) ([]byte, error) {
-	return gh("api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", "repos/"+f.repo+"/releases/assets/"+id)
+// asset downloads one draft asset. It refuses the asset unread when its
+// listed size is over limit, stops the download if it grows past limit, and
+// refuses a download whose length is not the listed size (review 93 L-2).
+func (f fetcher) asset(name, id string, size, limit int64) ([]byte, error) {
+	if size > limit {
+		return nil, fmt.Errorf("draft asset %s is %d bytes, over the %d-byte cap; %s", name, size, limit, refuseHint)
+	}
+	b, err := ghCapped(limit, "api", "--allow-escape-sequences", "-H", "Accept: application/octet-stream", "repos/"+f.repo+"/releases/assets/"+id)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) != size {
+		return nil, fmt.Errorf("draft asset %s: downloaded %d bytes, the release lists %d; %s", name, len(b), size, refuseHint)
+	}
+	return b, nil
 }
 
 // checkTagRef checks the tag on GitHub still resolves (peeling an annotated

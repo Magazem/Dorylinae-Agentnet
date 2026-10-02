@@ -80,7 +80,10 @@ func TestUnverifiedPeerReadsTrustInTx(t *testing.T) {
 	check(true, "relaypeer", true)
 	check(true, "codepeer", false)
 	check(true, "teampeer", false)
-	check(true, "unknown", false)
+	// A peer with no row (removed after the mail layer's paired check) is
+	// refused, never read as "not relay" (review 55 R55-080).
+	check(true, "unknown", true)
+	check(false, "unknown", false)
 	check(false, "relaypeer", false)
 
 	// A read error is returned, never treated as "not relay".

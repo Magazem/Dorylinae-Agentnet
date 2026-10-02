@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/zalando/go-keyring"
@@ -143,16 +144,20 @@ func TestFileFallbackWhenKeychainUnavailable(t *testing.T) {
 	}
 }
 
-func TestLoadNotFoundMentionsUnavailableKeychain(t *testing.T) {
+// Review 55 R55-092 (C05-01): when the only other backend is empty, an
+// unavailable keychain is reported as unavailable, not as "not found": it
+// may hold the secret.
+func TestLoadUnavailableKeychainIsNotNotFound(t *testing.T) {
 	keyring.MockInitWithError(errors.New("no secret service"))
+	defer keyring.MockInit()
 	dir := testutil.TempDir(t)
 	s := keystore.New(keystore.NewKeychain(keystore.AccountFor(dir)), keystore.NewFile(filepath.Join(dir, "k")))
 	_, _, err := s.Load()
-	if !errors.Is(err, keystore.ErrNotFound) {
-		t.Fatalf("want ErrNotFound, got %v", err)
+	if !errors.Is(err, keystore.ErrUnavailable) || errors.Is(err, keystore.ErrNotFound) {
+		t.Fatalf("want ErrUnavailable only, got %v", err)
 	}
-	if err.Error() == keystore.ErrNotFound.Error() {
-		t.Fatal("error should say the keychain was skipped")
+	if !strings.Contains(err.Error(), "keychain") {
+		t.Fatalf("error should say the keychain was skipped: %v", err)
 	}
 }
 

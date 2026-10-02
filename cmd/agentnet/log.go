@@ -17,8 +17,8 @@ import (
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
-	"github.com/Magazem/Dorylinae-Agentnet/internal/notify"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 )
@@ -31,6 +31,19 @@ const (
 	logVerifyTimeout = 120 * time.Second
 	logPage          = 1000
 )
+
+// logWait is how long the CLI waits for the log: --timeout when it was given
+// explicitly (any mode, R55-130), else 120 s for --verify (audit_verify is
+// exempt from the 2 s rule, audit.md §Verification) and 15 s otherwise.
+func logWait(verify, timeoutSet bool, timeout int) time.Duration {
+	switch {
+	case timeoutSet:
+		return time.Duration(timeout) * time.Second
+	case verify:
+		return logVerifyTimeout
+	}
+	return logListTimeout
+}
 
 // anchorFlags collects the repeatable --anchor ID:HASH.
 type anchorFlags []string
@@ -60,9 +73,9 @@ const logUsage = `Shows the audit log and checks its hash chain.
 
 Usage:
   agentnet log [--since DURATION|TIME] [--until TIME] [--session ID] [--action PREFIX]
-               [--limit N] [--json]
+               [--limit N] [--timeout SECONDS] [--json]
   agentnet log --verify [--anchor ID:HASH]... [--timeout SECONDS] [--json]
-  agentnet log --head [--json]
+  agentnet log --head [--timeout SECONDS] [--json]
 
 Flags:
   --since D|T     only rows at or after this time: a duration back from now
@@ -75,7 +88,7 @@ Flags:
   --verify        check the whole hash chain; exit 5 if it is broken
   --anchor I:H    with --verify: the row with id I must still have hash H (repeatable)
   --head          print the newest row's id, hash and time, to keep as an anchor
-  --timeout S     with --verify: seconds to wait (default 120)
+  --timeout S     seconds to wait (default 120 with --verify, 15 otherwise)
   --json          print machine-readable JSON on stdout:
                   {"ok":true,"events":[{"id","ts","actor","action","detail","hash"}]},
                   {"ok":true,"verify":{"status","rows","legacy_rows","chained_from",
@@ -148,11 +161,9 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failJSON(*asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
 	}
-	wait := logListTimeout
-	if *verify {
-		// audit_verify is exempt from the 2 s rule (audit.md §Verification).
-		wait = time.Duration(*timeout) * time.Second
-	}
+	timeoutSet := false
+	fs.Visit(func(f *flag.Flag) { timeoutSet = timeoutSet || f.Name == "timeout" })
+	wait := logWait(*verify, timeoutSet, *timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
 	src, err := openLogSource(ctx, p, stderr)
@@ -168,7 +179,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 			return logFail(*asJSON, stdout, stderr, p, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(logHeadBody{OK: true, Head: h})
+			writeJSON(stdout, logHeadBody{OK: true, Head: h})
 		} else if h == nil {
 			_, _ = fmt.Fprintln(stdout, "The audit log is empty.")
 		} else {
@@ -181,7 +192,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 			return logFail(*asJSON, stdout, stderr, p, err)
 		}
 		if *asJSON {
-			_ = json.NewEncoder(stdout).Encode(logVerifyBody{OK: true, Verify: res.Verify})
+			writeJSON(stdout, logVerifyBody{OK: true, Verify: res.Verify})
 		}
 		return printVerify(*asJSON, stdout, stderr, res.Verify)
 	}
@@ -207,7 +218,7 @@ func runLog(args []string, stdout, stderr io.Writer) int {
 		if events == nil {
 			events = []audit.Entry{}
 		}
-		_ = json.NewEncoder(stdout).Encode(logEventsBody{OK: true, Events: events})
+		writeJSON(stdout, logEventsBody{OK: true, Events: events})
 		return exitOK
 	}
 	for _, e := range events {
@@ -238,7 +249,7 @@ func printVerify(asJSON bool, stdout, stderr io.Writer, v *audit.VerifyResult) i
 	broken := v.Status == audit.StatusBroken
 	if !asJSON {
 		if broken {
-			_, _ = fmt.Fprintf(stderr, "agentnet: the audit log is BROKEN at row %d: %s\n", v.FirstBad, v.Reason)
+			_, _ = fmt.Fprintf(stderr, "agentnet: the audit log is BROKEN at row %d: %s\n", v.FirstBad, displaytext.Term(v.Reason))
 		} else {
 			_, _ = fmt.Fprintf(stdout, "The audit log is intact: %d rows checked", v.Rows)
 			if v.LegacyRows > 0 {
@@ -246,7 +257,8 @@ func printVerify(asJSON bool, stdout, stderr io.Writer, v *audit.VerifyResult) i
 			}
 			_, _ = fmt.Fprintln(stdout, ".")
 		}
-		if v.Head != nil {
+		// A broken chain is not a head worth anchoring (R55-129).
+		if v.Head != nil && !broken {
 			_, _ = fmt.Fprintf(stdout, "head %d %s (keep it as an anchor: --anchor %d:%s)\n", v.Head.ID, v.Head.Hash, v.Head.ID, v.Head.Hash)
 		}
 	}
@@ -257,14 +269,14 @@ func printVerify(asJSON bool, stdout, stderr io.Writer, v *audit.VerifyResult) i
 }
 
 // formatEvent is one line: "ts actor action key=value ...", every part through
-// the control-character cleaner (detail is content-free, but a key or name from
-// a peer must not inject terminal escapes).
+// displaytext.Term (R55-F10; detail is content-free, but a key or name from a
+// peer must not inject terminal escapes or reorder the line).
 func formatEvent(e audit.Entry) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s %s", notify.Clean(e.TS, 0), notify.Clean(e.Actor, 0), notify.Clean(e.Action, 0))
+	fmt.Fprintf(&b, "%s %s %s", displaytext.Term(e.TS), displaytext.Term(e.Actor), displaytext.Term(e.Action))
 	var d map[string]json.RawMessage
 	if err := json.Unmarshal(e.Detail, &d); err != nil {
-		if s := notify.Clean(string(e.Detail), 0); s != "" {
+		if s := displaytext.Term(string(e.Detail)); s != "" {
 			b.WriteString(" detail=" + s)
 		}
 		return b.String()
@@ -279,7 +291,7 @@ func formatEvent(e audit.Entry) string {
 		if compact, err := compactJSON(v); err == nil {
 			v = compact
 		}
-		b.WriteString(" " + notify.Clean(k, 0) + "=" + notify.Clean(string(v), 0))
+		b.WriteString(" " + displaytext.Term(k) + "=" + displaytext.Term(string(v)))
 	}
 	return b.String()
 }
@@ -386,7 +398,7 @@ func logFail(asJSON bool, stdout, stderr io.Writer, p paths.Paths, err error) in
 	case errors.Is(err, audit.ErrBadParams), errors.Is(err, audit.ErrBadAnchor):
 		return failJSON(asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 	case errors.Is(err, context.DeadlineExceeded):
-		return failJSON(asJSON, stdout, stderr, exitError, "timeout", "the log did not answer in time (raise --timeout for --verify)")
+		return failJSON(asJSON, stdout, stderr, exitError, "timeout", "the log did not answer in time (raise --timeout)")
 	default:
 		return failJSON(asJSON, stdout, stderr, exitError, "daemon_error", err.Error())
 	}

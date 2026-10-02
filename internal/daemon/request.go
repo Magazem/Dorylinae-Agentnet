@@ -167,8 +167,14 @@ func newRequestStore(db *sql.DB, self string, ob *mail.Outbox, log *audit.Log, t
 			if !nonLoopbackRelay {
 				return false, nil
 			}
-			trust, err := trustOfTx(tx, peer)
-			return trust == peers.TrustRelay, err
+			trust, ok, err := trustOfTx(tx, peer)
+			if err != nil {
+				return false, err
+			}
+			// A peer removed since the mail layer's paired check has no
+			// trust to vouch for it: D5 refuses it as unverified, never
+			// reads the missing row as "not relay" (review 55 R55-080).
+			return !ok || trust == peers.TrustRelay, nil
 		},
 	}
 }
@@ -448,16 +454,18 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams, position any) st
 }
 
 // trustOfTx reads a peer's trust through tx instead of the connection pool:
-// see mail.TxOutboxPeers for why this matters inside apply's transaction. An
-// unknown peer has trust "" (the mail layer only opens mail from paired
-// peers); any other read error is returned so that D5 never fails open.
-func trustOfTx(tx *sql.Tx, peer string) (string, error) {
-	var t string
-	err := tx.QueryRow(`SELECT trust FROM peers WHERE public_key = ?`, peer).Scan(&t)
+// see mail.TxOutboxPeers for why this matters inside apply's transaction. ok
+// is false for a peer with no row (removed after the mail layer's paired
+// check); any other read error is returned so that D5 never fails open.
+func trustOfTx(tx *sql.Tx, peer string) (trust string, ok bool, err error) {
+	err = tx.QueryRow(`SELECT trust FROM peers WHERE public_key = ?`, peer).Scan(&trust)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return "", false, nil
 	}
-	return t, err
+	if err != nil {
+		return "", false, err
+	}
+	return trust, true, nil
 }
 
 // presenceBrief reads the presence brief of Docs/protocol/ipc.md for peer:

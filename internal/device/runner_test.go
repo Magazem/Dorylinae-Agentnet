@@ -209,13 +209,13 @@ func TestCheckTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckTarget(prog, dir); err != nil {
+	if err := CheckTarget(prog, dir, nil); err != nil {
 		t.Fatalf("unchanged target: %v", err)
 	}
-	if CheckTarget(filepath.Join(dir, "missing"), dir) == nil || CheckTarget(dir, dir) == nil {
+	if CheckTarget(filepath.Join(dir, "missing"), dir, nil) == nil || CheckTarget(dir, dir, nil) == nil {
 		t.Fatal("a missing program or a directory as the program passed")
 	}
-	if CheckTarget(prog, filepath.Join(dir, "gone")) == nil {
+	if CheckTarget(prog, filepath.Join(dir, "gone"), nil) == nil {
 		t.Fatal("a missing directory passed")
 	}
 	// The repo replaced by a link to another directory.
@@ -224,7 +224,7 @@ func TestCheckTarget(t *testing.T) {
 	if err := os.Mkdir(repo, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckTarget(prog, repo); err != nil {
+	if err := CheckTarget(prog, repo, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(repo); err != nil {
@@ -233,7 +233,7 @@ func TestCheckTarget(t *testing.T) {
 	if err := os.Symlink(other, repo); err != nil {
 		t.Skipf("cannot create a symlink here: %v", err)
 	}
-	if CheckTarget(prog, repo) == nil {
+	if CheckTarget(prog, repo, nil) == nil {
 		t.Fatal("a repo swapped for a symlink passed")
 	}
 }

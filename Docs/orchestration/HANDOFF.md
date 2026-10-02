@@ -32,17 +32,21 @@ Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Me
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
 
 **WAVE R55-L (review-55 Lows, D63) — STARTED 2026-10-01, base main eb283bf.** Tickets: F10, F16, F17b, F20, F21, F22, F25–F34, F8c, F3c, F6b (F15 deferred). Owner decisions D64 (AppendTx for security actions, F31), D65 (document D20, F34), D66 (blanking needs a digit, F6b).
-Batch 1 (worktrees AgentNet-wt/r55-<x>, branches p4/r55-<x>):
-| Ticket | Slot | Model | State |
-|---|---|---|---|
-| F16 relay ops | R55-F16-Sonnet `01a0f89f-c0f4…` | Sonnet | coding |
-| F22 Windows hardening | R55-F22-Sonnet `01a0f89f-c393…` | Sonnet | coding |
-| F25 device runner | R55-F25-Opus `01a0f89f-c64b…` | Opus | coding (security review after) |
-| F32 CI coverage | R55-F32-Lite `01a0f89f-c8cd…` | Lite | coding |
-| F33 harness | R55-F33-Lite `01a0f89f-cb76…` | Lite | coding |
-| F10 spec | R55-F10spec-Opus `01a0f89f-cdf7…` | Opus | 82-r55-f10-spec.md |
-| F20 spec | R55-F20spec-Opus `01a0f89f-d0a3…` | Opus | 83-r55-f20-spec.md (+ R55-163 OD) |
-| F31 spec | R55-F31spec-Opus `01a0f89f-d28c…` | Opus | 84-r55-f31-spec.md (D64) |
+Live state (2026-10-02). Specs approved + on main: F20 (D67), F31 (D68), F10 (D70). Owner: D69 (install refuses writable program), D71 (env shebang resolved on PATH). Merged: #42 (TestQueryFilters date time bomb — main red on 2026-10-01).
+| Ticket | Slot | State |
+|---|---|---|
+| F32 CI coverage | (retired) | PR #40 — rerunning after main merge |
+| F33 harness | (retired) | PR #41 — rerunning after main merge |
+| F22 Windows hardening | (retired) | review 85 approve + fixes (D69); PR #43 in CI |
+| F16 relay ops | R55-F16fix-Sonnet `01a0f987-9db8…` | gate clean; review 88 fixes (F1 setup.sh, F2 restore chown, F3, F5) |
+| F21 keystore | R55-F21fix-Opus `01a0f987-9c16…` | review 87 changes requested (M1 newer-wins substitution, M2 locked delete) → fixing |
+| F25 device runner | R55-F25fix-Opus `01a0f987-9c7f…` | review 86 pass; fixing M1 (D71), L1–L5 |
+| F20 code | R55-F20-Opus `01a0f987-9f2c…` | coding |
+| F10 code | R55-F10-Opus `01a0f987-a069…` | coding (then F30) |
+**Update 2026-10-02 ~09:00:** merged since: F33 (#41), F32 (#40), F22 (#43), F16 (#44), F27 (#46). In flight: F25 (#45 green; D72 tweak), F21 (round-3 fixes; focused check 87c), F10 (review 90 approve-after-fix → fixing), F20 (review 91 approve, Lows → fixing; index migration **27**, placeholder 26), F29 spec (review 92b), F17b, F3c. **Daemon migrations: 26 = F21 mailbox_keys_own.key_backend, 27 = F20 requests_id index.**
+**Update 2026-10-02 ~10:00:** F25 merged (#45). F21 PR #48 (gate clean; merge before F20). F10 #47 in CI. F20 review-91 fixes committed `99c296f` (lint clean; replace placeholder 26 after F21 merges). F3c committed `ec4744d` → security review 93 (R55-F3csec-Opus `01a0fb2d-a8f9…`). F29 spec approved (D73) → on main; code next (after F20 merges, since it builds on F20's debate changes). F17b coding (`01a0fb25-a178…`).
+**Update 2026-10-02 ~11:00:** merged F10 (#47), F3c (#49). F21 #48: merged main (identity.go conflict with F10 resolved: keep F21's keystore cases + F10's LegacyText report) → CI rerun. F26 PR #50 (gate clean). F17b review 94: M1 (refund made pairing-start loops free → refuse before newSession) + L1/L2 → reviewer fixing, then independent re-check 94b. F30 coded (D74) → finishing R55-130. F6b (Opus) coding, plan in 95-r55-f6b-plan.md. Next: F20 after F21 merges (replace placeholder 26), then F29 code; F28, F8c after F21; F31; F34; SMOKE.
+Remaining: F26, F28, F8c, F6b (D66), F29 (spec; after F20), F30 (after F10), F31 code (after F27 for approval/store.go), F34 docs last (D65; R55-179 doc from F32; R55-201 OD), SMOKE-refresh. Watch: relay TestQueueSweepTickBudget once failed under load (Close during sweep 1.25 s vs 1 s). Time-bomb candidates listed by the fixer: daemon/reject_summary_internal_test.go:67,80; cmd/agentnet/prune_test.go:104; approvaltext_test.go:112,139 — check in F34/F33 follow-up.
 Added tickets: **SMOKE-refresh** (Sonnet; tests/phase1-smoke.ps1/.sh stale vs current behaviour — relay output file name, `peers verify` approval (D48), team invite/join flow; 42 failures found by F33's run), **FIX-audit-timebomb** (TestQueryFilters hard-coded 2026-10-01 dates vs a row written now — fails on main from 2026-10-01; FIX-AuditTimebomb-Lite running). F33 → PR #41; F32 → PR #40.
 Batch 2 (when slots free; sequence by files): F21 keystore (Opus), F26 lifecycle (Sonnet), F27 fail-closed (Opus, approval/store.go with F17b), F28 clock steps (Opus), F17b (Opus), F8c, F3c, F6b (D66); then F10 code → F30 (both cmd/agentnet), F20 code → F29 (debate; spec, D14 R55-221), F31 code, F34 docs last (D65; D14 R55-201 OneDrive as OD). Next free review number: 85. Next daemon migration: 26.
 
@@ -330,6 +334,9 @@ team-invite table prune and `team_delete` not cancelling pending invites (18).
 | D69 | 2026-10-01 (review 85 F3): **`agentnetd install` refuses a daemon binary (or folder) writable by other users**, with an explicit override flag (e.g. `--allow-writable-program`); `doctor` also reports it. Ticket F22. |
 | D70 | 2026-10-01: **R55-F10 spec approved** (Docs/review/82-r55-f10-spec.md + review 82b): OD-F10-1..9 all (a) — new cards refuse bidi controls + U+2028/2029 (emoji allowed); Verify at pairing/creation, VerifyStored for stored cards/rosters; one CLI renderer (displayTerm); --json escapes hidden runes (identity --json excluded); grant branch refuses hidden runes; multi-line fields as indented blocks; column-width shifts accepted and documented. Vectors N18, N19, P3. |
 | D71 | 2026-10-02 (review 86 M1): **helper scripts with `#!/usr/bin/env X`: resolve X on the run's PATH and apply the same ownership check to the program found** (npm/npx/yarn/pnpm keep working; the interpreter is still checked). Ticket F25. |
+| D72 | 2026-10-02 (review 86b L2): **a helper program that is executable but not readable is refused, set-ID or not** (its #! line can't be checked; fail closed). Ticket F25. |
+| D73 | 2026-10-02: **R55-F29 spec approved** (Docs/review/92-r55-f29-spec.md + review 92b). OD-F29-1 (D14, R55-221) = **(b)**: B may abandon at once before its answer; after it, `bad_state` until A's close is held on B or the answer's `at` + `turn_timeout_s` has passed. OD-F29-2..7 all (a): new `debate.refused` notification (both sides); 120 s connected grace after a connect or a detected resume, with a re-dial on resume; `debate_show`/`debate_list` sweep first; B's bad-peer closes record `cancelled_by: respondent` + `cause`; the disagreement count comes from the stored Decision; a bad `--turn-timeout` is exit 2. Coder notes: the sessionError mapping for `*debate.BadStateError` (plan 14) is required. cli/notify.md debate-events drift goes to F34. |
+| D74 | 2026-10-02 (F30 ODs): **R55-130: `agentnet log` honours an explicitly given --timeout in list/head mode too.** **R55-165 (consult wait scans every request per poll): deferred** to the next ticket that adds a daemon migration (needs a derived-id column). |
 | D53 | 2026-09-30: **R55-F2 spec approved** (Docs/review/66-r55-f2-spec.md + review 66b): OD-R55F2-1..8 (a), **OD-9 (c)** (no relay-wide redelivery ceiling now; add with accounts or IPv6), OD-10 (a) (per-prefix wait list). Takes migration R3; the Phase 4 plan's R3–R6 become R4–R7. |
 | D54 | 2026-09-30: **R55-F18 spec approved** (Docs/review/69-r55-f18-spec.md + review 69b): OD-F18-1..9 all (a). New ack member `rejected` (sent alone); migration 22 `work_sessions.runner` (also undo it in internal/audit/chain_test.go rewind, not only store_test.go). Code after F12. |
 | D55 | 2026-09-30: **R55-F23 spec approved** (Docs/review/68-r55-f23-spec.md + review 68b): OD-1..6 all (a). Vectors P1, N1–N15. |

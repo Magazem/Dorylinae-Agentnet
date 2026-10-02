@@ -106,7 +106,7 @@ either.
 | Field | Notes |
 |-------|-------|
 | `ok` | `false` when `state` is `failed` or the request itself failed |
-| `pairing_id` | Stable id to poll with `--status` |
+| `pairing_id` | Stable id to poll with `--status`, except for a `code_used` failure: that code is refused before a pairing exists, so `--status` with its id answers `unknown_pairing` |
 | `role` | `issuer` (`--new`) or `redeemer` (`<code>`) |
 | `state` | `pending`, `complete` or `failed` |
 | `code`, `expires` | Issuer only, while `pending` and once the relay issued the code (absent if the relay has not answered yet; poll again). Dropped when the pairing ends |
