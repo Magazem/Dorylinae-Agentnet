@@ -598,6 +598,16 @@ DROP TABLE approvals;
 ALTER TABLE approvals_new RENAME TO approvals;
 CREATE INDEX approvals_state ON approvals (state, expires);
 `},
+	// PLACEHOLDER: version 26 is reserved for R55-F21 (unmerged branch) so that
+	// versions stay consecutive. Replace this entry with the real migration at
+	// merge.
+	{26, "reserved_r55_f21", `SELECT 1;`},
+	// A request id is unique only per sender, so receive and submit look for a
+	// row with the same id alone (R55-F20, OD-F20-7 (b), review 91 S1): without
+	// this index that is a full scan (22.8 ms at 100k rows).
+	{27, "requests_id_index", `
+CREATE INDEX requests_id ON requests (id);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

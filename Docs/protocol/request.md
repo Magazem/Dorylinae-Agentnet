@@ -829,6 +829,11 @@ CREATE INDEX requests_introducer_state ON requests (direction, introducer, intro
 CREATE INDEX requests_introducer_time ON requests (direction, introducer, introduced_at, received_at);
 ```
 
+```sql
+-- migration 27 (R55-F20, review 91 S1): the receive and submit id-collision check
+CREATE INDEX requests_id ON requests (id);
+```
+
 The daily cap counts with the existing `requests_peer_time` index. The full migration, with
 the `mail_inbox` index for `prune`, is in [retention.md §Migration](retention.md#migration).
 

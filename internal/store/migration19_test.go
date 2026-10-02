@@ -213,8 +213,8 @@ func TestMigration19RebuildKeepsRows(t *testing.T) {
 	}
 	var afterIdx []string
 	for _, idx := range append(indexes(t, s, "requests"), indexes(t, s, "approvals")...) {
-		// Migration 24 (R55-F13) adds these after 19 has run.
-		if strings.HasPrefix(idx, "requests_peer_state:") || strings.HasPrefix(idx, "requests_introducer_") {
+		// Migrations 24 (R55-F13) and 27 (R55-F20) add these after 19 has run.
+		if strings.HasPrefix(idx, "requests_peer_state:") || strings.HasPrefix(idx, "requests_introducer_") || strings.HasPrefix(idx, "requests_id:") {
 			continue
 		}
 		afterIdx = append(afterIdx, idx)

@@ -89,6 +89,30 @@ func TestIDCollisionSessions(t *testing.T) {
 	}
 }
 
+// Review 91 S3: an old session-less request row with the same id makes the r-
+// shorthand ambiguous, though only one session carries it.
+func TestIDCollisionSessionlessRequest(t *testing.T) {
+	a, b, teamID := consultPair(t)
+	var res daemon.RequestSubmitResult
+	a.call("request_submit", daemon.RequestSubmitParams{To: b.key, Type: "task", Team: teamID, Title: "t", Brief: "What: x"}, &res)
+	harnessWait(t, "B to store the task", func() bool {
+		return b.count(`SELECT COUNT(*) FROM requests WHERE direction = 'in' AND id = '`+res.ID+`'`) == 1
+	})
+	b.call("request_accept", map[string]any{"id": res.ID, "from": a.key}, &daemon.RequestShowResult{})
+	harnessWait(t, "A's requester session", func() bool {
+		return a.count(`SELECT COUNT(*) FROM work_sessions WHERE id = '`+res.Session+`'`) == 1
+	})
+	cloneRow(t, a, "requests", `direction = 'out' AND id = ?`, `direction = 'in', peer = '`+peerC+`'`, res.ID)
+	if code, _ := callCode(t, a, "ws_show", map[string]any{"id": res.ID}); code != daemon.CodeAmbiguousRequest {
+		t.Errorf("session plus a session-less in row: ws_show r- = %q, want ambiguous_request", code)
+	}
+	var v daemon.SessionShowResult
+	a.call("ws_show", map[string]any{"id": res.Session}, &v)
+	if v.Session.ID != res.Session {
+		t.Errorf("ws_show s- = %s, want %s", v.Session.ID, res.Session)
+	}
+}
+
 // Acceptance test 8: the one-step answer resolves only `in` rows.
 func TestIDCollisionOneStepAnswer(t *testing.T) {
 	a, b, teamID := consultPair(t)

@@ -298,14 +298,44 @@ func (s *Store) GetByRequestID(ctx context.Context, requestID string) (View, err
 	if err := rows.Close(); err != nil {
 		return View{}, err
 	}
-	switch len(found) {
-	case 0:
+	if len(found) == 0 {
 		return View{}, ErrUnknownSession
-	case 1:
-		return toView(found[0])
-	default:
+	}
+	// A session-less request row with the same id (an old collision) makes the
+	// shorthand ambiguous too (review 91 S3): count (direction, peer) pairs
+	// across sessions and requests rows, as audit's r- lookup does.
+	type pair struct{ direction, peer string }
+	pairs := map[pair]bool{}
+	for _, r := range found {
+		direction := "in"
+		if r.role == string(RoleRequester) {
+			direction = "out"
+		}
+		pairs[pair{direction, r.peer}] = true
+	}
+	reqRows, err := s.DB.QueryContext(ctx, `SELECT direction, peer FROM requests WHERE id = ?`, requestID)
+	if err != nil {
+		return View{}, fmt.Errorf("worksession: read requests: %w", err)
+	}
+	for reqRows.Next() {
+		var p pair
+		if err := reqRows.Scan(&p.direction, &p.peer); err != nil {
+			_ = reqRows.Close()
+			return View{}, fmt.Errorf("worksession: read request: %w", err)
+		}
+		pairs[p] = true
+	}
+	if err := reqRows.Err(); err != nil {
+		_ = reqRows.Close()
+		return View{}, fmt.Errorf("worksession: read requests: %w", err)
+	}
+	if err := reqRows.Close(); err != nil {
+		return View{}, err
+	}
+	if len(found) > 1 || len(pairs) > 1 {
 		return View{}, ErrAmbiguousRequest
 	}
+	return toView(found[0])
 }
 
 // GetTx is Get read through tx, for callers that must check a session's

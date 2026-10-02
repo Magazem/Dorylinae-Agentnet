@@ -226,7 +226,7 @@ func TestTombstonedRowKeepsNoContentWhenRefused(t *testing.T) {
 			ctx := context.Background()
 			now := time.Now()
 			req := receivedRequest()
-			if err := deliverMirror(t, s, KindCancel, testFrom, now, map[string]any{"at": wireTime(now), "request": req.ID}); err != nil {
+			if err := deliverMirror(t, s, KindCancel, testFrom, now, map[string]any{"at": wireTime(now), "request": req.ID, "reason": "PEER TEXT"}); err != nil {
 				t.Fatal(err)
 			}
 			if err := deliverRequest(t, s, req, now.Add(time.Second)); err != nil {
@@ -250,6 +250,11 @@ func TestTombstonedRowKeepsNoContentWhenRefused(t *testing.T) {
 			}
 			if wantTitle := map[bool]string{true: req.Title, false: ""}[tc.wantBody]; v.Title != wantTitle {
 				t.Errorf("title = %q, want %q", v.Title, wantTitle)
+			}
+			// Review 91 S2: the refused peer's cancel reason is dropped with
+			// its content; a verified member's is kept.
+			if wantReason := map[bool]string{true: "PEER TEXT", false: ""}[tc.wantBody]; v.Reason != wantReason {
+				t.Errorf("reason = %q, want %q", v.Reason, wantReason)
 			}
 			if tc.wantBody {
 				return

@@ -456,7 +456,7 @@ func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opene
 		return false, fmt.Errorf("request: encode last_reply: %w", err)
 	}
 	var reasonArg any
-	if reason.Valid {
+	if reason.Valid && code == "" {
 		reasonArg = reason.String
 	}
 	if _, err := tx.ExecContext(ctx, `
