@@ -83,10 +83,14 @@ say so in the release notes. Installers already downloaded keep the old key.
    - exactly one run of `release.yml`, from a tag **push**, was built from COMMIT;
    - no other push run exists for this tag (if one does, the tag was moved on GitHub:
      stop, see below);
-   - every job succeeded on a GitHub-hosted runner;
+   - every job succeeded on a GitHub-hosted runner (after "Re-run failed jobs", a job
+     the new attempt reused, listed without a runner, counts only if an earlier attempt
+     ran that same job on a GitHub-hosted runner);
    - the `sums` log carries exactly one `release-sums-sha256:` value;
    - exactly one release is named vX.Y.Z, it is a draft, and it holds only the six
      archives and `SHA256SUMS`;
+   - no file is too big: at most 64 KiB for `SHA256SUMS` and 200 MiB per archive. A
+     bigger file is refused before or while it downloads;
    - the draft's `SHA256SUMS` has that digest;
    - every draft archive matches its line;
    - the tag on GitHub still points to COMMIT.
@@ -139,7 +143,8 @@ say so in the release notes. Installers already downloaded keep the old key.
 - the run was built from another commit;
 - there are two push runs for the tag, or two releases named vX.Y.Z;
 - your tag push was rejected, or the tag on GitHub points elsewhere;
-- the draft holds a file other than the six archives and `SHA256SUMS`;
+- the draft holds a file other than the six archives and `SHA256SUMS`, or a file over
+  `fetch`'s size cap;
 - the digests differ;
 - a job ran on a runner that is not GitHub-hosted.
 

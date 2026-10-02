@@ -137,6 +137,13 @@ func hostedJob(id int, name string) obj {
 		"runner_group_id": 0, "runner_group_name": "GitHub Actions", "labels": []string{"ubuntu-latest"}}
 }
 
+// reusedJob is a successful job listed without runner data, as a "re-run
+// failed jobs" attempt may list a job it reused (spec 57 §8 V5).
+func reusedJob(id int, name string) obj {
+	return obj{"id": id, "name": name, "status": "completed", "conclusion": "success",
+		"runner_id": nil, "runner_name": nil, "runner_group_id": nil, "runner_group_name": nil, "labels": []string{"ubuntu-latest"}}
+}
+
 func goodJobs() []obj {
 	return []obj{hostedJob(2001, "meta"), hostedJob(2002, "test"), hostedJob(2003, "build (linux, amd64)"),
 		hostedJob(2004, "build (windows, arm64)"), hostedJob(3001, "sums"), hostedJob(2005, "install-sh"),
@@ -177,11 +184,11 @@ func newFixture(version, salt string) *fixture {
 		3001: sumsLog(sha256Of(sums)),
 		2003: "2026-09-28T17:34:50.0000000Z go version go1.27.0 linux/amd64\n",
 	}
-	assets := []obj{{"id": 6000, "name": "SHA256SUMS"}}
+	assets := []obj{{"id": 6000, "name": "SHA256SUMS", "size": len(sums)}}
 	f.assets[6000] = sums
 	i := 6001
 	for name, b := range archives {
-		assets = append(assets, obj{"id": i, "name": name})
+		assets = append(assets, obj{"id": i, "name": name, "size": len(b)})
 		f.assets[i] = b
 		i++
 	}
@@ -433,12 +440,33 @@ func TestFetchRefuses(t *testing.T) {
 		}, want: "found 2"},
 		"release is not a draft": {mutate: func(f *fixture) { draft(f)["draft"] = false }, want: "not a draft"},
 		"extra asset on the draft": {mutate: func(f *fixture) {
-			draft(f)["assets"] = append(draft(f)["assets"].([]obj), obj{"id": 6100, "name": "install.sh"})
+			draft(f)["assets"] = append(draft(f)["assets"].([]obj), obj{"id": 6100, "name": "install.sh", "size": 100})
 		}, want: `"install.sh"`},
 		"archive asset missing": {mutate: func(f *fixture) {
 			draft(f)["assets"] = draft(f)["assets"].([]obj)[:6]
 		}, want: "the draft has no"},
 		"non-numeric asset id": {mutate: func(f *fixture) { draft(f)["assets"].([]obj)[0]["id"] = "6000/../../x" }, want: "malformed"},
+		"asset without a size": {mutate: func(f *fixture) { delete(draft(f)["assets"].([]obj)[1], "size") }, want: "no size for asset"},
+		"negative asset size":  {mutate: func(f *fixture) { draft(f)["assets"].([]obj)[1]["size"] = -1 }, want: "malformed size"},
+		"SHA256SUMS listed over its cap": {mutate: func(f *fixture) {
+			draft(f)["assets"].([]obj)[0]["size"] = 1 << 20
+		}, want: "SHA256SUMS is 1048576 bytes, over the 65536-byte cap"},
+		"archive listed over its cap": {mutate: func(f *fixture) {
+			draft(f)["assets"].([]obj)[1]["size"] = 300 << 20
+		}, want: "is 314572800 bytes, over the 209715200-byte cap"},
+		"successful job with no runner": {mutate: func(f *fixture) {
+			f.attempts[1][1] = reusedJob(2002, "test")
+		}, want: "attempt 1 job \"test\" (2002) succeeded but reports no runner"},
+		"re-run lists a no-runner job no earlier attempt ran": {mutate: func(f *fixture) {
+			cand(f)["run_attempt"] = 2
+			f.attempts[1][6]["conclusion"] = "failure"
+			f.attempts[2] = []obj{reusedJob(2999, "build (linux, amd64)"), hostedJob(2106, "homebrew"), hostedJob(2107, "draft")}
+		}, want: "attempt 2 job \"build (linux, amd64)\" (2999) succeeded but reports no runner"},
+		"re-run lists as reused a job that failed earlier": {mutate: func(f *fixture) {
+			cand(f)["run_attempt"] = 2
+			f.attempts[1][6]["conclusion"] = "failure"
+			f.attempts[2] = []obj{reusedJob(2006, "homebrew"), hostedJob(2107, "draft")}
+		}, want: "attempt 2 job \"homebrew\" (2006) succeeded but reports no runner"},
 		"tag on GitHub moved after the run": {mutate: func(f *fixture) {
 			f.tagRef["object"] = obj{"type": "commit", "sha": fxOther}
 		}, want: "it was moved"},
@@ -493,6 +521,72 @@ func TestFetchAcceptsHostedPartialRerun(t *testing.T) {
 	}
 	if jobs != 2 {
 		t.Fatalf("listed the jobs of %d attempts, want 2", jobs)
+	}
+}
+
+// A partial re-run that lists the jobs it reused without runner data is
+// accepted when attempt 1 ran each of them, by id, on a hosted runner
+// (review 62 F3S-02).
+func TestFetchAcceptsRerunListingReusedJobsWithoutRunner(t *testing.T) {
+	f := goodFixture()
+	f.runPages[0][1]["run_attempt"] = 2
+	f.attempts[1][6]["conclusion"] = "failure"
+	var a2 []obj
+	for _, j := range f.attempts[1] {
+		switch j["name"] {
+		case "homebrew":
+			a2 = append(a2, hostedJob(2106, "homebrew"))
+		case "draft":
+			a2 = append(a2, hostedJob(2107, "draft"))
+		default:
+			a2 = append(a2, reusedJob(j["id"].(int), j["name"].(string)))
+		}
+	}
+	f.attempts[2] = a2
+	r := runFetch(t, f, releaseArgs...)
+	if r.code != 0 {
+		t.Fatalf("rc=%d stderr=%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "expected sha256: "+sha256Of(f.sums)+"\n") {
+		t.Fatalf("stdout does not print the expected digest:\n%s", r.stdout)
+	}
+}
+
+// Output that grows past its cap is refused even when the listed asset size
+// is small (review 62 F3S-01): the size field is not trusted alone.
+func TestFetchRefusesOutputOverCap(t *testing.T) {
+	for name, c := range map[string]struct {
+		cap  *int64
+		want string
+	}{
+		"SHA256SUMS": {&maxSumsBytes, "/releases/assets/6000: the output is larger than the 64-byte cap"},
+		"archive":    {&maxArchiveBytes, "the output is larger than the 64-byte cap"},
+		"sums log":   {&maxLogBytes, "/actions/jobs/3001/logs: the output is larger than the 64-byte cap"},
+		"API answer": {&maxAPIBytes, "per_page=100: the output is larger than the 64-byte cap"},
+	} {
+		t.Run(strings.ReplaceAll(name, " ", "_"), func(t *testing.T) {
+			old := *c.cap
+			*c.cap = 64
+			defer func() { *c.cap = old }()
+			f := goodFixture()
+			for _, a := range f.releases[0][1]["assets"].([]obj) {
+				a["size"] = 1 // a lying size
+			}
+			if name == "archive" {
+				for id := range f.assets {
+					if id != 6000 {
+						f.assets[id] = bytes.Repeat([]byte("x"), 65)
+					}
+				}
+			}
+			r := runFetch(t, f, releaseArgs...)
+			if r.code == 0 {
+				t.Fatalf("fetch accepted it:\n%s", r.stdout)
+			}
+			if !strings.Contains(r.stderr, c.want) {
+				t.Fatalf("stderr %q, want %q", r.stderr, c.want)
+			}
+		})
 	}
 }
 
