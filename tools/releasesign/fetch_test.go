@@ -144,6 +144,36 @@ func reusedJob(id int, name string) obj {
 		"runner_id": nil, "runner_name": nil, "runner_group_id": nil, "runner_group_name": nil, "labels": []string{"ubuntu-latest"}}
 }
 
+// partialRerun makes the candidate run a "re-run failed jobs" of a failed
+// homebrew: attempt 2 runs homebrew and draft anew and lists every other job
+// of attempt 1 as reuse(job) returns it.
+func partialRerun(f *fixture, reuse func(j obj) obj) {
+	f.runPages[0][1]["run_attempt"] = 2
+	f.attempts[1][6]["conclusion"] = "failure"
+	var a2 []obj
+	for _, j := range f.attempts[1] {
+		switch j["name"] {
+		case "homebrew":
+			a2 = append(a2, hostedJob(2106, "homebrew"))
+		case "draft":
+			a2 = append(a2, hostedJob(2107, "draft"))
+		default:
+			a2 = append(a2, reuse(j))
+		}
+	}
+	f.attempts[2] = a2
+}
+
+// listedAsset is the draft's listing of asset id.
+func listedAsset(f *fixture, id int) obj {
+	for _, a := range f.releases[0][1]["assets"].([]obj) {
+		if a["id"] == id {
+			return a
+		}
+	}
+	panic(fmt.Sprintf("no listed asset %d", id))
+}
+
 func goodJobs() []obj {
 	return []obj{hostedJob(2001, "meta"), hostedJob(2002, "test"), hostedJob(2003, "build (linux, amd64)"),
 		hostedJob(2004, "build (windows, arm64)"), hostedJob(3001, "sums"), hostedJob(2005, "install-sh"),
@@ -432,6 +462,7 @@ func TestFetchRefuses(t *testing.T) {
 			for id, b := range f.assets {
 				if id != 6000 && bytes.Contains(b, []byte("linux_amd64")) {
 					f.assets[id] = []byte("trojan")
+					listedAsset(f, id)["size"] = len("trojan")
 				}
 			}
 		}, want: "archive check"},
@@ -467,6 +498,26 @@ func TestFetchRefuses(t *testing.T) {
 			f.attempts[1][6]["conclusion"] = "failure"
 			f.attempts[2] = []obj{reusedJob(2006, "homebrew"), hostedJob(2107, "draft")}
 		}, want: "attempt 2 job \"homebrew\" (2006) succeeded but reports no runner"},
+		"reused job listed in a self-hosted group": {mutate: func(f *fixture) {
+			partialRerun(f, func(j obj) obj {
+				r := reusedJob(j["id"].(int), j["name"].(string))
+				r["runner_group_id"], r["runner_group_name"] = 7, "evil"
+				return r
+			})
+		}, want: "attempt 2 job \"meta\" ran on runner \"\" in group \"evil\" (id 7), not a GitHub-hosted runner"},
+		"reused job listed under another name": {mutate: func(f *fixture) {
+			partialRerun(f, func(j obj) obj {
+				name := j["name"].(string)
+				if name == "test" {
+					name = "renamed-test"
+				}
+				return reusedJob(j["id"].(int), name)
+			})
+		}, want: "attempt 2 job \"renamed-test\" (2002) succeeded but reports no runner, and no earlier attempt ran it under that name"},
+		"listed size differs from the download": {mutate: func(f *fixture) {
+			draft(f)["assets"].([]obj)[1]["size"] = 1
+		}, want: "the release lists 1; do not sign"},
+		"non-integer asset size": {mutate: func(f *fixture) { draft(f)["assets"].([]obj)[1]["size"] = 1.5 }, want: "malformed size \"1.5\""},
 		"tag on GitHub moved after the run": {mutate: func(f *fixture) {
 			f.tagRef["object"] = obj{"type": "commit", "sha": fxOther}
 		}, want: "it was moved"},
@@ -525,30 +576,92 @@ func TestFetchAcceptsHostedPartialRerun(t *testing.T) {
 }
 
 // A partial re-run that lists the jobs it reused without runner data is
-// accepted when attempt 1 ran each of them, by id, on a hosted runner
-// (review 62 F3S-02).
+// accepted when attempt 1 ran each of them, by id and name, on a hosted
+// runner (review 62 F3S-02, review 93 L-1).
 func TestFetchAcceptsRerunListingReusedJobsWithoutRunner(t *testing.T) {
 	f := goodFixture()
-	f.runPages[0][1]["run_attempt"] = 2
-	f.attempts[1][6]["conclusion"] = "failure"
-	var a2 []obj
-	for _, j := range f.attempts[1] {
-		switch j["name"] {
-		case "homebrew":
-			a2 = append(a2, hostedJob(2106, "homebrew"))
-		case "draft":
-			a2 = append(a2, hostedJob(2107, "draft"))
-		default:
-			a2 = append(a2, reusedJob(j["id"].(int), j["name"].(string)))
-		}
-	}
-	f.attempts[2] = a2
+	partialRerun(f, func(j obj) obj { return reusedJob(j["id"].(int), j["name"].(string)) })
 	r := runFetch(t, f, releaseArgs...)
 	if r.code != 0 {
 		t.Fatalf("rc=%d stderr=%s", r.code, r.stderr)
 	}
 	if !strings.Contains(r.stdout, "expected sha256: "+sha256Of(f.sums)+"\n") {
 		t.Fatalf("stdout does not print the expected digest:\n%s", r.stdout)
+	}
+}
+
+// A second "re-run failed jobs" may again list attempt 1's jobs without
+// runner data: attempt 1 still vouches for them in attempt 3.
+func TestFetchAcceptsThreeAttemptRerunChain(t *testing.T) {
+	f := goodFixture()
+	partialRerun(f, func(j obj) obj { return reusedJob(j["id"].(int), j["name"].(string)) })
+	f.attempts[2][6]["conclusion"] = "failure" // homebrew failed again
+	f.attempts[2][7] = obj{"id": 2107, "name": "draft", "status": "completed", "conclusion": "skipped"}
+	var a3 []obj
+	for _, j := range f.attempts[2] {
+		switch j["name"] {
+		case "homebrew":
+			a3 = append(a3, hostedJob(2206, "homebrew"))
+		case "draft":
+			a3 = append(a3, hostedJob(2207, "draft"))
+		default:
+			a3 = append(a3, j)
+		}
+	}
+	f.attempts[3] = a3
+	f.runPages[0][1]["run_attempt"] = 3
+	r := runFetch(t, f, releaseArgs...)
+	if r.code != 0 {
+		t.Fatalf("rc=%d stderr=%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "(attempt 3)") {
+		t.Fatalf("stdout does not name attempt 3:\n%s", r.stdout)
+	}
+}
+
+// An asset exactly at its cap is accepted: the cap refuses only more.
+func TestFetchAcceptsAssetsAtTheirCap(t *testing.T) {
+	f := goodFixture()
+	n := 0
+	for _, b := range f.archives {
+		n = max(n, len(b))
+	}
+	oldA, oldS := maxArchiveBytes, maxSumsBytes
+	maxArchiveBytes, maxSumsBytes = int64(n), int64(len(f.sums))
+	defer func() { maxArchiveBytes, maxSumsBytes = oldA, oldS }()
+	if r := runFetch(t, f, releaseArgs...); r.code != 0 {
+		t.Fatalf("rc=%d stderr=%s", r.code, r.stderr)
+	}
+}
+
+// The build log only feeds the information-only Go version line: one over
+// the cap leaves that line "unavailable" and does not stop fetch.
+func TestFetchBuildLogOverCapIsNotFatal(t *testing.T) {
+	f := goodFixture()
+	old := maxLogBytes
+	maxLogBytes = int64(len(f.logs[3001]))
+	defer func() { maxLogBytes = old }()
+	f.logs[2003] = strings.Repeat("go version go1.27.0 linux/amd64\n", 100)
+	r := runFetch(t, f, releaseArgs...)
+	if r.code != 0 {
+		t.Fatalf("rc=%d stderr=%s", r.code, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "build:   unavailable (information only)") {
+		t.Fatalf("stdout does not show the build line as unavailable:\n%s", r.stdout)
+	}
+}
+
+// gh stderr is kept up to its cap for the error message; the rest is
+// discarded without failing the write.
+func TestHeadWriterKeepsOnlyTheHead(t *testing.T) {
+	w := &headWriter{limit: 4}
+	for _, s := range []string{"ab", "cdef", "gh"} {
+		if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = %d, %v", s, n, err)
+		}
+	}
+	if got := w.buf.String(); got != "abcd" {
+		t.Fatalf("kept %q, want %q", got, "abcd")
 	}
 }
 
@@ -570,7 +683,9 @@ func TestFetchRefusesOutputOverCap(t *testing.T) {
 			defer func() { *c.cap = old }()
 			f := goodFixture()
 			for _, a := range f.releases[0][1]["assets"].([]obj) {
-				a["size"] = 1 // a lying size
+				if name != "archive" || a["id"] != 6000 {
+					a["size"] = 1 // a lying size
+				}
 			}
 			if name == "archive" {
 				for id := range f.assets {

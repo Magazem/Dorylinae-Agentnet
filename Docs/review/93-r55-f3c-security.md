@@ -184,3 +184,48 @@ What an attacker can and cannot do:
 - Draft assets: duplicate names are refused, ids are validated, and there must be
   exactly seven assets (unchanged).
 - Nothing is written on any refusal (the `runFetch` assertion, plus the scratch cases).
+
+## Fixes applied
+
+The fixes were applied by R55-F3csec-Opus on top of `880b1c0`. `go vet ./tools/...` and
+`go test ./tools/... -count=1` pass. I checked that the tests catch regressions: undoing
+each fix by hand (the group clause, the name check, the length check, and `>` changed to
+`>=`) makes exactly the matching new test fail.
+
+- **L-1** (`tools/releasesign/fetch.go:466-485`)
+  - **What changed:** a job with any runner field set, including the group fields, now
+    gets the full hosted-group check. A successful job with no runner data passes only
+    if `ranOK[jid]` (now a map from job id to name, filled after each attempt) holds the
+    same name.
+  - **Tests:** "reused job listed in a self-hosted group" and "reused job listed under
+    another name".
+  - **Side effect:** a skipped job that GitHub lists with partial group data (for
+    example group id 0 but no group name) is now refused. That is fail-closed, and A9
+    should confirm it does not happen.
+- **L-2** (`fetch.go:631-646`)
+  - **What changed:** `asset` refuses a download whose length differs from the listed
+    `size`.
+  - **Tests:** "listed size differs from the download". Two existing tests were
+    adjusted to keep testing what they were written for. "draft archive does not match
+    its line" now lists the new content's size, so it still reaches the hash check.
+    `TestFetchRefusesOutputOverCap/archive` keeps `SHA256SUMS`'s honest size.
+- **I-1** (`fetch.go:85-98`, `:107`)
+  - **What changed:** gh stderr goes to a `headWriter` that keeps 64 KiB and discards
+    the rest.
+  - **Tests:** `TestHeadWriterKeepsOnlyTheHead`.
+- **I-2** (`tools/releasesign/fetch_test.go`)
+  - Non-integer size: the "non-integer asset size" case (`1.5`).
+  - `TestFetchAcceptsThreeAttemptRerunChain`.
+  - `TestFetchAcceptsAssetsAtTheirCap` (both `SHA256SUMS` and archives exactly at
+    their cap).
+  - `TestFetchBuildLogOverCapIsNotFatal`.
+  - The re-run fixture is now shared in `partialRerun`.
+- **I-3** (`Docs/ops/release-signing.md`)
+  - The re-run rule now says "without any runner data … under the same name,
+    successfully".
+  - The size item now says each file must be exactly its listed size, and that a
+    `sums` log over 16 MiB or an API answer over 32 MiB stops `fetch`.
+  - The "stop if" list now names a size mismatch.
+  - I left an oversized log or API answer off the "someone changed the repository"
+    list, because a busy repository can cause it too.
+- **I-4:** nothing to change. It is for A9.
