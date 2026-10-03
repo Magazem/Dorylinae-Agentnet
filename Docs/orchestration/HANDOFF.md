@@ -4,7 +4,7 @@ Read this first if you are a fresh Orchestrator instance. It is the single sourc
 for *where we are*. Update it after every merge and owner decision. The full per-wave
 record up to the end of Phase 1 is archived in `Docs/orchestration/history.md`.
 
-Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Medium wave (D46) DONE; next = owner's pick (F17b, Lows, follow-ups).
+Last updated: 2026-10-03, home PC. **Read §0 "START HERE" first.** Review-55 Low wave (D63) DONE; all review-55 tickets merged except F15 (deferred). Next = owner's pick.
 
 ## 0. Status and next steps
 
@@ -30,6 +30,15 @@ Last updated: 2026-10-01, home PC. **Read §0 "START HERE" first.** Review-55 Me
 | F24 | Presence and teams | small | **D8** | any time |
 
 **Owner answered D2/D8/D10/D12 → D47–D50 (§3).** R55-009 is High pending verification.
+
+**WAVE R55-L (review-55 Lows, D63) — DONE 2026-10-03.** All tickets merged with green CI on 3 OSes + race: F33 (#41), F32 (#40), F22 (#43), F16 (#44), F27 (#46), F25 (#45), F10 (#47), F3c (#49), F26 (#50), F30 (#51), F6b (#53), F21 (#48, migration 26), F17b (#52), F20 (#54, migration 27), SMOKE-refresh (#55), F31 (#56), F8c (#57), F28 (#58), F29 (#59), F34 (#60); plus #42 (TestQueryFilters time bomb). Security-sensitive tickets each had an Opus security review (reviews 85–101, with re-checks 87b/87c, 94b, 100b). Decisions this wave: D63–D77. Daemon migrations end at 27. F15 stays deferred (accounts gate).
+
+**Backlog (owner picks):** R55-165 consult-wait scan (needs migration 28, D74); F28 L2 clock backlog (mailbox keys, outbox, presence stay on the wall clock); F31 review 97 backlog (RunSoft retry for hook and mail-apply S- sites; test-strength items); F21 87c C2/C3; F12 L1; F23 I2/I3; F8c-03 note; fetch error hint for OneDrive (D77 chose docs only); review 96 residuals (O/I/l for 0/1, groups >8 apart).
+
+**Owner manual checks (before a release):** run tests/phase1-smoke.sh on a real Linux or macOS machine (only the .ps1 was run); macOS launchd log reopen (F14); D7 two-account Windows pipe check; F8c-04 elevated old CLI stopping an elevated old daemon (Docs/beta/known-limitations.md); optional: delete %TEMP%dorylinae-p1-smoke-* scratch dirs by hand.
+
+**Next:** owner's pick (release prep, backlog, or a new review). Local worktrees AgentNet-wt/r55-* can be removed with `git worktree remove` once the owner agrees (never recursive deletes).
+
 
 **WAVE R55-L (review-55 Lows, D63) — STARTED 2026-10-01, base main eb283bf.** Tickets: F10, F16, F17b, F20, F21, F22, F25–F34, F8c, F3c, F6b (F15 deferred). Owner decisions D64 (AppendTx for security actions, F31), D65 (document D20, F34), D66 (blanking needs a digit, F6b).
 Live state (2026-10-02). Specs approved + on main: F20 (D67), F31 (D68), F10 (D70). Owner: D69 (install refuses writable program), D71 (env shebang resolved on PATH). Merged: #42 (TestQueryFilters date time bomb — main red on 2026-10-01).
