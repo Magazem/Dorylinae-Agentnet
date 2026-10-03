@@ -30,7 +30,7 @@ func TestMigration22Runner(t *testing.T) {
 
 	// Back to schema 21 with one row, then reopen.
 	for _, q := range []string{
-		`DROP INDEX requests_id`, // migration 27
+		`DROP INDEX requests_id`,                               // migration 27
 		`ALTER TABLE mailbox_keys_own DROP COLUMN key_backend`, // migration 26
 		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`, // migration 24

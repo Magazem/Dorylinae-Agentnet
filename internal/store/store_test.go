@@ -267,7 +267,7 @@ func TestConcurrentOpenAppliesMigrationsOnce(t *testing.T) {
 			// alters work_sessions). Migrations 23 (R55-F24) and 25 (R55-F13)
 			// only rebuild approvals with a wider kind CHECK and add no table
 			// or column: nothing to undo, they replay over any approvals form.
-			`DROP INDEX requests_id`, // migration 27
+			`DROP INDEX requests_id`,                               // migration 27
 			`ALTER TABLE mailbox_keys_own DROP COLUMN key_backend`, // migration 26
 			`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 			`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
