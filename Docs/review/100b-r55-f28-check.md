@@ -179,3 +179,60 @@ Mismatches:
   main (review 100).
 - The probe file was created and deleted inside the worktree. Nothing else was written except
   this file.
+
+## Fixes applied
+
+Applied by the re-checker (task 01a10105), with no git used. I backed up the changed files
+to `%TEMP%\f28n1bak` first.
+
+- **N1 (the preferred fix).**
+  - `mail.SeenNewest` (`internal/mail/receiver.go`) returns the raw `MAX(received_at)`, not
+    capped at `now`. `SeenBasis` now calls it, and its behaviour is unchanged.
+  - `spareOf` (`internal/mailbox/mailbox.go`) picks the newest retired key whose `created` is
+    at most that stamp + 10 min: the last key peers can have accepted.
+  - In `sweepLocked`'s cap loop, when the normal victim (`capVictim`: future-dated first, then
+    the oldest retired, never the current key) is the spared key:
+    - with 4 keys live, the loop stops;
+    - with more than 4, it deletes the next candidate (`capVictim(..., skip)`).
+  - So at most `MaxLive + 1` keys stay live. With no mail, or if the query fails (the error
+    is returned), nothing is spared and the cap works as before.
+  - Behaviour by case:
+    - Steady clock with mail: the victim is never the spared key, so the schedule is
+      unchanged.
+    - Long step: K_n is kept.
+    - Idle daemon: the last key created before the newest mail is kept until mail arrives.
+      Every later key still goes at 21 days.
+- **Comments.** The package doc, `MaxLive`, `Rotate` and `sweepLocked` now name the spare.
+- **Spec.** `Docs/protocol/mail.md` §Lifecycle:
+  - The old sentence "the oldest of three … whose successor has been current for at least 7
+    days" is replaced by two bullets.
+  - The first states what is protected: the spared key, the one-key overflow, when the spared
+    key is deleted, and the idle case.
+  - The second states the remaining case: a step that creates a key can delete another key
+    early, at a true age of 14 to 21 days. That key's successor was accepted and has been
+    current for at least 7 days.
+- **Plan 98.** An amendment note for N1 is added.
+- **Tests** (`internal/mailbox/clockstep_test.go`):
+  - `TestRotateLongClockStepKeepsAcceptedKey` covers +30 d and −20 d steps, each running
+    hourly for 14 and for 21 days. It checks that:
+    - live keys stay at most 4 after every run;
+    - K_n survives the step;
+    - K_n is live after the correction while its mail can still be queued;
+    - the current announcement is accepted;
+    - K_n is deleted by age when mail arrives 7 days later, with at most 3 keys live.
+  - `TestCapSparesLastAcceptedKeyWhenIdle` covers 50 idle days after one mail. It checks that:
+    - live keys stay at most 4 every hour;
+    - every key except the spared one is deleted at exactly 21 days;
+    - the spared key goes at the first new mail.
+  - Mutation checks (the code was restored after each):
+    - with no spare, both tests fail (K_n deleted);
+    - with an unbounded spare, both fail (5 live keys).
+- **Checks.**
+  - `go build ./...` and `go vet ./internal/... ./cmd/...` with GOOS=windows, linux and
+    darwin: ok.
+  - golangci-lint v2.13.2, `run ./...` on 3 OSes: only the CRLF "properly formatted" lines.
+  - CRLF-aware gofmt (`tr -d '\r' | gofmt -l`) on the 3 changed `.go` files: clean.
+  - Every changed file is still CRLF.
+  - `go test -count=1 ./internal/mail ./internal/mailbox ./internal/retention`: ok. The
+    mailbox tests use the file backend or `keyring.MockInit` only.
+  - `go test -count=1 ./internal/daemon -run 'Clock|Rotation|KeyMiss|Mail'`: ok.
