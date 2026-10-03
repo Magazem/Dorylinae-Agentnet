@@ -322,6 +322,16 @@ Invalid → `bad_path`.
 
 - The grantor opens the resolved directory with **`os.OpenRoot`** (Go ≥ 1.24) and resolves
   every path inside that root, so `..` and symlinks cannot escape it even under a race.
+- **Known limitation: OneDrive Files-On-Demand (R55-201, owner decision D77).** On Windows Go
+  reports every reparse point other than a symlink, an AF_UNIX socket or a dedup point as
+  `ModeIrregular`, so the rule below refuses all of them as `symlink`, not only junctions.
+  OneDrive Files-On-Demand files and folders carry `IO_REPARSE_TAG_CLOUD_*` tags, and Windows 11
+  often redirects Documents, Desktop and Pictures into OneDrive, so a grant on such a folder may
+  fail file by file with `symlink` (a Dropbox or iCloud folder on macOS is served). This is
+  **suspected, not confirmed**: the reviewer's OneDrive files carried no reparse attribute. It is
+  kept on purpose (nothing is followed or served). Workaround: grant a folder outside OneDrive,
+  or mark the files "Always keep on this device". The `fetch` error carries only the code
+  `symlink`, with no hint text.
 - Before opening, each path component is checked with `Root.Lstat`: a symlink or a
   `ModeIrregular` component (which Go ≥ 1.23 reports for Windows junctions and other
   reparse points) anywhere in the path, **the final component included** → `symlink`,
@@ -414,7 +424,7 @@ a public one, so the default is sensitive and the human opts out. The opt-out is
 human's only because the approval summary shows it: a `--public` grant or policy says
 "PUBLIC … results are NOT quarantined" in the window (R55-F5). A session in which any
 sensitive grant was ever issued quarantines its results
-([work-session.md §Quarantine](work-session.md#quarantine-24)); `agentnet release` needs a
+([work-session.md §Quarantine](work-session.md#quarantine-24)); `agentnet session <id> --release` needs a
 human approval and is audited.
 
 ## IPC
@@ -520,21 +530,25 @@ CREATE INDEX grants_session ON grants (session);
 ```
 
 ```sql
--- in migration 15 (2.2a)
+-- migration 15 (2.2a), then migration 16 adds path, branch and approval (R55-220)
 CREATE TABLE grant_policies (
     id          TEXT PRIMARY KEY,                -- p-<32 hex>
     peer        TEXT NOT NULL,
     action      TEXT NOT NULL,
-    path        TEXT NOT NULL,                   -- resolved local path
-    branch      TEXT,
-    scope       TEXT,
-    public      INTEGER NOT NULL DEFAULT 0,      -- 1: covers only --public git.read grants
-    max_expires_s INTEGER NOT NULL,
-    until       TEXT NOT NULL,                   -- the policy's own end (≤ created + 90 d)
-    approval    TEXT NOT NULL,
-    created     TEXT NOT NULL
+    scope       TEXT NOT NULL,
+    public      INTEGER NOT NULL DEFAULT 0 CHECK (public IN (0, 1)),  -- 1: covers only --public git.read grants
+    max_ttl     INTEGER,                         -- seconds; NULL = no cap beyond the grant default
+    until       TEXT,                            -- the policy's own end (≤ created + 90 d); NULL = none (the code always writes it)
+    created     TEXT NOT NULL,
+    path        TEXT NOT NULL DEFAULT '',        -- migration 16: resolved local path
+    branch      TEXT,                            -- migration 16
+    approval    TEXT NOT NULL DEFAULT ''         -- migration 16: the approval id; always '' today (O-133)
 );
+CREATE INDEX grant_policies_peer ON grant_policies (peer, action);
 ```
+
+The column is `max_ttl` (not `max_expires_s`), and `scope` is `NOT NULL`. `until` is nullable in
+the schema, but `internal/capability` writes it on every policy, so no policy lacks an end.
 
 `expired` is derived from `exp` at read time, not stored. Grant rows are never deleted
 automatically (owner decision D50). [`agentnet prune`](../cli/prune.md) removes every grant

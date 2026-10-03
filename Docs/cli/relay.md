@@ -18,9 +18,13 @@ relay [--listen HOST:PORT] [--allow-non-loopback]
       [--tls-cert FILE --tls-key FILE | --acme-domain NAME [--acme-cache DIR] [--acme-email ADDR]
        | --behind-proxy --client-ip-header NAME --trusted-proxy CIDR...]
       [--public-origin URL]... [--allow-auth-v1]
-      [--queue-db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]]
+      [--db PATH] [--queue-ttl DURATION] [--allow-pairing-v1[=false]]
+      [--accounts off|github|email|both] [--metrics-listen HOST:PORT] [--security-journal PATH]
       [--min-client VERSION] [abuse limit flags, see below] [--verbose] [--version]
 relay version [--json]
+relay backup --db PATH --out FILE
+relay restore --from FILE --db PATH [--force] [--replay-journal PATH]
+relay admin account|group ...
 ```
 
 | Flag | Default | Meaning |
@@ -34,9 +38,13 @@ relay version [--json]
 | `--trusted-proxy CIDR` | | A proxy address or range (`10.0.0.0/8`, or a single IP) whose `--client-ip-header` is believed (repeatable; at least one with `--client-ip-header`). List only the proxy's own addresses: a range that includes clients lets them choose their prefix |
 | `--public-origin URL` | the loopback names of the listen port, on a relay that is not public | An origin daemons dial to reach this relay, e.g. `wss://relay.example.com` (repeatable). **Required** with `--tls-cert`, `--acme-domain` and `--behind-proxy`. Relay auth v2 signatures must name one of these ([../protocol/envelope.md](../protocol/envelope.md#auth-daemon---relay)). List only origins this relay serves exclusively: a hostname shared with another relay defeats the binding |
 | `--allow-auth-v1` | off | Also accept relay auth v1 (Phase 0–3 daemons) on a public relay, for a migration window. Logs a warning at start. v1 does not name the relay, so a hostile relay can replay it here; upgrade the daemons, then drop the flag. A relay that is not public always accepts v1 |
-| `--queue-db PATH` | `relay-queue.db` in the config dir (`$DORYLINAE_HOME`, else the OS user config dir + `dorylinae`) | SQLite file for envelopes queued for offline peers. Created, with its directory, if missing. If it cannot be opened the relay exits 1 with a message |
+| `--db PATH` | `relay-queue.db` in the config dir (`$DORYLINAE_HOME`, else the OS user config dir + `dorylinae`) | The relay's SQLite database: the offline queue and, with `--accounts`, the account tables. Created, with its directory, if missing. If it cannot be opened the relay exits 1 with a message |
+| `--queue-db PATH` | | Deprecated alias of `--db`; `--db` wins when both are given |
 | `--queue-ttl DURATION` | `168h` (7 days) | How long an envelope waits for its recipient before it is dropped. Must be positive |
 | `--allow-pairing-v1` | on for a relay that is not public, off for a public one | Accept the v1 pairing frames (`pair_new` without `lookup`, `pair_redeem` with `code`). With it off they get `pair_v1_disabled`. Pass `--allow-pairing-v1=false` to turn it off on a relay that is not public. v2 pairing (lookup only, entry kept until `pair_cancel`, expiry or 3 redemptions) is always on. See [../protocol/pairing.md](../protocol/pairing.md#v1-compatibility) |
+| `--accounts MODE` | `off` | `off`, `github`, `email` or `both`: require a key bound to an account to use the relay ([../protocol/accounts.md](../protocol/accounts.md)). Any other value is a usage error |
+| `--metrics-listen HOST:PORT` | none (off) | A second listener that serves Prometheus text on `/metrics` only (no per-key or per-account labels), never on the `--listen` listener ([../protocol/relay-hosted.md](../protocol/relay-hosted.md)). A bind failure exits 1 |
+| `--security-journal PATH` | none | Append-only file (mode 0600) of content-free security events, for a later `restore --replay-journal`. If it cannot be opened the relay exits 1 |
 | `--min-client VERSION` | none | The oldest daemon release (`MAJOR.MINOR.PATCH`) this relay supports, sent to every daemon as `ready.min_client` (ticket 4.4a). Advisory: no connection is refused; an older daemon logs a warning, `agentnet status` prints an `upgrade:` line and `agentnet doctor` fails its `binary` check. Anything but `MAJOR.MINOR.PATCH` is a usage error |
 | Abuse limits | see below | Ticket 4.0b; every limit has a flag |
 | `--verbose` | off | Also log every connect, disconnect and routed envelope (routing metadata only: abbreviated keys, `type`, `id`, byte counts) |
@@ -121,12 +129,17 @@ With no flags, `relay` listens on `127.0.0.1:8787` and runs in the foreground un
 interrupted (Ctrl+C or SIGTERM); it does not exit on its own and prints nothing further
 unless `--verbose` is set or something goes wrong.
 
-On start, two lines on stderr:
+On start, these lines go to stderr (they are not logs, so `--verbose` does not change them):
 
 ```
 relay listening on 127.0.0.1:8787; Ctrl+C to stop
-public: no; origins: ws://127.0.0.1:8787 ws://localhost:8787 ws://[::1]:8787
+public: no; origins: ws://127.0.0.1:8787 ws://localhost:8787 ws://[::1]:8787; accounts: off
+memory budgets: max-inflight 256MiB (and as much again for frames being read); max-inflight-ephemeral …; frame-read-timeout …
+queue redelivery budgets: queue-redeliver-per-key …/h; queue-redeliver-per-prefix …/h
 ```
+
+With `--metrics-listen`, a line `relay metrics listening on ADDR` follows. The relay does **not**
+print its version at start (use `relay --version`; R55-224).
 
 With `--allow-auth-v1` on a public relay a warning line follows.
 
@@ -138,10 +151,26 @@ example rejected authentication) appear. Logs never contain payloads or raw fram
 | Code | Meaning |
 |------|---------|
 | 0 | Stopped cleanly (SIGINT/SIGTERM) or `--help`/`--version` |
-| 1 | Could not listen, could not open the offline queue, could not load `--tls-cert`/`--tls-key`, or the server failed |
-| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` or without TLS, `--tls-cert` without `--tls-key`, more than one of the TLS options, a TLS option without `--public-origin`, a malformed `--public-origin`, a non-positive `--queue-ttl`, `--behind-proxy` without `--client-ip-header`, `--client-ip-header` without `--behind-proxy` or without a `--trusted-proxy`, a malformed `--trusted-proxy`, a `--min-client` that is not `MAJOR.MINOR.PATCH`, or a limit flag that is not positive |
+| 1 | Could not listen, could not open the offline queue, could not load `--tls-cert`/`--tls-key`, could not bind `--metrics-listen` or open `--security-journal`, or the server failed. The relay and the metrics listener share one error channel: a failure of either one stops the whole relay with exit 1 |
+| 2 | Usage error, including a non-loopback `--listen` without `--allow-non-loopback` or without TLS, `--tls-cert` without `--tls-key`, more than one of the TLS options, a TLS option without `--public-origin`, a malformed `--public-origin`, a non-positive `--queue-ttl`, `--behind-proxy` without `--client-ip-header`, `--client-ip-header` without `--behind-proxy` or without a `--trusted-proxy`, a malformed `--trusted-proxy`, a `--min-client` that is not `MAJOR.MINOR.PATCH`, an `--accounts` value other than the four above, or a limit flag that is not positive |
 
 The relay has no `--json` output.
+
+## Subcommands
+
+| Command | What it does |
+|---|---|
+| `relay version [--json]` | Print the version |
+| `relay backup --db PATH --out FILE` | Write an online copy of the relay database to `FILE`, which must not exist. Prints `backup written to FILE`. Exit 1 on failure, 2 when `--db` or `--out` is missing ([../protocol/relay-hosted.md](../protocol/relay-hosted.md#3-persistence-backup-and-restore-tickets-41a-41b)) |
+| `relay restore --from FILE --db PATH [--force] [--replay-journal PATH]` | Restore a backup into `--db`. A non-empty database is refused unless `--force`. With `--replay-journal`, the journal entries written after the backup file's modification time are applied. Exit 1 on failure, 2 on a missing flag |
+| `relay admin account list\|show ACCOUNT` | List accounts, or show one with its keys |
+| `relay admin account suspend\|unsuspend\|delete ACCOUNT` | Change an account; `--security-journal PATH` records it |
+| `relay admin account unbind KEY` | Unbind a key |
+| `relay admin group suspend\|unsuspend GROUP` | Change a quota group (`team` is accepted for `group`) |
+
+`admin` works on the database directly (`--db`, default as above); a running relay picks the
+change up within a second and closes the connections it affects. Exit 0 on success, 1 on
+failure, 2 on a usage error ([../protocol/accounts.md](../protocol/accounts.md#revocation)).
 
 ## Daemon side
 

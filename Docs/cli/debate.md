@@ -3,8 +3,7 @@
 Status: draft (Phase 3, 3.1). Protocol: [../protocol/debate.md](../protocol/debate.md).
 
 Argues a question with a teammate's agent in a fixed structure, ending in one signed
-[Decision](decision.md) that both daemons sign (the Decision itself and `agentnet decision` are
-ticket 3.3, not yet implemented; a debate still runs to a close without it). A debate is a
+[Decision](decision.md) that both daemons sign (`agentnet decision` shows, exports and verifies it). A debate is a
 [request](request.md) of type `debate`; the accept opens a [work session](session.md) of kind
 `debate`, which `agentnet session`/`ws_*` refuse (`bad_state`: "use agentnet debate").
 
@@ -151,8 +150,8 @@ agentnet wait <id>
 
 `agentnet wait` recognises a debate id automatically (it tries `debate_show` first). It exits 0
 with `"wait": "turn"` once it becomes your turn (`expect` names the kind to submit), `"closed"`
-once the debate's mirror on your side has closed (`phase` is `closed` or `broken`; the outcome
-and the Decision summary appear once 3.3 lands), and exit 4 (`"timeout"`) if nothing changed
+once the debate's mirror on your side has closed (`phase` is `closed` or `broken`; the view's `outcome`
+and its `decision` pointer `{id, state, outcome, signed_by}` are filled in once the debate has a Decision), and exit 4 (`"timeout"`) if nothing changed
 within `--timeout` seconds (default 300, max 3600).
 
 ```json

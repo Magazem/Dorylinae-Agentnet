@@ -407,7 +407,9 @@ daemon has no caller identity to budget per client (review 77b, R3).
 
 These appear in `pair.fail` audit rows and in the pairing status `error.code`, alongside
 the relay codes above: `bad_card`, `bad_mbox` (new), `bad_confirm` (new), `confirm_timeout`
-(new), `relay_v1` (new), `code_used` (new), `pair_lookup_taken`, `store_error`, `timeout`,
+(new), `relay_v1` (new), `code_used` (new), `pair_lookup_taken`, `relay_unavailable` (the
+daemon has no relay connection to pair through; R55-208), `store_error` (a peer or the code
+record could not be stored, and also a code that could not be generated), `timeout`,
 `expired`, `cancelled` (R55-F31: an owner-side team invite whose `team.invite_issued` row
 could not be written, [audit.md](audit.md#classes)).
 
@@ -417,18 +419,19 @@ could not be written, [audit.md](audit.md#classes)).
 
 ```sql
 ALTER TABLE peers ADD COLUMN trust TEXT NOT NULL DEFAULT 'relay'
-    CHECK (trust IN ('relay', 'code', 'fingerprint'));
+    CHECK (trust IN ('relay', 'code', 'fingerprint'));  -- 'team' added by a later migration (team.md)
 ALTER TABLE peers ADD COLUMN mailbox_keys TEXT NOT NULL DEFAULT '[]'
     CHECK (json_valid(mailbox_keys));
 ```
 
 | `trust` | Meaning | Set by |
 |---|---|---|
+| `team` | Key introduced by a team owner ([team.md](team.md#trust-level-team)); ranks between `relay` and `code` | A team roster or invite |
 | `relay` | Key came from a v1 pairing. A hostile relay could have substituted it | Migration default for existing rows; any v1 pairing |
 | `code` | Key confirmed by a v2 code MAC | v2 pairing |
 | `fingerprint` | A human compared the fingerprint out of band | `agentnet peers verify`, after the human approves it in the approval window (D48) |
 
-Rank: `relay` < `code` < `fingerprint`. **`Store.Add` never lowers `trust`.** It stores
+Rank: `relay` < `team` < `code` < `fingerprint`. **`Store.Add` never lowers `trust`.** It stores
 the higher of the old and new values. A re-pair of a known key updates `name`, `harness`,
 `skills` and `card`, keeps `paired_at`, and merges the announcement into `mailbox_keys`
 (see [mail.md](mail.md#peer-storage)). A re-pair that returns a **different key** for a
@@ -527,7 +530,9 @@ the other side may already have stored us, as for any `store_error`). A failure 
   `displayLine(…, 200)`. This also covers the `bad_card`/`bad_mbox` reasons, which embed
   verifier text that may quote key names chosen by the peer or relay (review 55 C06-02;
   review 67b F9R-3). `pair.attempt_fail` (new; actor `daemon`;
-  `{id, peer, code}`) for each failed issuer attempt. **The code, lookup, secret, K,
+  `{id, peer, code}`) for each failed issuer attempt. An attempt that ends without a failure of its
+own (its TTL ran out, the relay reported an error, or another attempt of the same issuer
+completed first) writes **no** `pair.attempt_fail` (R55-208). **The code, lookup, secret, K,
   tags, cards and announcements are never logged or audited.**
 
 ## Test vectors

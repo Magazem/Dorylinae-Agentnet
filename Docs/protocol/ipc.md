@@ -164,7 +164,7 @@ With it, `team` is added:
       "self": true, "owner": true, "trust": null,
       "daemon_online": true, "agent_active": true, "human_present": null,
       "last_seen": "2026-10-01T09:12:03Z",
-      "agent_last_active": "2026-10-01T09:12:03Z", "human_last_present": null
+      "agent_last_active": null, "human_last_present": null
     }
   ]
 }
@@ -174,8 +174,9 @@ Members are listed owner first, then by `name`, then by `public_key`. For peers,
 come from [presence.md §Receiving](presence.md#receiving) (effective state at call time).
 `last_seen`, `agent_last_active` and `human_last_present` are RFC 3339 UTC with whole
 seconds, or `null`. `trust` is the peer's trust value. For `self`, `trust` is `null`,
-`daemon_online` is `relay == "connected"`, `last_seen` is now, and the other two come from
-the local values. A member that is not a peer (for example, not yet introduced) has
+`daemon_online` is `relay == "connected"`, `last_seen` is now, `agent_active` and `human_present`
+are the local values, and `agent_last_active` and `human_last_present` are always `null` (the
+self row carries no last-active times: R55-204). A member that is not a peer (for example, not yet introduced) has
 `daemon_online: false` and every time `null`. Errors: `unknown_team`, `ambiguous_team`.
 
 ### `shutdown`
@@ -186,8 +187,9 @@ Asks the daemon to stop the same way its own ctx cancellation does (SIGTERM or C
 outbox flushed, database closed, `daemon.stop` audit row written. The daemon also writes
 `daemon.stop_requested` (actor `cli`, no detail) before it starts stopping, so the audit log
 shows the shutdown was asked for rather than signalled. The response is sent before the
-daemon starts tearing down its listener, so the call itself always succeeds if it reaches a
-running daemon; `agentnet stop` then polls the endpoint until it stops answering (up to
+daemon starts tearing down its listener, so once the `daemon.stop_requested` row is written
+the call succeeds; if that audit row cannot be written the call fails with `internal` and the daemon
+keeps running (fail closed, R55-204); `agentnet stop` then polls the endpoint until it stops answering (up to
 10 s) before reporting success. Like every IPC method this is reachable only by the same
 user (the endpoint's own permissions, above) and is never exposed over the relay: the relay
 carries encrypted envelopes between daemons, not local IPC calls. See
@@ -298,8 +300,8 @@ refuses (`bad_request`) every kind the daemon registers a handler for (`keys`, `
 `request`, `request.*`, `team.*`, `ws.*`, `grant`, `grant.revoke`, `device.*`), taken from the
 same code that builds the mail receiver, so a kind added there is refused here too; and,
 as a backstop, every kind in a reserved namespace (`device.`, `ws.`, `request`, `team.`,
-`grant`, `presence`, `fetch`, `consult`, `approval`, `pair`, `keys`, `ack`), even one no
-build registers yet. Each daemon kind is sent only by its own method, after that method's
+`grant`, `presence`, `fetch`, `consult`, `approval`, `pair`, `keys`, `ack`, `debate.`,
+`decision.`), even one no build registers yet. Each daemon kind is sent only by its own method, after that method's
 checks: `device.link`, for example, has no signature of its own, and the mail signature is
 its only proof that the local human approved ([device.md §Kinds](device.md#kinds)). What
 remains sendable are application and debug kinds with no daemon handler, such as the debug
@@ -307,7 +309,14 @@ kind `note`.
 
 Error codes: `unknown_peer`, `ambiguous_peer`, `unpaired`, `no_mailbox_key` (the peer was
 paired with v1 and must re-pair); `bad_request` for missing params, a bad kind or body, or
-a kind the daemon owns (above).
+a kind the daemon owns (above). Any other `Submit` failure (keystore load, seal, database
+insert) is also reported as `bad_request`, with that error's own text (R55-204). It is local
+and same-user, and this is the only IPC error that carries such text.
+
+**No audit, and the CLI gate is cosmetic.** `mail_submit` is always registered and is not
+audited. The CLI hides `agentnet mail` unless the caller sets `DORYLINAE_DEBUG=1` in its own
+environment, which any local caller can do or skip by speaking IPC directly. The daemon's kind
+allowlist above is the real control (R55-149).
 
 ## Phase 1 methods
 
@@ -338,7 +347,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | `not_owner` | Operation needs the team owner |
 | `owner_cannot_leave` | `team_leave` by the owner (use `team_delete`) |
 | `not_member` | The peer is not a member of the team |
-| `team_inactive` | The team is `left`, `removed` or `dissolved` |
+| `team_inactive` | The team is `left`, `removed` or `dissolved` (`team_invite`, `request_submit` with an explicit team) |
 | `team_full` | The team already has 32 members (`team_invite`) |
 | `no_shared_team`, `not_team_member` | `request_submit` team resolution |
 | `unverified_peer` | D5: `trust=relay` peer on a non-loopback relay |
@@ -354,7 +363,7 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 | Method | Params | Result |
 |---|---|---|
 | `team_create` | `{"name"}` | `{"team": <team summary>}` |
-| `team_list` | `{"all"?: bool}` | `{"teams": [<team summary>]}`: `active` teams only unless `all`. Sorted by name, then id |
+| `team_list` | `{"all"?: bool}` | `{"teams": [<team summary>]}`: `active` teams only unless `all`. Sorted by creation time, then id |
 | `team_show` | `{"team"}` | `{"team": <team summary> + "members": [{<peer ref>, "added", "owner": bool, "self": bool}]}`. Here `members` is the list, replacing the count |
 | `team_invite` | `{"team", "approval"?}` | Without `approval`: validates the team, creates a `team_invite` approval (D48, R55-084) and returns `{"team": {"id","name"}, "approval": <approval view>}`, with no code. With the `approval` id from that call: while it is `pending`, the same result again; once a human approved it, a pairing status ([pair_new](#pair_new)) plus `"team": {"id","name"}`, and the id is spent. A rejected or expired approval, an id this daemon did not issue for this team, or a spent one is `bad_state`. Owner only (`not_owner`). Errors as for `pair_new`, plus `team_full` and `team_inactive` |
 | `team_join` | `{"code"}` | A pairing status ([pair_redeem](#pair_redeem)). v2 codes only (`bad_code` for 10-character codes). On `complete`, the daemon writes the pending join and submits `team.join` |
@@ -386,9 +395,9 @@ New error codes, which the CLI maps to exit 1 unless stated otherwise:
 
 `urgency` defaults to `normal`. Result: the [submit result](request.md#submit-result-19).
 Errors: `unknown_peer`, `ambiguous_peer`, `no_mailbox_key`, `unverified_peer`,
-`unknown_team`, `ambiguous_team`, `no_shared_team`, `not_team_member`,
+`unknown_team`, `ambiguous_team`, `team_inactive`, `no_shared_team`, `not_team_member`,
 `idempotency_conflict`, `request_too_large`, `bad_request` (with a message naming the
-field).
+field; also "peer is no longer paired" when the peer was unpaired after the check).
 
 **Request view** (used by the methods below):
 
@@ -441,7 +450,7 @@ Lifecycle errors: `unknown_request`, `ambiguous_request`, `bad_state`, `bad_requ
 |---|---|---|
 | `notify_get` | none | `{"desktop": bool, "events": {...}, "webhook": null \| {"url", "format", "title": bool, "pending": <int>, "failed_7d": <int>}}` |
 | `notify_set` | `{"desktop"?: bool, "events"?: {"<event>": bool}, "webhook_url"?: "<url>"\|"", "format"?, "title"?: bool, "rotate_secret"?: bool}` | `notify_get`'s result plus `"secret"?: "whsec_..."`, present only when a secret was just created or rotated. `webhook_url: ""` removes the webhook |
-| `notify_test` | none | `{"desktop": "shown"\|"failed"\|"disabled", "webhook": "queued"\|"none"}` |
+| `notify_test` | none | `{"desktop": "shown"\|"failed"\|"disabled", "webhook": "queued"\|"none"}`. The only method here that can take longer than 2 s: it waits for the desktop notifier, whose own timeout is a little over 3 s (R55-211) |
 
 Errors: `bad_webhook`, `bad_request`.
 
@@ -451,7 +460,7 @@ Specified in their documents, with the same rules (every call returns within 2 s
 waits at most 1 s like `ping`):
 
 - work sessions `ws_list`, `ws_show`, `ws_result`, `ws_accept_result`, `ws_request_changes`,
-  `ws_cancel`, `ws_release` ([work-session.md](work-session.md#ipc)); the request view gains
+  `ws_cancel`, `ws_release`, `ws_discard` ([work-session.md](work-session.md#ipc)); the request view gains
   `session`, and the submit result gains `session` ([consult.md](consult.md#agentnet-consult));
 - `approval_list`, `approval_open`, `approval_reject` ([approval.md](approval.md#ipc-and-cli); `approval_confirm` removed in 2.2d);
 - `grant_create`, `grant_list`, `grant_show`, `grant_revoke`, `grant_policy_add`,

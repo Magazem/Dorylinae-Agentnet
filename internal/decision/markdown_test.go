@@ -151,6 +151,31 @@ func TestRenderGoldenEscalated(t *testing.T) {
 	checkGolden(t, "escalated.golden.md", renderFixture(t, escalatedDecision(), true))
 }
 
+// TestRenderParticipantsFingerprintFirst: each participant's real fingerprint
+// comes before the peer-chosen name, so a name that spells a fingerprint
+// cannot be read as the participant's own.
+func TestRenderParticipantsFingerprintFirst(t *testing.T) {
+	names := map[string]string{"initiator": "alice (fingerprint FA4E-FA4E-FA4E)", "respondent": "bob"}
+	sigI, sigR := mdSignaturesFor(true)
+	out, err := decision.Render(agreedDecision(), "6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede", sigI, sigR, false, names, testFPs)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	var line string
+	for _, l := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(l, "- Participants:") {
+			line = l
+		}
+	}
+	const want = "- Participants: initiator fingerprint AB12-CD34-EF56, named "
+	if !strings.HasPrefix(line, want) {
+		t.Fatalf("Participants line = %q, want prefix %q", line, want)
+	}
+	if !strings.Contains(line, "; respondent fingerprint 12AB-34CD-56EF, named ") {
+		t.Fatalf("Participants line = %q, respondent fingerprint must precede the name", line)
+	}
+}
+
 // TestRenderDeterministic: decision.md §Markdown, "the same input gives the
 // same bytes": no render time, no locale, LF only, one trailing newline.
 func TestRenderDeterministic(t *testing.T) {

@@ -41,6 +41,18 @@ paired) before performing it. A precondition that no longer holds drops the
 waiting action; the human sees this in the window or the terminal, not
 through this command.
 
+## Linux: the summary is in the dialog's argument list
+
+On Linux the approval window is a `zenity` (or `kdialog`) process. Those tools take their
+text only from the command line, so the window's **title and summary** (the action, the
+label, the peer's name) are in that process's argument list, and any other local user can read
+them with `ps` or `/proc/<pid>/cmdline`. The **code is never in it**: it is shown on the
+desktop notification, and the window only receives what you type. Owner decision D20
+accepted this because the summary is local metadata, not a secret. On a shared machine, mount
+`/proc` with `hidepid=2` (for example `mount -o remount,hidepid=2 /proc`, or `proc /proc proc
+defaults,hidepid=2 0 0` in `/etc/fstab`), so a user sees only their own processes. macOS and
+Windows pass the text through the environment, which only the same user can read.
+
 ## Exit codes
 
 | Code | Meaning |

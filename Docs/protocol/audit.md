@@ -7,7 +7,7 @@ Status: **draft** for Phase 3 (plan step 3.6). Ticket split:
 
 `internal/audit` appends rows to `audit_events` (migration 1): `id INTEGER PRIMARY KEY
 AUTOINCREMENT, ts TEXT, actor TEXT, action TEXT, detail TEXT (JSON)`. Triggers reject every
-`UPDATE` and `DELETE`. About 75 call sites append through `Log.Append` (own statement) or
+`UPDATE` and `DELETE`. About 120 call sites append through `Log.Append` (own statement) or
 `audit.AppendTx` (inside the caller's transaction); `agentnetd install`/`uninstall` append
 from a separate process (`cmd/agentnetd/install.go`). Every Phase 1 and Phase 2 spec lists
 its actions, and the **no-content invariant** holds and is tested
@@ -224,9 +224,9 @@ debate anchors both logs (it reveals the peer's row count). OD-P3-6 lists them.
 
 ```
 agentnet log [--since DURATION|TIME] [--until TIME] [--session ID] [--action PREFIX]
-             [--limit N] [--json]
-agentnet log --verify [--anchor ID:HASH]… [--json]
-agentnet log --head [--json]
+             [--limit N] [--timeout SECONDS] [--json]
+agentnet log --verify [--anchor ID:HASH]… [--timeout SECONDS] [--json]
+agentnet log --head [--timeout SECONDS] [--json]
 ```
 
 IPC `audit_list {since?, until?, session?, action?, limit?, after_id?}` →

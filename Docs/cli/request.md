@@ -104,7 +104,7 @@ note, not as proof that the work passed.
 |---|---|
 | 0 | Queued (or `duplicate` for an idempotency key), shown, listed, resent or cancel sent (or `duplicate`) |
 | 1 | Error (see the codes below) |
-| 2 | Usage error (missing `--title`, both or neither brief flag, a bad flag value) |
+| 2 | Usage error (missing `--title`, both or neither brief flag, a bad flag value; `list --state` is the exception: it is not validated, so an unknown state lists nothing and exits 0) |
 | 3 | Daemon not running |
 
 ## Human output

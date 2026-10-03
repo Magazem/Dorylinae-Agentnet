@@ -227,7 +227,7 @@ Auth frame for the first row:
 From Phase 1 (1.2a) the relay adds `"features": ["ephemeral"]`. **Ephemeral** envelope
 types (only `presence`) are forwarded only to a connected recipient whose send buffer is at
 most half full, regardless of backlog. Otherwise they are dropped silently: no `queued`, no
-`error`, never stored. The recipient does not `ack` them, and `relayclient` hands them up
+`error`, never stored (one exception: on a relay with accounts, an ephemeral frame from a sender that is not eligible gets `account_required`; only one to an ineligible recipient is dropped silently). The recipient does not `ack` them, and `relayclient` hands them up
 without the seen-set. Rate limit: 600 per minute per sender. See [presence.md](presence.md#relay-ephemeral-envelopes).
 
 From Phase 4 (4.2a) a relay started with `--accounts github|email|both` adds the feature
@@ -411,7 +411,7 @@ kept in memory, rebuilt by one scan at start-up and adjusted on add, ack and swe
 | `auth_failed` | Authentication rejected; connection is closed |
 | `bad_envelope` | Frame is not a valid envelope (bad JSON, missing or malformed field; from R55-F2 also a `payload` that is not a JSON string of standard base64) |
 | `bad_sender` | `from` does not match the authenticated key |
-| `queue_full` | A queue cap refused the envelope (the recipient's, this sender's for the recipient or overall, or the relay-wide total); envelope dropped |
+| `queue_full` | A queue cap refused the envelope (the recipient's, this sender's for the recipient or overall, or the relay-wide total); envelope dropped. The `message` always reads "recipient's offline queue is full", whichever cap refused it (R55-212) |
 | `internal` | The relay could not store the envelope (message `relay storage low` when the disk is nearly full); dropped |
 | `rate_limited` | 4.0b: a send rate refused this envelope or control frame (`ref` names it; dropped, connection stays open), or, right after `auth` with no `ref`, the key reconnects too often (then close 1013). Retry later |
 | `relay_full` | 4.0b: right after `auth`, the relay is at its connection cap (`--max-conns`) or this network prefix at its distinct-key cap; close 1013. Retry later with the normal reconnect backoff |
@@ -448,7 +448,8 @@ pairing, in the `pair.fail` audit row's `reason` ([pairing.md](pairing.md)).
 
 ## Logging rule
 
-The relay logs connection and routing events with abbreviated keys (first 8
+The relay logs connection and routing events (Info level, so only with `--verbose`: the default
+level is Warn, R55-212) with abbreviated keys (first 8
 characters), `type`, `id` and byte counts, including `queue`, `queue_flush`
 and `queue_expire` events for the offline queue. It never logs `payload`, nor the
 raw frame. `internal/relay` has a test that fails if a payload marker appears in

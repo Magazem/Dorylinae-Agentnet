@@ -74,7 +74,7 @@ and exit code are unchanged.
 |------|---------|
 | 0 | Stopped cleanly (SIGINT/SIGTERM), or `--help` / `--version` |
 | 1 | Could not start or serve (for example `--log-file` cannot be opened) |
-| 2 | Usage error, including a remote `ws://` relay URL and an unreadable or certificate-less `--relay-ca` |
+| 2 | Usage error, including a remote `ws://` relay URL and an unreadable or certificate-less `--relay-ca`; also `DORYLINAE_APPROVAL=terminal` without a terminal on stderr, unless `DORYLINAE_DEBUG=1` ([approval.md](../protocol/approval.md#headless-machines)) |
 | 3 | Another `agentnetd` is already running for this home (see above) |
 
 `agentnetd stop`'s own exit codes (0 stopped, 1 error, 2 usage, 3 not running) are in

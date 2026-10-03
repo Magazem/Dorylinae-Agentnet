@@ -104,7 +104,7 @@ Ticket 4.4c adds `relay`, present whenever a relay is configured (`--relay` or
 
 `since` is when `connected` last changed (RFC 3339 UTC). `last_error` is the most recent
 connection error's message (content-free: a dial or handshake failure, never an envelope
-payload or a peer identity), empty before any failure. It is not cleared by a later successful
+payload or a peer identity). The key is **omitted** (not `""`) before any failure (R55-225). It is not cleared by a later successful
 connection. Since R55-F9 it never carries the relay's `error` message, close reason or
 redirect target
 ([envelope.md §Relay-supplied text](../protocol/envelope.md#relay-supplied-text-daemon)):
@@ -128,8 +128,14 @@ Ticket 4.4a adds `min_client` to `relay` when the relay's `ready` frame carried 
 oldest release (`MAJOR.MINOR.PATCH`) the relay supports. It is omitted when the relay sent
 none, or sent something that is not a release version. When this `agentnetd` is a release
 older than it, human `status` prints an `upgrade:` line and `doctor`'s `binary` check fails.
-The connection itself is kept: the minimum is advisory.
-`account` is added by ticket 4.2c.
+The connection itself is kept: the minimum is advisory. `min_client` is what the relay last
+said and stays after a disconnect.
+
+The result also carries `approval` (`desktop`, `terminal` or `terminal-debug`), in desktop mode
+`approval_window` (`ok` or `missing`) with `approval_window_fix`, and `git` (`ok` or
+`unsupported: <reason>`); see [../protocol/ipc.md](../protocol/ipc.md#status).
+
+There is no `account` field: relay accounts are not part of `status` in this build (R55-214).
 
 Error (stdout, non-zero exit):
 
@@ -138,7 +144,8 @@ Error (stdout, non-zero exit):
 ```
 
 Error codes: `daemon_not_running` (exit 3), `daemon_error` (exit 1), `usage` (exit 2),
-and with `--team`: `unknown_team`, `ambiguous_team` (exit 1).
+and with `--team`: `unknown_team`, `ambiguous_team` (exit 1). A code the daemon returns
+(including `internal` and `bad_request`) is passed through unchanged with exit 1.
 
 ## Related
 
