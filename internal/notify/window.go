@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
@@ -24,6 +25,12 @@ func (ApprovalWindow) Start(ctx context.Context, id, tag, kind, summary, note st
 	}
 	return startDialog(ctx, id, tag, kind, summary, expires)
 }
+
+// Check implements approval.WindowRunner: whether a window could be shown
+// here, without opening one, spawning a process or reading peer data. fix is
+// one of a fixed set of plain-words strings (Docs/protocol/approval.md §The
+// approval window, "How the check works", R55-125).
+func (ApprovalWindow) Check(ctx context.Context) (bool, string) { return checkWindow(ctx) }
 
 // MaxWindowSummary bounds the summary shown in the dialog, in code points
 // (Docs/protocol/approval.md §Length). A longer summary is refused when the
@@ -79,7 +86,17 @@ type dialogHandle struct {
 
 	killOnce sync.Once
 	killFn   func()
+
+	// blocked is set when the window process reported that policy blocks it
+	// (Windows Constrained Language Mode); see BlockedByPolicy.
+	blocked atomic.Bool
 }
+
+// BlockedByPolicy reports that the window process wrote the Constrained
+// Language Mode error while opening, so the daemon can name the cause in
+// approval_unavailable (Docs/protocol/approval.md §The approval window,
+// R55-125). It only ever carries that one fixed fact, never process output.
+func (h *dialogHandle) BlockedByPolicy() bool { return h.blocked.Load() }
 
 func newDialogHandle(kill func()) *dialogHandle {
 	return &dialogHandle{

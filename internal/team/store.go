@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 )
@@ -436,46 +437,53 @@ func (s *Store) LeaveNotify(ctx context.Context, teamID string, now time.Time) (
 }
 
 func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify bool) (Team, []peers.Removed, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	t, err := getTx(ctx, tx, teamID)
-	if err != nil {
-		return Team{}, nil, err
-	}
-	if t.Owner == s.Self {
-		return Team{}, nil, ErrOwnerCannotLeave
-	}
-	t.State = StateLeft
-	ts := stamp(now)
-	if _, err := tx.ExecContext(ctx, `UPDATE teams SET state = 'left', updated = ? WHERE id = ?`, ts, teamID); err != nil {
-		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
-	}
-	t.Updated = ts
-	// The mail is queued before GC: the owner may be an introduced peer whose
-	// row GC would delete.
+	// The GC's peer.remove rows are S- rows in this transaction: if SQLite
+	// lost it, the leave is retried once without them (audit.RunSoft, review
+	// 97 L1).
+	var (
+		t       Team
+		removed []peers.Removed
+		queued  bool
+	)
 	txo, inTx := s.Outbox.(TxOutbox)
-	queued := true
-	if notify && inTx {
-		if _, err := txo.SubmitTx(ctx, tx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
-			// A permanent "cannot send" (the owner is no longer paired or has no
-			// mailbox key) must not make leaving impossible: leave locally and
-			// warn (review 79 L3). Any other error rolls back and can be retried.
-			if !errors.Is(err, mail.ErrUnpaired) && !errors.Is(err, mail.ErrNoMailboxKey) {
-				return Team{}, nil, err
-			}
-			s.log().Warn("team: leave without team.leave mail", "event", "team_error", "error", err)
-			queued = false
+	err := audit.RunSoft(ctx, s.db, func(tx *sql.Tx, _ bool) error {
+		var err error
+		t, err = getTx(ctx, tx, teamID)
+		if err != nil {
+			return err
 		}
-	}
-	removed, err := s.peers.GCIntroduced(ctx, tx)
+		if t.Owner == s.Self {
+			return ErrOwnerCannotLeave
+		}
+		t.State = StateLeft
+		ts := stamp(now)
+		if _, err := tx.ExecContext(ctx, `UPDATE teams SET state = 'left', updated = ? WHERE id = ?`, ts, teamID); err != nil {
+			return fmt.Errorf("team: leave: %w", err)
+		}
+		t.Updated = ts
+		// The mail is queued before GC: the owner may be an introduced peer whose
+		// row GC would delete.
+		queued = true
+		if notify && inTx {
+			if _, err := txo.SubmitTx(ctx, tx, t.Owner, "team.leave", map[string]any{"team": teamID}); err != nil {
+				// A permanent "cannot send" (the owner is no longer paired or has no
+				// mailbox key) must not make leaving impossible: leave locally and
+				// warn (review 79 L3). Any other error rolls back and can be retried.
+				if !errors.Is(err, mail.ErrUnpaired) && !errors.Is(err, mail.ErrNoMailboxKey) {
+					return err
+				}
+				s.log().Warn("team: leave without team.leave mail", "event", "team_error", "error", err)
+				queued = false
+			}
+		}
+		removed, err = s.peers.GCIntroduced(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return s.auditRemovedTx(ctx, tx, removed)
+	})
 	if err != nil {
 		return Team{}, nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Team{}, nil, fmt.Errorf("team: leave: %w", err)
 	}
 	if notify {
 		if inTx {
@@ -489,17 +497,24 @@ func (s *Store) leave(ctx context.Context, teamID string, now time.Time, notify 
 		}
 	}
 	s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": teamID})
-	s.auditRemoved(ctx, removed)
 	s.changed()
 	return t, removed, nil
 }
 
-func (s *Store) auditRemoved(ctx context.Context, removed []peers.Removed) {
-	for _, r := range removed {
-		s.audited(ctx, ActorDaemon, ActionPeerRemove, map[string]string{
-			"peer": r.PublicKey, "name": r.Name, "fingerprint": r.Fingerprint, "reason": "team",
-		})
+// auditRemovedTx writes the S- peer.remove row (reason "team") of every peer
+// the team GC collected, inside the GC's transaction (class S-, audit.md).
+func (s *Store) auditRemovedTx(ctx context.Context, tx *sql.Tx, removed []peers.Removed) error {
+	if s.audit == nil {
+		return nil
 	}
+	for _, r := range removed {
+		if err := audit.AppendTxSoft(ctx, tx, ActorDaemon, ActionPeerRemove, map[string]string{
+			"peer": r.PublicKey, "name": r.Name, "fingerprint": r.Fingerprint, "reason": "team",
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // OwnerRemoved handles `peers remove` of a key that owns local teams
@@ -509,46 +524,49 @@ func (s *Store) auditRemoved(ctx context.Context, removed []peers.Removed) {
 // caller removes the owner's peer row separately. No team.leave is sent
 // (there is no longer a mailbox key to send it to).
 func (s *Store) OwnerRemoved(ctx context.Context, ownerKey string, now time.Time) ([]string, []peers.Removed, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("team: owner removed: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM teams WHERE owner = ? AND state = 'active'`, ownerKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("team: owner removed: %w", err)
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+	// The GC's peer.remove rows are S- rows in this transaction: if SQLite
+	// lost it, this is retried once without them (audit.RunSoft, review 97 L1).
+	var (
+		ids     []string
+		removed []peers.Removed
+	)
+	err := audit.RunSoft(ctx, s.db, func(tx *sql.Tx, _ bool) error {
+		ids, removed = nil, nil
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM teams WHERE owner = ? AND state = 'active'`, ownerKey)
+		if err != nil {
+			return fmt.Errorf("team: owner removed: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("team: owner removed: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
 			_ = rows.Close()
-			return nil, nil, fmt.Errorf("team: owner removed: %w", err)
+			return err
 		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
 		_ = rows.Close()
-		return nil, nil, err
-	}
-	_ = rows.Close()
-	ts := stamp(now)
-	for _, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE teams SET state = 'left', updated = ? WHERE id = ?`, ts, id); err != nil {
-			return nil, nil, fmt.Errorf("team: owner removed: %w", err)
+		ts := stamp(now)
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE teams SET state = 'left', updated = ? WHERE id = ?`, ts, id); err != nil {
+				return fmt.Errorf("team: owner removed: %w", err)
+			}
 		}
-	}
-	removed, err := s.peers.GCIntroduced(ctx, tx)
+		removed, err = s.peers.GCIntroduced(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return s.auditRemovedTx(ctx, tx, removed)
+	})
 	if err != nil {
 		return nil, nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, nil, fmt.Errorf("team: owner removed: %w", err)
 	}
 	for _, id := range ids {
 		s.audited(ctx, ActorCLI, ActionLeave, map[string]any{"team": id, "reason": "owner_removed"})
 	}
-	s.auditRemoved(ctx, removed)
 	if len(ids) > 0 {
 		s.changed()
 	}

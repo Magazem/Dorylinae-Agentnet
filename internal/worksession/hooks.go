@@ -20,7 +20,7 @@ import (
 // A debate request opens a session of kind debate, and the debate learns of
 // it in the same transaction (DebateHooks.OpenedTx, Docs/protocol/debate.md
 // §Model).
-func (s *Store) OpenSession(ctx context.Context, tx *sql.Tx, role, peer, requestID, teamID string, now time.Time) error {
+func (s *Store) OpenSession(ctx context.Context, tx *sql.Tx, actor, role, peer, requestID, teamID string, now time.Time) error {
 	sid := DeriveID(idA(role, s.Self, peer), idB(role, s.Self, peer), requestID)
 	typ, _, err := requestType(ctx, tx, role, peer, requestID)
 	if err != nil {
@@ -33,16 +33,32 @@ func (s *Store) OpenSession(ctx context.Context, tx *sql.Tx, role, peer, request
 		}
 		kind = SessionKindDebate
 	}
-	if _, err := tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 INSERT OR IGNORE INTO work_sessions (id, role, peer, request_id, team_id, state, seq, round, opened, state_at, updated, kind)
 VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?)`,
-		sid, role, peer, requestID, teamID, StateOpen, wireTime(now), wireTime(now), storeTime(now), kind); err != nil {
+		sid, role, peer, requestID, teamID, StateOpen, wireTime(now), wireTime(now), storeTime(now), kind)
+	if err != nil {
 		return fmt.Errorf("worksession: open session: %w", err)
+	}
+	// ws.open is written when this call inserted the row (class N: a failed
+	// row is logged and the session still opens; R55-121).
+	if n, _ := res.RowsAffected(); n == 1 && s.Audit != nil {
+		if err := s.auditOpen(ctx, tx, actor, sid, requestID, peer, role); err != nil {
+			return err
+		}
 	}
 	if kind == SessionKindDebate {
 		return s.Debate.OpenedTx(ctx, tx, role, peer, requestID, sid, now)
 	}
 	return nil
+}
+
+// auditOpen writes the ws.open row of a session row just inserted in tx,
+// through a savepoint (class N, audit.md §When the row cannot be written).
+func (s *Store) auditOpen(ctx context.Context, tx *sql.Tx, actor, sid, requestID, peer, role string) error {
+	return s.Audit.AppendTxSoft(ctx, tx, actor, "ws.open", map[string]string{
+		"session": sid, "request": requestID, "peer": peer, "role": role,
+	})
 }
 
 // idA and idB order (requester-key, worker-key) for DeriveID: the requester

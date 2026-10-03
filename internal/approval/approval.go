@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 )
 
 // Kinds of a waiting action (Docs/protocol/approval.md §Object).
@@ -180,6 +182,11 @@ type Notifier interface {
 // AuditSink is the part of audit.Log the store needs.
 type AuditSink interface {
 	Append(ctx context.Context, actor, action string, detail any) error
+	// AppendTx writes an S row in the change's own transaction (audit.md
+	// §When the row cannot be written); AppendTxSoft writes an S- row through a
+	// savepoint and returns nil when only the row failed.
+	AppendTx(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error
+	AppendTxSoft(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error
 }
 
 // WindowHandle is a running approval dialog process for one approval
@@ -216,6 +223,12 @@ type WindowRunner interface {
 	// reopened ("Wrong code, 2 attempts left"), or "". It is not part of the
 	// summary and does not count toward its limit.
 	Start(ctx context.Context, id, tag, kind, summary, note string, expires time.Time) (WindowHandle, error)
+	// Check reports, without opening a window, spawning a process or reading
+	// peer data, whether a window could be shown. fix is empty when ok and
+	// otherwise one of a fixed set of plain-words strings, never OS or D-Bus
+	// error text (Docs/protocol/approval.md §The approval window, "How the
+	// check works", R55-125).
+	Check(ctx context.Context) (ok bool, fix string)
 }
 
 // tagOf is the short tag shown in the window title and read back on the
@@ -302,6 +315,8 @@ type Store struct {
 	unwritten map[string]struct{}
 	// expireRetry is expireRetryWait; tests shorten it before any expiry.
 	expireRetry time.Duration
+	// wcache caches the last WindowRunner.Check (window_check.go).
+	wcache windowCache
 }
 
 // NewStore builds a Store with a fresh approval_key. now defaults to
@@ -374,13 +389,19 @@ func (s *Store) ExpireStale(ctx context.Context) error {
 	_ = rows.Close()
 	now := s.now().UTC().Format(storeTimeFmt)
 	for _, r := range list {
-		if _, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ?`, now, r.id); err != nil {
-			return fmt.Errorf("approval: expire stale %s: %w", r.id, err)
-		}
-		if s.audit != nil {
-			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{
-				"id": r.id, "kind": r.kind, "subject": r.subject, "reason": "expired",
-			})
+		err := audit.RunSoft(ctx, s.db, func(tx *sql.Tx, withRows bool) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ?`, now, r.id); err != nil {
+				return fmt.Errorf("approval: expire stale %s: %w", r.id, err)
+			}
+			if s.audit != nil && withRows {
+				return s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.reject", map[string]string{
+					"id": r.id, "kind": r.kind, "subject": r.subject, "reason": "expired",
+				})
+			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 	s.pruneDecided(ctx, s.now())

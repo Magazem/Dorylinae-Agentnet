@@ -87,6 +87,14 @@ func (f *fakeAudit) Append(_ context.Context, actor, action string, detail any) 
 	return nil
 }
 
+func (f *fakeAudit) AppendTx(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return f.Append(ctx, actor, action, detail)
+}
+
+func (f *fakeAudit) AppendTxSoft(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return f.Append(ctx, actor, action, detail)
+}
+
 func (f *fakeAudit) count(action string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

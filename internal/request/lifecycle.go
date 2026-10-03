@@ -124,6 +124,9 @@ type transitionBuild struct {
 	extraArgs     []any
 	firstResponse string
 	newState      string
+	// actor is the audit actor of the ws.open row an accept writes; empty
+	// means "cli".
+	actor string
 }
 
 // transition runs the shared part of accept/decline/defer/complete: load the
@@ -210,7 +213,11 @@ func (s *Store) transitionTx(ctx context.Context, tx *sql.Tx, id, from string, a
 		}
 	}
 	if tb.kind == KindAccept && s.Sessions != nil {
-		if err := s.Sessions.OpenSession(ctx, tx, "worker", row.peer, row.id, row.teamID, now); err != nil {
+		actor := tb.actor
+		if actor == "" {
+			actor = "cli"
+		}
+		if err := s.Sessions.OpenSession(ctx, tx, actor, "worker", row.peer, row.id, row.teamID, now); err != nil {
 			return storedRow{}, 0, "", err
 		}
 	}
@@ -243,7 +250,7 @@ func (s *Store) acceptInTx(ctx context.Context, tx *sql.Tx, id, from, onlyType, 
 			return transitionBuild{}, &BadStateError{State: row.state, Msg: fmt.Sprintf("%s is a %s request and %s: accept it first", id, row.typ, row.state)}
 		}
 		body := map[string]any{"at": wireTime(now), "request": id, "seq": seq}
-		return transitionBuild{kind: KindAccept, body: body, firstResponse: "accept", newState: StateAccepted}, nil
+		return transitionBuild{kind: KindAccept, body: body, firstResponse: "accept", newState: StateAccepted, actor: actor}, nil
 	})
 	if err != nil {
 		return "", nil, err

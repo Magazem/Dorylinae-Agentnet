@@ -265,7 +265,7 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		// lock is held until this approval is recorded (R55-085).
 		defer pending.lock(peer.PublicKey)()
 		if old := pending.takeLocked(peer.PublicKey); old != "" {
-			_, _ = apprStore.Reject(ctx, old, "superseded")
+			_, _ = apprStore.RejectFor(ctx, old, "superseded")
 		}
 		peerKey, linkID := peer.PublicKey, link.ID
 		var approvalID string
@@ -347,24 +347,25 @@ func registerDeviceScope(srv *ipc.Server, ds *device.Store, apprStore *approval.
 		if err != nil {
 			return nil, err
 		}
-		tx, err := ds.DB.BeginTx(ctx, nil)
+		// device.scope_clear is an S- row: written in the clear's transaction
+		// through a savepoint, and if SQLite lost the transaction the clear is
+		// retried once without it (audit.RunSoft, review 97 L1).
+		err = audit.RunSoft(ctx, ds.DB, func(tx *sql.Tx, withRows bool) error {
+			if _, err := ds.ClearScopeTx(ctx, tx, link.ID); err != nil {
+				return err
+			}
+			if !withRows {
+				return nil
+			}
+			return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID})
+		})
 		if err != nil {
-			return nil, fmt.Errorf("device: begin scope clear: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := ds.ClearScopeTx(ctx, tx, link.ID); err != nil {
 			return nil, err
-		}
-		if err := auditTx(ctx, tx, audit.ActorCLI, "device.scope_clear", map[string]any{"link": link.ID}); err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("device: commit scope clear: %w", err)
 		}
 		// Narrowing takes effect at once: a scope still waiting for its code
 		// is rejected, and queued runs are dropped.
 		if old := pending.take(peer.PublicKey); old != "" {
-			_, _ = apprStore.Reject(ctx, old, "scope_cleared")
+			_, _ = apprStore.RejectFor(ctx, old, "scope_cleared")
 		}
 		runner.kick()
 		return DeviceScopeClearResult{Link: deviceView(ctx, ps, ds, link)}, nil

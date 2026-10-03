@@ -143,6 +143,8 @@ func buildView(r row, tr transcript) View {
 		var cb struct {
 			Entries *int `json:"entries"`
 		}
+		// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+		// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 		if json.Unmarshal([]byte(r.closeBody.String), &cb) == nil && cb.Entries != nil {
 			late = *cb.Entries
 		}
@@ -177,6 +179,8 @@ func buildView(r row, tr transcript) View {
 				Outcome string `json:"outcome"`
 			} `json:"body"`
 		}
+		// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+		// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 		if r.lastState.Valid && json.Unmarshal([]byte(r.lastState.String), &ls) == nil {
 			v.Outcome = ls.Body.Outcome
 		}

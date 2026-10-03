@@ -106,7 +106,7 @@ func (s *Store) applyAccept(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		var teamID string
 		err := tx.QueryRowContext(ctx, `SELECT team_id FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, op.Msg.From, reqID).Scan(&teamID)
 		if err == nil {
-			if err := s.Sessions.OpenSession(ctx, tx, "requester", op.Msg.From, reqID, teamID, s.now()); err != nil {
+			if err := s.Sessions.OpenSession(ctx, tx, "daemon", "requester", op.Msg.From, reqID, teamID, s.now()); err != nil {
 				return err
 			}
 		} else if !errors.Is(err, sql.ErrNoRows) {

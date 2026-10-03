@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,7 @@ const (
 	FailRelayV1        = "relay_v1"
 	FailCodeUsed       = "code_used"
 	FailStore          = "store_error"
+	FailCancelled      = "cancelled"
 	FailTimeout        = "timeout"
 	FailExpired        = "expired"
 	failUnavailable    = "relay_unavailable"
@@ -804,23 +806,31 @@ func (m *Manager) onPeerV1(s *session, ctl envelope.Control) {
 		m.finish(s.st.ID, StateFailed, nil, &Failure{Code: FailBadCard, Message: "rejected the peer's Agent Card: " + err.Error()})
 		return
 	}
-	peer, fail := m.store(sc, card, TrustRelay, nil)
+	peer, fail := m.store(sc, card, TrustRelay, nil, s.st.ID, s.st.Role)
 	m.finish(s.st.ID, choose(fail == nil, StateComplete, StateFailed), peer, fail)
 }
 
 // store saves a verified peer. It returns the Peer for the status, or a failure.
-func (m *Manager) store(sc *agentcard.Signed, rawCard []byte, trust string, mbox []byte) (*Peer, *Failure) {
+// pair.complete is an S row (audit.md §When the row cannot be written): it is
+// written in the storing transaction, with the trust the row holds after the
+// store, so a failing row means no stored peer and the pairing fails
+// store_error (R55-118, R55-142).
+func (m *Manager) store(sc *agentcard.Signed, rawCard []byte, trust string, mbox []byte, id, role string) (*Peer, *Failure) {
 	at := m.cfg.Now().UTC().Truncate(time.Second)
 	sctx, cancel := context.WithTimeout(context.Background(), auditWriteBudget)
 	defer cancel()
-	if err := m.cfg.Store.AddTrusted(sctx, sc, rawCard, at, trust, mbox); err != nil {
+	stored, pairedAt, err := m.cfg.Store.AddTrustedAudited(sctx, sc, rawCard, at, trust, mbox, func(ctx context.Context, tx *sql.Tx, stored string) error {
+		return audit.AppendTx(ctx, tx, audit.ActorDaemon, ActionPairComplete, map[string]string{
+			"id": id, "role": role, "peer": sc.Card.PublicKey, "trust": stored,
+		})
+	})
+	if err != nil {
 		m.log.Error("could not store peer", "event", "pair_store_error", "error", err)
 		return nil, &Failure{Code: FailStore, Message: "could not store the peer"}
 	}
-	// A re-pair keeps the higher stored trust and the first paired_at.
-	if st, pa, err := m.cfg.Store.stored(sctx, sc.Card.PublicKey); err == nil {
-		trust, at = st, parsePairedAt(pa, at)
-	}
+	// A re-pair keeps the higher stored trust and the first paired_at: the row,
+	// not the request, says what is stored (R55-118, review 97 L2).
+	trust, at = stored, parsePairedAt(pairedAt, at)
 	fp, _ := envelope.KeyFingerprint(sc.Card.PublicKey)
 	return &Peer{
 		PublicKey: sc.Card.PublicKey, Name: sc.Card.Name, Harness: sc.Card.Harness,
@@ -1083,7 +1093,11 @@ func (m *Manager) checkConfirm(s *session, att *attempt, kd *kderiv, tag []byte)
 	}
 	s.completing = true
 	m.mu.Unlock()
-	peer, fail := m.store(att.sc, att.rawCard, TrustCode, att.mbox)
+	role := RoleRedeemer
+	if issuer {
+		role = RoleIssuer
+	}
+	peer, fail := m.store(att.sc, att.rawCard, TrustCode, att.mbox, id, role)
 	if fail != nil {
 		m.end(id, StateFailed, nil, fail, true)
 		return
@@ -1157,13 +1171,10 @@ func (m *Manager) end(id, state string, peer *Peer, fail *Failure, completer boo
 		cancel()
 	}
 	m.notify(s, CompletionInfo{PairingID: id, Role: role, Lookup: lookup, State: state, Peer: copyPeer(peer)})
-	detail := map[string]string{"id": id, "role": role}
 	if peer != nil {
-		detail["peer"] = peer.PublicKey
-		detail["trust"] = peer.Trust
-		m.audit(context.Background(), audit.ActorDaemon, ActionPairComplete, detail)
-		return
+		return // pair.complete was written in the storing transaction (m.store)
 	}
+	detail := map[string]string{"id": id, "role": role}
 	detail["code"] = fail.Code
 	detail["reason"] = fail.Message
 	if fail.reason != "" {
@@ -1197,9 +1208,24 @@ func (m *Manager) audit(ctx context.Context, actor, action string, detail any) {
 	// Audit even if the caller went away, but never block for long.
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), auditWriteBudget)
 	defer cancel()
-	if err := m.cfg.Audit.Append(actx, actor, action, detail); err != nil {
-		m.log.Error("audit write failed", "event", "audit_error", "action", action, "error", err)
+	// A failure is logged once, centrally, by internal/audit.
+	_ = m.cfg.Audit.Append(actx, actor, action, detail)
+}
+
+// Cancel ends the pending pairing id as failed with code "cancelled"
+// (pair.fail row, relay lookup withdrawn). The daemon uses it when the
+// team.invite_issued row could not be written, so no code is ever released
+// without its row (audit.md §When the row cannot be written). It returns
+// ErrNotFound for an unknown id; a pairing that already ended stays as it is.
+func (m *Manager) Cancel(id string) error {
+	m.mu.Lock()
+	_, ok := m.sessions[id]
+	m.mu.Unlock()
+	if !ok {
+		return ErrNotFound
 	}
+	m.finish(id, StateFailed, nil, &Failure{Code: FailCancelled, Message: "cancelled"})
+	return nil
 }
 
 func newID() (string, error) {

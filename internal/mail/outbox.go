@@ -386,9 +386,7 @@ func (o *Outbox) maintain(ctx context.Context, now time.Time) {
 	for _, e := range due {
 		if o.finish(ctx, e.id, "", StateExpired, "") && o.Audit != nil {
 			detail := map[string]string{"peer": e.to, "id": e.id, "kind": e.kind}
-			if aerr := o.Audit.Append(ctx, actorDaemon, ActionExpired, detail); aerr != nil {
-				o.log().Warn("mail: audit failed", "event", "mail_error", "error", aerr)
-			}
+			_ = o.Audit.Append(ctx, actorDaemon, ActionExpired, detail) // logged once, centrally, by internal/audit
 		}
 	}
 	if _, err := o.DB.ExecContext(ctx,

@@ -960,6 +960,33 @@ func TestFetchAuditRateLimitAndSummary(t *testing.T) {
 	}
 }
 
+// R55-078 (T10): Close writes the summary of every window, whatever its age,
+// so the 10 fetches over the limit are summarised even when the server stops
+// before the window's minute is up.
+func TestFetchCloseFlushesPendingSummaries(t *testing.T) {
+	h := newFetchHarness(t, nil, func(c *FetchConfig) { c.BytesPer24h = 1 << 40 })
+	h.write("a.txt", "x")
+	rec, tok := h.issue("")
+	total := 0
+	for total < 70 {
+		for i := 0; i < maxOpsPerSecond && total < 70; i++ {
+			if e := errOf(h.call(tok, reqOpts{op: OpStat, path: "a.txt"})); e != "" {
+				t.Fatalf("op %d: %q", total, e)
+			}
+			total++
+		}
+		h.advance(time.Second)
+	}
+	if n := len(h.auditsOf("grant.fetch_summary")); n != 0 {
+		t.Fatalf("summaries before Close = %d, want 0 (the minute is not over)", n)
+	}
+	h.srv.Close()
+	sum := h.auditsOf("grant.fetch_summary")
+	if len(sum) != 1 || sum[0].Detail["grant"] != rec.ID || sum[0].Detail["ops"].(int64) != 10 {
+		t.Fatalf("summaries after Close = %v, want one for the 10 suppressed ops", sum)
+	}
+}
+
 // Review 34 M1: a peer without a valid grant leaves nothing in the dedupe
 // store, and one peer's full store does not refuse another peer's requests.
 func TestFetchDedupeOnlyAfterAuthAndPerPeer(t *testing.T) {

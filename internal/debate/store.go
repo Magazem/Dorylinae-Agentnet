@@ -71,6 +71,11 @@ type SubmitTx interface {
 // AuditSink is the part of audit.Log the Store needs.
 type AuditSink interface {
 	Append(ctx context.Context, actor, action string, detail any) error
+	// AppendTx writes an S row in the change's own transaction and
+	// AppendTxSoft an S- (or N) row through a savepoint (audit.md §When the
+	// row cannot be written); *audit.Log provides both.
+	AppendTx(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error
+	AppendTxSoft(ctx context.Context, tx *sql.Tx, actor, action string, detail any) error
 }
 
 // Store owns the debates and debate_entries tables (migration 19) and the

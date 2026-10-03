@@ -560,11 +560,6 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if err != nil {
 			return nil, summaryField(err, "id")
 		}
-		// approvalID is set once Create returns below, before Perform can ever
-		// run (Perform only runs later, once a human confirms through the
-		// approval window or the daemon's terminal stdin, 2.2d): the closure
-		// captures the variable, not its zero value.
-		var approvalID string
 		createdSeq := v.Seq
 		view, err := as.Create(ctx, "release", sid, summary, approval.Action{
 			Rebuild: rebuildWith(facts, func(ctx context.Context, tx *sql.Tx) (approvaltext.Result, error) {
@@ -599,14 +594,27 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 				if err != nil {
 					return nil, err
 				}
-				return afterCommitResult{after: func(ctx context.Context) {
+				// ws.release is an S row: written here, in the approval's
+				// transaction, not after the commit. The approval id is read
+				// in tx, where Confirm has just marked it approved. Earlier
+				// rounds' release approvals of the same session are approved
+				// too; this one is the newest: an older pending one fails the
+				// seq check above once a newer one released (review 97 M1).
+				if log != nil {
+					var apprID string
+					if err := tx.QueryRowContext(ctx, `SELECT id FROM approvals WHERE kind = ? AND subject = ? AND state = 'approved' ORDER BY rowid DESC LIMIT 1`,
+						approval.KindRelease, sid).Scan(&apprID); err != nil {
+						return nil, fmt.Errorf("session: read approval id: %w", err)
+					}
+					if err := auditTx(ctx, tx, audit.ActorCLI, "ws.release", map[string]any{
+						"session": sid, "peer": peer, "round": round, "approval": apprID,
+					}); err != nil {
+						return nil, err
+					}
+				}
+				return afterCommitResult{after: func(context.Context) {
 					if ws.Outbox != nil {
 						ws.Outbox.Wake()
-					}
-					if log != nil {
-						_ = log.Append(ctx, "cli", "ws.release", map[string]any{
-							"session": sid, "peer": peer, "round": round, "approval": approvalID,
-						})
 					}
 				}}, nil
 			},
@@ -614,7 +622,6 @@ func registerSession(srv *ipc.Server, ws *worksession.Store, rs *request.Store, 
 		if err != nil {
 			return nil, approvalError(err)
 		}
-		approvalID = view.ID
 		return map[string]approval.View{"approval": view}, nil
 	})
 }

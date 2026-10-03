@@ -76,6 +76,14 @@ func (h *hookAudit) Append(ctx context.Context, actor, action string, detail any
 	return nil
 }
 
+func (h *hookAudit) AppendTx(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return h.Append(ctx, actor, action, detail)
+}
+
+func (h *hookAudit) AppendTxSoft(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return h.Append(ctx, actor, action, detail)
+}
+
 // M-2: once the 10th wrong code is recorded, no other pending approval may
 // be tried, not even by a Confirm that was already waiting for the lock.
 func TestLockoutLeavesNoWindowForAnotherGuess(t *testing.T) {

@@ -132,7 +132,7 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 		}
 		var hash string
 		var derr error
-		tr, hash, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out)
+		tr, hash, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now)
 		if derr != nil {
 			return nil, derr
 		}
