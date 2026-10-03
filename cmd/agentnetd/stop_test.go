@@ -13,6 +13,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/daemon"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/identity"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/store"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/testutil"
@@ -92,6 +93,34 @@ func TestSecondInstanceReportsClearError(t *testing.T) {
 	}
 	if !strings.Contains(errs, "already running for") || !strings.Contains(errs, "(pid "+strconv.Itoa(os.Getpid())+")") {
 		t.Fatalf("stderr = %q", errs)
+	}
+}
+
+// Review 60b F8b-03: when no daemon answers on our endpoint (an older one
+// holds the home, or only the lock is held), the message gives the cause
+// instead of a bare "already running" that agentnetd stop then contradicts.
+func TestAlreadyRunningWithoutAnswerGivesCause(t *testing.T) {
+	t.Setenv(identity.KeystoreEnv, "file") // never touch the real keychain from tests
+	home := filepath.Join(testutil.TempDir(t), "home")
+	p, err := paths.In(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := ipc.LockInstance(p.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	code, _, errs := invoke(t, "--home", home)
+	if code != exitAlreadyRunning {
+		t.Fatalf("code = %d, want %d; stderr %q", code, exitAlreadyRunning, errs)
+	}
+	if !strings.Contains(errs, "already running for") || !strings.Contains(errs, "locked by another agentnetd") {
+		t.Fatalf("stderr = %q, want the cause", errs)
 	}
 }
 
