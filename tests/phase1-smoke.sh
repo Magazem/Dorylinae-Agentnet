@@ -78,13 +78,50 @@ wait_until() { # wait_until SECONDS cmd...
   while [ "$SECONDS" -lt "$end" ]; do "$@" && return 0; sleep 0.3; done
   return 1
 }
-status_ok() { ag "$1" status; [ "$CODE" -eq 0 ]; }
+# Running and, when a relay is configured, connected to it (the status "relay" object is
+# absent for a daemon started without a relay URL).
+status_ok() {
+  ag "$1" status --json; [ "$CODE" -eq 0 ] || return 1
+  [ "$(jpy "str(d.get('relay',{}).get('connected', True)).lower()")" = true ]
+}
 
 start_relay() { "$bin/relay$exe" --listen "127.0.0.1:$port" --queue-db "$queue" --verbose >>"$work/relay.log" 2>&1 & pid_relay=$!; }
-start_d() { # start_d A|B|C|D [extra env "K=V" ...]
-  local who="$1"; shift
+# Approvals (D48: peers verify, team invite, ... need a human). The daemons run with
+# DORYLINAE_APPROVAL=terminal + DORYLINAE_DEBUG=1 (pipes allowed) under a small wrapper;
+# this script, never an agent, reads each "AgentNet approval a-XXXXXX: ... Code NNNNNN."
+# line off the daemon's stderr and types "<id> <code>" on its stdin (Docs/protocol/approval.md
+# "Headless machines").
+write_pump() {
+  cat > "$work/pump.py" <<'PYEOF'
+import os, re, signal, subprocess, sys, threading
+exe, log = sys.argv[1], sys.argv[2]
+env = dict(os.environ, DORYLINAE_APPROVAL="terminal", DORYLINAE_DEBUG="1")
+p = subprocess.Popen([exe, "run"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+rx = re.compile(rb"AgentNet approval (a-[0-9a-f]+): .*?Code ([0-9]+)[.]")
+def pump():
+    with open(log, "ab") as lf:
+        for line in p.stderr:
+            lf.write(line); lf.flush()
+            m = rx.search(line)
+            if m:
+                p.stdin.write(b"
+" + m.group(1) + b" " + m.group(2) + b"
+"); p.stdin.flush()
+threading.Thread(target=pump, daemon=True).start()
+def term(*_):
+    p.terminate()
+signal.signal(signal.SIGTERM, term)
+sys.exit(p.wait())
+PYEOF
+}
+start_d() { # start_d A|B|C|D [norelay]   (norelay: no DORYLINAE_RELAY_URL at all)
+  local who="$1" mode="${2:-relay}"
   local h; h="$(homedir "$who")"
-  env DORYLINAE_HOME="$h" "$@" "$bin/agentnetd$exe" run >>"$work/$who.log" 2>&1 &
+  if [ "$mode" = norelay ]; then
+    DORYLINAE_HOME="$h" "$PYTHON" "$work/pump.py" "$bin/agentnetd$exe" "$work/$who.log" &
+  else
+    DORYLINAE_HOME="$h" DORYLINAE_RELAY_URL="$relay_url" "$PYTHON" "$work/pump.py" "$bin/agentnetd$exe" "$work/$who.log" &
+  fi
   eval "pid_$who=$!"
 }
 stop_d() { # stop_d A|B|C|D
@@ -103,11 +140,12 @@ trap cleanup EXIT
 echo "work dir: $work  relay: $relay_url  hook port: $hookport"
 
 # 1. relay + four daemons (A, B, C, D), no admin, all foreground child processes
+write_pump
 start_relay
 wait_until 10 grep -q listening "$work/relay.log" 2>/dev/null
 step "relay starts and listens" $?
 
-for who in A B C D; do start_d "$who" env DORYLINAE_RELAY_URL="$relay_url"; done
+for who in A B C D; do start_d "$who"; done
 okall=0
 for who in A B C D; do wait_until 20 status_ok "$who" || okall=1; done
 step "status: A, B, C, D all running" $okall
@@ -126,7 +164,10 @@ ag B pair "$code" --json
 
 spaced="$(printf '%s' "$fpB" | sed 's/\(....\)/\1 /g; s/ $//')"
 ag A peers verify "$refB" "$spaced" --json
-[ "$CODE" -eq 0 ] && [ "$(jget trust)" = fingerprint ]; step "peers verify with correct fingerprint sets trust=fingerprint" $? "$OUT"
+[ "$CODE" -eq 0 ] && [ "$(jget kind)" = peer_verify ] && [ "$(jget state)" = pending ]; step "peers verify with correct fingerprint creates a peer_verify approval (D48)" $? "$OUT"
+# The approval pump types the code on A's daemon terminal; trust changes only then.
+b_trust() { ag A peers --json; [ "$(jpy "next(p for p in d['peers'] if p['public_key']=='$refB')['trust']")" = fingerprint ]; }
+wait_until 15 b_trust; step "peers verify: B's trust becomes fingerprint once the approval is confirmed" $?
 first="${fpB:0:1}"; swap=A; [ "$first" = A ] && swap=B
 ag A peers verify "$refB" "${swap}${fpB:1}"
 [ "$CODE" -eq 1 ] && printf '%s' "$OUT" | grep -q fingerprint_mismatch; step "peers verify with wrong fingerprint is rejected" $? "$OUT"
@@ -203,7 +244,7 @@ ag A request "$refB" task --title "SMOKEMARKTITLE Offline artifact request" \
 offReqId="$(jget id)"
 [ "$CODE" -eq 0 ] && [ "$(jget status)" = queued ] && [ "$(jget urgency)" = blocking ]
 step "request: accepted as queued while B is offline, urgency blocking, has an artifact" $? "$OUT"
-start_d B env DORYLINAE_RELAY_URL="$relay_url"
+start_d B
 wait_until 20 status_ok B; step "status: B running again" $?
 delivered() { ag B inbox --json; [ "$(jpy "sum(1 for r in d['requests'] if r['id']=='$offReqId')")" -ge 1 ]; }
 wait_until 30 delivered; step "request: delivered to B after it restarts" $?
@@ -245,6 +286,10 @@ ag B complete "$highId" --note "SMOKEMARKNOTE all good" \
   --status pass --summary "SMOKEMARKSUMMARY all green" --exit-code 0 \
   --output-from-file "$outfile" --artifact "url=https://example.test/y branch=main commit=1234567890abcdef path=out/log" --json
 step "complete: B completes with a D14 result" "$CODE" "$OUT"
+# Since accept opens a work session (Docs/cli/inbox.md), complete only submits the result and
+# the request stays accepted until the requester runs accept-result.
+acc_result() { ag A accept-result "$highId" --json; [ "$CODE" -eq 0 ]; }
+wait_until 20 acc_result; step "accept-result: A accepts the result, closing the session" $? "$OUT"
 completed() { ag A request show "$highId" --json; [ "$(jget state)" = completed ]; }
 wait_until 15 completed; step "complete: A's mirror shows completed" $?
 ag A request show "$highId" --json
@@ -284,13 +329,13 @@ wait_until 30 arrived2; step "cancel test: request 2 reached B's inbox" $?
 stop_d A
 ag A status; [ "$CODE" -eq 3 ]; step "status: A not running before the accept-then-cancel test (exit 3)" $? "code=$CODE"
 ag B accept "$rc2" --json; step "cancel after accept: B accepts request 2 while A is offline" "$CODE" "$OUT"
-start_d A   # deliberately no DORYLINAE_RELAY_URL: A cannot receive B's queued "accepted" mail
+start_d A norelay   # deliberately no DORYLINAE_RELAY_URL: A cannot receive B's queued "accepted" mail
 wait_until 20 status_ok A; step "status: A running again, deliberately relay-less" $?
 ag A request cancel "$rc2" --json
 [ "$CODE" -eq 0 ] && [ "$(jpy "d['request']['state']")" = pending ]
 step "cancel after accept: cancel accepted locally while A's mirror still reads pending" $? "$OUT"
 stop_d A
-start_d A env DORYLINAE_RELAY_URL="$relay_url"
+start_d A
 wait_until 20 status_ok A; step "status: A running again with the relay reconnected" $?
 can2refused() { ag A request show "$rc2" --json; [ "$(jget state)" = accepted ] && [ "$(jget cancel)" = refused ]; }
 wait_until 30 can2refused; step "cancel after accept: A's mirror shows cancel=refused, state stays accepted" $?
@@ -345,10 +390,22 @@ wreq_arrived() { ag B inbox --json; [ "$(jpy "sum(1 for r in d['requests'] if r[
 wait_until 15 wreq_arrived
 ag B accept "$wreqId" --json
 
-two_posts() { [ "$(ls "$work/hookposts" 2>/dev/null | wc -l)" -ge 2 ]; }
-wait_until 20 two_posts
+# Late events of earlier steps (e.g. request.cancelled from the cancel-after-accept test) may
+# arrive first, so wait until both wanted events were seen.
+both_events() {
+  "$PYTHON" - "$work/hookposts" <<'PYEOF'
+import sys, os, json
+ev = set()
+for n in os.listdir(sys.argv[1]):
+    with open(os.path.join(sys.argv[1], n)) as f:
+        ev.add(json.loads(json.load(f)["body"]).get("event"))
+sys.exit(0 if {"request.received", "request.accepted"} <= ev else 1)
+PYEOF
+}
+wait_until 20 both_events
+both_events; rc=$?
 npost="$(ls "$work/hookposts" 2>/dev/null | wc -l)"
-[ "$npost" -ge 2 ]; step "webhook: at least 2 signed deliveries arrived (request.received + request.accepted)" $? "$npost received"
+step "webhook: signed deliveries arrived (request.received + request.accepted)" $rc "$npost received"
 kill "$hook_pid" 2>/dev/null; hook_pid=""
 
 verify_out="$("$PYTHON" - "$work/hookposts" "$secretB" "$secretA" <<'PYEOF'
@@ -378,10 +435,13 @@ for name in sorted(os.listdir(posts_dir)):
     ts = headers.get("dorylinae-webhook-timestamp", "")
     wid = headers.get("dorylinae-webhook-id", "")
     payload = json.loads(body)
-    key = keyB if payload.get("event") == "request.received" else keyA
     signed = f"v1:{ts}:{wid}:{body}".encode()
-    expect = "v1=" + b64url(hmac.new(key, signed, hashlib.sha256).digest())
-    if expect == sig and wid == payload.get("id"):
+    okB = ("v1=" + b64url(hmac.new(keyB, signed, hashlib.sha256).digest())) == sig
+    okA = ("v1=" + b64url(hmac.new(keyA, signed, hashlib.sha256).digest())) == sig
+    # B's webhook signs request.received (and late request.cancelled), A's request.accepted.
+    ev = payload.get("event")
+    good = okB if ev == "request.received" else okA if ev == "request.accepted" else (okA or okB)
+    if good and wid == payload.get("id"):
         verified += 1
 print(f"{verified}/{total}")
 PYEOF

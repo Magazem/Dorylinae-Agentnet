@@ -43,8 +43,18 @@ socket stale. On every OS the daemon also holds an exclusive lock on
 `agentnetd.lock` in the config dir (`flock`, `LockFileEx` on Windows) from
 before it opens the database, so a second daemon for the same home stops before
 it migrates anything; on Windows this lock, not the pipe name, is what keeps one
-daemon per home, and a daemon from before the lock that answers on the old pipe
-name counts as running too. A stale socket file (no listener answering) is removed on start
+daemon per home. A daemon from before the lock holds no lock file, so after
+taking the lock the daemon also dials where an older one would listen: the
+socket on Unix, the old pipe name (a hash of the config dir as spelled) on
+Windows. One that answers counts as running. On Unix a socket that fails the dial
+other than as missing, stale (connection refused) or too long for `sun_path`
+refuses the start too (review 99 F8c-01). On Windows an old pipe name that is
+in use but does not answer as ours (an older daemon started elevated owns its
+pipe as `BUILTIN\Administrators`, or all its instances are busy) refuses the
+start too, with a message that says to stop the older daemon with its own
+`agentnetd stop`: the newer CLI dials only the new name. An older daemon started
+with another spelling of the config dir cannot be found this way (review 60b
+F8b-01, F8b-02). A stale socket file (no listener answering) is removed on start
 only if the current user owns it.
 
 ## Framing

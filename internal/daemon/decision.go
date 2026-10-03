@@ -58,9 +58,14 @@ type DecisionShowResult struct {
 }
 
 // decisionError maps an internal/debate/decision error to its IPC error.
+// An s- or r- id with no debate is an unknown Decision too, and an r- id of
+// several debates is ambiguous (R55-128).
 func decisionError(err error) error {
-	if errors.Is(err, debate.ErrUnknownDecision) {
+	switch {
+	case errors.Is(err, debate.ErrUnknownDecision), errors.Is(err, debate.ErrUnknownDebate):
 		return &ipc.Error{Code: CodeUnknownDecision, Message: "no such Decision"}
+	case errors.Is(err, request.ErrAmbiguousRequest):
+		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the id matches more than one debate; use the session id (s-...)"}
 	}
 	return err
 }

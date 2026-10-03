@@ -605,6 +605,12 @@ CREATE INDEX approvals_state ON approvals (state, expires);
 	{26, "mailbox_key_backend", `
 ALTER TABLE mailbox_keys_own ADD COLUMN key_backend TEXT;
 `},
+	// A request id is unique only per sender, so receive and submit look for a
+	// row with the same id alone (R55-F20, OD-F20-7 (b), review 91 S1): without
+	// this index that is a full scan (22.8 ms at 100k rows).
+	{27, "requests_id_index", `
+CREATE INDEX requests_id ON requests (id);
+`},
 }
 
 // Store is an open SQLite database with migrations applied.

@@ -33,6 +33,7 @@ func TestReview79Migration23RebuildKeepsRows(t *testing.T) {
     decided   TEXT
 )`,
 		`CREATE INDEX approvals_state ON approvals (state, expires)`,
+		`DROP INDEX requests_id`,                               // migration 27
 		`ALTER TABLE mailbox_keys_own DROP COLUMN key_backend`, // migration 26
 		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`, // migration 24

@@ -121,7 +121,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			if pid := runningPID(p.Endpoint); pid > 0 {
 				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s (pid %d)\n", name, p.Dir, pid)
 			} else {
-				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s\n", name, p.Dir)
+				// Not answering on our endpoint: the cause says who holds it
+				// and how to stop it, e.g. an older daemon (review 60b F8b-03).
+				_, _ = fmt.Fprintf(stderr, "%s: agentnetd is already running for %s: %v\n", name, p.Dir, err)
 			}
 			return exitAlreadyRunning
 		}

@@ -264,7 +264,7 @@ func TestApplyPolicyReadErrorIsRetryable(t *testing.T) {
 
 // TestApplyWireIdempotency: (from, id) is the key. The same body is a
 // duplicate, a different body keeps the first, and the same id from another
-// sender is a separate request.
+// sender is refused as bad_body (R55-F20).
 func TestApplyWireIdempotency(t *testing.T) {
 	s, _, al := newTestStore(t, testTo, &policy{})
 	req := receivedRequest()
@@ -295,11 +295,11 @@ func TestApplyWireIdempotency(t *testing.T) {
 
 	other := *req
 	other.From = testKey(3)
-	if err := deliverRequest(t, s, &other, time.Now()); err != nil {
-		t.Fatal(err)
+	if err := deliverRequest(t, s, &other, time.Now()); !errors.Is(err, mail.ErrBadBody) {
+		t.Fatalf("same id from another sender: err = %v, want bad_body", err)
 	}
-	if n := countRows(t, s.DB, `SELECT COUNT(*) FROM requests WHERE direction = 'in' AND id = ?`, req.ID); n != 2 {
-		t.Errorf("rows for one id from two senders = %d, want 2", n)
+	if n := countRows(t, s.DB, `SELECT COUNT(*) FROM requests WHERE direction = 'in' AND id = ?`, req.ID); n != 1 {
+		t.Errorf("rows for one id from two senders = %d, want 1", n)
 	}
 }
 

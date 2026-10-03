@@ -83,6 +83,10 @@ type Store struct {
 	// normal inbox for everything.
 	Helper HelperRouter
 
+	// NewIDFunc, when set, replaces NewID for the ids Submit draws, so tests
+	// can force a collision (R55-F20).
+	NewIDFunc func() string
+
 	Now func() time.Time
 }
 
@@ -195,6 +199,16 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, op *mail.Opened) error {
 		if decided {
 			return badBody("debate request id already has a Decision")
 		}
+	}
+	// A request id is unique only per sender, so refuse one that another row
+	// here already has: our `out` row to any peer, or another peer's `in` row
+	// (Docs/protocol/request.md §Receiving step 2, R55-F20).
+	taken, err := idTakenTx(ctx, tx, req.ID, op.Msg.From)
+	if err != nil {
+		return err
+	}
+	if taken {
+		return badBody("request id is already used here")
 	}
 	intro, err := introducerOf(ctx, tx, op.Msg.From)
 	if err != nil {
@@ -425,6 +439,16 @@ func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opene
 	if _, err := tx.ExecContext(ctx, `DELETE FROM request_cancels WHERE peer = ? AND id = ?`, op.Msg.From, req.ID); err != nil {
 		return false, fmt.Errorf("request: delete tombstone: %w", err)
 	}
+	// The row keeps no content when D5 or the team checks would have declined
+	// the request (Docs/protocol/request.md §Receiving step 2, R55-163).
+	body := string(canon)
+	code, err := s.policyDeclineCode(ctx, tx, req)
+	if err != nil {
+		return false, err
+	}
+	if code != "" {
+		body = emptyBody
+	}
 	at := parseStoreTime(receivedAt)
 	replyBody := map[string]any{"at": wireTime(at), "request": req.ID, "seq": 1}
 	lastReply, err := jsonObject(map[string]any{"kind": KindCancelled, "body": replyBody})
@@ -432,7 +456,7 @@ func (s *Store) consumeTombstone(ctx context.Context, tx *sql.Tx, op *mail.Opene
 		return false, fmt.Errorf("request: encode last_reply: %w", err)
 	}
 	var reasonArg any
-	if reason.Valid {
+	if reason.Valid && code == "" {
 		reasonArg = reason.String
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -442,10 +466,25 @@ INSERT INTO requests (
 	last_reply, last_reply_sent, updated, introducer, introduced_at
 ) VALUES ('in', ?, ?, ?, ?, ?, ?, NULL, ?, ?, 'cancelled', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		op.Msg.From, req.ID, req.Team, req.Type, req.Urgency, effectiveDeclared(req),
-		string(canon), hash, wireTime(at), reasonArg, wireTime(req.Created), storeTime(now), op.Msg.ID,
+		body, hash, wireTime(at), reasonArg, wireTime(req.Created), storeTime(now), op.Msg.ID,
 		lastReply, storeTime(at), storeTime(now), intro.by, intro.at,
 	); err != nil {
 		return false, fmt.Errorf("request: insert tombstoned row: %w", err)
+	}
+	return true, nil
+}
+
+// idTakenTx reports whether a requests row other than (in, from, id) has id:
+// an `out` row to any peer or an `in` row from another peer (R55-F20). With
+// from empty it reports any row with id.
+func idTakenTx(ctx context.Context, tx *sql.Tx, id, from string) (bool, error) {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM requests WHERE id = ? AND NOT (direction = 'in' AND peer = ?) LIMIT 1`, id, from).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("request: check id: %w", err)
 	}
 	return true, nil
 }

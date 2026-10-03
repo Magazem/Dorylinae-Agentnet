@@ -208,3 +208,30 @@ func TestKeychainLegacyAccountFallback(t *testing.T) {
 		t.Fatalf("legacy entry survived Delete: %v", err)
 	}
 }
+
+// Review 60b F8b-05: KeychainEntries derives the accounts once and gives each
+// entry the account and legacy fallback KeychainFor would, plus the suffix.
+func TestKeychainEntriesSuffix(t *testing.T) {
+	keyring.MockInit()
+	dir := testutil.TempDir(t)
+	spelled := testutil.OtherSpelling(t, dir)
+	e := keystore.KeychainEntriesFor("mailbox-", spelled)
+	base := keystore.KeychainFor("mailbox-", spelled).Location()
+	if got := e.Entry("-k1").Location(); got != base+"-k1" {
+		t.Fatalf("Entry location = %s, want %s-k1", got, base)
+	}
+	sum := sha256.Sum256([]byte(spelled))
+	legacy := "mailbox-" + hex.EncodeToString(sum[:8]) + "-k1"
+	if "entry "+keystore.Service+"/"+legacy == base+"-k1" {
+		t.Skip("spelling is already canonical")
+	}
+	if err := keystore.NewKeychain(legacy).Set(secret); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Entry("-k1").Get(); err != nil || !bytes.Equal(got, secret) {
+		t.Fatalf("legacy entry not found: %v", err)
+	}
+	if _, err := e.Entry("-k2").Get(); !errors.Is(err, keystore.ErrNotFound) {
+		t.Fatalf("other suffix: %v, want ErrNotFound", err)
+	}
+}
