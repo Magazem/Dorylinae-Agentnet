@@ -214,9 +214,7 @@ func (r *Receiver) Handle(ctx context.Context, env envelope.Envelope) error {
 			auditKind = "unknown"
 		}
 		detail := map[string]string{"peer": op.Msg.From, "id": op.Msg.ID, "kind": auditKind}
-		if aerr := r.Audit.Append(ctx, actorDaemon, ActionIn, detail); aerr != nil {
-			r.log().Warn("mail: audit failed", "event", "mail_error", "error", aerr)
-		}
+		_ = r.Audit.Append(ctx, actorDaemon, ActionIn, detail) // logged once, centrally, by internal/audit
 	}
 	if !dup && known && k.After != nil {
 		k.After(ctx, op)

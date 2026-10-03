@@ -144,12 +144,6 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 	}
 }
 
-type grantRevokeOutcome struct {
-	applied bool
-	grant   string
-	peer    string
-}
-
 // grantRevokeKind returns the receiver Kind for "grant.revoke"
 // (Docs/protocol/grant.md §Kinds, holder apply). Review 24 M8: applied only
 // when msg.from equals the peer that granted it (capability.Store.FindHeldTx).
@@ -192,19 +186,12 @@ func grantRevokeKind(capStore *capability.Store, log *audit.Log) mail.Kind {
 			if err != nil {
 				return err
 			}
-			if changed {
-				op.Outcome = &grantRevokeOutcome{applied: true, grant: gid, peer: op.Msg.From}
+			// grant.revoked_in is an S- row: written in this transaction
+			// through a savepoint, so the revoke applies even if it fails.
+			if changed && log != nil {
+				return audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "grant.revoked_in", map[string]any{"grant": gid, "peer": op.Msg.From})
 			}
 			return nil
-		},
-		After: func(ctx context.Context, op *mail.Opened) {
-			out, ok := op.Outcome.(*grantRevokeOutcome)
-			if !ok || log == nil {
-				return
-			}
-			if out.applied {
-				_ = log.Append(ctx, audit.ActorDaemon, "grant.revoked_in", map[string]any{"grant": out.grant, "peer": out.peer})
-			}
 		},
 	}
 }

@@ -149,6 +149,14 @@ func (a *fakeAudit) Append(_ context.Context, _, action string, detail any) erro
 	return nil
 }
 
+func (a *fakeAudit) AppendTx(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return a.Append(ctx, actor, action, detail)
+}
+
+func (a *fakeAudit) AppendTxSoft(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return a.Append(ctx, actor, action, detail)
+}
+
 // has reports whether an audit row with action and every fragment exists.
 func (a *fakeAudit) has(action string, fragments ...string) bool {
 	a.mu.Lock()

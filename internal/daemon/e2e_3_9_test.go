@@ -270,6 +270,7 @@ func TestPhase3AuditHasNoContent(t *testing.T) {
 		return b.count(`SELECT COUNT(*) FROM experience_records WHERE session = '`+sid2+`' AND role = 'respondent'`) == 1
 	})
 
+	assertNoContentAnywhere(t, p3AuditMarkers, a.harnessNode, b.harnessNode) // R55-200
 	for _, n := range []*harnessNode{a.harnessNode, b.harnessNode} {
 		_, details := allAuditRows(t, n)
 		for _, d := range details {

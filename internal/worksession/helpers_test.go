@@ -116,6 +116,7 @@ func (o *spyOutbox) sentCount(kind string) int {
 type auditEntry struct {
 	action string
 	detail string
+	actor  string
 }
 
 type fakeAudit struct {
@@ -123,15 +124,36 @@ type fakeAudit struct {
 	entries []auditEntry
 }
 
-func (a *fakeAudit) Append(_ context.Context, _, action string, detail any) error {
+func (a *fakeAudit) AppendTx(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return a.Append(ctx, actor, action, detail)
+}
+
+func (a *fakeAudit) AppendTxSoft(ctx context.Context, _ *sql.Tx, actor, action string, detail any) error {
+	return a.Append(ctx, actor, action, detail)
+}
+
+func (a *fakeAudit) Append(_ context.Context, actor, action string, detail any) error {
 	b, err := json.Marshal(detail)
 	if err != nil {
 		return err
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.entries = append(a.entries, auditEntry{action, string(b)})
+	a.entries = append(a.entries, auditEntry{action, string(b), actor})
 	return nil
+}
+
+// byAction returns the entries of one action.
+func (a *fakeAudit) byAction(action string) []auditEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []auditEntry
+	for _, e := range a.entries {
+		if e.action == action {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (a *fakeAudit) actions() []string {

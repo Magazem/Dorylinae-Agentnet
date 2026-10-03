@@ -230,6 +230,9 @@ func (s *FetchServer) Close() {
 	s.mu.Unlock()
 	close(s.stop)
 	s.wg.Wait()
+	// Every window's pending summary is written now, whatever its age: the
+	// daemon closes this server before the store (R55-078).
+	s.aud.flushAll(context.Background())
 }
 
 func (s *FetchServer) now() time.Time {
@@ -598,13 +601,14 @@ func (s *FetchServer) authorize(ctx context.Context, peer string, token json.Raw
 	if err != nil {
 		return nil, nil, err
 	}
-	var w struct {
-		Sig string `json:"sig"`
-	}
-	if json.Unmarshal(token, &w) != nil {
+	// sig comes from the strict parse (exact names), never from a struct
+	// decode of peer bytes (ParseStrict code rule, review 76 I2). Verify
+	// parsed the same bytes successfully, so this parse cannot fail.
+	_, parsed, err := parseToken(token)
+	if err != nil {
 		return nil, nil, fetchErr(ReasonMalformed)
 	}
-	wire, err := Canonical(Token{Grant: *g, Sig: w.Sig})
+	wire, err := Canonical(Token{Grant: *g, Sig: parsed.Sig})
 	if err != nil {
 		return nil, nil, fetchErr(ReasonMalformed)
 	}
@@ -775,6 +779,26 @@ func (w *auditWindow) takeSummary() map[string]any {
 	}
 	w.ops, w.bytes, w.er = 0, 0, 0
 	return d
+}
+
+// flushAll emits the pending summary of every window and drops them all, for
+// the server's Close.
+func (a *fetchAudit) flushAll(ctx context.Context) {
+	if a.emit == nil {
+		return
+	}
+	var out []map[string]any
+	a.mu.Lock()
+	for k, w := range a.wins {
+		if s := w.takeSummary(); s != nil {
+			out = append(out, s)
+		}
+		delete(a.wins, k)
+	}
+	a.mu.Unlock()
+	for _, s := range out {
+		a.emit(ctx, "grant.fetch_summary", s)
+	}
 }
 
 // flush emits the summaries of windows older than a minute and drops idle ones.

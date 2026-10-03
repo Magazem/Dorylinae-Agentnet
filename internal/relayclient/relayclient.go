@@ -214,15 +214,18 @@ func (c *Client) State() State {
 // reset, no 1001 "relay drain" branch, no doubling (R55-F29, R55-071: after
 // a resume the old socket may be dead while Connected still reports true).
 // It closes with no handshake, since the socket may be dead. It does nothing
-// while disconnected.
+// while disconnected. CloseNow runs after mu is released: it can wait for
+// the library's goroutines (review 101 L2), and State and Send must not.
 func (c *Client) Reconnect() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn == nil {
-		return
+	conn := c.conn
+	if conn != nil {
+		c.redial = true
 	}
-	c.redial = true
-	_ = c.conn.CloseNow()
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
 }
 
 // Send validates and sends e. It does not wait for delivery: a relay refusal
@@ -279,7 +282,11 @@ func (c *Client) Run(ctx context.Context) error {
 		redial := c.redial
 		c.redial = false
 		c.mu.Unlock()
-		if redial {
+		// A session the relay ended itself (a close frame, or relay_full /
+		// rate_limited) keeps its classification even if Reconnect raced it,
+		// so a stale redial never skips the 1013 floor (review 101 L3).
+		var ce websocket.CloseError
+		if redial && !shedding(err) && !errors.As(err, &ce) {
 			// Reconnect closed this session on purpose: a client-side close
 			// must not be classified as the relay's (R55-F29, review 92b F4).
 			wait := jitter(c.cfg.MinBackoff)

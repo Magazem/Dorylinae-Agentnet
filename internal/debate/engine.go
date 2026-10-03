@@ -151,7 +151,7 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 			return nil, fmt.Errorf("debate: closing: %w", err)
 		}
 		var derr error
-		tr, decCanon, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out)
+		tr, decCanon, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now)
 		if derr != nil {
 			return nil, derr
 		}

@@ -1035,9 +1035,7 @@ func (m *Manager) auditOpen(ctx context.Context, s *sess) {
 	actx, cancel := context.WithTimeout(ctx, auditBudget)
 	defer cancel()
 	detail := map[string]string{"peer": s.peer, "role": role, "session": hex.EncodeToString(s.sid[:4])}
-	if err := m.cfg.Audit.Append(actx, audit.ActorDaemon, ActionOpen, detail); err != nil {
-		m.log.Warn("session: audit failed", "event", "session_error", "error", err)
-	}
+	_ = m.cfg.Audit.Append(actx, audit.ActorDaemon, ActionOpen, detail) // logged once, centrally, by internal/audit
 }
 
 // reject counts a dropped envelope into the limited session_reject log line.

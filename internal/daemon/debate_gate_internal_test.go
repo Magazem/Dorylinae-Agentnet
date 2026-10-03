@@ -51,6 +51,7 @@ func newTestGate(t *testing.T, connectedFor time.Duration) (*debateTimeoutGate, 
 	c := &gateClock{base: time.Now()}
 	g := newDebateTimeoutGate(false, nil)
 	g.now, g.wall = c.now, c.wall
+	g.redial = func(f func()) { f() } // inline: counts are checked right after
 	c.mono = time.Hour
 	fr := &fakeRelay{st: relayclient.State{Connected: true, Since: c.now().Add(-connectedFor)}}
 	g.setClient(fr)
@@ -161,4 +162,90 @@ func TestDebateGateBackwardWallJump(t *testing.T) {
 	if fr.count() != 0 || !g.Ready() {
 		t.Fatalf("backward jump: reconnects %d, ready %v (connected 120 s)", fr.count(), g.Ready())
 	}
+}
+
+// Review 101 L1: the sweep itself calls Ready for every overdue debate. A
+// sweep that runs 70 s in steps (each SweepOne quick) is not a resume, even
+// though the last tick ended more than 60 s before its later Ready calls.
+func TestDebateGateReadyInsideSlowSweep(t *testing.T) {
+	g, c, fr := newTestGate(t, time.Hour)
+	g.tick(context.Background(), noSweep)
+	c.mono += 20 * time.Second
+	g.tick(context.Background(), func(context.Context) {
+		for i := 0; i < 7; i++ {
+			c.mono += 10 * time.Second
+			if !g.Ready() {
+				t.Fatalf("not ready %d s into a slow sweep", (i+1)*10)
+			}
+		}
+	})
+	if fr.count() != 0 {
+		t.Fatalf("slow sweep with Ready calls: reconnects %d, want 0", fr.count())
+	}
+}
+
+// Review 101 L1: a suspend in the middle of a sweep is still a resume.
+func TestDebateGateSuspendInsideSweep(t *testing.T) {
+	g, c, fr := newTestGate(t, time.Hour)
+	g.tick(context.Background(), noSweep)
+	c.mono += 20 * time.Second
+	g.tick(context.Background(), func(context.Context) {
+		if !g.Ready() {
+			t.Fatal("not ready at the start of the sweep")
+		}
+		c.mono += 10 * time.Minute // asleep between two SweepOne calls
+		if g.Ready() {
+			t.Fatal("ready right after a suspend inside the sweep")
+		}
+	})
+	if fr.count() != 1 {
+		t.Fatalf("reconnects = %d, want 1", fr.count())
+	}
+}
+
+// blockingRelay's Reconnect blocks until released, like a CloseNow waiting on
+// the socket.
+type blockingRelay struct {
+	fakeRelay
+	release chan struct{}
+	called  chan struct{}
+}
+
+func (b *blockingRelay) Reconnect() {
+	close(b.called)
+	<-b.release
+}
+
+// Review 101 L2: the re-dial runs off the caller's goroutine and outside the
+// gate's lock, so Ready (inside SweepOne's transaction) never waits on it.
+func TestDebateGateRedialDoesNotBlockReady(t *testing.T) {
+	c := &gateClock{base: time.Now(), mono: time.Hour}
+	g := newDebateTimeoutGate(false, nil) // the production redial
+	g.now, g.wall = c.now, c.wall
+	br := &blockingRelay{release: make(chan struct{}), called: make(chan struct{})}
+	br.st = relayclient.State{Connected: true, Since: c.now().Add(-time.Hour)}
+	g.setClient(br)
+	defer close(br.release)
+	g.tick(context.Background(), noSweep)
+	c.mono += 10 * time.Minute
+	done := make(chan bool, 1)
+	go func() { done <- g.Ready() }()
+	select {
+	case ready := <-done:
+		if ready {
+			t.Fatal("ready right after a resume")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Ready blocked on Reconnect")
+	}
+	select {
+	case <-br.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Reconnect never called")
+	}
+	// The gate's lock is free while Reconnect is still blocked.
+	if !g.mu.TryLock() {
+		t.Fatal("gate lock held during Reconnect")
+	}
+	g.mu.Unlock()
 }

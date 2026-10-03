@@ -63,7 +63,7 @@ type AuditSink interface {
 // Keys is the daemon's own mailbox key store.
 type Keys struct {
 	dir      string
-	home     string
+	keychain keystore.KeychainEntries
 	mode     string
 	identity ed25519.PublicKey
 	sign     func(msg []byte) ([]byte, error)
@@ -94,7 +94,7 @@ func New(configDir, mode string, identity ed25519.PublicKey, sign func([]byte) (
 	}
 	return &Keys{
 		dir:      filepath.Join(configDir, Dir),
-		home:     configDir,
+		keychain: keystore.KeychainEntriesFor("mailbox-", configDir),
 		mode:     mode,
 		identity: identity,
 		sign:     sign,
@@ -130,7 +130,7 @@ func (k *Keys) keystoreFor(keyID string) (*keystore.Store, error) {
 	file := keystore.NewFile(filepath.Join(k.dir, keyID+".key"))
 	switch k.mode {
 	case "", "auto":
-		backends = []keystore.Backend{keystore.KeychainForEntry("mailbox-", k.home, "-"+keyID), file}
+		backends = []keystore.Backend{k.keychain.Entry("-" + keyID), file}
 	case "file":
 		backends = []keystore.Backend{file}
 	default:
@@ -443,9 +443,7 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 		return nil, nil, fmt.Errorf("mailbox: record key: %w", err)
 	}
 	if k.audit != nil {
-		if aerr := k.audit.Append(ctx, actorDaemon, ActionRotate, map[string]string{"key_id": keyID, "retired": prev}); aerr != nil {
-			k.log.Warn("mailbox: audit failed", "event", "mailbox_error", "error", aerr)
-		}
+		_ = k.audit.Append(ctx, actorDaemon, ActionRotate, map[string]string{"key_id": keyID, "retired": prev}) // logged once, centrally, by internal/audit
 	}
 	// Sweep with the new key included. A failed deletion is retried by the next run.
 	rows = append(retire(rows), row{keyID: keyID, created: ann.Created, notAfter: ann.NotAfter, announced: signed, backend: backend})

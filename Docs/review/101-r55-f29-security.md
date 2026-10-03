@@ -49,3 +49,78 @@ backward wall jump. L1 is the one missing case. The store-side gate test
 10× and 30× repeats were green on Windows. The relayclient re-dial test uses real time (see
 L5). Race and the three-OS run were not possible locally; CI's matrix must be green before
 merge.
+
+## Fixes applied
+
+This is the second worker pass, after the Orchestrator merged `origin/main` into
+`p4/r55-f29`. No git commands were run; I only edited files.
+
+**M1 — merge resolved by keeping F31's in-transaction audits (D64/D68).** There were
+conflicts in `internal/debate/decision.go` (4 hunks) and `internal/debate/engine.go`
+(1 hunk).
+- `decideTx`: main's signature with no `out` parameter, returning F29's `canon []byte`.
+  `decision.create` is written through `createAudit(ctx, tx, …)` (`AppendTx`, S row).
+- `signOnB`: main's version is kept (no `out`, in-tx `createAudit`), and `apply.go:666`
+  calls it without `out`.
+- `refuseOnB`: `refuseAudit(ctx, tx, …)` (`AppendTxSoft`, S-), followed by F29's
+  `closeMirrorTx(…, EventRefused, …, coverBelow(entries), RoleRespondent,
+  experience.CauseDecisionRefused, dec, canon, …)`.
+- `applySign` (A's refusal): `refuseAudit` in the transaction, then
+  `out.add(s.event(EventRefused, …))`. The notification stays after commit, as on main.
+- `closeTx`: `tr, decCanon, derr = s.decideTx(…)` with no `&out`.
+
+F29 needs no after-commit work in `decideTx`/`signOnB`: its only use of `out` there was the
+audit rows, so the parameter stays removed. I checked every non-test file in
+`internal/{debate,experience,daemon,notify,relayclient,worksession}` and `cmd/agentnet`
+against main. No audit or `AppendTx` line on main is missing from the merged tree; the only
+difference is one doc comment F29 rewrote. `debate.abandon` stays an after-commit row, as on
+main. No conflict markers are left outside `.git`.
+
+**L1** (`internal/daemon/debate_gate.go`). `tick` sets `sweeping` and `lastSeen` before the
+sweep and clears them with `lastTick` after it. While a sweep runs, `checkResumeLocked`
+measures the gap from `lastSeen` (the sweep's start or its previous `Ready` call), not from
+`lastTick`. A slow sweep made of quick `SweepOne` calls is therefore not a resume, but a
+suspend in the middle of a sweep (a gap between two calls) still is. I chose this over
+skipping the test outright, which would have reopened R55-071 for a suspend mid-sweep. New
+tests: `TestDebateGateReadyInsideSlowSweep` (70 s of sweep, `Ready` every 10 s, no
+re-dial) and `TestDebateGateSuspendInsideSweep`.
+
+**L2.**
+- `checkResumeLocked`/`readyLocked` return the client to re-dial, and `Ready`/`checkResume`
+  call it only after `g.mu` is released, through `g.redial`. In production that is
+  `go f()`, so `Reconnect` never runs on `SweepOne`'s goroutine, inside its transaction.
+  Tests run it inline.
+- `relayclient.Reconnect` reads `conn` and sets `redial` under `mu`, then calls `CloseNow`
+  after unlocking.
+- New test: `TestDebateGateRedialDoesNotBlockReady`. A `Reconnect` that blocks does not
+  block `Ready`, and the gate lock is free while it waits.
+
+**L3** (`relayclient.go`, `Run`). `redial` is honoured only when the session did not end
+with a relay close frame (`websocket.CloseError`) or a shedding error frame. Otherwise F9's
+classification applies, including the 1013 floor, with a `relay_disconnect` log line. New
+test: `TestStaleRedialKeepsTryAgainFloor`. It uses a test-only `MarkRedial` in
+`export_test.go`; the relay then closes with 1013, and the test expects a gap of at least
+the jittered floor and no `relay_redial` line.
+
+**L4.** `internal/debate/store.go`: `Â§` replaced with `§`.
+
+**L5** (`internal/relayclient/reconnect_test.go`).
+- The re-dial test pushes the backoff up with 7 failed dials, so the normal path's next wait
+  is at least 960 ms. It then parses `retry_in` from the `relay_redial` line and requires
+  it to be ≤ 2×`MinBackoff`. The wall-clock check is now `eventually` (10 s), so a slow
+  `-race` runner cannot flake it.
+- The no-op test now runs `Run` against a relay that never sends `ready`. It calls
+  `Reconnect` five times during the 1 s backoff and asserts no extra dial and no
+  `relay_redial` line.
+
+**Checks.**
+- Pass: `go build ./...`; `go vet ./...` for GOOS windows, linux and darwin.
+- golangci-lint v2.13.2 on the three OSes: only the known CRLF `gofmt` findings (3 per
+  OS, in files this change does not touch).
+- The CRLF-aware gofmt check on the 10 changed Go files is clean, and all of them keep CRLF.
+- Tests pass: `internal/debate`, `internal/experience`, `internal/notify`,
+  `internal/relayclient`, `internal/audit`, `cmd/agentnet -run Debate`.
+- `internal/daemon -run 'Debate|Decision|Gate|Audit|Inventory'` passes except the two known
+  `C:\` ACL failures (`TestAuditInventoryDevices`, `TestPhase2AuditHasNoContent`:
+  `writable_by_others: "C:\\"`).
+- `-race` is still not runnable locally (no cgo), so it is left to CI.

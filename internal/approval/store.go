@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/displaytext"
 )
 
@@ -154,7 +155,7 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 				handle.Kill()
 			}
 			settled = true
-			return View{}, ErrUnavailable
+			return View{}, s.windowUnavailable(handle)
 		}
 		release = s.lock()
 		defer release()
@@ -217,10 +218,9 @@ func (s *Store) Create(ctx context.Context, kind, subject, summary string, actio
 		}
 		return View{}, ErrUnavailable
 	}
-	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO approvals (id, kind, subject, summary, created, expires, attempts, state)
-VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
-		id, kind, subject, summary, created, expiresStr); err != nil {
+	// approval.create is an S row: it commits with the insert, and if it
+	// fails the approval is cleaned up as after a failed insert.
+	if err := s.insertApproval(ctx, id, kind, subject, summary, created, expiresStr); err != nil {
 		delete(s.pending, id)
 		release()
 		if handle != nil {
@@ -228,16 +228,13 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 		}
 		s.notifier.Remove(ctx, id)
 		settled = true
-		return View{}, fmt.Errorf("approval: insert: %w", err)
+		return View{}, err // insertApproval wraps a failed insert; an audit failure is *audit.WriteError
 	}
 	entry.mac = mac
 	entry.reserved = false
 	entry.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
 	settled = true
 	release()
-	if s.audit != nil {
-		_ = s.audit.Append(ctx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject})
-	}
 	if handle != nil {
 		s.startWatch(id, handle)
 	}
@@ -245,6 +242,31 @@ VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
 		ID: id, Kind: kind, Summary: summary, Created: created, Expires: expiresStr,
 		State: StatePending, AttemptsLeft: MaxAttempts, Window: s.windowState(id),
 	}, nil
+}
+
+// insertApproval writes the approvals row and its approval.create row in one
+// transaction.
+func (s *Store) insertApproval(ctx context.Context, id, kind, subject, summary, created, expires string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("approval: insert: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO approvals (id, kind, subject, summary, created, expires, attempts, state)
+VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`,
+		id, kind, subject, summary, created, expires); err != nil {
+		return fmt.Errorf("approval: insert: %w", err)
+	}
+	if s.audit != nil {
+		if err := s.audit.AppendTx(ctx, tx, "cli", "approval.create", map[string]string{"id": id, "kind": kind, "subject": subject}); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("approval: insert: %w", err)
+	}
+	return nil
 }
 
 // deliveryText builds the title/body of the code notification
@@ -433,24 +455,31 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 			return nil, err
 		}
 	}
+	// approval.approve is an S row in this transaction, after the
+	// precondition check and before Perform, so it still precedes the rows
+	// Perform writes. If it fails, Confirm behaves as for a failing Perform.
 	var result any
-	if action.Perform != nil {
+	if s.audit != nil {
+		kind, subject := kindSubjectIn(ctx, tx, id)
+		err = s.audit.AppendTx(ctx, tx, "cli", "approval.approve", map[string]string{"id": id, "kind": kind, "subject": subject, "via": via})
+	}
+	if err == nil && action.Perform != nil {
 		result, err = action.Perform(ctx, tx)
-		if err != nil {
-			_ = tx.Rollback()
-			// A Perform error leaves the approval pending (the code was
-			// genuinely correct): restart the timer so a caller can decide
-			// whether to reopen the window with a retry message.
-			if e, ok := s.pending[id]; ok {
-				// A real-wall-clock timer, deliberately not derived from the
-				// (possibly fake, in tests) now: it exists only as a
-				// production safety net alongside the lazy sweep, same as
-				// Create's initial timer.
-				e.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
-			}
-			release()
-			return nil, err
+	}
+	if err != nil {
+		_ = tx.Rollback()
+		// A Perform (or audit) error leaves the approval pending (the code was
+		// genuinely correct): restart the timer so a caller can decide
+		// whether to reopen the window with a retry message.
+		if e, ok := s.pending[id]; ok {
+			// A real-wall-clock timer, deliberately not derived from the
+			// (possibly fake, in tests) now: it exists only as a
+			// production safety net alongside the lazy sweep, same as
+			// Create's initial timer.
+			e.timer = time.AfterFunc(TTL, func() { s.expireNow(id) })
 		}
+		release()
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		release()
@@ -460,10 +489,6 @@ func (s *Store) confirm(ctx context.Context, id, code, via string) (any, error) 
 	release()
 	if handle != nil {
 		handle.Kill()
-	}
-	if s.audit != nil {
-		kind, subject := s.kindSubject(ctx, id)
-		_ = s.audit.Append(ctx, "cli", "approval.approve", map[string]string{"id": id, "kind": kind, "subject": subject, "via": via})
 	}
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
@@ -515,12 +540,18 @@ func (s *Store) checkExpiryLocked(ctx context.Context, id string, now time.Time)
 	}
 	if !now.Before(expires) {
 		decided := now.UTC().Format(storeTimeFmt)
-		if _, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ?`, decided, id); err != nil {
-			return false, expires, fmt.Errorf("approval: expire: %w", err)
-		}
-		if s.audit != nil {
-			kind, subject := s.kindSubject(ctx, id)
-			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
+		err := audit.RunSoft(ctx, s.db, func(tx *sql.Tx, withRows bool) error {
+			if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ?`, decided, id); err != nil {
+				return fmt.Errorf("approval: expire: %w", err)
+			}
+			if s.audit != nil && withRows {
+				kind, subject := kindSubjectIn(ctx, tx, id)
+				return s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
+			}
+			return nil
+		})
+		if err != nil {
+			return false, expires, err
 		}
 		return true, expires, nil
 	}
@@ -534,43 +565,55 @@ func (s *Store) checkExpiryLocked(ctx context.Context, id string, now time.Time)
 // write counts neither and the daily cap never misses a wrong code the
 // attempts counter kept (review 55 R55-147).
 func (s *Store) recordBadCode(ctx context.Context, id, via string, now time.Time) (attemptsLeft int, rejected, locked bool, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, false, false, fmt.Errorf("approval: begin bad code: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	var attempts int
-	if err := tx.QueryRowContext(ctx, `SELECT attempts FROM approvals WHERE id = ?`, id).Scan(&attempts); err != nil {
-		return 0, false, false, fmt.Errorf("approval: read attempts: %w", err)
-	}
-	attempts++
-	attemptsLeft = MaxAttempts - attempts
-	if attemptsLeft < 0 {
-		attemptsLeft = 0
-	}
-	rejected = attempts >= MaxAttempts
-	state := StatePending
-	var decided any
-	if rejected {
-		state = StateRejected
-		decided = s.now().UTC().Format(storeTimeFmt)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE approvals SET attempts = ?, state = ?, decided = ? WHERE id = ?`, attempts, state, decided, id); err != nil {
-		return 0, false, false, fmt.Errorf("approval: write attempts: %w", err)
-	}
-	locked, err = recordWrongCodeIn(ctx, tx, now)
+	// The attempts count, the daily count and the S- rows (bad_code, reject,
+	// locked) share one transaction (audit.md §When the row cannot be
+	// written). Every read goes through tx: the store has one connection.
+	err = audit.RunSoft(ctx, s.db, func(tx *sql.Tx, withRows bool) error {
+		var attempts int
+		if err := tx.QueryRowContext(ctx, `SELECT attempts FROM approvals WHERE id = ?`, id).Scan(&attempts); err != nil {
+			return fmt.Errorf("approval: read attempts: %w", err)
+		}
+		attempts++
+		attemptsLeft = MaxAttempts - attempts
+		if attemptsLeft < 0 {
+			attemptsLeft = 0
+		}
+		rejected = attempts >= MaxAttempts
+		state := StatePending
+		var decided any
+		if rejected {
+			state = StateRejected
+			decided = s.now().UTC().Format(storeTimeFmt)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE approvals SET attempts = ?, state = ?, decided = ? WHERE id = ?`, attempts, state, decided, id); err != nil {
+			return fmt.Errorf("approval: write attempts: %w", err)
+		}
+		var err error
+		locked, err = recordWrongCodeIn(ctx, tx, now)
+		if err != nil {
+			return err
+		}
+		if s.audit == nil || !withRows {
+			return nil
+		}
+		kind, subject := kindSubjectIn(ctx, tx, id)
+		if err := s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.bad_code", map[string]any{"id": id, "attempts_left": attemptsLeft, "via": via}); err != nil {
+			return err
+		}
+		if rejected {
+			if err := s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "attempts", "via": via}); err != nil {
+				return err
+			}
+		}
+		if locked {
+			if err := s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.locked", map[string]int{"wrong_codes": MaxWrongPerDay}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, false, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, false, false, fmt.Errorf("approval: commit bad code: %w", err)
-	}
-	kind, subject := s.kindSubject(ctx, id)
-	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.bad_code", map[string]any{"id": id, "attempts_left": attemptsLeft, "via": via})
-		if rejected {
-			_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "attempts", "via": via})
-		}
 	}
 	return attemptsLeft, rejected, locked, nil
 }
@@ -697,18 +740,26 @@ const (
 // writeExpired marks id's pending row expired and audits it. written is
 // false when the row was no longer pending.
 func (s *Store) writeExpired(ctx context.Context, id, decided string) (written bool, err error) {
-	kind, subject := s.kindSubject(ctx, id)
-	res, err := s.db.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
+	err = audit.RunSoft(ctx, s.db, func(tx *sql.Tx, withRows bool) error {
+		written = false
+		res, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'expired', decided = ? WHERE id = ? AND state = 'pending'`, decided, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return nil
+		}
+		written = true
+		if s.audit != nil && withRows {
+			kind, subject := kindSubjectIn(ctx, tx, id)
+			return s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
+		}
+		return nil
+	})
 	if err != nil {
 		return false, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return false, nil
-	}
-	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.reject", map[string]string{"id": id, "kind": kind, "subject": subject, "reason": "expired"})
-	}
-	return true, nil
+	return written, nil
 }
 
 // retryExpired retries writeExpired for an approval in s.unwritten, attempt
@@ -775,9 +826,6 @@ func (s *Store) lockAll(ctx context.Context, entries []lockedEntry) {
 		s.rejectRow(ctx, e.id, "locked", "")
 		runOnReject(ctx, e.onReject)
 	}
-	if s.audit != nil {
-		_ = s.audit.Append(ctx, "daemon", "approval.locked", map[string]int{"wrong_codes": MaxWrongPerDay})
-	}
 	if s.notifier != nil {
 		_ = s.notifier.Show(ctx, "lock-"+s.now().UTC().Format(storeTimeFmt), s.now().Add(time.Minute), "AgentNet",
 			"approval codes were guessed wrongly 10 times; approvals are locked for up to 24 h")
@@ -789,22 +837,35 @@ func (s *Store) lockAll(ctx context.Context, entries []lockedEntry) {
 // change directly in recordBadCode).
 func (s *Store) rejectRow(ctx context.Context, id, reason, via string) {
 	decided := s.now().UTC().Format(storeTimeFmt)
-	kind, subject := s.kindSubject(ctx, id)
-	_, _ = s.db.ExecContext(ctx, `UPDATE approvals SET state = 'rejected', decided = ? WHERE id = ?`, decided, id)
-	if s.audit != nil {
+	// A failing update is ignored as before (the in-memory entry is gone, so
+	// the approval can no longer be confirmed); the S- row shares its
+	// transaction.
+	_ = audit.RunSoft(ctx, s.db, func(tx *sql.Tx, withRows bool) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE approvals SET state = 'rejected', decided = ? WHERE id = ?`, decided, id); err != nil {
+			return err
+		}
+		if s.audit == nil || !withRows {
+			return nil
+		}
+		kind, subject := kindSubjectIn(ctx, tx, id)
 		detail := map[string]string{"id": id, "kind": kind, "subject": subject, "reason": reason}
 		if via != "" {
 			detail["via"] = via
 		}
-		_ = s.audit.Append(ctx, "daemon", "approval.reject", detail)
-	}
+		return s.audit.AppendTxSoft(ctx, tx, "daemon", "approval.reject", detail)
+	})
 	if s.notifier != nil {
 		s.notifier.Remove(ctx, id)
 	}
 }
 
-func (s *Store) kindSubject(ctx context.Context, id string) (kind, subject string) {
-	_ = s.db.QueryRowContext(ctx, `SELECT kind, subject FROM approvals WHERE id = ?`, id).Scan(&kind, &subject)
+// kindSubjectIn reads id's kind and subject through q, which must be the open
+// transaction when there is one: the daemon has one SQLite connection, so a
+// read on s.db inside a transaction would wait for it forever.
+func kindSubjectIn(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, id string) (kind, subject string) {
+	_ = q.QueryRowContext(ctx, `SELECT kind, subject FROM approvals WHERE id = ?`, id).Scan(&kind, &subject)
 	return
 }
 
@@ -830,6 +891,23 @@ func (s *Store) unknownOrExpired(ctx context.Context, id string) error {
 // own Reject button, "terminal" for `reject <tag>` on the daemon's stdin).
 // Any caller may reject: rejecting only removes access.
 func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
+	return s.rejectWith(ctx, id, "user", via)
+}
+
+// RejectFor rejects a pending approval because the daemon changed what it
+// was about (Docs/protocol/approval.md §Audit, "Who rejected"): reason is one
+// of "superseded", "unlinked" and "scope_cleared". The audit row names the
+// reason, actor daemon, and carries no via (R55-123).
+func (s *Store) RejectFor(ctx context.Context, id, reason string) (View, error) {
+	switch reason {
+	case "superseded", "unlinked", "scope_cleared":
+	default:
+		return View{}, fmt.Errorf("approval: unknown reject reason %q", reason)
+	}
+	return s.rejectWith(ctx, id, reason, "")
+}
+
+func (s *Store) rejectWith(ctx context.Context, id, reason, via string) (View, error) {
 	entry, handle, ok := s.takePending(id)
 	if !ok {
 		return View{}, s.unknownOrExpired(ctx, id)
@@ -837,7 +915,7 @@ func (s *Store) Reject(ctx context.Context, id, via string) (View, error) {
 	if handle != nil {
 		handle.Kill()
 	}
-	s.rejectRow(ctx, id, "user", via)
+	s.rejectRow(ctx, id, reason, via)
 	runOnReject(ctx, entry.action.OnReject)
 	return s.Show(ctx, id)
 }

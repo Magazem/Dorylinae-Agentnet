@@ -37,6 +37,18 @@ type debateTimeoutGate struct {
 	client             debateRelay
 	noRelay            bool // no relay configured: the plain rule
 	log                *slog.Logger
+	// sweeping is true while tick runs its sweep, which calls Ready for
+	// every overdue debate. Ready then measures the gap from lastSeen (the
+	// sweep's start or its previous Ready call), not from lastTick: a slow
+	// sweep is not a resume, but a suspend in the middle of one still is
+	// (review 101 L1).
+	sweeping bool
+	lastSeen time.Time
+
+	// redial runs a forced re-dial off the caller's goroutine (go f()):
+	// Ready runs inside SweepOne's transaction and under mu, and Reconnect
+	// may wait on the socket (review 101 L2). Tests run it inline.
+	redial func(f func())
 
 	// now is the gate's own clock (time.Now): elapsed times subtract its
 	// monotonic readings, so a backward wall-clock jump cannot stretch the
@@ -48,7 +60,7 @@ type debateTimeoutGate struct {
 }
 
 func newDebateTimeoutGate(noRelay bool, log *slog.Logger) *debateTimeoutGate {
-	return &debateTimeoutGate{noRelay: noRelay, log: log, now: time.Now}
+	return &debateTimeoutGate{noRelay: noRelay, log: log, now: time.Now, redial: func(f func()) { go f() }}
 }
 
 func (g *debateTimeoutGate) wallNow() time.Time {
@@ -69,59 +81,86 @@ func (g *debateTimeoutGate) setClient(c debateRelay) {
 // checkResume detects a resume: a wall-clock gap of more than
 // debateResumeGap since the last tick. It then starts a new grace, counts
 // the tick as seen (one sleep is one resume), logs debate_resume and forces
-// a re-dial. It reports whether it fired.
+// a re-dial. It reports whether it fired. The re-dial runs through g.redial,
+// after mu is released.
 func (g *debateTimeoutGate) checkResume() bool {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.checkResumeLocked()
+	fired, c := g.checkResumeLocked()
+	g.mu.Unlock()
+	g.reconnect(c)
+	return fired
 }
 
-func (g *debateTimeoutGate) checkResumeLocked() bool {
+// checkResumeLocked is checkResume under mu. It returns the client to
+// re-dial (nil for none); the caller calls reconnect once mu is released.
+func (g *debateTimeoutGate) checkResumeLocked() (bool, debateRelay) {
 	wall := g.wallNow()
-	if g.lastTick.IsZero() || wall.Sub(g.lastTick) <= debateResumeGap {
-		return false
+	ref := g.lastTick
+	if g.sweeping {
+		ref = g.lastSeen
+		g.lastSeen = wall
+	}
+	if ref.IsZero() || wall.Sub(ref) <= debateResumeGap {
+		return false, nil
 	}
 	g.resumeAt, g.lastTick = g.now(), wall
 	if g.log != nil {
 		g.log.Info("debate: resume detected, timeouts wait for the relay", "event", "debate_resume")
 	}
-	if g.client != nil {
-		g.client.Reconnect()
+	return true, g.client
+}
+
+func (g *debateTimeoutGate) reconnect(c debateRelay) {
+	if c != nil {
+		g.redial(c.Reconnect)
 	}
-	return true
 }
 
 // Ready reports whether timeouts may be applied now. The resume test runs
 // here too (review 92b F2): after a wake, an IPC debate_show can come before
-// the ticker does.
+// the ticker does. While tick's sweep runs, the gap is measured between
+// observations inside it (review 101 L1).
 func (g *debateTimeoutGate) Ready() bool {
 	g.mu.Lock()
-	defer g.mu.Unlock()
-	fired := g.checkResumeLocked()
+	ready, c := g.readyLocked()
+	g.mu.Unlock()
+	g.reconnect(c)
+	return ready
+}
+
+func (g *debateTimeoutGate) readyLocked() (bool, debateRelay) {
+	fired, c := g.checkResumeLocked()
 	switch {
 	case g.noRelay:
-		return true
+		return true, c
 	case fired || g.client == nil:
-		return false
+		return false, c
 	}
 	st := g.client.State()
 	if !st.Connected {
-		return false
+		return false, c
 	}
 	from := st.Since
 	if g.resumeAt.After(from) {
 		from = g.resumeAt
 	}
-	return g.now().Sub(from) >= debateTimeoutGrace
+	return g.now().Sub(from) >= debateTimeoutGrace, c
 }
 
 // tick is one sweep tick: the resume test, then sweep, then the tick time.
-// The gap counts from the end of the last run, so a slow sweep is not a
-// resume (review 92b F7).
+// The gap counts from the end of the last run, and inside the sweep from
+// the previous observation, so a slow sweep is not a resume (review 92b F7,
+// review 101 L1).
 func (g *debateTimeoutGate) tick(ctx context.Context, sweep func(context.Context)) {
 	g.checkResume()
-	sweep(ctx)
 	g.mu.Lock()
-	g.lastTick = g.wallNow()
+	g.sweeping, g.lastSeen = true, g.wallNow()
 	g.mu.Unlock()
+	defer func() {
+		g.mu.Lock()
+		g.sweeping = false
+		g.lastTick = g.wallNow()
+		g.mu.Unlock()
+	}()
+	sweep(ctx)
 }

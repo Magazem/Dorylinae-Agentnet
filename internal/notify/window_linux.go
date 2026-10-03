@@ -197,6 +197,31 @@ func decodeExit(zenity bool, exitCode int, line string) (dialogAnswer, bool) {
 	return ans, ans.kind != "dismiss"
 }
 
+// checkWindow is the Linux check: zenity or kdialog is found, and a display is
+// set in the daemon's environment or in the systemd user manager's (the same
+// lookup as an opening). The D-Bus read is bounded by ctx.
+func checkWindow(ctx context.Context) (bool, string) {
+	return linuxCheck(ctx, findDialogProgram, os.Getenv, systemdUserEnvironment)
+}
+
+// linuxCheck is checkWindow with its three lookups injected, for tests.
+func linuxCheck(ctx context.Context, find func(string) (string, bool), getenv func(string) string,
+	sysd func(context.Context) map[string]string) (bool, string) {
+	if _, ok := find("zenity"); !ok {
+		if _, ok := find("kdialog"); !ok {
+			return false, "install zenity (or kdialog)"
+		}
+	}
+	if getenv("DISPLAY") != "" || getenv("WAYLAND_DISPLAY") != "" {
+		return true, ""
+	}
+	env := sysd(ctx)
+	if env["DISPLAY"] != "" || env["WAYLAND_DISPLAY"] != "" {
+		return true, ""
+	}
+	return false, "no desktop session"
+}
+
 func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {
 	timeoutSecs := int(time.Until(expires).Seconds())
 	if timeoutSecs < 1 {

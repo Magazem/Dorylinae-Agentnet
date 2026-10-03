@@ -676,19 +676,25 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			if _, err := ob.SubmitTx(ctx, tx, peer.PublicKey, "grant", map[string]any{"token": tokenAny}); err != nil {
 				return nil, err
 			}
+			// grant.create and grant.auto are S rows on the policy path: no
+			// row, no grant (audit.md §When the row cannot be written).
+			if log != nil {
+				if err := audit.AppendTx(ctx, tx, audit.ActorCLI, "grant.create", map[string]any{
+					"grant": g.ID, "session": p.Session, "peer": peer.PublicKey, "action": p.Action,
+					"sensitive": sensitive, "expires_s": int(expires.Seconds()),
+				}); err != nil {
+					return nil, err
+				}
+				if err := audit.AppendTx(ctx, tx, audit.ActorDaemon, "grant.auto", map[string]any{"grant": g.ID, "policy": match.ID}); err != nil {
+					return nil, err
+				}
+			}
 			if err := tx.Commit(); err != nil {
 				return nil, fmt.Errorf("grant: commit: %w", err)
 			}
 			committed = true
 			ob.Wake()
 			rec.State = capability.StateActive
-			if log != nil {
-				_ = log.Append(ctx, audit.ActorCLI, "grant.create", map[string]any{
-					"grant": g.ID, "session": p.Session, "peer": peer.PublicKey, "action": p.Action,
-					"sensitive": sensitive, "expires_s": int(expires.Seconds()),
-				})
-				_ = log.Append(ctx, audit.ActorDaemon, "grant.auto", map[string]any{"grant": g.ID, "policy": match.ID})
-			}
 			return map[string]GrantView{"grant": grantView(ctx, ps, rec)}, nil
 		}
 
@@ -897,38 +903,33 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			return GrantRevokeResult{Grant: grantView(ctx, ps, rec), Duplicate: true}, nil
 		}
 		now := time.Now()
-		tx, err := capStore.DB.BeginTx(ctx, nil)
-		if err != nil {
-			return nil, fmt.Errorf("grant: begin revoke: %w", err)
-		}
-		committed := false
-		defer func() {
-			if !committed {
-				_ = tx.Rollback()
-			}
-		}()
-		if _, err := capStore.RevokeTx(ctx, tx, p.ID, capability.ReasonUser, now); err != nil {
-			return nil, err
-		}
 		var mailID string
-		if ob != nil {
-			sub, err := ob.SubmitTx(ctx, tx, rec.Peer, "grant.revoke", map[string]any{
-				"at": wireTimeStr(now), "grant": p.ID, "reason": capability.ReasonUser,
-			})
-			if err != nil {
-				return nil, err
+		// grant.revoke is an S- row: written in the revoke's transaction
+		// through a savepoint, and the revoke commits even if the row fails.
+		err = audit.RunSoft(ctx, capStore.DB, func(tx *sql.Tx, withRows bool) error {
+			mailID = ""
+			if _, err := capStore.RevokeTx(ctx, tx, p.ID, capability.ReasonUser, now); err != nil {
+				return err
 			}
-			mailID = sub.ID
+			if ob != nil {
+				sub, err := ob.SubmitTx(ctx, tx, rec.Peer, "grant.revoke", map[string]any{
+					"at": wireTimeStr(now), "grant": p.ID, "reason": capability.ReasonUser,
+				})
+				if err != nil {
+					return err
+				}
+				mailID = sub.ID
+			}
+			if log != nil && withRows {
+				return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "grant.revoke", map[string]any{"grant": p.ID, "peer": rec.Peer, "reason": capability.ReasonUser})
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("grant: revoke: %w", err)
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("grant: commit revoke: %w", err)
-		}
-		committed = true
 		if ob != nil {
 			ob.Wake()
-		}
-		if log != nil {
-			_ = log.Append(ctx, audit.ActorCLI, "grant.revoke", map[string]any{"grant": p.ID, "peer": rec.Peer, "reason": capability.ReasonUser})
 		}
 		rec.State = capability.StateRevoked
 		rec.Reason = capability.ReasonUser
@@ -1037,13 +1038,59 @@ func recheckResource(configDir string, rec capability.Record) error {
 // revokeForRemovedPeer is the peers.Store.OnRemovedTx hook: it revokes every
 // grant with the removed peer and deletes its policies, inside the removal's
 // own transaction (Docs/protocol/grant.md §Session end, §Policies).
-func revokeForRemovedPeer(capStore *capability.Store) func(ctx context.Context, tx *sql.Tx, key string) error {
+//
+// Each grant it ends gets a grant.revoke row (reason peer_removed) and each
+// policy it deletes a grant.policy_remove row, both actor daemon, class S-
+// (R55-124, review 84b F6). log may be nil (tests).
+func revokeForRemovedPeer(capStore *capability.Store, log *audit.Log) func(ctx context.Context, tx *sql.Tx, key string) error {
 	return func(ctx context.Context, tx *sql.Tx, key string) error {
-		if _, err := capStore.RevokeForPeerTx(ctx, tx, key, capability.ReasonPeerRemoved, time.Now()); err != nil {
+		ids, err := capStore.RevokeForPeerTx(ctx, tx, key, capability.ReasonPeerRemoved, time.Now())
+		if err != nil {
 			return err
 		}
-		return capStore.PolicyDeleteForPeerTx(ctx, tx, key)
+		if err := auditGrantRevokes(ctx, tx, log, ids, capability.ReasonPeerRemoved, key); err != nil {
+			return err
+		}
+		pols, err := capStore.PolicyDeleteForPeerTx(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if log == nil {
+			return nil
+		}
+		for _, p := range pols {
+			if err := audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "grant.policy_remove", map[string]string{
+				"policy": p.ID, "peer": p.Peer, "action": p.Action,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
+}
+
+// auditGrantRevokes writes one grant.revoke row (S-, actor daemon) per grant
+// a session close or a peer removal just revoked, inside that transaction.
+// peer is the removed peer, or "" to read each grant's peer. A failing read
+// is reported to the central audit log and the row is written without the
+// peer: reading a row's detail never rolls back a removal (D68, review 97 L3).
+func auditGrantRevokes(ctx context.Context, tx *sql.Tx, log *audit.Log, ids []string, reason, peer string) error {
+	if log == nil {
+		return nil
+	}
+	for _, id := range ids {
+		peer := peer
+		if peer == "" {
+			if err := tx.QueryRowContext(ctx, `SELECT peer FROM grants WHERE id = ?`, id).Scan(&peer); err != nil {
+				audit.ReportFailure("grant.revoke", fmt.Errorf("read revoked grant: %w", err))
+				peer = ""
+			}
+		}
+		if err := audit.AppendTxSoft(ctx, tx, audit.ActorDaemon, "grant.revoke", map[string]any{"grant": id, "peer": peer, "reason": reason}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CodeDebateOpen refuses a sensitive grant to a peer with an open debate
@@ -1194,7 +1241,7 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 					return nil, err
 				}
 				if log != nil {
-					if err := auditTx(ctx, tx, audit.ActorDaemon, "grant.policy_add", map[string]any{
+					if err := auditTx(ctx, tx, audit.ActorCLI, "grant.policy_add", map[string]any{
 						"policy": pol.ID, "peer": pol.Peer, "action": pol.Action,
 					}); err != nil {
 						return nil, err
@@ -1247,14 +1294,25 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
 		}
-		if err := capStore.PolicyDelete(ctx, p.ID); err != nil {
+		// One transaction: read the policy's peer and action, delete it and
+		// write the S- row {policy, peer, action} (R55-160).
+		err := audit.RunSoft(ctx, capStore.DB, func(tx *sql.Tx, withRows bool) error {
+			pol, err := capStore.PolicyDeleteTx(ctx, tx, p.ID)
+			if err != nil {
+				return err
+			}
+			if log != nil && withRows {
+				return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, "grant.policy_remove", map[string]string{
+					"policy": pol.ID, "peer": pol.Peer, "action": pol.Action,
+				})
+			}
+			return nil
+		})
+		if err != nil {
 			if errors.Is(err, capability.ErrUnknownPolicy) {
 				return nil, &ipc.Error{Code: CodeUnknownPolicy, Message: "no such policy"}
 			}
 			return nil, err
-		}
-		if log != nil {
-			_ = log.Append(ctx, audit.ActorCLI, "grant.policy_remove", map[string]string{"policy": p.ID})
 		}
 		return map[string]bool{"ok": true}, nil
 	})

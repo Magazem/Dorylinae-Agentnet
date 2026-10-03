@@ -14,7 +14,7 @@ import (
 // noSessions is a stand-in request.SessionHooks, only to flip the wiring.
 type noSessions struct{}
 
-func (noSessions) OpenSession(context.Context, *sql.Tx, string, string, string, string, time.Time) error {
+func (noSessions) OpenSession(context.Context, *sql.Tx, string, string, string, string, string, time.Time) error {
 	return nil
 }
 func (noSessions) EarlyComplete(context.Context, *sql.Tx, string, string, string, *request.Result) (request.CompleteContent, func(context.Context), error) {
