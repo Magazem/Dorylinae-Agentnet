@@ -87,7 +87,9 @@ func TestNoContentScanNegativeControl(t *testing.T) {
 	r := newHarnessRelay(t)
 	n := newHarnessNode(t, "alice", r)
 	n.start()
-	n.logs.Write([]byte("level=INFO msg=planted MARKER-CONTROL\n"))
+	if _, err := n.logs.Write([]byte("level=INFO msg=planted MARKER-CONTROL\n")); err != nil {
+		t.Fatal(err)
+	}
 	if hits := markerHits(map[string]string{"alice log": n.logs.String()}, markers); len(hits) != 1 {
 		t.Fatalf("a marker planted in a daemon log was not found: %v", hits)
 	}

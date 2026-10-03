@@ -144,12 +144,6 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 	}
 }
 
-type grantRevokeOutcome struct {
-	applied bool
-	grant   string
-	peer    string
-}
-
 // grantRevokeKind returns the receiver Kind for "grant.revoke"
 // (Docs/protocol/grant.md §Kinds, holder apply). Review 24 M8: applied only
 // when msg.from equals the peer that granted it (capability.Store.FindHeldTx).

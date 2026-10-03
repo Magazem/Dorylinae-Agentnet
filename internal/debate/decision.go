@@ -159,7 +159,7 @@ func (s *Store) refuseAudit(ctx context.Context, tx *sql.Tx, r row, why string) 
 // signature to the close body. It returns the loaded transcript and the
 // Decision hash so closeTx can reuse them for the experience record (written
 // before B signs, Docs/protocol/experience.md "acceptance").
-func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time, out *afters) (transcript, string, error) {
+func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time) (transcript, string, error) {
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
 		return nil, "", err
@@ -225,7 +225,7 @@ func closeGap(tr transcript, roundsMax, entries int) (refuse string, hold bool) 
 // signOnB is B's success path of decision.md §Signing step 2 (the caller has
 // checked the close): sign, store the Decision with both signatures, and
 // queue debate.sign. It returns B's signature.
-func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, sigA string, now time.Time, out *afters) error {
+func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, sigA string, now time.Time) error {
 	sigB, err := s.sign(canon)
 	if err != nil {
 		return err

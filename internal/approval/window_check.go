@@ -24,6 +24,8 @@ type UnavailableError struct {
 }
 
 func (e *UnavailableError) Error() string { return ErrUnavailable.Error() }
+
+// Is reports whether target is ErrUnavailable, so errors.Is matches it.
 func (e *UnavailableError) Is(target error) bool {
 	return target == ErrUnavailable
 }

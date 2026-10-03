@@ -18,8 +18,8 @@ func TestDecisionCreateAuditFailureAbortsTheClose(t *testing.T) {
 	answerMail := b.ob.take(t, MailEntry)
 
 	// A writes through a real audit log, with a TEMP trigger refusing the row.
-	real := audit.New(a.db)
-	a.ds.Audit = real
+	auditLog := audit.New(a.db)
+	a.ds.Audit = auditLog
 	if _, err := a.db.Exec(`CREATE TEMP TRIGGER audit_fail BEFORE INSERT ON main.audit_events
 WHEN NEW.action = 'decision.create' BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
 		t.Fatal(err)

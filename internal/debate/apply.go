@@ -661,7 +661,7 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 		case !decision.VerifySignature(r.peer, canon, sigA):
 			return s.refuseOnB(ctx, tx, r, tr, b, raw, "signature", out)
 		}
-		if err := s.signOnB(ctx, tx, r, canon, sigA, now, out); err != nil {
+		if err := s.signOnB(ctx, tx, r, canon, sigA, now); err != nil {
 			return err
 		}
 		for slot, e := range tr {

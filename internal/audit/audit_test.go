@@ -196,6 +196,9 @@ func TestRunSoftRetriesWithoutRowsAfterATxLoss(t *testing.T) {
 	runs := 0
 	err := audit.RunSoft(ctx, s.DB(), func(tx *sql.Tx, withRows bool) error {
 		runs++
+		if want := runs == 1; withRows != want {
+			t.Errorf("run %d: withRows = %v, want %v", runs, withRows, want)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO tt VALUES (7)`); err != nil {
 			return err
 		}
