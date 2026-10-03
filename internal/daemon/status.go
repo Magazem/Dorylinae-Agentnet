@@ -84,7 +84,7 @@ func statusTeam(ctx context.Context, ts *team.Store, ps *peers.Store, pstore *pr
 	for _, pr := range peerList {
 		byKey[pr.PublicKey] = pr
 	}
-	now := time.Now()
+	now := clockNow(ts.Now)
 	views := make([]StatusTeamMember, 0, len(members))
 	for _, m := range members {
 		v := StatusTeamMember{PublicKey: m.Key, Owner: m.Key == t.Owner, Self: m.Key == ts.Self}

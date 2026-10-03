@@ -475,8 +475,10 @@ func (c *fetchClient) start(ctx context.Context, p FetchStartParams) (FetchStatu
 		return FetchStatus{}, &ipc.Error{Code: capability.CodeRevoked, Message: "the grant was revoked"}
 	}
 	now := time.Now()
+	// The token's expiry is checked on the daemon clock (the grant store's,
+	// R55-F28); now stays the monotonic base of the call's deadline.
 	if _, err := capability.Verify([]byte(rec.Token), capability.VerifyParams{
-		Role: capability.RoleHolder, Self: c.self, Counterparty: rec.Peer, Now: now,
+		Role: capability.RoleHolder, Self: c.self, Counterparty: rec.Peer, Now: clockNow(c.caps.Now),
 		SessionOpen: func(id, requester, worker string) (bool, bool) {
 			v, err := c.ws.Get(ctx, id)
 			if err != nil {

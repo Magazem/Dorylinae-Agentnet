@@ -34,11 +34,15 @@ func TestReusedIDAfterSeenPruneIsDuplicate(t *testing.T) {
 		t.Fatalf("first delivery: %v", err)
 	}
 	// 36 days later: mail_seen is pruned, mail_inbox is not.
+	// Newer mail from another peer anchors the cutoff (SeenCutoff, R55-F28).
 	later := vectorNow.Add(36 * 24 * time.Hour)
+	if _, err := f.st.DB().Exec(`INSERT INTO mail_seen (from_key, id, received_at) VALUES ('k', 'newer', ?)`, later.Format(StoreTimeFmt)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Prune(ctx, f.st.DB(), later); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.count(`SELECT COUNT(*) FROM mail_seen`); n != 0 {
+	if n := f.count(`SELECT COUNT(*) FROM mail_seen WHERE id = '` + testID + `'`); n != 0 {
 		t.Fatalf("mail_seen rows after prune = %d, want 0", n)
 	}
 	f.rcv.Now = func() time.Time { return later }

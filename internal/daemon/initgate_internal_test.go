@@ -53,7 +53,7 @@ func TestPeerHasLiveTies(t *testing.T) {
 		"granted": true, "sessioned": true,
 		"expired": false, "revoked": false, "holder-of-nothing": false, "done": false, "stranger": false,
 	} {
-		if got := peerHasLiveTies(ctx, db, peer); got != want {
+		if got := peerHasLiveTies(ctx, db, peer, time.Now()); got != want {
 			t.Errorf("peerHasLiveTies(%q) = %v, want %v", peer, got, want)
 		}
 	}

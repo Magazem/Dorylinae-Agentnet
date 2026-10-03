@@ -406,7 +406,10 @@ ORDER BY x.created, x.session, x.role`+lim, []any{cut}, func(rows *sql.Rows) err
 	// 3. mail_inbox: rows older than the cutoff whose mail_seen row is gone
 	// (after the mail_seen prune), then pre-R55-F13 rows still holding
 	// plaintext.
-	seenCut := now.Add(-mail.SeenRetention).UTC().Format(storeTimeFmt)
+	seenCut, err := mail.SeenCutoff(ctx, q, now)
+	if err != nil {
+		return nil, err
+	}
 	err = each(ctx, q, `SELECT i.rowid FROM mail_inbox i
 WHERE i.received_at < ?1
   AND NOT EXISTS (SELECT 1 FROM mail_seen s WHERE s.from_key = i.from_key AND s.id = i.id AND s.received_at >= ?2)
@@ -585,7 +588,10 @@ func DryRun(ctx context.Context, db *sql.DB, cutoff, now time.Time) (Counts, err
 	defer func() { _ = tx.Rollback() }()
 	var c Counts
 	cut := cutoff.UTC().Format(storeTimeFmt)
-	seenCut := now.Add(-mail.SeenRetention).UTC().Format(storeTimeFmt)
+	seenCut, err := mail.SeenCutoff(ctx, tx, now)
+	if err != nil {
+		return Counts{}, err
+	}
 	if err := tx.QueryRowContext(ctx, countAll, cut, seenCut).Scan(&c.Requests, &c.WorkSessions, &c.Grants, &c.Debates,
 		&c.DebateEntries, &c.DebateConstraints, &c.ExperienceRecords, &c.MailInbox, &c.InboxBlanked); err != nil {
 		return Counts{}, fmt.Errorf("retention: count: %w", err)

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
@@ -51,7 +50,7 @@ func grantKind(capStore *capability.Store, wsStore *worksession.Store, self stri
 			if err != nil {
 				return badMailBody("token: %s", err.Error())
 			}
-			now := time.Now()
+			now := clockNow(capStore.Now)
 			// readErr keeps a session read error other than not-found: only
 			// a session we do not have makes the grant an orphan. A DB error
 			// fails the apply so the mail is retried, never acked and lost
@@ -182,7 +181,7 @@ func grantRevokeKind(capStore *capability.Store, log *audit.Log) mail.Kind {
 				return nil
 			}
 			_ = rec
-			changed, err := capStore.RevokeTx(ctx, tx, gid, reason, time.Now())
+			changed, err := capStore.RevokeTx(ctx, tx, gid, reason, clockNow(capStore.Now))
 			if err != nil {
 				return err
 			}
