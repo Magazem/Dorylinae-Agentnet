@@ -273,19 +273,69 @@ func (s *Store) Get(ctx context.Context, id string) (View, error) {
 
 // GetByRequestID resolves ws_show's r-<id> shorthand
 // (Docs/protocol/work-session.md §IPC, "ws_show ... an r- id resolved
-// through its session"): the session belonging to a request id. A daemon
-// only ever holds one role for a given session, so request_id alone (not
-// narrowed by role) is enough in practice.
+// through its session"): the session belonging to a request id. A request id
+// is unique only per sender, so the same id can belong to a requester and a
+// worker session, or to worker sessions for several peers: more than one
+// session is ErrAmbiguousRequest (R55-F20).
 func (s *Store) GetByRequestID(ctx context.Context, requestID string) (View, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE request_id = ? LIMIT 1`, requestID)
-	r, err := scanRow(row)
-	if errors.Is(err, sql.ErrNoRows) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+workSessionColumns+` FROM work_sessions WHERE request_id = ?`, requestID)
+	if err != nil {
+		return View{}, fmt.Errorf("worksession: read rows: %w", err)
+	}
+	var found []storedRow
+	for rows.Next() {
+		r, err := scanRow(rows)
+		if err != nil {
+			_ = rows.Close()
+			return View{}, fmt.Errorf("worksession: read row: %w", err)
+		}
+		found = append(found, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return View{}, fmt.Errorf("worksession: read rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return View{}, err
+	}
+	if len(found) == 0 {
 		return View{}, ErrUnknownSession
 	}
-	if err != nil {
-		return View{}, fmt.Errorf("worksession: read row: %w", err)
+	// A session-less request row with the same id (an old collision) makes the
+	// shorthand ambiguous too (review 91 S3): count (direction, peer) pairs
+	// across sessions and requests rows, as audit's r- lookup does.
+	type pair struct{ direction, peer string }
+	pairs := map[pair]bool{}
+	for _, r := range found {
+		direction := "in"
+		if r.role == string(RoleRequester) {
+			direction = "out"
+		}
+		pairs[pair{direction, r.peer}] = true
 	}
-	return toView(r)
+	reqRows, err := s.DB.QueryContext(ctx, `SELECT direction, peer FROM requests WHERE id = ?`, requestID)
+	if err != nil {
+		return View{}, fmt.Errorf("worksession: read requests: %w", err)
+	}
+	for reqRows.Next() {
+		var p pair
+		if err := reqRows.Scan(&p.direction, &p.peer); err != nil {
+			_ = reqRows.Close()
+			return View{}, fmt.Errorf("worksession: read request: %w", err)
+		}
+		pairs[p] = true
+	}
+	if err := reqRows.Err(); err != nil {
+		_ = reqRows.Close()
+		return View{}, fmt.Errorf("worksession: read requests: %w", err)
+	}
+	if err := reqRows.Close(); err != nil {
+		return View{}, err
+	}
+	if len(found) > 1 || len(pairs) > 1 {
+		return View{}, ErrAmbiguousRequest
+	}
+	return toView(found[0])
 }
 
 // GetTx is Get read through tx, for callers that must check a session's

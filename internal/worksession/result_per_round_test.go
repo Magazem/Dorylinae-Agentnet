@@ -44,7 +44,7 @@ func TestOneResultPerRound(t *testing.T) {
 	if err := deliver(t, a, testB, b.ob.last(t, request.KindComplete)); err != nil {
 		t.Fatal(err)
 	}
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.Result == nil || arv.Result.Summary != r1.Summary {
 		t.Fatalf("A's request record = %+v, %v; want R1", arv.Result, err)
 	}
@@ -114,7 +114,7 @@ func TestModifiedWorkerCompleteAfterAcceptedClose(t *testing.T) {
 	}
 	injectComplete(t, a, reqID, outSeq(t, a, reqID)+1, "", "never reviewed R2")
 
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result == nil || arv.Result.Summary != r1.Summary || arv.Note != "" {
 		t.Fatalf("A's request record = %+v (result %+v), %v; want R1 and no note", arv, arv.Result, err)
 	}
@@ -132,7 +132,7 @@ func TestModifiedWorkerCompleteAfterCancelledClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	injectComplete(t, a, reqID, outSeq(t, a, reqID)+1, "all good", "sneaked in")
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "session cancelled" {
 		t.Fatalf("A's request record = %+v, %v; want no result and note \"session cancelled\"", arv, err)
 	}
@@ -151,7 +151,7 @@ func TestEarlyCompleteMidReviewThenAccept(t *testing.T) {
 	submitAndDeliverResult(t, a, b, reqID, r1)
 	injectComplete(t, a, reqID, outSeq(t, a, reqID)+1, "", "never reviewed R2")
 
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "" {
 		t.Fatalf("A's record mid-review = %+v, %v; want completed with no content", arv, err)
 	}
@@ -164,7 +164,7 @@ func TestEarlyCompleteMidReviewThenAccept(t *testing.T) {
 	if _, err := a.ws.AcceptResult(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	arv, err = a.req.Show(ctx, reqID, testB)
+	arv, err = a.req.Show(ctx, reqID, "")
 	if err != nil || arv.Result == nil || arv.Result.Summary != r1.Summary || arv.Note != "" {
 		t.Fatalf("A's record after accept = %+v (result %+v), %v; want R1", arv, arv.Result, err)
 	}
@@ -181,14 +181,14 @@ func TestEarlyCompleteMidQuarantineThenDiscard(t *testing.T) {
 		t.Fatalf("session = %+v, %v; want quarantined", av, err)
 	}
 	injectComplete(t, a, reqID, outSeq(t, a, reqID)+1, "trust me", "never reviewed R2")
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "" {
 		t.Fatalf("A's record mid-quarantine = %+v, %v; want completed with no content", arv, err)
 	}
 	if _, err := a.ws.Discard(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	arv, err = a.req.Show(ctx, reqID, testB)
+	arv, err = a.req.Show(ctx, reqID, "")
 	if err != nil || arv.Result != nil || arv.Note != "session cancelled" {
 		t.Fatalf("A's record after discard = %+v, %v; want note \"session cancelled\"", arv, err)
 	}
@@ -209,12 +209,12 @@ func TestStaleCompleteNoMismatchAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	seq := outSeq(t, a, reqID)
-	before, err := a.req.Show(ctx, reqID, testB)
+	before, err := a.req.Show(ctx, reqID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	injectComplete(t, a, reqID, seq-1, "", "stale R2")
-	after, err := a.req.Show(ctx, reqID, testB)
+	after, err := a.req.Show(ctx, reqID, "")
 	if err != nil || after.Result == nil || after.Result.Summary != before.Result.Summary || outSeq(t, a, reqID) != seq {
 		t.Fatalf("record changed by a stale complete: before %+v after %+v, %v", before.Result, after.Result, err)
 	}
@@ -239,7 +239,7 @@ func TestEarlyCompleteAfterRound1StoresAView(t *testing.T) {
 	if av, err := a.ws.Get(ctx, sid); err != nil || av.State != StateClosed || av.Outcome != OutcomeCancelled {
 		t.Fatalf("A's session = %+v, %v; want closed cancelled", av, err)
 	}
-	arv, err := a.req.Show(ctx, reqID, testB)
+	arv, err := a.req.Show(ctx, reqID, "")
 	if err != nil || arv.State != "completed" || arv.Result != nil || arv.Note != "session cancelled" {
 		t.Fatalf("A's record = %+v (result %+v), %v; want no result and note \"session cancelled\"", arv, arv.Result, err)
 	}

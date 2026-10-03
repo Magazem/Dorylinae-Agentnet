@@ -84,7 +84,7 @@ func TestSessionStateMachine_AwaitingResultToClosedAccepted(t *testing.T) {
 	if err != nil || brv.State != "completed" || brv.Result == nil || brv.Result.Status != request.ResultPass {
 		t.Fatalf("B's request = %+v, %v", brv, err)
 	}
-	arv, err := a.req.Show(context.Background(), reqID, testB)
+	arv, err := a.req.Show(context.Background(), reqID, "")
 	if err != nil || arv.State != "completed" {
 		t.Fatalf("A's request = %+v, %v", arv, err)
 	}

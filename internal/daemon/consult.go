@@ -59,21 +59,25 @@ func findAnswerable(ctx context.Context, ws *worksession.Store, rs *request.Stor
 		key = &k
 		rid = k.ID
 	case request.ValidID(id):
-		if _, err := ws.GetByRequestID(ctx, id); err == nil {
+		// Only an `in` row can be answered; an `out` row with the same id is
+		// not this question (R55-F20). Several senders are ambiguous.
+		k, err := rs.FindIn(ctx, id, "")
+		if errors.Is(err, request.ErrUnknownRequest) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if _, err := ws.Get(ctx, worksession.DeriveID(k.Peer, self, id)); err == nil {
 			return nil, nil
 		} else if !errors.Is(err, worksession.ErrUnknownSession) {
 			return nil, err
 		}
+		key = &k
 	default:
 		return nil, nil
 	}
-	var v request.View
-	var err error
-	if key != nil {
-		v, err = rs.ShowKey(ctx, *key)
-	} else {
-		v, err = rs.Show(ctx, rid, "")
-	}
+	v, err := rs.ShowKey(ctx, *key)
 	if errors.Is(err, request.ErrUnknownRequest) {
 		return nil, nil
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
 )
 
 // NotifyWebhook is the "webhook" member of NotifyGetResult
@@ -109,9 +110,10 @@ func notifyAdapter(t *notify.Trigger, ps *peers.Store, ts teamNamer) request.Not
 // notify.Trigger.Fire call (Docs/protocol/debate.md §Notifications):
 // content-free, never the topic, entries or constraint text. The request
 // title is looked up for the webhook payload's "request.title"
-// (notify.Trigger only includes it when the caller sets --webhook-title);
-// the role is unknown here (the event fires the same way on either side), so
-// both directions are tried.
+// (notify.Trigger only includes it when the caller sets --webhook-title)
+// from the row of the debate's own direction: the session id is derived from
+// the initiator's key, so it tells the role (R55-F20; the other direction may
+// hold an unrelated request with the same id).
 func debateNotifyAdapter(t *notify.Trigger, ps *peers.Store, rs *request.Store) func(ctx context.Context, event, sid, peer, requestID string) {
 	if t == nil {
 		return nil
@@ -130,9 +132,11 @@ func debateNotifyAdapter(t *notify.Trigger, ps *peers.Store, rs *request.Store) 
 		}
 		title := ""
 		if rs != nil {
-			if v, err := rs.ShowKey(ctx, request.Key{Direction: "out", Peer: peer, ID: requestID}); err == nil {
-				title = v.Title
-			} else if v, err := rs.ShowKey(ctx, request.Key{Direction: "in", Peer: peer, ID: requestID}); err == nil {
+			direction := "in"
+			if worksession.DeriveID(rs.Self, peer, requestID) == sid {
+				direction = "out"
+			}
+			if v, err := rs.ShowKey(ctx, request.Key{Direction: direction, Peer: peer, ID: requestID}); err == nil {
 				title = v.Title
 			}
 		}

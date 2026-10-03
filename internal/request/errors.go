@@ -57,6 +57,7 @@ func (e *BadStateError) Error() string { return e.Msg }
 // if given). The caller maps this to IPC `unknown_request`.
 var ErrUnknownRequest = errors.New("request: unknown request")
 
-// ErrAmbiguousRequest is returned when an id alone matches in rows from
-// several peers. The caller maps this to IPC `ambiguous_request`.
-var ErrAmbiguousRequest = errors.New("request: id matches requests from several peers; pass from")
+// ErrAmbiguousRequest is returned when an id alone matches more than one
+// request row (an id is unique only per sender, R55-F20). The caller maps
+// this to IPC `ambiguous_request`.
+var ErrAmbiguousRequest = errors.New("request: id matches more than one request; pass from, or use the s- id")

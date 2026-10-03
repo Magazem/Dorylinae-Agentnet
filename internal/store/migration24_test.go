@@ -23,6 +23,7 @@ func TestMigration24IndexesNoRewrite(t *testing.T) {
 	}
 	// Back to schema 23 with a pre-F13 inbox row that holds plaintext.
 	for _, q := range []string{
+		`DROP INDEX requests_id`,                               // migration 27
 		`ALTER TABLE mailbox_keys_own DROP COLUMN key_backend`, // migration 26
 		`DROP INDEX mail_inbox_received`, `DROP INDEX requests_introducer_time`, `DROP INDEX requests_introducer_state`,
 		`ALTER TABLE requests DROP COLUMN introduced_at`, `ALTER TABLE requests DROP COLUMN introducer`, `DROP INDEX requests_peer_state`,
@@ -42,7 +43,7 @@ func TestMigration24IndexesNoRewrite(t *testing.T) {
 			t.Fatalf("open %d: %v", i, err)
 		}
 		db := s.DB()
-		for _, idx := range []string{"requests_peer_state", "requests_introducer_state", "requests_introducer_time", "mail_inbox_received"} {
+		for _, idx := range []string{"requests_peer_state", "requests_introducer_state", "requests_introducer_time", "mail_inbox_received", "requests_id"} {
 			var n int
 			if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&n); err != nil || n != 1 {
 				t.Fatalf("index %s: %d, %v", idx, n, err)

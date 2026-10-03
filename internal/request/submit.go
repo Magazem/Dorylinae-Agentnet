@@ -20,6 +20,14 @@ import (
 // was given with different params.
 var ErrIdempotencyConflict = errors.New("request: idempotency key already used with different params")
 
+// maxIDDraws bounds how many request ids Submit draws before it gives up on
+// finding one that no row here has (R55-F20).
+const maxIDDraws = 8
+
+// errIDTaken is insertOut's report that a row here already has the drawn id;
+// Submit then rebuilds the request from a new id.
+var errIDTaken = errors.New("request: drawn id is already used here")
+
 var idemKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,64}$`)
 
 // ValidIdempotencyKey reports whether s is a valid --idempotency-key.
@@ -41,11 +49,11 @@ type SubmitParams struct {
 	// §Submitting ("params_hash"), required when IdempotencyKey is set.
 	ParamsHash string
 
-	// Prepare, if set, is called once on a fresh submit, after the request
-	// id is drawn and before validation, to complete the request (a debate
-	// sets its "debate" member here: the commitment needs the id,
-	// Docs/protocol/debate.md §Commit-reveal). It is never called for an
-	// idempotent duplicate.
+	// Prepare, if set, is called on a fresh submit, after the request id is
+	// drawn and before validation, to complete the request (a debate sets its
+	// "debate" member here: the commitment needs the id,
+	// Docs/protocol/debate.md §Commit-reveal). It is called again for each id
+	// drawn after a collision, and never for an idempotent duplicate.
 	Prepare func(req *Request) error
 	// InTx, if set, is called inside the transaction that stores the out row
 	// and queues the request mail, after both; it must touch only tx (a
@@ -91,32 +99,46 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 	if note != "" {
 		declared = p.Urgency
 	}
-	req := &Request{
-		V: 1, ID: NewID(), From: p.From, To: p.To, Team: p.Team, Type: p.Type,
-		Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
-		Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
-		Created: now.UTC().Truncate(time.Second), Context: p.Context, Run: p.Run,
-	}
-	if p.Prepare != nil {
-		if err := p.Prepare(req); err != nil {
+	// The id is drawn again while any row here already has it, and everything
+	// built from it is rebuilt (Docs/protocol/request.md §Submitting step 7,
+	// R55-F20): a debate's session id and commitment bind the id.
+	var outcome SubmitOutcome
+	var retry bool
+	for draw := 1; ; draw++ {
+		req := &Request{
+			V: 1, ID: s.newID(), From: p.From, To: p.To, Team: p.Team, Type: p.Type,
+			Title: p.Title, Brief: p.Brief, Urgency: urgency, UrgencyDeclared: declared, UrgencyReason: p.UrgencyReason,
+			Artifacts: p.Artifacts, RequestedGrant: p.RequestedGrant, Deadline: p.Deadline,
+			Created: now.UTC().Truncate(time.Second), Context: p.Context, Run: p.Run,
+		}
+		if p.Prepare != nil {
+			if err := p.Prepare(req); err != nil {
+				return SubmitOutcome{}, err
+			}
+		}
+		if err := Validate(req); err != nil {
 			return SubmitOutcome{}, err
 		}
-	}
-	if err := Validate(req); err != nil {
-		return SubmitOutcome{}, err
-	}
-	canon, err := Canonical(req)
-	if err != nil {
-		return SubmitOutcome{}, err
-	}
-	if err := CheckSizeFor(req, canon); err != nil {
-		return SubmitOutcome{}, err
-	}
-	hash := BodyHash(canon)
+		canon, err := Canonical(req)
+		if err != nil {
+			return SubmitOutcome{}, err
+		}
+		if err := CheckSizeFor(req, canon); err != nil {
+			return SubmitOutcome{}, err
+		}
+		hash := BodyHash(canon)
 
-	outcome, retry, err := s.insertOut(ctx, p, req, canon, hash, now)
-	if err != nil {
-		return SubmitOutcome{}, err
+		outcome, retry, err = s.insertOut(ctx, p, req, canon, hash, now)
+		if errors.Is(err, errIDTaken) {
+			if draw < maxIDDraws {
+				continue
+			}
+			return SubmitOutcome{}, fmt.Errorf("request: no unused request id after %d draws", maxIDDraws)
+		}
+		if err != nil {
+			return SubmitOutcome{}, err
+		}
+		break
 	}
 	if retry {
 		row, ok, lerr := s.lookupIdem(ctx, p.To, p.IdempotencyKey)
@@ -135,9 +157,17 @@ func (s *Store) Submit(ctx context.Context, p SubmitParams) (SubmitOutcome, erro
 	return outcome, nil
 }
 
+func (s *Store) newID() string {
+	if s.NewIDFunc != nil {
+		return s.NewIDFunc()
+	}
+	return NewID()
+}
+
 // insertOut stores the `out` row and the outbox row in one transaction. retry
 // is true when a concurrent submit with the same idempotency key won the race
-// (Docs/protocol/request.md §Submitting step 7).
+// (Docs/protocol/request.md §Submitting step 7). It returns errIDTaken, and
+// stores nothing, when any row here already has req.ID.
 func (s *Store) insertOut(ctx context.Context, p SubmitParams, req *Request, canon []byte, hash string, now time.Time) (outcome SubmitOutcome, retry bool, err error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -145,6 +175,13 @@ func (s *Store) insertOut(ctx context.Context, p SubmitParams, req *Request, can
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	taken, err := idTakenTx(ctx, tx, req.ID, "")
+	if err != nil {
+		return SubmitOutcome{}, false, err
+	}
+	if taken {
+		return SubmitOutcome{}, false, errIDTaken
+	}
 	sub, err := s.Outbox.SubmitTx(ctx, tx, p.To, "request", WireBody(req))
 	if err != nil {
 		return SubmitOutcome{}, false, err
