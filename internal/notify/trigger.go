@@ -228,6 +228,8 @@ func titleLine(ev Event) string {
 		return fmt.Sprintf("Debate with %s needs your decision: no agreement", name)
 	case EventDebateBroken:
 		return fmt.Sprintf("Debate with %s stopped: the opening position did not match its commitment", name)
+	case EventDebateRefused:
+		return fmt.Sprintf("Debate with %s stopped: the two daemons' records of the Decision differ (see agentnet log)", name)
 	default:
 		return ""
 	}

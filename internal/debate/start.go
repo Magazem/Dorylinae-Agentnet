@@ -26,9 +26,10 @@ type StartParams struct {
 	// Position is A's opening position as a generic JSON value (as parsed
 	// from the IPC params). It is committed, never sent before the reveal.
 	Position any
-	// Rounds and TurnTimeoutS; 0 selects the default.
-	Rounds       int
-	TurnTimeoutS int
+	// Rounds and TurnTimeoutS; nil selects the default. A present value
+	// outside the range, 0 included, is refused (R55-116).
+	Rounds       *int
+	TurnTimeoutS *int
 }
 
 // StartOutcome is request.SubmitOutcome plus the derived session id.
@@ -52,16 +53,17 @@ func (s *Store) Start(ctx context.Context, p StartParams) (StartOutcome, error) 
 	if p.Submit.Type != request.TypeDebate {
 		return StartOutcome{}, fieldErr("type", "must be debate")
 	}
-	if p.Rounds == 0 {
-		p.Rounds = DefaultRounds
+	rounds, turnTimeoutS := DefaultRounds, DefaultTurnTimeoutS
+	if p.Rounds != nil {
+		rounds = *p.Rounds
 	}
-	if p.TurnTimeoutS == 0 {
-		p.TurnTimeoutS = DefaultTurnTimeoutS
+	if p.TurnTimeoutS != nil {
+		turnTimeoutS = *p.TurnTimeoutS
 	}
-	if p.Rounds < request.MinDebateRounds || p.Rounds > request.MaxDebateRounds {
+	if rounds < request.MinDebateRounds || rounds > request.MaxDebateRounds {
 		return StartOutcome{}, fieldErr("debate.rounds", "must be %d-%d", request.MinDebateRounds, request.MaxDebateRounds)
 	}
-	if p.TurnTimeoutS < request.MinDebateTurnTimeout || p.TurnTimeoutS > request.MaxDebateTurnTimeout {
+	if turnTimeoutS < request.MinDebateTurnTimeout || turnTimeoutS > request.MaxDebateTurnTimeout {
 		return StartOutcome{}, fieldErr("debate.turn_timeout_s", "must be %d-%d", request.MinDebateTurnTimeout, request.MaxDebateTurnTimeout)
 	}
 	if p.Position == nil {
@@ -77,7 +79,7 @@ func (s *Store) Start(ctx context.Context, p StartParams) (StartOutcome, error) 
 		sid = worksession.DeriveID(req.From, req.To, req.ID)
 		nonce = NewNonce()
 		req.Debate = &request.DebateMember{
-			Commitment: Commitment(sid, req.From, nonce, canon), Rounds: p.Rounds, TurnTimeoutS: p.TurnTimeoutS,
+			Commitment: Commitment(sid, req.From, nonce, canon), Rounds: rounds, TurnTimeoutS: turnTimeoutS,
 		}
 		return nil
 	}
@@ -88,7 +90,7 @@ func (s *Store) Start(ctx context.Context, p StartParams) (StartOutcome, error) 
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO debates (session, role, peer, request_id, rounds_max, turn_timeout_s, commitment, nonce, phase, next_slot, created, updated)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-			sid, RoleInitiator, req.To, req.ID, p.Rounds, p.TurnTimeoutS, req.Debate.Commitment, nonce, PhaseInvited,
+			sid, RoleInitiator, req.To, req.ID, rounds, turnTimeoutS, req.Debate.Commitment, nonce, PhaseInvited,
 			storeTime(now), storeTime(now)); err != nil {
 			return fmt.Errorf("debate: insert debate: %w", err)
 		}
@@ -106,7 +108,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 	if !out.Duplicate {
 		s.audit("cli", "debate.start", map[string]any{
 			"session": sid, "request": out.Request.ID, "peer": out.Request.To,
-			"rounds": p.Rounds, "turn_timeout_s": p.TurnTimeoutS, "position_bytes": len(canon),
+			"rounds": rounds, "turn_timeout_s": turnTimeoutS, "position_bytes": len(canon),
 		})(ctx)
 	}
 	return StartOutcome{SubmitOutcome: out, Session: sid}, nil

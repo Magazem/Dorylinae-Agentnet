@@ -32,8 +32,21 @@ const recordVersion = 1
 // Outcome values this package matches on directly (never imported from
 // internal/worksession or internal/debate, which would cycle back here).
 const (
-	outcomeAccepted = "accepted"
-	outcomeAgreed   = "agreed"
+	outcomeAccepted  = "accepted"
+	outcomeAgreed    = "agreed"
+	outcomeEscalated = "escalated"
+	outcomeCancelled = "cancelled"
+)
+
+// VerificationNone is the verification value of every debate and every
+// cancelled session, and of a work session that claimed none
+// (Docs/protocol/experience.md "verification", R55-222).
+const VerificationNone = "none"
+
+// Causes of B's own debate closes for a bad peer (failed.cause).
+const (
+	CauseBadReveal       = "bad_reveal"
+	CauseDecisionRefused = "decision_refused"
 )
 
 // Grant is one approach.grants item: action, sensitivity and final state
@@ -80,9 +93,9 @@ type Input struct {
 	// What failed.
 	RoundsRejected              int    // work, accepted: rounds - 1 (0 means absent)
 	LastChanges                 string // work: the same text as approach.changes
-	HasRemainingDisagreement    bool   // debate, escalated
-	RemainingDisagreementPoints int
+	RemainingDisagreementPoints int    // debate, escalated: the Decision's count (0 allowed)
 	CancelledBy                 string // any cancelled close: a role value, or "timeout"
+	Cause                       string // with CancelledBy: CauseBadReveal or CauseDecisionRefused
 
 	Verification, VerificationBy string
 
@@ -99,9 +112,12 @@ func wireTime(t time.Time) string { return t.UTC().Truncate(time.Second).Format(
 
 func num(n int) json.Number { return json.Number(strconv.Itoa(n)) }
 
-// value returns the record's canonical-form value at drop level 0-3
+// maxLevel is the last truncation step.
+const maxLevel = 4
+
+// value returns the record's canonical-form value at drop level 0-4
 // (Docs/protocol/experience.md §Record, the truncation order:
-// approach.changes, failed.last_changes, problem.brief).
+// approach.changes, failed.last_changes, problem.brief, approach.grants).
 func value(in Input, level int) map[string]any {
 	m := map[string]any{
 		"v": num(recordVersion), "session": in.Session, "request": in.Request,
@@ -134,7 +150,7 @@ func value(in Input, level int) map[string]any {
 		}
 		approach["rounds_used"] = num(in.RoundsUsed)
 	} else {
-		if len(in.Grants) > 0 {
+		if len(in.Grants) > 0 && level < 4 {
 			gs := make([]any, 0, len(in.Grants))
 			for _, g := range in.Grants {
 				gs = append(gs, map[string]any{"action": g.Action, "sensitive": g.Sensitive, "state": g.State})
@@ -153,9 +169,15 @@ func value(in Input, level int) map[string]any {
 	// for any other outcome, but the builder also refuses to include it then,
 	// so a mistaken caller cannot resurrect a discarded or replaced result
 	// (Docs/protocol/experience.md "Never in the record").
+	// verification is always in the enum: none for every cancelled session
+	// and when the caller has none (R55-222).
+	verification := in.Verification
+	if verification == "" || in.Outcome == outcomeCancelled {
+		verification = VerificationNone
+	}
 	switch {
 	case in.Kind == KindWork && in.Outcome == outcomeAccepted && in.WorkedStatus != "":
-		w := map[string]any{"status": in.WorkedStatus, "verification": in.Verification}
+		w := map[string]any{"status": in.WorkedStatus, "verification": verification}
 		if in.WorkedSummary != "" {
 			w["summary"] = in.WorkedSummary
 		}
@@ -168,7 +190,10 @@ func value(in Input, level int) map[string]any {
 	switch {
 	case in.CancelledBy != "":
 		failed["cancelled_by"] = in.CancelledBy
-	case in.Kind == KindDebate && in.HasRemainingDisagreement:
+		if in.Cause != "" {
+			failed["cause"] = in.Cause
+		}
+	case in.Kind == KindDebate && in.Outcome == outcomeEscalated:
 		failed["remaining_disagreement_points"] = num(in.RemainingDisagreementPoints)
 	case in.Kind == KindWork && in.RoundsRejected > 0:
 		failed["rounds_rejected"] = num(in.RoundsRejected)
@@ -180,8 +205,8 @@ func value(in Input, level int) map[string]any {
 		m["failed"] = failed
 	}
 
-	m["verification"] = in.Verification
-	if in.VerificationBy != "" {
+	m["verification"] = verification
+	if verification != VerificationNone && in.VerificationBy != "" {
 		m["verification_by"] = in.VerificationBy
 	}
 
@@ -202,19 +227,21 @@ func value(in Input, level int) map[string]any {
 
 // Build returns canonical(record) (Docs/protocol/experience.md §Record),
 // capped at MaxRecordBytes: members are dropped in the order
-// approach.changes, failed.last_changes, problem.brief until it fits, adding
-// "truncated": true once any member was dropped.
+// approach.changes, failed.last_changes, problem.brief, approach.grants until
+// it fits, adding "truncated": true once any member was dropped. A record
+// still over the cap after the last step is an error (unreachable: every
+// remaining string is bounded by a field cap).
 func Build(in Input) (canon []byte, truncated bool, err error) {
-	for level := 0; level <= 3; level++ {
+	for level := 0; level <= maxLevel; level++ {
 		c, err := agentcard.CanonicalValue(value(in, level))
 		if err != nil {
 			return nil, false, fmt.Errorf("experience: canonical form: %w", err)
 		}
-		if len(c) <= MaxRecordBytes || level == 3 {
+		if len(c) <= MaxRecordBytes {
 			return c, level > 0, nil
 		}
 	}
-	panic("unreachable")
+	return nil, false, fmt.Errorf("experience: record over %d bytes after truncation", MaxRecordBytes)
 }
 
 // WriteTx builds and inserts the (session, role) experience record inside

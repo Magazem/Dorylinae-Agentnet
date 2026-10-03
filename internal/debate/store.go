@@ -55,7 +55,10 @@ const (
 const (
 	EventAgreed    = "debate.agreed"
 	EventEscalated = "debate.escalated"
-	EventBroken    = "debate.broken"
+	// EventBroken is a bad reveal only (B); EventRefused is a Decision
+	// refusal, on both sides (R55-126, OD-F29-2).
+	EventBroken  = "debate.broken"
+	EventRefused = "debate.refused"
 )
 
 // echoInterval is the 10-minute rule of the last_state echo.
@@ -102,13 +105,20 @@ type Store struct {
 	PeerQuarantine func(ctx context.Context, tx *sql.Tx, peer string) (bool, error)
 
 	// OnEvent, if set, is called after commit with a content-free
-	// notification event (EventAgreed, EventEscalated, EventBroken) and ids.
+	// notification event (EventAgreed, EventEscalated, EventBroken,
+	// EventRefused) and ids.
 	OnEvent func(ctx context.Context, event, sid, peer, requestID string)
 
 	// Log receives errors from Sweep that do not stop it (review 45 L2): one
 	// bad debate is logged and skipped, never lost silently. Nil discards
 	// them.
 	Log *slog.Logger
+
+	// TimeoutsReady gates the timeout rule (Docs/protocol/debate.md
+	// §Timeouts, "Grace after downtime", R55-071): while it reports false, a
+	// passed deadline closes nothing yet. It keeps its own clock, not Now.
+	// Nil is always ready (unit tests).
+	TimeoutsReady func() bool
 
 	Now func() time.Time
 }

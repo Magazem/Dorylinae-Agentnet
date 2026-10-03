@@ -279,6 +279,12 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 			}
 			peer = pr.PublicKey
 		}
+		// Sweep first, as debate_submit does (§Timeouts, R55-169): a view is
+		// never up to a sweep interval stale. A sweep error is logged and the
+		// view is still served.
+		if _, err := ds.Sweep(ctx); err != nil && ds.Log != nil {
+			ds.Log.Error("debate: sweep before debate_list", "error", err)
+		}
 		views, err := ds.List(ctx, p.Phase, peer)
 		if err != nil {
 			return nil, debateError(err)
@@ -294,6 +300,11 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 		var p struct{ ID string }
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id is required"}
+		}
+		// Sweep first (R55-169); Get reports an unknown or ambiguous id.
+		if _, err := ds.SweepOne(ctx, p.ID); err != nil && !errors.Is(err, debate.ErrUnknownDebate) &&
+			!errors.Is(err, request.ErrAmbiguousRequest) && ds.Log != nil {
+			ds.Log.Error("debate: sweep before debate_show", "error", err)
 		}
 		v, err := ds.Get(ctx, p.ID)
 		if err != nil {
@@ -332,20 +343,24 @@ func registerDebate(srv *ipc.Server, ds *debate.Store, ps *peers.Store, ts *team
 const debateSweepInterval = 20 * time.Second
 
 // startDebateSweep runs debate.Store.Sweep on a ticker until ctx is
-// cancelled. Sweep itself logs and continues past one bad debate (review 45
-// L2); this loop only logs a failure to even list debates, which would be a
-// database problem, not a single bad row.
-func startDebateSweep(ctx context.Context, ds *debate.Store, log *slog.Logger) {
+// cancelled, each tick through gate (the resume test, R55-071). Sweep itself
+// logs and continues past one bad debate (review 45 L2); this loop only logs
+// a failure to even list debates, which would be a database problem, not a
+// single bad row.
+func startDebateSweep(ctx context.Context, ds *debate.Store, gate *debateTimeoutGate, log *slog.Logger) {
 	t := time.NewTicker(debateSweepInterval)
 	defer t.Stop()
+	sweep := func(ctx context.Context) {
+		if _, err := ds.Sweep(ctx); err != nil && log != nil {
+			log.Error("debate: sweep", "error", err)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := ds.Sweep(ctx); err != nil && log != nil {
-				log.Error("debate: sweep", "error", err)
-			}
+			gate.tick(ctx, sweep)
 		}
 	}
 }

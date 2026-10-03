@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/decision"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/experience"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/worksession"
@@ -157,12 +158,12 @@ func (s *Store) refuseAudit(ctx context.Context, tx *sql.Tx, r row, why string) 
 // decideTx is A's part of decision.md §Signing step 1, inside closeTx: derive
 // the Decision, sign it, store it awaiting_peer and add the hash and the
 // signature to the close body. It returns the loaded transcript and the
-// Decision hash so closeTx can reuse them for the experience record (written
-// before B signs, Docs/protocol/experience.md "acceptance").
-func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time) (transcript, string, error) {
+// canonical Decision so closeTx can reuse them for the experience record
+// (written before B signs, Docs/protocol/experience.md "acceptance").
+func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time) (transcript, []byte, error) {
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	at, _ := body["at"].(string)
 	// closed is never before opened (review 47 M1): if this clock went back
@@ -170,7 +171,7 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 	// created instead, so B does not refuse and verify step 5 holds.
 	var opened string
 	if err := tx.QueryRowContext(ctx, `SELECT created FROM requests WHERE direction = 'out' AND peer = ? AND id = ?`, r.peer, r.requestID).Scan(&opened); err != nil {
-		return nil, "", fmt.Errorf("debate: read request for the Decision: %w", err)
+		return nil, nil, fmt.Errorf("debate: read request for the Decision: %w", err)
 	}
 	if at < opened { // both whole-second UTC wire times: string order is time order
 		at = opened
@@ -178,21 +179,21 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 	}
 	canon, err := s.deriveTx(ctx, tx, r, tr, entries, listed, outcome, reason, at)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	sig, err := s.sign(canon)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	hash := decision.Hash(canon)
 	if err := insertDecision(ctx, tx, r, canon, hash, sig, "", "", DecisionAwaitingPeer, now); err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	body["decision"], body["sig"] = hash, sig
 	if err := s.createAudit(ctx, tx, r, outcome, hash, len(canon), RoleInitiator); err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return tr, hash, nil
+	return tr, canon, nil
 }
 
 // closeGap compares A's entries count with B's transcript (decision.md
@@ -249,8 +250,10 @@ func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, si
 // refuseOnB is B's mismatch path (decision.md §Signing, "If B refuses"): B
 // stores its own derivation (with the outcome its own transcript gives) and
 // A's claimed hash, sets peer_refused, breaks the debate, closes its mirror
-// cancelled, notifies debate.broken and sends debate.sign with refused. B
-// never signs. why is the audited reason (content-free).
+// cancelled, notifies debate.refused (R55-126) and sends debate.sign with
+// refused. B never signs. why is the audited reason (content-free). The
+// experience record says cancelled_by respondent, cause decision_refused,
+// and refers to B's own stored record when there is one (R55-222).
 func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript, b map[string]any, raw []byte, why string, out *afters) error {
 	now := s.now()
 	claimed, _ := b["decision"].(string)
@@ -260,6 +263,7 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 	// B's own record: its transcript up to A's count, the outcome rule 6
 	// gives for it. None exists without both positions.
 	own := ""
+	var dec *experience.Decision
 	var answer *Answer
 	for slot, e := range tr {
 		if slot < entries && (e.state == stateApplied || e.state == stateSent) {
@@ -276,11 +280,13 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 		if err := insertDecision(ctx, tx, r, canon, own, "", "", claimed, DecisionPeerRefused, now); err != nil {
 			return err
 		}
+		dec = &experience.Decision{ID: decision.ID(r.session), Hash: own}
 	case errors.Is(err, decision.ErrIncomplete), errors.Is(err, decision.ErrClosedBeforeOpened), errors.As(err, new(*decision.TooLargeError)):
 		// B holds no record (no position, a close before the request was
 		// created, or a record over MaxDecision): the refusal carries the
 		// hash of the empty message, which no Decision has.
 		own = decision.Hash(nil)
+		canon = nil
 	default:
 		return err
 	}
@@ -296,7 +302,8 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 	if err := s.refuseAudit(ctx, tx, r, why); err != nil {
 		return err
 	}
-	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr, RoleInitiator, nil, now, out)
+	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventRefused, OutcomeCancelled, tr,
+		coverBelow(entries), RoleRespondent, experience.CauseDecisionRefused, dec, canon, now, out)
 }
 
 // decisionOutcome reads the outcome member of a canonical Decision.
@@ -408,7 +415,7 @@ func (s *Store) applySign(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err
 		if err := s.refuseAudit(ctx, tx, r, why); err != nil {
 			return err
 		}
-		out.add(s.event(EventBroken, r.session, r.peer, r.requestID))
+		out.add(s.event(EventRefused, r.session, r.peer, r.requestID))
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE decisions SET state = ?, sig_respondent = ?, updated = ? WHERE session = ?`,

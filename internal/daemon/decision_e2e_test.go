@@ -75,7 +75,7 @@ func TestDecisionEscalatedE2E(t *testing.T) {
 	a, b, teamID, aDS, bDS := debatePair(t)
 	var res daemon.RequestSubmitResult
 	a.call("request_submit", daemon.RequestSubmitParams{To: b.key, Type: "debate", Team: teamID, Title: "Retries",
-		Brief: "How should the outbox retry?", Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1}}, &res)
+		Brief: "How should the outbox retry?", Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: new(1)}}, &res)
 	sid := res.Session
 	harnessWait(t, "B to store the debate", phaseIs(b, sid, debate.PhaseInvited))
 	dsSubmit(t, bDS, sid, debate.KindPosition, `{"argument":"Simple.","claim":"Fixed retry"}`)

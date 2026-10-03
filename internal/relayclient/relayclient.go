@@ -134,6 +134,10 @@ type Client struct {
 	// in which a v1 signature is ever made.
 	origin   string
 	loopback bool
+
+	// redial is set by Reconnect and cleared by Run when the session it
+	// closed ends (R55-F29, R55-071); guarded by mu.
+	redial bool
 }
 
 // State is relayclient's connection state, reported by "status" and "doctor"
@@ -205,6 +209,25 @@ func (c *Client) State() State {
 	return State{Connected: c.conn != nil, Since: c.connSince, LastError: c.lastErr, MinClient: c.minClient}
 }
 
+// Reconnect drops the current connection so that Run dials again after
+// jitter(MinBackoff), without the backoff rules for a lost connection: no
+// reset, no 1001 "relay drain" branch, no doubling (R55-F29, R55-071: after
+// a resume the old socket may be dead while Connected still reports true).
+// It closes with no handshake, since the socket may be dead. It does nothing
+// while disconnected. CloseNow runs after mu is released: it can wait for
+// the library's goroutines (review 101 L2), and State and Send must not.
+func (c *Client) Reconnect() {
+	c.mu.Lock()
+	conn := c.conn
+	if conn != nil {
+		c.redial = true
+	}
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
+}
+
 // Send validates and sends e. It does not wait for delivery: a relay refusal
 // (for example peer_offline) arrives later through Config.OnError with Ref == e.ID.
 func (c *Client) Send(ctx context.Context, e envelope.Envelope) error {
@@ -254,6 +277,26 @@ func (c *Client) Run(ctx context.Context) error {
 		readyAt, err := c.session(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		c.mu.Lock()
+		redial := c.redial
+		c.redial = false
+		c.mu.Unlock()
+		// A session the relay ended itself (a close frame, or relay_full /
+		// rate_limited) keeps its classification even if Reconnect raced it,
+		// so a stale redial never skips the 1013 floor (review 101 L3).
+		var ce websocket.CloseError
+		if redial && !shedding(err) && !errors.As(err, &ce) {
+			// Reconnect closed this session on purpose: a client-side close
+			// must not be classified as the relay's (R55-F29, review 92b F4).
+			wait := jitter(c.cfg.MinBackoff)
+			c.log.Info("relay re-dial", "event", "relay_redial", "retry_in", wait.Round(time.Millisecond), "connected_for", time.Since(start).Round(time.Millisecond))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
 		}
 		switch {
 		case shedding(err):

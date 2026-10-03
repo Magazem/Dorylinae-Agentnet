@@ -333,7 +333,9 @@ func TestDecisionRefusals(t *testing.T) {
 			if p := phaseOf(t, b, sid); p != PhaseBroken {
 				t.Fatalf("B phase %s, want broken (refused at once)", p)
 			}
-			if !b.audit.has("decision.refuse", `"reason":"`+c.reason+`"`) || b.events.count(EventBroken) != 1 {
+			// R55-126: a refusal is debate.refused on both sides, never
+			// debate.broken (a bad reveal only).
+			if !b.audit.has("decision.refuse", `"reason":"`+c.reason+`"`) || b.events.count(EventRefused) != 1 || b.events.count(EventBroken) != 0 {
 				t.Fatalf("B audit:\n%s", b.audit.all())
 			}
 			if st, o := sessionState(t, b, sid); st != worksession.StateClosed || o != worksession.OutcomeCancelled {
@@ -361,7 +363,7 @@ func TestDecisionRefusals(t *testing.T) {
 			if da.State != DecisionPeerRefused || da.PeerHash != db.Hash || da.SigRespondent != "" {
 				t.Fatalf("A record %+v", da)
 			}
-			if !a.audit.has("decision.refuse", `"reason":"mismatch"`) || a.events.count(EventBroken) != 1 {
+			if !a.audit.has("decision.refuse", `"reason":"mismatch"`) || a.events.count(EventRefused) != 1 || a.events.count(EventBroken) != 0 {
 				t.Fatalf("A audit:\n%s", a.audit.all())
 			}
 			if phaseOf(t, a, sid) != PhaseClosed {

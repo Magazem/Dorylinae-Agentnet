@@ -47,3 +47,12 @@ func WithBackoffTiming(cfg Config, stableAfter, tryAgainFloor time.Duration) Con
 	cfg.stableAfter, cfg.tryAgainFloor = stableAfter, tryAgainFloor
 	return cfg
 }
+
+// MarkRedial sets the flag Reconnect sets, without closing the connection,
+// so a test can end the session from the relay side with the flag stale
+// (review 101 L3).
+func MarkRedial(c *Client) {
+	c.mu.Lock()
+	c.redial = true
+	c.mu.Unlock()
+}

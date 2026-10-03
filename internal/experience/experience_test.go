@@ -120,7 +120,7 @@ func TestBuildDebateEscalated(t *testing.T) {
 	in := baseInput()
 	in.Kind, in.Role = KindDebate, "initiator"
 	in.Outcome = "escalated"
-	in.HasRemainingDisagreement, in.RemainingDisagreementPoints = true, 3
+	in.RemainingDisagreementPoints = 3
 	canon, _, err := Build(in)
 	if err != nil {
 		t.Fatal(err)
@@ -177,19 +177,15 @@ func TestBuildTruncatesInOrder(t *testing.T) {
 }
 
 func TestBuildNeverExceedsCapEvenAtFullDrop(t *testing.T) {
-	// Every optional large member dropped; the remainder must still fit even
-	// with an implausibly long title (the builder must not loop forever or
-	// panic: Build always returns at level 3).
+	// Every droppable member dropped and still over the cap (an implausibly
+	// long title, which the field caps make unreachable): Build returns an
+	// error, never a record over the cap and never a panic (R55-F29).
 	in := baseInput()
 	in.ProblemTitle = strings.Repeat("y", 200000)
-	canon, truncated, err := Build(in)
-	if err != nil {
-		t.Fatal(err)
+	canon, _, err := Build(in)
+	if err == nil {
+		t.Fatalf("Build = %d bytes, want an error", len(canon))
 	}
-	if !truncated {
-		t.Fatal("want truncated")
-	}
-	_ = canon // may still exceed the cap once every droppable member is gone; just must not error/panic
 }
 
 func TestWriteTxStoresOneRowPerSessionRole(t *testing.T) {

@@ -146,7 +146,7 @@ func TestDebateRoundTrip(t *testing.T) {
 }
 
 // TestDebateCancelInInvited: A cancels before B ever accepts (a Phase 1
-// request.cancel); B sees the request cancelled.
+// request.cancel); B sees the request cancelled, with A's reason (R55-127).
 func TestDebateCancelInInvited(t *testing.T) {
 	oldInterval := waitPollInterval
 	waitPollInterval = 50 * time.Millisecond
@@ -162,11 +162,13 @@ func TestDebateCancelInInvited(t *testing.T) {
 	}
 	pollCLI(t, b, "the invitation", func(o string) bool { return strings.Contains(o, sub.ID) }, "inbox", "--json")
 
-	code, out, errs := cli(t, a, "debate", sub.Session, "--cancel", "--json")
+	code, out, errs := cli(t, a, "debate", sub.Session, "--cancel", "--reason", "wrong topic", "--json")
 	if code != exitOK {
 		t.Fatalf("A cancel: %d %s %s", code, out, errs)
 	}
-	pollCLI(t, b, "B to see the cancellation", func(o string) bool { return strings.Contains(o, `"state":"cancelled"`) }, "request", "show", sub.ID, "--json")
+	pollCLI(t, b, "B to see the cancellation", func(o string) bool {
+		return strings.Contains(o, `"state":"cancelled"`) && strings.Contains(o, `"reason":"wrong topic"`)
+	}, "request", "show", sub.ID, "--json")
 }
 
 // TestDebateAbandon: once B has accepted, B has no ws.state to learn A's

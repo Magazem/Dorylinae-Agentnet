@@ -12,6 +12,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/capability"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -114,6 +115,7 @@ func sessionError(err error) error {
 	var fe *worksession.FieldError
 	var bse *worksession.BadStateError
 	var tl *worksession.TooLargeResultError
+	var dbse *debate.BadStateError
 	switch {
 	case errors.Is(err, worksession.ErrUnknownSession):
 		return &ipc.Error{Code: CodeUnknownSession, Message: "no such session"}
@@ -125,6 +127,10 @@ func sessionError(err error) error {
 		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the request id matches more than one session; use the s- id"}
 	case errors.As(err, &bse):
 		return &ipc.Error{Code: CodeBadState, Message: bse.Msg}
+	case errors.As(err, &dbse):
+		// A debate hook's refusal, e.g. B abandoning after its own answer
+		// (R55-221).
+		return &ipc.Error{Code: CodeBadState, Message: dbse.Msg}
 	case errors.As(err, &fe):
 		return &ipc.Error{Code: ipc.CodeBadRequest, Message: fe.Error()}
 	case errors.As(err, &tl):
