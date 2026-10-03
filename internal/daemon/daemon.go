@@ -190,7 +190,10 @@ type Options struct {
 	// request, work session, capability, debate, notify, and approval and
 	// device unless ApprovalNow or DeviceNow is set), and the handlers read
 	// the time through those stores, so a test can drive one clock (R55-F28,
-	// review 55 R55-151). Durations stay on the monotonic clock.
+	// review 55 R55-151). The mail receiver (step 11, mail_seen stamps) and
+	// the fetch client's grant-expiry check use it too. Durations stay on the
+	// monotonic clock. Still on time.Now: the mailbox keys, the outbox and
+	// presence, which sign times that peers check against their own clocks.
 	Now func() time.Time
 	// ApprovalNow overrides the approval store's clock (a test option). Nil
 	// uses Now.
@@ -896,6 +899,9 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	if opts.MailboxKeys != nil {
 		rcv, pusher := newMailReceiver(db, alog, idKey, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
 		rcv.Opener.Audit.CountLogged = rejects.countMail
+		// Step 11 and the mail_seen stamp read the daemon clock, as the
+		// kinds' stores do (R55-F28, review 100 L2). Nil is time.Now.
+		rcv.Now, rcv.Opener.Now = opts.Now, opts.Now
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

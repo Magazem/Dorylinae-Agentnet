@@ -356,9 +356,9 @@ func (k *Keys) forgetLocked(keyID string) {
 
 // Rotate is one run of the rotation job: it creates a new current key if there
 // is none, the current one is 7 d old or unusable, deletes the private keys
-// that are 21 d old (not_after + 7 d) and have a successor at least 7 d old
-// (expired), and deletes the oldest early if more
-// than 3 would be live. It returns the announcement of the newly created key,
+// that are 21 d old (not_after + 7 d) and have a successor at least 7 d old,
+// both measured at the mail_seen basis (expired, sweepLocked), and deletes the
+// oldest retired key early if more than 3 would be live. It returns the announcement of the newly created key,
 // or nil if none was created.
 func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
 	ann, hook, err := k.rotate(ctx)
@@ -461,23 +461,44 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 	return signed, k.onRotate, nil
 }
 
-// expired reports whether r may be deleted by age: not_after + 7 d <= now, and
-// a newer key was created at least DeleteGrace before now. Peers seal to r
-// until they accept a newer key, and mail sealed to r lives at most the 7 d
-// queue TTL after that. On a steady clock the second condition holds a week
-// before the first. In a run whose clock is stepped forward, the only newer
-// key is the one just created, so the key peers seal to is kept (R55-F28,
-// review 55 R55-103).
-func expired(r row, rows []row, now time.Time) bool {
-	if r.notAfter.Add(DeleteGrace).After(now) {
+// expired reports whether r may be deleted by age, measured at basis (see
+// sweepLocked): not_after + 7 d <= basis, and a newer key was created at least
+// DeleteGrace before basis. Peers seal to r until they accept a newer key, and
+// mail sealed to r lives at most the 7 d queue TTL after that. On a steady
+// clock the second condition holds a week before the first (R55-F28, review
+// 55 R55-103).
+func expired(r row, rows []row, basis time.Time) bool {
+	if r.notAfter.Add(DeleteGrace).After(basis) {
 		return false
 	}
 	for _, n := range rows {
-		if n.created.After(r.created) && !n.created.Add(DeleteGrace).After(now) {
+		if n.created.After(r.created) && !n.created.Add(DeleteGrace).After(basis) {
 			return true
 		}
 	}
 	return false
+}
+
+// capVictim returns the index in rows of the key the MaxLive cap deletes
+// next, or -1: a retired key created after now + mail.MaxSkew first (made
+// while the clock was stepped forward; every peer refused its announcement),
+// else the retired key with the earliest created. The current key is never a
+// candidate: after a backward clock step it can be older by created than the
+// key before it (R55-F28, review 100 L1).
+func capVictim(rows []row, now time.Time) int {
+	i := -1
+	for j, r := range rows {
+		if !r.retired {
+			continue
+		}
+		if r.created.After(now.Add(mail.MaxSkew)) {
+			return j
+		}
+		if i < 0 || r.created.Before(rows[i].created) {
+			i = j
+		}
+	}
+	return i
 }
 
 func retire(rows []row) []row {
@@ -490,13 +511,26 @@ func retire(rows []row) []row {
 }
 
 // sweepLocked deletes the private key of every expired key (see expired),
-// then of the oldest keys while more than MaxLive are live. rows is the live
-// list, oldest first.
+// then of retired keys (see capVictim) while more than MaxLive are live. rows
+// is the live list.
+//
+// Age is measured at mail.SeenBasis, the earlier of now and the newest
+// mail_seen stamp, which is bounded by the peers' signed created: a run whose
+// clock is stepped forward cannot age out a key that peers still seal to
+// (R55-F28, review 100 M1; the same basis as the mail_seen prune, D75). With
+// no mail received there is no basis and nothing is deleted by age; MaxLive
+// then bounds the live keys, and on the 7-day rotation it deletes each key
+// when it is 21 days old, as the age rule would.
 func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error {
 	var errs []error
+	basis, aged, err := mail.SeenBasis(ctx, k.db, now)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("mailbox: key age basis: %w", err))
+		aged = false
+	}
 	var keep []row
 	for _, r := range rows {
-		if !expired(r, rows, now) {
+		if !aged || !expired(r, rows, basis) {
 			keep = append(keep, r)
 			continue
 		}
@@ -506,11 +540,15 @@ func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error
 		}
 	}
 	for len(keep) > MaxLive {
-		if err := k.deleteKey(ctx, keep[0], now); err != nil {
+		i := capVictim(keep, now)
+		if i < 0 {
+			break
+		}
+		if err := k.deleteKey(ctx, keep[i], now); err != nil {
 			errs = append(errs, err)
 			break
 		}
-		keep = keep[1:]
+		keep = append(keep[:i], keep[i+1:]...)
 	}
 	return errors.Join(errs...)
 }

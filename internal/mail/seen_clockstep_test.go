@@ -1,9 +1,9 @@
 package mail
 
-// Review 55 theme T12, finding T12-02 (R55-053), inverted by R55-F28: a
-// mail_seen prune run while the receiver's wall clock is stepped forward must
-// not remove rows whose mail is still inside the receive window once the clock
-// is corrected, so a relay replay stays a duplicate.
+// mail_seen under a stepped wall clock (R55-F28; review 55 R55-053, theme
+// T12-02). A mail_seen prune run while the receiver's wall clock is stepped
+// forward must not remove rows whose mail is still inside the receive window
+// once the clock is corrected, so a relay replay stays a duplicate.
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func (f *recvFixture) mailAt(id, kind string, created time.Time) envelopeAt {
 const testID2 = "m-00000000000000000000000000000002"
 const testID3 = "m-00000000000000000000000000000003"
 
-func TestReview55T12_02PruneDuringForwardStepAdmitsReplay(t *testing.T) {
+func TestSeenPruneDuringForwardStepKeepsReplayDuplicate(t *testing.T) {
 	now := vectorNow
 	f, applied := stepFixture(t, &now)
 	e := f.mailAt(testID, "team.leave", vectorNow)
@@ -62,7 +62,7 @@ func TestReview55T12_02PruneDuringForwardStepAdmitsReplay(t *testing.T) {
 
 // A mail received during the step is stamped with the sender's time, so it does
 // not move the prune cutoff forward either.
-func TestReview55T12_02MailDuringForwardStep(t *testing.T) {
+func TestSeenStampDuringForwardStep(t *testing.T) {
 	now := vectorNow
 	f, applied := stepFixture(t, &now)
 	e1 := f.mailAt(testID, "team.leave", vectorNow)
@@ -92,7 +92,7 @@ func TestReview55T12_02MailDuringForwardStep(t *testing.T) {
 
 // A clock stepped back prunes nothing early, and a replay after the correction
 // is still a duplicate.
-func TestReview55T12_02BackwardStep(t *testing.T) {
+func TestSeenPruneBackwardStep(t *testing.T) {
 	now := vectorNow
 	f, applied := stepFixture(t, &now)
 	e := f.mailAt(testID, "team.leave", vectorNow)
@@ -111,7 +111,7 @@ func TestReview55T12_02BackwardStep(t *testing.T) {
 // On a steady clock rows are pruned 35 days after their stamp once newer mail
 // has arrived, and the replay of a pruned id is refused by step 11. Without
 // newer mail the newest rows are kept.
-func TestReview55T12_02SteadyPrune(t *testing.T) {
+func TestSeenPruneSteady(t *testing.T) {
 	now := vectorNow
 	f, applied := stepFixture(t, &now)
 	e := f.mailAt(testID, "team.leave", vectorNow)
@@ -153,6 +153,15 @@ func TestSeenCutoffEmptyAndBadBody(t *testing.T) {
 	cut, err = SeenCutoff(context.Background(), f.st.DB(), vectorNow.Add(100*day))
 	if want := newest.Add(-SeenRetention).Format(StoreTimeFmt); err != nil || cut != want {
 		t.Fatalf("cutoff %q, %v; want %q", cut, err, want)
+	}
+	// SeenBasis, which the mailbox key deletion ages by, is the newest stamp
+	// when the clock is ahead of it and now when the clock is behind.
+	if b, ok, err := SeenBasis(context.Background(), f.st.DB(), vectorNow.Add(100*day)); err != nil || !ok || !b.Equal(newest) {
+		t.Fatalf("basis %v, %v, %v; want %v", b, ok, err, newest)
+	}
+	behind := newest.Add(-time.Hour)
+	if b, ok, err := SeenBasis(context.Background(), f.st.DB(), behind); err != nil || !ok || !b.Equal(behind) {
+		t.Fatalf("basis %v, %v, %v; want %v", b, ok, err, behind)
 	}
 }
 

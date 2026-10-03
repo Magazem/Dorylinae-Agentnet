@@ -519,29 +519,41 @@ type SeenQueryer interface {
 // is corrected (R55-F28, review 55 R55-053; Docs/protocol/mail.md §Dedupe and
 // inbox). An empty table gives a cutoff that prunes nothing.
 func SeenCutoff(ctx context.Context, q SeenQueryer, now time.Time) (string, error) {
+	basis, ok, err := SeenBasis(ctx, q, now)
+	if err != nil || !ok {
+		return "", err
+	}
+	return basis.Add(-SeenRetention).UTC().Format(StoreTimeFmt), nil
+}
+
+// SeenBasis returns the earlier of now and the newest mail_seen.received_at,
+// a clock bounded by the peers' signed created (see seenStamp) that a forward
+// step of the local clock does not move. ok is false when the table is empty.
+// SeenCutoff and the mailbox key deletion age by it (R55-F28, review 100 M1).
+func SeenBasis(ctx context.Context, q SeenQueryer, now time.Time) (basis time.Time, ok bool, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT MAX(received_at) FROM mail_seen`)
 	if err != nil {
-		return "", fmt.Errorf("mail: newest mail_seen row: %w", err)
+		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var newest sql.NullString
 	if rows.Next() {
 		if err := rows.Scan(&newest); err != nil {
-			return "", fmt.Errorf("mail: newest mail_seen row: %w", err)
+			return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("mail: newest mail_seen row: %w", err)
+		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 	}
 	if !newest.Valid {
-		return "", nil
+		return time.Time{}, false, nil
 	}
-	basis := now
+	basis = now
 	// A bad-body row carries badBodyMark after the time.
 	if t, err := time.Parse(StoreTimeFmt, strings.TrimSuffix(newest.String, badBodyMark)); err == nil && t.Before(basis) {
 		basis = t
 	}
-	return basis.Add(-SeenRetention).UTC().Format(StoreTimeFmt), nil
+	return basis, true, nil
 }
 
 // Prune deletes mail_seen rows older than SeenCutoff.

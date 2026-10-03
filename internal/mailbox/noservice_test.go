@@ -88,6 +88,11 @@ func TestKeychainKeyNotMarkedDeletedWithoutService(t *testing.T) {
 	now = na.Add(-mailbox.RotateAfter)
 	_, _ = k.Rotate(context.Background())
 	now = na.Add(mailbox.DeleteGrace + time.Hour)
+	// Mail received at that time gives the age basis (review 100 M1), so
+	// the deletion is attempted.
+	if err := mailbox.ReceivedMailAt(k, now); err != nil {
+		t.Fatal(err)
+	}
 	off = true
 	_, _ = k.Rotate(context.Background())
 	if d := deletedAt(t, db, keyID); d.Valid {

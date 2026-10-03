@@ -129,6 +129,10 @@ func TestMailboxKeyIsLoadedOnceAndDroppedWithTheKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(14 * 24 * time.Hour)
+	// Mail received at that time gives the age basis (review 100 M1).
+	if err := mailbox.ReceivedMailAt(k, now); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := k.Rotate(context.Background()); err != nil {
 		t.Fatal(err)
 	}

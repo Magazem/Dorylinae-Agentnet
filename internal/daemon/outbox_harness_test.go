@@ -190,8 +190,8 @@ type harnessNode struct {
 	ApprovalNow     func() time.Time
 	OnApprovalReady func(*approval.Store)
 	// Now mirrors daemon.Options Now (R55-F28). Set before start().
-	Now func() time.Time
-	OnStoresReady   func(*capability.Store, *worksession.Store)
+	Now           func() time.Time
+	OnStoresReady func(*capability.Store, *worksession.Store)
 	// OnDebateReady mirrors daemon.Options OnDebateReady (3.1a: entries are
 	// driven through the store until 3.1b adds debate_submit).
 	OnDebateReady func(*debate.Store)

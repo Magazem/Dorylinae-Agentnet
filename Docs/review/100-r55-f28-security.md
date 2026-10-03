@@ -142,3 +142,73 @@ chain.
   - `go test ./internal/daemon -run 'Clock|Request|Prune'`: one failure,
     `TestHelperRunsInScopeRequests` (`writable_by_others: "C:\\"`). It **fails identically
     on main**, so it comes from this host, not F28. With it skipped, the rest is ok.
+
+## Fixes applied
+
+Applied by the reviewer (task 01a100f2), with no git used.
+
+- **M1.** `mail.SeenBasis` (`internal/mail/receiver.go`) returns `min(now, newest
+  mail_seen.received_at)`, or not-ok on an empty table. `SeenCutoff` now uses it.
+  `sweepLocked` (`internal/mailbox/mailbox.go`) measures `expired` at that basis. With no
+  `mail_seen` row, or if the basis query fails (the error is returned), nothing is deleted by
+  age, and `MaxLive` bounds the keys. On the 7-day rotation the cap deletes each key at 21
+  days, as the age rule would.
+- **M1 follow-on (the cap).** Measured alone, the age basis was not enough. The correction
+  run adds a 4th live key, and "oldest by created" then deleted K_{n-1}. `capVictim` now
+  deletes a retired key created after `now + MaxSkew` first (every peer refused it), then
+  the oldest retired key.
+- **L1.** `capVictim` never picks the current (non-retired) key.
+- **Spec.** `Docs/protocol/mail.md` §Lifecycle now:
+  - states the basis;
+  - states that a forward step ages neither the current key nor the one before it;
+  - states the idle-daemon rule;
+  - states the cap order and that the current key is protected;
+  - states the residual: a forward step that creates a key can delete the oldest of three
+    keys through the cap. That key's successor has been current for at least 7 days.
+
+  The nit at the old line 366 is fixed (`now − 35 d + 10 min`, step 11 at most 30 d).
+- **Plan.** `Docs/review/98-r55-f28-plan.md`:
+  - the backward-step claim is corrected (the cap deletes the oldest retired key);
+  - an amendment note for M1 and L1 is added;
+  - the test file names are updated.
+- **L2.**
+  - `fetch_client.go` `fetch` checks the token expiry with `clockNow(c.caps.Now)`. The
+    call's deadline stays monotonic. I withdraw the review's line-274 point: that `now`
+    only times the fetch.
+  - `daemon.go` sets `rcv.Now` and `rcv.Opener.Now` to `opts.Now` (nil means
+    `time.Now`).
+  - The `Options.Now` comment now lists what still uses `time.Now`.
+  - **Backlog:** the mailbox keys (`mailbox.New(..., nil)`), the outbox and presence. They
+    sign times (`created`) that peers check against their own clocks, so a skewed test clock
+    there would make peers refuse the node. Wiring them needs a design choice, not a quick
+    change.
+- **Tests.**
+  - `internal/mailbox/clockstep_test.go` replaces `zz_review55_T12-01_test.go`. It holds:
+    - the forward step (the sealed key kept; the future-dated key is the one the cap deletes;
+      the first key goes at `not_after + 7 d` once mail arrives);
+    - **forward step keeps the predecessor** (M1);
+    - the backward step, now checking all ids (ids[0] deleted by the cap, ids[1..2] live, no
+      key churn while stepped);
+    - **cap never deletes the current key** (L1, mock keyring plus a locked keychain);
+    - **age deletion needs mail** (after downtime, with mail vs idle);
+    - the steady 21-day schedule, with mail and idle.
+  - Mutation check: reverting the basis fails the M1 tests, and reverting the cap to
+    `keep[0]` fails the L1 and forward tests.
+  - `internal/mail/seen_clockstep_test.go` replaces `zz_review55_T12-02_test.go` (functions
+    renamed `TestSeen*`, plus `SeenBasis` cases).
+  - `export_test.go` gains `ReceivedMailAt`. The four existing keychain and cache tests
+    record mail before the deleting run; outage and noservice record it before the locked
+    run, so the deletion is really attempted.
+  - **The old files are left in place for `git rm`.** The `mail` package does not compile
+    until `internal/mail/zz_review55_T12-02_test.go` is removed (duplicate helpers).
+    `internal/mailbox/zz_review55_T12-01_test.go` is superseded, and its forward test now
+    fails by design.
+- **gofmt.** `outbox_harness_test.go` is fixed. Every changed `.go` file passes
+  `tr -d '\r' | gofmt -l` with no output. The files edited here are CRLF.
+- **Runs** (with the two old files moved aside temporarily):
+  - `go build` and `go vet ./internal/... ./cmd/...` on windows, linux and darwin: ok.
+  - golangci-lint v2.13.2 on 3 OSes: only the CRLF "File is not properly formatted" lines.
+  - `go test` on mail, mailbox (file backend and mock keyring only) and retention: ok.
+  - daemon `-run 'Clock|Request|Prune'` (skipping the host-only `TestHelperRunsInScopeRequests`):
+    ok.
+  - daemon `-run 'Outbox|Rotation|KeyMiss|Forged|Mail'`: ok.
