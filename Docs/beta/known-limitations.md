@@ -129,6 +129,13 @@ Phase 3 ones in
   name). On Windows it cannot find an old daemon that was started with a different spelling
   of the config directory (`DORYLINAE_HOME` in another case, a `subst` drive, a short 8.3
   name), and the two would then share one database. (Review 60b F8b-02)
+- **Not yet checked by hand: stopping an old daemon that was started elevated on Windows.** The
+  refusal message tells you to run the old version's `agentnetd stop` from an elevated
+  terminal. Whether the old CLI accepts its own elevated pipe (owned by
+  `BUILTIN\Administrators`) is unverified. If it reports the daemon as not running or held by
+  another user, end `agentnetd.exe` in Task Manager instead. Manual check for the release:
+  start an old `agentnetd run` from an admin terminal, then stop it with the old
+  `agentnetd stop` from an admin terminal. (Review 99 F8c-04)
 
 ## Revisit in a later review
 

@@ -46,7 +46,9 @@ it migrates anything; on Windows this lock, not the pipe name, is what keeps one
 daemon per home. A daemon from before the lock holds no lock file, so after
 taking the lock the daemon also dials where an older one would listen: the
 socket on Unix, the old pipe name (a hash of the config dir as spelled) on
-Windows. One that answers counts as running. On Windows an old pipe name that is
+Windows. One that answers counts as running. On Unix a socket that fails the dial
+other than as missing, stale (connection refused) or too long for `sun_path`
+refuses the start too (review 99 F8c-01). On Windows an old pipe name that is
 in use but does not answer as ours (an older daemon started elevated owns its
 pipe as `BUILTIN\Administrators`, or all its instances are busy) refuses the
 start too, with a message that says to stop the older daemon with its own

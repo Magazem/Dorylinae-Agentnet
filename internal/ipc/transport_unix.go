@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/Magazem/Dorylinae-Agentnet/internal/paths"
 )
 
 const dialTimeout = 1 * time.Second
@@ -38,33 +40,42 @@ func Listen(endpoint string) (net.Listener, error) {
 	return &lockedListener{Listener: ln, lock: lock}, nil
 }
 
-// socketName is the daemon's socket in the config dir, as paths names it
-// before and since the instance lock.
-const socketName = "agentnetd.sock"
+// dialInstance is the Dial LockInstance probes the socket with. Tests replace
+// it to play a socket that fails in a way a real one rarely does.
+var dialInstance = Dial
 
 // LockInstance takes the exclusive lock on dir/InstanceLock, held until the
 // returned Closer is closed. The daemon takes it before opening the database,
 // so a losing second daemon does not migrate the DB under the running one
 // (review 55 C28-03). A held lock, or a daemon from before the lock answering
 // on the socket, yields ErrAlreadyRunning (review 60b F8b-01); a socket served
-// by another user yields ErrForeignOwner, as Listen would.
+// by another user yields ErrForeignOwner, as Listen would. Only a missing or
+// stale socket lets the start go on: one that fails the dial otherwise, such
+// as an older daemon with a full backlog (EAGAIN), is refused too (review 99
+// F8c-01), as on Windows.
 func LockInstance(dir string) (io.Closer, error) {
 	f, err := lockFile(filepath.Join(dir, InstanceLock))
 	if err != nil {
 		return nil, err
 	}
-	sock := filepath.Join(dir, socketName)
-	c, err := Dial(context.Background(), sock)
+	sock := filepath.Join(dir, paths.SocketName)
+	c, err := dialInstance(context.Background(), sock)
 	switch {
 	case err == nil:
 		_ = c.Close()
 		_ = f.Close()
 		return nil, fmt.Errorf("%w: an agentnetd from before the instance lock serves socket %s", ErrAlreadyRunning, sock)
+	case errors.Is(err, ErrNotRunning), errors.Is(err, syscall.EINVAL):
+		// EINVAL: the path is too long for sun_path, so no daemon can
+		// listen there either; Listen reports it.
+		return f, nil
 	case errors.Is(err, ErrForeignOwner):
 		_ = f.Close()
 		return nil, fmt.Errorf("listen on %s: %w", sock, err)
+	default:
+		_ = f.Close()
+		return nil, fmt.Errorf("socket %s is in use but did not answer, so an older agentnetd may be running; stop it or remove the socket: %w", sock, err)
 	}
-	return f, nil
 }
 
 func lockEndpoint(endpoint string) (*os.File, error) { return lockFile(endpoint + ".lock") }

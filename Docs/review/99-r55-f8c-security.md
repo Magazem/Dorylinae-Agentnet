@@ -201,3 +201,43 @@ findings follow. None of them needs to block the merge.
 - `sha256sum` of the vector dir; `od -c` of the NFC/NFD test constants.
 - Not done: mutation runs. The Windows subtests fail on removing either refusal branch by
   inspection, but this was not executed.
+
+## Fixes applied
+
+Applied by R55-F8csec-Opus in the same worktree, without git.
+
+- **F8c-01, fixed.** Unix `LockInstance` now fails closed (`internal/ipc/transport_unix.go:56-79`).
+  - Only `ErrNotRunning` lets the start go on: no socket, or a stale one that refuses the
+    connection.
+  - One more error proceeds: `EINVAL`, a path too long for `sun_path`. No daemon can listen
+    there either, and `Listen` then reports the long path, as before.
+  - Any other dial error releases the lock and refuses with "socket … is in use but did not
+    answer, so an older agentnetd may be running". `EAGAIN` from a full backlog and a failed
+    peer-uid read are examples.
+  - Like Windows, that refusal is not `ErrAlreadyRunning`, because unknown is not ours.
+  - `ipc.md` §Endpoint says so.
+  - New tests in `internal/ipc/lock_unix_test.go`:
+    - `TestLockInstanceRefusesUnansweredSocket`. A real full backlog would need thousands of
+      pending connections, so it replaces the dial through a new `dialInstance` seam
+      (`transport_unix.go:45`), the same pattern as `expectedUID`. It also re-takes the lock
+      to prove the refusal released it.
+    - `TestLockInstanceTooLongForSocket` uses a real dir of about 200 bytes, so the `EINVAL`
+      exemption is exercised for real.
+- **F8c-02, fixed.**
+  - `paths.SocketName` (`internal/paths/endpoint_unix.go:15`) is the single constant.
+    `endpoint` and `LockInstance` both use it, and `ipc.socketName` is gone. `ipc` now imports
+    `paths`, which imports nothing internal, so there is no cycle.
+  - `TestLockInstanceSeesPreLockDaemon` now plays the old daemon on `paths.In(dir).Endpoint`,
+    the path the daemon really listens on. A divergence would therefore fail the test.
+- **F8c-03, left as a note.** No change.
+- **F8c-04, left as a note.** Added to `Docs/beta/known-limitations.md` as a manual release
+  check, with Task Manager as the fallback.
+
+**Verification**
+- `go build ./...`: ok.
+- `GOOS={windows,linux,darwin} go vet` over ipc, paths, daemon, cmd/agentnetd, keystore and
+  mailbox: clean.
+- On Windows: `go test ./internal/ipc ./internal/paths ./cmd/agentnetd -count=1` gives ok ×3.
+  `go test ./internal/daemon -run 'Lock|Instance'` is ok.
+- **The three unix tests have only been compiled (vet), not run.** They run in CI. The Docker
+  Desktop daemon was not running, so no local Linux run was possible.

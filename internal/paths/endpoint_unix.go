@@ -10,10 +10,14 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// SocketName is the daemon's socket in the config dir. ipc.LockInstance dials
+// it to find a daemon from before the instance lock (review 99 F8c-02).
+const SocketName = "agentnetd.sock"
+
 // endpoint is the socket inside dir; every spelling of dir reaches the same
 // file.
 func endpoint(dir string) (string, error) {
-	return filepath.Join(dir, "agentnetd.sock"), nil
+	return filepath.Join(dir, SocketName), nil
 }
 
 // resolveExisting resolves symlinks in the existing path p, then the case and
