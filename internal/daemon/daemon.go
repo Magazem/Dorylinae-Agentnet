@@ -191,8 +191,18 @@ type Options struct {
 	// option). Nil selects notify.Approval{} or, under
 	// DORYLINAE_APPROVAL=terminal, a notifier that writes to Stderr.
 	ApprovalNotify approval.Notifier
+	// Now is the daemon's wall clock (a test option). Nil uses time.Now. It
+	// is the Now of the stores the IPC handlers and mail kinds call (team,
+	// request, work session, capability, debate, notify, and approval and
+	// device unless ApprovalNow or DeviceNow is set), and the handlers read
+	// the time through those stores, so a test can drive one clock (R55-F28,
+	// review 55 R55-151). The mail receiver (step 11, mail_seen stamps) and
+	// the fetch client's grant-expiry check use it too. Durations stay on the
+	// monotonic clock. Still on time.Now: the mailbox keys, the outbox and
+	// presence, which sign times that peers check against their own clocks.
+	Now func() time.Time
 	// ApprovalNow overrides the approval store's clock (a test option). Nil
-	// uses time.Now.
+	// uses Now.
 	ApprovalNow func() time.Time
 	// ApprovalWindow overrides the approval window runner (a test option: a
 	// fake that records id/tag/kind/summary and replies without ever
@@ -237,7 +247,7 @@ type Options struct {
 	OnDebateReady func(*debate.Store)
 	// DeviceNow overrides the own-device link's clock (a test option: intents
 	// and offers expire after 10 minutes, Docs/protocol/device.md §Link flow).
-	// Nil uses time.Now.
+	// Nil uses Now.
 	DeviceNow func() time.Time
 	// DeviceRunWatch bounds how long a running helper command goes between
 	// two re-checks of its scope (a test option: with DeviceNow, a scope
@@ -391,6 +401,10 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	rejects := newRejectSummary(log, opts.Logger, nil)
 	rejects.start(ctx)
 	defer rejects.stop(ctx)
+	clock := opts.Now
+	if clock == nil {
+		clock = time.Now
+	}
 	sessions, err := newSessions(id, idKey.Sign, log, st.DB(), opts, rejects.countSession)
 	if err != nil {
 		_ = ln.Close()
@@ -399,6 +413,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	defer sessions.Close()
 	outbox := newOutbox(st.DB(), log, idKey, opts.Logger)
 	teamStore := team.NewStore(st.DB(), peerStore, id.Card().Card.PublicKey)
+	teamStore.Now = clock
 	teamStore.SetAudit(log)
 	teamStore.Outbox = outbox
 	teamStore.Announcement = mailboxKeys.Announcement
@@ -427,7 +442,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// from an offline one, unless the peer holds a grant from us or shares an
 	// open work session with us (granted fetches keep working, review 79 M1).
 	sessions.SetInitGate(func(ctx context.Context, peer string) bool {
-		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer)
+		return presenceSender.PingAllowed(ctx, peer) || peerHasLiveTies(ctx, st.DB(), peer, clock())
 	})
 	presenceSender.ModeChanged = sessions.DropGatedSessions
 	if err := presenceSender.LoadSettings(ctx); err != nil {
@@ -445,13 +460,14 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	notifySettings := notify.NewSettings(st.DB())
 	webhookKS := webhookKeystore(p.Dir, mailboxMode)
 	notifyWebhook := &notify.Webhook{
+		Now:      clock,
 		Settings: notifySettings,
 		Queue:    notify.NewQueue(st.DB()),
 		Secret:   webhookKS,
 		Audit:    log,
 		Log:      opts.Logger,
 	}
-	notifyTrigger := &notify.Trigger{Settings: notifySettings, Show: opts.NotifyShow, Webhook: notifyWebhook, Audit: log, Log: opts.Logger}
+	notifyTrigger := &notify.Trigger{Now: clock, Settings: notifySettings, Show: opts.NotifyShow, Webhook: notifyWebhook, Audit: log, Log: opts.Logger}
 	wctx, stopWebhook := context.WithCancel(ctx)
 	whDone := make(chan struct{})
 	go func() { defer close(whDone); notifyWebhook.Run(wctx) }()
@@ -476,7 +492,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	}
 	approvalNow := opts.ApprovalNow
 	if approvalNow == nil {
-		approvalNow = time.Now
+		approvalNow = clock
 	}
 	apprStore, err := approval.NewStore(st.DB(), log, apprNotifier, apprWindow, approvalNow)
 	if err != nil {
@@ -523,7 +539,8 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 
 	nonLoopbackRelay := relayIsNonLoopback(opts.RelayURL)
 	reqStore := newRequestStore(st.DB(), id.Card().Card.PublicKey, outbox, log, teamStore, nonLoopbackRelay, notifyTrigger, peerStore)
-	wsStore := &worksession.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore, Quarantine: opts.Quarantine, Log: opts.Logger}
+	reqStore.Now = clock
+	wsStore := &worksession.Store{Now: clock, DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log, Requests: reqStore, Quarantine: opts.Quarantine, Log: opts.Logger}
 	// Wiring Sessions makes every request_complete on an accepted request
 	// redirect into the session shorthand (Docs/protocol/work-session.md,
 	// "request_complete while a session exists"), and newMailReceiver
@@ -567,7 +584,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 			cancelUndeliveredRun(id)
 		}
 	}
-	capStore := &capability.Store{DB: st.DB()}
+	capStore := &capability.Store{DB: st.DB(), Now: clock}
 	// Every grant of a session ends in the same transaction as the session's
 	// close (Docs/protocol/grant.md §Session end), on both the grantor (A,
 	// closeSessionTx) and the holder (B, the ws.state closed mirror step).
@@ -584,7 +601,11 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// path (peers remove and team GC), review 28 M4.
 	// The own-device link (2.D1) ends the same way (Docs/protocol/device.md
 	// §Unlink and expiry), and its two mail kinds join the receiver's.
-	devStore := &device.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Now: opts.DeviceNow}
+	deviceNow := opts.DeviceNow
+	if deviceNow == nil {
+		deviceNow = clock
+	}
+	devStore := &device.Store{DB: st.DB(), Self: id.Card().Card.PublicKey, Now: deviceNow}
 	// The own-device helper (2.D2, Docs/protocol/device.md §Running): every
 	// new pending request passes through the router, and in-scope ones run
 	// one at a time on the runner's goroutine.
@@ -626,7 +647,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	debates := &debate.Store{
 		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
 		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
-		Priv: idKey.Priv, Log: opts.Logger,
+		Priv: idKey.Priv, Log: opts.Logger, Now: clock,
 	}
 	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates
@@ -712,7 +733,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	registerSession(srv, wsStore, reqStore, peerStore, teamStore, apprStore, log)
 	registerNotify(srv, notifySettings, notify.Desktop{}, notifyWebhook, log)
 	registerApproval(srv, apprStore)
-	registerPrune(srv, st.DB(), apprStore, time.Now)
+	registerPrune(srv, st.DB(), apprStore, clock)
 	registerGrant(srv, capStore, wsStore, apprStore, peerStore, outbox, log,
 		grantIdentity{Self: id.Card().Card.PublicKey, Priv: idKey.Priv}, p.Dir, nonLoopbackRelay)
 	registerAudit(srv, log)
@@ -907,6 +928,9 @@ func startRelay(ctx context.Context, db *sql.DB, alog *audit.Log, id *identity.I
 	if opts.MailboxKeys != nil {
 		rcv, pusher := newMailReceiver(db, alog, idKey, pub, opts.MailboxKeys, opts.Logger, ts, rs, ws, caps)
 		rcv.Opener.Audit.CountLogged = rejects.countMail
+		// Step 11 and the mail_seen stamp read the daemon clock, as the
+		// kinds' stores do (R55-F28, review 100 L2). Nil is time.Now.
+		rcv.Now, rcv.Opener.Now = opts.Now, opts.Now
 		for k, v := range opts.MailKinds {
 			if k != "keys" && k != "ack" {
 				rcv.Kinds[k] = v

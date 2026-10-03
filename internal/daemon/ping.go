@@ -158,9 +158,9 @@ func pingError(err error) error {
 // issued or shares a work session with us that is not closed: such a peer may
 // open a session even while we are invisible. A database error answers false
 // (fail closed).
-func peerHasLiveTies(ctx context.Context, db *sql.DB, peer string) bool {
+func peerHasLiveTies(ctx context.Context, db *sql.DB, peer string, at time.Time) bool {
 	var n int
-	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	now := at.UTC().Format("2006-01-02T15:04:05.000Z")
 	if err := db.QueryRowContext(ctx, `SELECT
 		(SELECT COUNT(*) FROM grants WHERE direction = 'issued' AND peer = ? AND state = 'active' AND exp > ?) +
 		(SELECT COUNT(*) FROM work_sessions WHERE peer = ? AND state <> 'closed')`, peer, now, peer).Scan(&n); err != nil {

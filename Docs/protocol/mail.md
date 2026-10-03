@@ -58,9 +58,22 @@ For a key created at time `t`:
   non-empty `mailbox_keys` as a [`keys` mail](#kind-keys) (outboxed and acked like any mail).
   A current key whose private half is missing from the keystore is replaced at once; one that
   cannot be read because the keychain is unavailable (locked, timed out) is kept, and is
-  replaced at the latest by the 7-day rotation (review 55 R55-092).
-- In the same job, every key with `not_after + 7 d ≤ now` is deleted from the keystore, and
-  its row gets `deleted` set. The row itself is kept for audit. While the keychain is locked
+  replaced at the latest by the 7-day rotation (review 55 R55-092). A current key whose
+  `created` is later than `now + 10 min` is also replaced at once: every peer refuses its
+  announcement ([check 5](#announcement)). It was made while the local clock was stepped
+  forward, and is replaced by a key made at the corrected time (R55-F28, review 55 R55-103).
+- In the same job, every key with `not_after + 7 d ≤ basis` **and** a newer key whose
+  `created + 7 d ≤ basis` is deleted from the keystore, and its row gets `deleted` set. The
+  `basis` is the earlier of `now` and the newest `mail_seen.received_at`, the same basis as the
+  [`mail_seen` prune](#dedupe-and-inbox); with no `mail_seen` row nothing is deleted by age.
+  Peers seal to a key until they accept its successor (a peer that is offline keeps sealing
+  to it until its `not_after`), and mail sealed to it lives at most the 7 d queue TTL after
+  that. On a steady clock with mail arriving, the successor is 7 days old a week before
+  `not_after + 7 d`, so the schedule above is unchanged. Stamps are bounded by the senders'
+  signed `created`, so a run whose clock is stepped forward does not age any key: neither the
+  current key nor the one before it is deleted by age (R55-F28, review 55 R55-103, review 100
+  M1). After a long downtime the old key is deleted 7 days after the first rotation once mail
+  arrives. The row itself is kept for audit. While the keychain is locked
   or times out, the delete fails and the row stays live, so the next run retries it
   (review 87 M2). The row records the backend the key was saved to (`key_backend`): a key
   saved to the keychain is not marked deleted while the daemon sees no keychain service
@@ -68,8 +81,27 @@ For a key created at time `t`:
   still be in the user's keychain; the row stays live and the delete is retried (review 87b
   N3). Rows from before migration 26 have no `key_backend` and are deleted as before.
 - A key is **live** when it is not deleted. This schedule never has more than **3 live keys**
-  (ages below 7, 14 and 21 days). The job also enforces the limit: if a 4th would be live, the
-  oldest is deleted early.
+  (ages below 7, 14 and 21 days). The job also enforces the limit: if a 4th would be live, a
+  retired key is deleted early. A retired key whose `created` is later than `now + 10 min`
+  goes first (every peer refused its announcement), then the oldest retired key. The current
+  key is never deleted by the limit: after a backward clock step it can be older than the key
+  before it (R55-F28, review 100 L1). The limit is also what bounds the keys while no mail
+  arrives: on the 7-day rotation it deletes each key when it is 21 days old, as the age rule
+  would.
+- Remaining case, one step: when a step (forward, or backward by more than 10 min) creates a
+  key, the limit can delete the oldest of the three earlier keys early, at a true age of 14
+  to 21 days. That key's successor was accepted by peers and has been current for at least
+  7 days, so only mail from a peer that missed two `keys` mails, sealed before that key's
+  `not_after` and still queued, is lost.
+- Remaining case, a **clock that stays wrong**: a clock that is wrong by more than 10 min, in
+  either direction, for **14 days or more of daemon runtime** can let the limit delete the
+  last key peers accepted. Every key the daemon makes meanwhile is refused by every peer
+  (check 5, or a `not_after` already past for them), so they keep sealing to that key, but
+  the limit keeps the strict 3-key schedule. Mail still queued for that key is then lost (a
+  [key miss](#key-miss-recovery)). The node is already cut off from its peers while its
+  clock is wrong (step 11 refuses its mail and theirs); fix the clock. The 3-key schedule is
+  kept on purpose: an extra older private key is not kept (owner decision D76, review 100b
+  N1).
 - The first key is created on demand by pairing (0.8c, see [pairing.md](pairing.md#mailbox-key-during-pairing))
   or by the rotation job, whichever comes first.
 - Decrypting uses any live key selected by `key_id`. Sealing uses the peer's newest announcement.
@@ -350,9 +382,23 @@ insert, the commit) rolls it back and sends no ack, so the sender resends. The d
 an error class such as an SQLite result code; never the error text, so no body content), not on every redelivery (review 55 R55-058). What a kind's apply prepares for
 its after-commit step belongs to that one delivery and is discarded with it.
 
-`mail_seen` rows are pruned when `received_at < now − 35 d`, which runs daily and at start.
-A replay of a pruned id carries a `created` older than `now − 30 d + 10 min`, so step 11
-rejects it. Pruning can never re-admit a replay. A **re-used** id (a new mail from the same
+`mail_seen.received_at` is the receive time, but never later than `created + 10 min`: a row
+is stamped `min(now, created + 10 min)`. Step 11 gives `created ≤ now + 10 min`, so the stamp
+is within 10 minutes of the signed `created`. Rows are pruned when
+`received_at < min(now, newest received_at) − 35 d`, which runs daily and at start. A replay
+of a pruned id carries a `created` older than `now − 35 d + 10 min`, so step 11 (at most 30 d
+old) rejects it. Pruning can never re-admit a replay.
+
+The prune basis is the newest stamp, not the local clock alone, because the local clock can
+step (R55-F28, review 55 R55-053). One prune run while the clock is stepped more than 21 days
+forward would otherwise remove rows whose mail is still inside the 14-day
+[receive age limit](#receive-age-limit) once the clock is corrected, and a relay could replay
+kinds that have no `mail_inbox` row (`team.*`, `keys`). Stamps are bounded by the senders'
+signed `created`, so a forward step of the local clock moves neither the newest stamp nor
+the cutoff. A step back prunes later, never earlier. The cost: while no mail arrives, the rows
+of the 35 days before the newest one are kept. A peer that signs a `created` near the stepped
+clock while the local clock is wrong can still move the basis; that needs both the step and
+such a peer. A **re-used** id (a new mail from the same
 peer with a fresh `created`) is still a duplicate while its `mail_inbox` row exists. The two
 tables are one dedupe set: `mail_inbox` rows are removed only by `agentnet prune`, which runs
 the `mail_seen` prune first in the same transaction with a cutoff of at least 35 days
@@ -536,7 +582,7 @@ CREATE TABLE mailbox_keys_own (
 CREATE TABLE mail_seen (
     from_key    TEXT NOT NULL,
     id          TEXT NOT NULL,
-    received_at TEXT NOT NULL,
+    received_at TEXT NOT NULL,                -- min(receive time, created + 10 min); R55-F28
     PRIMARY KEY (from_key, id)
 ) WITHOUT ROWID;
 CREATE INDEX mail_seen_received ON mail_seen (received_at);
