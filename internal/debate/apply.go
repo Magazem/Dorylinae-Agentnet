@@ -437,15 +437,17 @@ func (s *Store) brokenTx(ctx context.Context, tx *sql.Tx, r row, now time.Time, 
 	if err != nil {
 		return err
 	}
-	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr, RoleInitiator, nil, now, out)
+	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr,
+		coverAppliedOrSent, RoleRespondent, experience.CauseBadReveal, nil, nil, now, out)
 }
 
 // closeMirrorTx closes B's work-session mirror and completes B's request
 // through the Phase 1 path with note and no result (§Kinds: "B then completes
-// the request"). outcome, tr, cancelledBy and dec are the experience record's
-// inputs (Docs/protocol/experience.md §When and where: "B's mirror applying
-// closed" is one of B's own closing transactions).
-func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome, note, event string, outcome string, tr transcript, cancelledBy string, dec *experience.Decision, now time.Time, out *afters) error {
+// the request"). outcome, tr, cover, cancelledBy, cause, dec and decCanon are
+// the experience record's inputs (Docs/protocol/experience.md §When and
+// where: "B's mirror applying closed" is one of B's own closing
+// transactions).
+func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome, note, event string, outcome string, tr transcript, cover coverFunc, cancelledBy, cause string, dec *experience.Decision, decCanon []byte, now time.Time, out *afters) error {
 	afterWS, err := s.Sessions.CloseDebateTx(ctx, tx, r.session, wsOutcome, now)
 	if err != nil {
 		return err
@@ -464,7 +466,7 @@ func (s *Store) closeMirrorTx(ctx context.Context, tx *sql.Tx, r row, wsOutcome,
 	if event != "" {
 		out.add(s.event(event, r.session, r.peer, r.requestID))
 	}
-	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, outcome, cancelledBy, dec, now)
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, cover, outcome, cancelledBy, cause, dec, decCanon, now)
 	if err != nil {
 		return err
 	}
@@ -698,7 +700,7 @@ func (s *Store) applyCloseOnB(ctx context.Context, tx *sql.Tx, r row, b map[stri
 	if outcome != OutcomeCancelled {
 		dec = &experience.Decision{ID: decision.ID(r.session), Hash: decision.Hash(canon)}
 	}
-	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, outcome, tr, cancelledBy, dec, now, out)
+	return s.closeMirrorTx(ctx, tx, r, wsOutcome, note, event, outcome, tr, coverBelow(entries), cancelledBy, "", dec, canon, now, out)
 }
 
 // closeMatches checks A's close against B's own transcript: agreed needs B's

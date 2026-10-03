@@ -69,7 +69,7 @@ func TestDebateE2E(t *testing.T) {
 
 	base := func() daemon.RequestSubmitParams {
 		return daemon.RequestSubmitParams{To: b.key, Type: "debate", Team: teamID, Title: "Retries", Brief: "How should the outbox retry?",
-			Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1}}
+			Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: new(1)}}
 	}
 	for name, mutate := range map[string]func(p *daemon.RequestSubmitParams){
 		"debate member on a task": func(p *daemon.RequestSubmitParams) { p.Type = "task" },
@@ -79,10 +79,12 @@ func TestDebateE2E(t *testing.T) {
 		},
 		"run":                      func(p *daemon.RequestSubmitParams) { p.Run = &daemon.RunParam{Command: "test"} },
 		"bad position":             func(p *daemon.RequestSubmitParams) { p.Debate.Position = e2ePosition("two\\nlines") },
-		"rounds 6":                 func(p *daemon.RequestSubmitParams) { p.Debate.Rounds = 6 },
+		"rounds 6":                 func(p *daemon.RequestSubmitParams) { p.Debate.Rounds = new(6) },
+		"rounds 0":                 func(p *daemon.RequestSubmitParams) { p.Debate.Rounds = new(0) },
+		"turn timeout 0":           func(p *daemon.RequestSubmitParams) { p.Debate.TurnTimeoutS = new(0) },
 		"U+2028 in the topic":      func(p *daemon.RequestSubmitParams) { p.Brief = "a\u2028b" },
 		"position not an object":   func(p *daemon.RequestSubmitParams) { p.Debate.Position = json.RawMessage(`"x"`) },
-		"turn timeout below 300 s": func(p *daemon.RequestSubmitParams) { p.Debate.TurnTimeoutS = 299 },
+		"turn timeout below 300 s": func(p *daemon.RequestSubmitParams) { p.Debate.TurnTimeoutS = new(299) },
 	} {
 		p := base()
 		mutate(&p)

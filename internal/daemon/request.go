@@ -92,11 +92,12 @@ type RequestSubmitParams struct {
 }
 
 // DebateParam is request_submit's "debate" member. Rounds and TurnTimeoutS
-// are optional (0: the defaults 2 and 3600).
+// are optional: absent (or null) selects the defaults 2 and 3600, and a
+// present value outside the range, 0 included, is bad_request (R55-116).
 type DebateParam struct {
 	Position     json.RawMessage `json:"position"`
-	Rounds       int             `json:"rounds,omitempty"`
-	TurnTimeoutS int             `json:"turn_timeout_s,omitempty"`
+	Rounds       *int            `json:"rounds,omitempty"`
+	TurnTimeoutS *int            `json:"turn_timeout_s,omitempty"`
 }
 
 // teamRefResult is the "team": {"id","name"} member of the submit result.
@@ -436,11 +437,13 @@ func submitParamsHash(to, teamID string, p RequestSubmitParams, position any) st
 	}
 	if p.Debate != nil {
 		d := map[string]any{"position": position}
-		if p.Debate.Rounds != 0 {
-			d["rounds"] = json.Number(strconv.Itoa(p.Debate.Rounds))
+		// Present values only, as given: absent and an explicit default hash
+		// differently, and every valid submit hashes as before (R55-116).
+		if p.Debate.Rounds != nil {
+			d["rounds"] = json.Number(strconv.Itoa(*p.Debate.Rounds))
 		}
-		if p.Debate.TurnTimeoutS != 0 {
-			d["turn_timeout_s"] = json.Number(strconv.Itoa(p.Debate.TurnTimeoutS))
+		if p.Debate.TurnTimeoutS != nil {
+			d["turn_timeout_s"] = json.Number(strconv.Itoa(*p.Debate.TurnTimeoutS))
 		}
 		m["debate"] = d
 	}

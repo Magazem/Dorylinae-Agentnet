@@ -108,7 +108,7 @@ func TestAuditInventory(t *testing.T) {
 	var dsub daemon.RequestSubmitResult
 	run.call(a, "request_submit", daemon.RequestSubmitParams{
 		To: b.key, Type: "debate", Team: e.teamID, Title: "Retries", Brief: "How should the outbox retry?",
-		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1},
+		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: new(1)},
 	}, &dsub)
 	harnessWait(t, "B to see the debate", func() bool {
 		return b.count(`SELECT COUNT(*) FROM debates WHERE session = '`+dsub.Session+`'`) == 1

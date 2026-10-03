@@ -600,10 +600,13 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// Debates (Docs/protocol/debate.md, 3.1a): the request type debate, its
 	// session kind and the debate.* kinds. The peer-wide quarantine clause
 	// is checked at a debate's edges (§Quarantine interplay).
+	// The grace after downtime (R55-071): timeouts wait for 120 s of relay
+	// connection; the client is stored once it exists (startRelay, below).
+	debateGate := newDebateTimeoutGate(opts.RelayURL == "", opts.Logger)
 	debates := &debate.Store{
 		DB: st.DB(), Self: id.Card().Card.PublicKey, Outbox: outbox, Audit: log,
 		Requests: reqStore, Sessions: wsStore, PeerQuarantine: capStore.PeerQuarantineHoldsTx,
-		Priv: idKey.Priv, Log: opts.Logger,
+		Priv: idKey.Priv, Log: opts.Logger, TimeoutsReady: debateGate.Ready,
 	}
 	debates.OnEvent = debateNotifyAdapter(notifyTrigger, peerStore, reqStore)
 	reqStore.Debates = debates
@@ -637,7 +640,7 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 	// continues past one bad debate (review 45 L2).
 	dctx, stopDebateSweep := context.WithCancel(ctx)
 	debateSweepDone := make(chan struct{})
-	go func() { defer close(debateSweepDone); startDebateSweep(dctx, debates, opts.Logger) }()
+	go func() { defer close(debateSweepDone); startDebateSweep(dctx, debates, debateGate, opts.Logger) }()
 	defer func() { stopDebateSweep(); <-debateSweepDone }()
 	if opts.OnStoresReady != nil {
 		opts.OnStoresReady(capStore, wsStore)
@@ -652,6 +655,9 @@ func RunWithOptions(ctx context.Context, p paths.Paths, ready chan<- struct{}, o
 		return err
 	}
 	defer stopRelay()
+	if relayClient != nil {
+		debateGate.setClient(relayClient)
+	}
 	octx, stopOutbox := context.WithCancel(ctx)
 	obDone := make(chan struct{})
 	go func() { defer close(obDone); outbox.Run(octx) }()

@@ -96,8 +96,9 @@ Flags:
                             pending debate: accepts it and submits your
                             position in one step
   --context-file F          repeatable, up to 8; same rules as 'agentnet consult'
-  --rounds N                1-5, default 2
-  --turn-timeout D          a Go duration (e.g. 90m, 2h) or Nd, default 1h
+  --rounds N                1-5, default 2 when omitted
+  --turn-timeout D          a Go duration (e.g. 90m, 2h) or Nd, a positive
+                            whole number of seconds, default 1h when omitted
   --title T                 default: the first line of the topic, cut to 120
                             characters
   --team TEAM               needed only when you share several teams with the peer
@@ -164,8 +165,8 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 	moveFile := fs.String("move-file", "", "a move (- = stdin)")
 	proposeFile := fs.String("propose-file", "", "a proposal (- = stdin)")
 	answerFile := fs.String("answer-file", "", "an answer (- = stdin)")
-	rounds := fs.Int("rounds", 0, "1-5, default 2")
-	turnTimeout := fs.String("turn-timeout", "", "a Go duration (e.g. 90m, 2h) or Nd, default 1h")
+	rounds := fs.Int("rounds", 0, "1-5, default 2 when omitted")
+	turnTimeout := fs.String("turn-timeout", "", "a Go duration (e.g. 90m, 2h) or Nd, default 1h when omitted")
 	title := fs.String("title", "", "default: the first line of the topic")
 	team := fs.String("team", "", "team ref, needed only when you share several teams with the peer")
 	urgency := fs.String("urgency", "", "low, normal (default), high or blocking")
@@ -276,9 +277,15 @@ func runDebate(args []string, stdout, stderr io.Writer) int {
 	if set["topic"] == set["topic-from-file"] {
 		return failJSON(*asJSON, stdout, stderr, exitUsage, "usage", "give exactly one of --topic or --topic-from-file")
 	}
+	// --rounds is sent only when given: an absent value takes the daemon's
+	// default, a given 0 is the daemon's bad_request (R55-116).
+	var roundsP *int
+	if set["rounds"] {
+		roundsP = rounds
+	}
 	return runDebateStart(*asJSON, stdout, stderr, pos[0], debateStartFlags{
 		topic: *topic, topicFile: *topicFile, positionFile: *positionFile,
-		rounds: *rounds, turnTimeout: *turnTimeout, title: *title, team: *team,
+		rounds: roundsP, turnTimeout: *turnTimeout, title: *title, team: *team,
 		urgency: *urgency, urgencyReason: *urgencyReason, idemKey: *idemKey,
 		contextFiles: contextFiles,
 	})
@@ -421,7 +428,7 @@ func debateEntryKind(set map[string]bool, positionFile, moveFile, proposeFile, a
 
 type debateStartFlags struct {
 	topic, topicFile, positionFile string
-	rounds                         int
+	rounds                         *int // nil: not given
 	turnTimeout                    string
 	title, team                    string
 	urgency, urgencyReason         string
@@ -446,13 +453,18 @@ func runDebateStart(asJSON bool, stdout, stderr io.Writer, peer string, f debate
 	if err != nil {
 		return failJSON(asJSON, stdout, stderr, exitUsage, "usage", err.Error())
 	}
-	turnTimeoutS := 0
+	var turnTimeoutS *int
 	if f.turnTimeout != "" {
 		d, err := parseDebateDuration(f.turnTimeout)
 		if err != nil {
 			return failJSON(asJSON, stdout, stderr, exitUsage, "usage", "--turn-timeout: "+err.Error())
 		}
-		turnTimeoutS = int(d.Seconds())
+		// R55-116: never rounded or defaulted silently.
+		if d <= 0 || d%time.Second != 0 {
+			return failJSON(asJSON, stdout, stderr, exitUsage, "usage", "--turn-timeout: must be a positive whole number of seconds")
+		}
+		n := int(d / time.Second)
+		turnTimeoutS = &n
 	}
 	title := f.title
 	if title == "" {
@@ -589,8 +601,12 @@ func runDebateCancel(asJSON bool, stdout, stderr io.Writer, id, reason string) i
 			return failJSON(asJSON, stdout, stderr, exitError, "bad_state",
 				fmt.Sprintf("you were invited to %s: decline it with agentnet decline %s", shown.Debate.Session, shown.Debate.Request.ID))
 		}
+		cancelParams := map[string]any{"id": shown.Debate.Request.ID}
+		if reason != "" {
+			cancelParams["reason"] = reason // R55-127
+		}
 		var res daemon.RequestCancelResult
-		if code := callDaemon(asJSON, stdout, stderr, statusTimeout, "request_cancel", map[string]any{"id": shown.Debate.Request.ID}, &res); code != exitOK {
+		if code := callDaemon(asJSON, stdout, stderr, statusTimeout, "request_cancel", cancelParams, &res); code != exitOK {
 			return code
 		}
 		if asJSON {

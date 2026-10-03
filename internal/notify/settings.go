@@ -52,6 +52,9 @@ const (
 	EventDebateAgreed     = "debate.agreed"
 	EventDebateEscalated  = "debate.escalated"
 	EventDebateBroken     = "debate.broken"
+	// EventDebateRefused mirrors internal/debate.EventRefused: a Decision
+	// refusal, on both sides (R55-126). debate.broken is a bad reveal only.
+	EventDebateRefused = debate.EventRefused
 )
 
 // DefaultEvents is the default on/off state of each event
@@ -77,6 +80,7 @@ var DefaultEvents = map[string]bool{
 	EventDebateAgreed:     true,
 	EventDebateEscalated:  true,
 	EventDebateBroken:     true,
+	EventDebateRefused:    true,
 }
 
 // ValidEvent reports whether event is one of the known events.

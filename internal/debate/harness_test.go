@@ -395,7 +395,7 @@ func startDebate(t *testing.T, a, b *dnode, rounds int) (reqID, sid string) {
 			From: a.self, To: b.self, Team: testTeam, Type: request.TypeDebate, Title: "Backoff",
 			Brief: "How should the outbox retry?", Urgency: request.UrgencyNormal,
 		},
-		Position: testPosition("A: capped backoff"), Rounds: rounds,
+		Position: testPosition("A: capped backoff"), Rounds: &rounds,
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

@@ -30,7 +30,7 @@ func TestCloseOutcomeCheckedAgainstAnswer(t *testing.T) {
 		if st, o := sessionState(t, b, sid); st != worksession.StateClosed || o != worksession.OutcomeCancelled {
 			t.Fatalf("B session %s/%s", st, o)
 		}
-		if b.events.count(EventAgreed) != 0 || b.events.count(EventBroken) != 1 || !b.audit.has("decision.refuse", `"reason":"outcome"`) {
+		if b.events.count(EventAgreed) != 0 || b.events.count(EventRefused) != 1 || b.events.count(EventBroken) != 0 || !b.audit.has("decision.refuse", `"reason":"outcome"`) {
 			t.Fatalf("B events/audit:\n%s", b.audit.all())
 		}
 		var sigs int

@@ -14,13 +14,21 @@ import (
 // advanceTx recomputes the next turn from tr and stores the phase, next_slot
 // and turn deadline (Docs/protocol/debate.md §State, §Timeouts: the deadline
 // runs from the time the previous slot was applied). After the answer (Done)
-// the respondent waits for the close: no deadline.
+// A closes in the same transaction (no deadline), and B shows the answer's at
+// + turn_timeout_s, display only (B never sweeps): the time after which it
+// may abandon (R55-221, OD-F29-1). It comes from the entry, not from now, so
+// a later advanceTx cannot move it.
 func (s *Store) advanceTx(ctx context.Context, tx *sql.Tx, r row, tr transcript, now time.Time) (Turn, error) {
 	t := Next(tr.metas(turnStates(r.role)...), r.roundsMax)
 	phase := t.Phase
 	var deadline any
 	if t.Done {
 		phase = PhaseConverge
+		if r.role == RoleRespondent {
+			if due, ok := answerDue(tr, r.turnTimeoutS); ok {
+				deadline = wireTime(due)
+			}
+		}
 	} else {
 		deadline = wireTime(now.Add(time.Duration(r.turnTimeoutS) * time.Second))
 	}
@@ -29,6 +37,17 @@ func (s *Store) advanceTx(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 		return Turn{}, fmt.Errorf("debate: advance: %w", err)
 	}
 	return t, nil
+}
+
+// answerDue is B's display deadline after its answer: the answer entry's at
+// + turnTimeoutS. ok is false while B has not answered.
+func answerDue(tr transcript, turnTimeoutS int) (time.Time, bool) {
+	for _, e := range tr {
+		if e.author == RoleRespondent && e.kind == KindAnswer && e.state == stateSent {
+			return parseWireTime(e.at).Add(time.Duration(turnTimeoutS) * time.Second), true
+		}
+	}
+	return time.Time{}, false
 }
 
 // insertEntry stores one entry row.
@@ -116,6 +135,7 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 	var out afters
 	var tr transcript
 	var dec *experience.Decision
+	var decCanon []byte
 	if outcome == OutcomeCancelled {
 		if err := setClosed(ctx, tx, r.session, outcome, reason, now); err != nil {
 			return nil, err
@@ -130,13 +150,12 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 			PhaseClosing, reason, storeTime(now), r.session); err != nil {
 			return nil, fmt.Errorf("debate: closing: %w", err)
 		}
-		var hash string
 		var derr error
-		tr, hash, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out)
+		tr, decCanon, derr = s.decideTx(ctx, tx, r, n, ids, outcome, reason, body, now, &out)
 		if derr != nil {
 			return nil, derr
 		}
-		dec = &experience.Decision{ID: decision.ID(r.session), Hash: hash}
+		dec = &experience.Decision{ID: decision.ID(r.session), Hash: decision.Hash(decCanon)}
 	}
 	if _, err := s.sendLastState(ctx, tx, r, MailClose, body, now); err != nil {
 		return nil, err
@@ -164,7 +183,7 @@ func (s *Store) closeTx(ctx context.Context, tx *sql.Tx, r row, outcome, reason,
 	case OutcomeEscalated:
 		out.add(s.event(EventEscalated, r.session, r.peer, r.requestID))
 	}
-	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, outcome, cancelledBy, dec, now)
+	expBytes, expTruncated, err := s.writeExperienceTx(ctx, tx, r, tr, coverApplied, outcome, cancelledBy, "", dec, decCanon, now)
 	if err != nil {
 		return nil, err
 	}
@@ -217,6 +236,14 @@ func (s *Store) PeerCancelTx(ctx context.Context, tx *sql.Tx, sid string, now ti
 // from A is then stored for the record and changes nothing (it is applied
 // nowhere: the debate is no longer open). Idempotent: a debate that is
 // already closed, broken or still invited does nothing (nil, nil).
+//
+// After B's own answer it is refused (*BadStateError, which rolls back
+// SubmitCancel's transaction and its ws.cancel) until A's close is held on B
+// or the answer's at + turn_timeout_s has passed (R55-221, OD-F29-1 (b)): A
+// closes by itself on applying the answer, so an earlier abandon would leave
+// A's Decision awaiting_peer for good. The time comes from the answer entry,
+// never turn_deadline, which is NULL on rows answered before this rule
+// (review 92b F1).
 func (s *Store) AbandonTx(ctx context.Context, tx *sql.Tx, sid string, now time.Time) (func(context.Context), error) {
 	r, err := getRow(ctx, tx, sid)
 	if err != nil {
@@ -225,15 +252,20 @@ func (s *Store) AbandonTx(ctx context.Context, tx *sql.Tx, sid string, now time.
 	if r.role != RoleRespondent || !r.open() {
 		return nil, nil
 	}
-	if err := setClosed(ctx, tx, sid, OutcomeCancelled, ReasonAbandoned, now); err != nil {
-		return nil, err
-	}
 	tr, err := loadTranscript(ctx, tx, sid)
 	if err != nil {
 		return nil, err
 	}
+	if due, answered := answerDue(tr, r.turnTimeoutS); answered && !r.closeBody.Valid && now.Before(due) {
+		return nil, &BadStateError{Phase: r.phase, Msg: fmt.Sprintf(
+			"you answered: the initiator's daemon closes the debate itself; wait for it, or cancel after %s", wireTime(due))}
+	}
+	if err := setClosed(ctx, tx, sid, OutcomeCancelled, ReasonAbandoned, now); err != nil {
+		return nil, err
+	}
 	var out afters
-	if err := s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", "", OutcomeCancelled, tr, RoleRespondent, nil, now, &out); err != nil {
+	if err := s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", "", OutcomeCancelled, tr,
+		coverAppliedOrSent, RoleRespondent, "", nil, nil, now, &out); err != nil {
 		return nil, err
 	}
 	out.add(s.audit("cli", "debate.abandon", map[string]any{"session": sid, "peer": r.peer}))

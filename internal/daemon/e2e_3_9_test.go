@@ -37,7 +37,7 @@ func TestPhase3E2E(t *testing.T) {
 			Position: []byte(`{"claim":"Capped backoff","argument":"Simple and bounded.",` +
 				`"assumptions":["Retries are rare"],` +
 				`"evidence":[{"kind":"file","ref":"internal/daemon/outbox.go","note":"current retry loop"}]}`),
-			Rounds: 2,
+			Rounds: new(2),
 		},
 	}, &res)
 	sid := res.Session
@@ -101,7 +101,7 @@ func TestPhase3E2E(t *testing.T) {
 	a.call("request_submit", daemon.RequestSubmitParams{
 		To: b.key, Type: "debate", Team: teamID, Title: "Which serializer?",
 		Brief:  "Pick a wire format for the new endpoint.",
-		Debate: &daemon.DebateParam{Position: []byte(`{"claim":"Protobuf","argument":"Smaller and typed."}`), Rounds: 1},
+		Debate: &daemon.DebateParam{Position: []byte(`{"claim":"Protobuf","argument":"Smaller and typed."}`), Rounds: new(1)},
 	}, &res2)
 	sid2 := res2.Session
 	harnessWait(t, "B to store the second debate", phaseIs(b.harnessNode, sid2, debate.PhaseInvited))
@@ -198,7 +198,7 @@ func TestPhase3AuditHasNoContent(t *testing.T) {
 			Position: []byte(`{"claim":"P3AUDIT-CLAIM-A-2c19","argument":"P3AUDIT-ARGUMENT-A-88b3",` +
 				`"assumptions":["P3AUDIT-ASSUMPTION-a015"],` +
 				`"evidence":[{"kind":"file","ref":"P3AUDIT-EVREF-c274","note":"P3AUDIT-EVNOTE-5f9d"}]}`),
-			Rounds: 2,
+			Rounds: new(2),
 		},
 	}, &res)
 	sid := res.Session
@@ -246,7 +246,7 @@ func TestPhase3AuditHasNoContent(t *testing.T) {
 	var res2 daemon.RequestSubmitResult
 	a.call("request_submit", daemon.RequestSubmitParams{
 		To: b.key, Type: "debate", Team: teamID, Title: "second", Brief: "second",
-		Debate: &daemon.DebateParam{Position: []byte(`{"claim":"P3AUDIT-CLAIM2-A-33aa","argument":"P3AUDIT-ARGUMENT2-A-5511"}`), Rounds: 1},
+		Debate: &daemon.DebateParam{Position: []byte(`{"claim":"P3AUDIT-CLAIM2-A-33aa","argument":"P3AUDIT-ARGUMENT2-A-5511"}`), Rounds: new(1)},
 	}, &res2)
 	sid2 := res2.Session
 	harnessWait(t, "B to store the second debate", phaseIs(b.harnessNode, sid2, debate.PhaseInvited))

@@ -68,6 +68,11 @@ func (s *Store) SweepOne(ctx context.Context, id string) (closed bool, err error
 	if r.role != RoleInitiator || !r.open() || !r.turnDeadline.Valid || now.Before(parseWireTime(r.turnDeadline.String)) {
 		return false, nil
 	}
+	// The grace after downtime only delays the check, never the deadline
+	// (R55-071): B's entry may still be queued at the relay.
+	if s.TimeoutsReady != nil && !s.TimeoutsReady() {
+		return false, nil
+	}
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
 		return false, err

@@ -32,7 +32,7 @@ VALUES ('in', 'PEER-C', ?, ?, 'task', 'normal', 'normal', '{}', 'h', 'pending', 
 			From: a.self, To: b.self, Team: testTeam, Type: request.TypeDebate, Title: "Backoff",
 			Brief: "How should the outbox retry?", Urgency: request.UrgencyNormal,
 		},
-		Position: testPosition("A: capped backoff"), Rounds: 2,
+		Position: testPosition("A: capped backoff"), Rounds: new(2),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

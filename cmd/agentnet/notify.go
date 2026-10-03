@@ -56,8 +56,8 @@ Usage:
 The events are request.received, request.accepted, request.declined,
 request.cancelled, session.quarantined, session.result, session.changes,
 device.linked and debate.constraint, debate.agreed, debate.escalated,
-debate.broken (all on by default), request.deferred and request.completed
-(off by default). device.linked is desktop only.
+debate.broken, debate.refused (all on by default), request.deferred and
+request.completed (off by default). device.linked is desktop only.
 
 The webhook URL must be https:// (http:// only to localhost). When a webhook
 is first set, or on --rotate-secret, the signing secret is printed once

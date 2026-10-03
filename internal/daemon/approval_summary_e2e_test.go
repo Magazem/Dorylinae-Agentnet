@@ -201,7 +201,7 @@ func TestDebateConstraintSummaryRename(t *testing.T) {
 	a, b, teamID := newConstrainPair(t)
 	var res daemon.RequestSubmitResult
 	a.call("request_submit", daemon.RequestSubmitParams{To: b.key, Type: "debate", Team: teamID, Title: "Retries", Brief: "How should the outbox retry?",
-		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: 1}}, &res)
+		Debate: &daemon.DebateParam{Position: e2ePosition("Capped backoff"), Rounds: new(1)}}, &res)
 	sid := res.Session
 	harnessWait(t, "B to store the debate", phaseIs(b.harnessNode, sid, debate.PhaseInvited))
 	dsSubmit(t, b.ds, sid, debate.KindPosition, `{"argument":"Simple.","claim":"Fixed retry"}`)
