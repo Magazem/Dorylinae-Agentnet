@@ -335,7 +335,7 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		if !team.ValidName(p.Name) {
 			return nil, &ipc.Error{Code: CodeBadTeamName, Message: "team names match ^[a-z0-9][a-z0-9-]{0,31}$"}
 		}
-		t, err := ts.Create(ctx, p.Name, time.Now())
+		t, err := ts.Create(ctx, p.Name, clockNow(ts.Now))
 		if err != nil {
 			return nil, teamError(err)
 		}
@@ -434,7 +434,7 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		if err != nil {
 			return nil, err
 		}
-		nt, err := removeMemberFromTeam(ctx, ts, log, t.ID, peer.PublicKey, time.Now())
+		nt, err := removeMemberFromTeam(ctx, ts, log, t.ID, peer.PublicKey, clockNow(ts.Now))
 		if err != nil {
 			return nil, teamError(err)
 		}
@@ -460,7 +460,7 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		if err := requireActive(t); err != nil {
 			return nil, err
 		}
-		nt, err := ts.Rename(ctx, t.ID, p.Name, time.Now())
+		nt, err := ts.Rename(ctx, t.ID, p.Name, clockNow(ts.Now))
 		if err != nil {
 			return nil, teamError(err)
 		}
@@ -488,7 +488,7 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		}
 		// The team.leave mail is queued in the same transaction as the leave
 		// (R55-113): a failure leaves the team active, so the call can be retried.
-		nt, _, err := ts.LeaveNotify(ctx, t.ID, time.Now())
+		nt, _, err := ts.LeaveNotify(ctx, t.ID, clockNow(ts.Now))
 		if err != nil {
 			return nil, teamError(err)
 		}
@@ -511,7 +511,7 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		if err := requireActive(t); err != nil {
 			return nil, err
 		}
-		nt, err := ts.Delete(ctx, t.ID, time.Now())
+		nt, err := ts.Delete(ctx, t.ID, clockNow(ts.Now))
 		if err != nil {
 			return nil, teamError(err)
 		}

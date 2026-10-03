@@ -173,7 +173,7 @@ func fixtures(t *testing.T, db *sql.DB) Counts {
 		('P', 'm-1', 'request', 'c', ?, ''), ('P', 'm-2', 'request', 'c', ?, ''),
 		('P', 'm-3', 'request', 'c', ?, '{"plain":"MARKER"}'), ('P', 'm-4', 'request', 'c', ?, '{"old":1}')`,
 		ago(36), ago(34), ago(1), ago(36))
-	mustExec(t, db, `INSERT INTO mail_seen (from_key, id, received_at) VALUES ('P', 'm-2', ?), ('P', 'm-3', ?), ('P', 'm-1', ?)`, ago(34), ago(1), ago(36))
+	mustExec(t, db, `INSERT INTO mail_seen (from_key, id, received_at) VALUES ('P', 'm-2', ?), ('P', 'm-3', ?), ('P', 'm-1', ?)`, ago(34), ago(0), ago(36))
 	return Counts{
 		Requests: 2, WorkSessions: 2, Grants: 6, Debates: 2, DebateEntries: 5, DebateConstraints: 1,
 		ExperienceRecords: 2, MailInbox: 2, InboxBlanked: 1,

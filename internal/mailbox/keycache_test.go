@@ -122,7 +122,13 @@ func TestMailboxKeyIsLoadedOnceAndDroppedWithTheKey(t *testing.T) {
 
 	// Rotation 21 days later deletes the key: the cache is empty and a frame
 	// naming it is a key miss.
-	now = now.Add(21 * 24 * time.Hour)
+	// Its successor is made by the 7-day rotation: a key is deleted by age only
+	// once a newer key has been current for 7 days (R55-F28).
+	now = now.Add(mailbox.RotateAfter)
+	if _, err := k.Rotate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(14 * 24 * time.Hour)
 	if _, err := k.Rotate(context.Background()); err != nil {
 		t.Fatal(err)
 	}

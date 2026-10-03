@@ -95,7 +95,12 @@ func TestBadBodyRowPruned(t *testing.T) {
 	if n, err := Prune(context.Background(), f.st.DB(), vectorNow.Add(SeenRetention-time.Hour)); err != nil || n != 0 {
 		t.Fatalf("Prune before retention = %d, %v; want 0", n, err)
 	}
-	n, err := Prune(context.Background(), f.st.DB(), vectorNow.Add(SeenRetention+time.Hour))
+	// A newer row anchors the cutoff (SeenCutoff, R55-F28).
+	later := vectorNow.Add(SeenRetention + time.Hour)
+	if _, err := f.st.DB().Exec(`INSERT INTO mail_seen (from_key, id, received_at) VALUES ('k', 'newer', ?)`, later.Format(StoreTimeFmt)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := Prune(context.Background(), f.st.DB(), later)
 	if err != nil || n != 1 {
 		t.Fatalf("Prune = %d, %v; want 1", n, err)
 	}

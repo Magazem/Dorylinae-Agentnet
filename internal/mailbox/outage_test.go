@@ -143,6 +143,10 @@ func TestLockedKeychainDeletionIsRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Its successor is made by the 7-day rotation: a key is deleted by age only
+	// once a newer key has been current for 7 days (R55-F28).
+	now = na.Add(-mailbox.RotateAfter)
+	_, _ = k.Rotate(context.Background())
 	now = na.Add(mailbox.DeleteGrace + time.Hour)
 	locked = true
 	_, _ = k.Rotate(context.Background())

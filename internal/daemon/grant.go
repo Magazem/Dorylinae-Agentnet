@@ -587,7 +587,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			return nil, debateOpenError(err)
 		}
 
-		now := time.Now()
+		now := clockNow(capStore.Now)
 		label := deriveLabel(resolved)
 		priv, err := id.Priv()
 		if err != nil {
@@ -651,7 +651,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 			// would still issue under an ended policy. Policies are never
 			// edited, so re-reading the matched one by id here is enough
 			// (review 55 R55-104).
-			if err := recheckPolicyTx(ctx, tx, match.ID, time.Now()); err != nil {
+			if err := recheckPolicyTx(ctx, tx, match.ID, clockNow(capStore.Now)); err != nil {
 				return nil, err
 			}
 			// The policy path never activates a sensitive grant to a peer
@@ -741,7 +741,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				if err != nil || gr.State != capability.StatePendingApproval {
 					return &ipc.Error{Code: CodeBadState, Message: "the grant is no longer pending approval"}
 				}
-				if !time.Now().Before(gr.Exp) {
+				if !clockNow(capStore.Now).Before(gr.Exp) {
 					return &ipc.Error{Code: CodeBadState, Message: "the grant expired before it was approved"}
 				}
 				// The row must agree with the token Perform sends
@@ -770,7 +770,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 				return grantFacts(wire, gr.Path, pf, typ, title)
 			}, approvaltext.BuildGrant),
 			Perform: func(ctx context.Context, tx *sql.Tx) (any, error) {
-				now := time.Now()
+				now := clockNow(capStore.Now)
 				// The approval id marks the row as once-active for the
 				// quarantine rule (capability.QuarantineHolds). It is read in
 				// tx, where Confirm has just marked this grant's approval
@@ -896,7 +896,7 @@ func registerGrant(srv *ipc.Server, capStore *capability.Store, wsStore *workses
 		if rec.State == capability.StateRevoked {
 			return GrantRevokeResult{Grant: grantView(ctx, ps, rec), Duplicate: true}, nil
 		}
-		now := time.Now()
+		now := clockNow(capStore.Now)
 		tx, err := capStore.DB.BeginTx(ctx, nil)
 		if err != nil {
 			return nil, fmt.Errorf("grant: begin revoke: %w", err)
@@ -1039,7 +1039,7 @@ func recheckResource(configDir string, rec capability.Record) error {
 // own transaction (Docs/protocol/grant.md §Session end, §Policies).
 func revokeForRemovedPeer(capStore *capability.Store) func(ctx context.Context, tx *sql.Tx, key string) error {
 	return func(ctx context.Context, tx *sql.Tx, key string) error {
-		if _, err := capStore.RevokeForPeerTx(ctx, tx, key, capability.ReasonPeerRemoved, time.Now()); err != nil {
+		if _, err := capStore.RevokeForPeerTx(ctx, tx, key, capability.ReasonPeerRemoved, clockNow(capStore.Now)); err != nil {
 			return err
 		}
 		return capStore.PolicyDeleteForPeerTx(ctx, tx, key)
@@ -1164,7 +1164,7 @@ func registerGrantPolicy(srv *ipc.Server, capStore *capability.Store, apprStore 
 		if count >= capability.MaxPolicies {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "at most 50 policies are allowed"}
 		}
-		now := time.Now()
+		now := clockNow(capStore.Now)
 		pol := capability.Policy{
 			ID: capability.NewPolicyID(), Peer: peer.PublicKey, Action: p.Action, Path: resolved, Branch: branch,
 			Scope: p.Scope, Public: p.Public, MaxExpiresS: int(maxExpires.Seconds()), Until: now.Add(until), Created: now,

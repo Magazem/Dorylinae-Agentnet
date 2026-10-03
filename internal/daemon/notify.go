@@ -100,7 +100,7 @@ func notifyAdapter(t *notify.Trigger, ps *peers.Store, ts teamNamer) request.Not
 			Kind: event, PeerName: name, PeerFP: fp, Type: info.Type, Urgency: info.Urgency, Title: info.Title,
 			Until: info.Until, ResultStatus: info.ResultStatus, HasResult: info.HasResult,
 			RequestID: info.RequestID, State: info.State, TeamID: info.TeamID, TeamName: teamName,
-			CreatedAt: time.Now(),
+			CreatedAt: clockNow(t.Now),
 		})
 	}
 }
@@ -138,7 +138,7 @@ func debateNotifyAdapter(t *notify.Trigger, ps *peers.Store, rs *request.Store) 
 		}
 		t.Fire(ctx, notify.Event{
 			Kind: event, PeerName: name, PeerFP: fp, Title: title,
-			RequestID: requestID, Session: sid, CreatedAt: time.Now(),
+			RequestID: requestID, Session: sid, CreatedAt: clockNow(t.Now),
 		})
 	}
 }
@@ -157,7 +157,7 @@ func registerNotify(srv *ipc.Server, settings *notify.Settings, desktop notify.D
 				return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "malformed params"}
 			}
 		}
-		now := time.Now()
+		now := clockNow(webhookClock(wh))
 		if p.Desktop != nil {
 			if err := settings.SetDesktopEnabled(ctx, *p.Desktop, now); err != nil {
 				return nil, err
@@ -327,7 +327,7 @@ func notifyGetResult(ctx context.Context, settings *notify.Settings, wh *notify.
 	if ok {
 		w := &NotifyWebhook{URL: cfg.URL, Format: cfg.Format, Title: cfg.Title}
 		if wh != nil {
-			if pending, failed7d, err := wh.Queue.Counts(ctx, time.Now()); err == nil {
+			if pending, failed7d, err := wh.Queue.Counts(ctx, clockNow(wh.Now)); err == nil {
 				w.Pending, w.Failed7d = pending, failed7d
 			}
 		}

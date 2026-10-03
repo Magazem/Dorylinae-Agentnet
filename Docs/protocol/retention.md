@@ -85,7 +85,9 @@ cases follow their direction (review 71b F1):
 content (`signed = ''`, or pre-R55-F13 plaintext; see [Existing rows](#existing-rows)); they
 exist only for dedupe. Each call also **blanks** pre-R55-F13 rows of any age that still hold
 plaintext (`signed <> ''` → `''`, counted as `inbox_blanked`), OD-F13-4. In the **same transaction**, `prune` first runs the regular
-`mail_seen` prune (`received_at < now − 35 d`). The cutoff is at least 35 days old, so an id
+`mail_seen` prune (`received_at < min(now, newest received_at) − 35 d`, [mail.md §Dedupe and
+inbox](mail.md#dedupe-and-inbox), R55-F28), and an inbox row is removed only once its
+`mail_seen` row is past that same cutoff. The cutoff is at least 35 days old, so an id
 never leaves `mail_inbox` while `mail_seen` still holds it: the two tables stay one dedupe set
 ([mail.md §Dedupe and inbox](mail.md#dedupe-and-inbox)).
 

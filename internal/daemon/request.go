@@ -202,7 +202,7 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 		if err != nil {
 			return nil, err
 		}
-		now := time.Now()
+		now := clockNow(rs.Now)
 		deadline, err := parseDeadline(p.Deadline, now)
 		if err != nil {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "deadline: " + err.Error()}
@@ -277,7 +277,7 @@ func registerRequest(srv *ipc.Server, pstore *presence.Store, rs *request.Store,
 				return nil, aerr
 			}
 		}
-		online, lastSeen := presenceBrief(ctx, pstore, peer.PublicKey, time.Now())
+		online, lastSeen := presenceBrief(ctx, pstore, peer.PublicKey, clockNow(rs.Now))
 		return RequestSubmitResult{
 			ID: outcome.Request.ID, MailID: outcome.MailID, Status: outcome.Status, Duplicate: outcome.Duplicate,
 			Team: teamRefResult{ID: t.ID, Name: t.Name}, Urgency: outcome.Request.Urgency,

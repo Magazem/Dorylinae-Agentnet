@@ -360,7 +360,7 @@ func registerLifecycle(srv *ipc.Server, rs *request.Store, ps *peers.Store, ts *
 		if err := json.Unmarshal(params, &p); err != nil || p.ID == "" || p.Until == "" {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "id and until are required"}
 		}
-		until, err := parseDeadline(p.Until, time.Now())
+		until, err := parseDeadline(p.Until, clockNow(rs.Now))
 		if err != nil {
 			return nil, &ipc.Error{Code: ipc.CodeBadRequest, Message: "until: " + err.Error()}
 		}

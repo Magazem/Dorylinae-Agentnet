@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approval"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/approvaltext"
@@ -140,12 +139,12 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 			// Owned-team membership first (review 16 L12): broadcasting the
 			// updated roster needs the peer's mailbox key, so this runs
 			// before OwnerRemoved and before the peer row is deleted.
-			if err := cascadeTeamRemoval(ctx, ts, log, peer.PublicKey, time.Now()); err != nil {
+			if err := cascadeTeamRemoval(ctx, ts, log, peer.PublicKey, clockNow(ts.Now)); err != nil {
 				return nil, err
 			}
 		}
 		if ts != nil {
-			_, removed, terr := ts.OwnerRemoved(ctx, peer.PublicKey, time.Now())
+			_, removed, terr := ts.OwnerRemoved(ctx, peer.PublicKey, clockNow(ts.Now))
 			if terr != nil {
 				return nil, terr
 			}

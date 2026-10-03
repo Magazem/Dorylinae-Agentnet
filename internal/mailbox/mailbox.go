@@ -248,8 +248,13 @@ func (k *Keys) announce(ctx context.Context) ([]byte, func([]byte), error) {
 // replaced at the latest by the scheduled rotation. A host without a keychain
 // service is not "unavailable": the key can only be in the file, so a missing
 // file means a lost key (review 87 L2).
+//
+// A key created after now + mail.MaxSkew is not usable either: every peer
+// refuses its announcement (mail.md §Announcement check 5). It was made while
+// the clock was stepped forward, so a new key is made at the true time
+// (R55-F28, review 55 R55-103).
 func (k *Keys) usable(r *row, now time.Time) (bool, error) {
-	if !r.notAfter.After(now.Add(renewBefore)) {
+	if !r.notAfter.After(now.Add(renewBefore)) || r.created.After(now.Add(mail.MaxSkew)) {
 		return false, nil
 	}
 	pub, err := k.rowPub(r)
@@ -351,7 +356,8 @@ func (k *Keys) forgetLocked(keyID string) {
 
 // Rotate is one run of the rotation job: it creates a new current key if there
 // is none, the current one is 7 d old or unusable, deletes the private keys
-// that are 21 d old (not_after + 7 d), and deletes the oldest early if more
+// that are 21 d old (not_after + 7 d) and have a successor at least 7 d old
+// (expired), and deletes the oldest early if more
 // than 3 would be live. It returns the announcement of the newly created key,
 // or nil if none was created.
 func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
@@ -455,6 +461,25 @@ func (k *Keys) createLocked(ctx context.Context, now time.Time, rows []row) ([]b
 	return signed, k.onRotate, nil
 }
 
+// expired reports whether r may be deleted by age: not_after + 7 d <= now, and
+// a newer key was created at least DeleteGrace before now. Peers seal to r
+// until they accept a newer key, and mail sealed to r lives at most the 7 d
+// queue TTL after that. On a steady clock the second condition holds a week
+// before the first. In a run whose clock is stepped forward, the only newer
+// key is the one just created, so the key peers seal to is kept (R55-F28,
+// review 55 R55-103).
+func expired(r row, rows []row, now time.Time) bool {
+	if r.notAfter.Add(DeleteGrace).After(now) {
+		return false
+	}
+	for _, n := range rows {
+		if n.created.After(r.created) && !n.created.Add(DeleteGrace).After(now) {
+			return true
+		}
+	}
+	return false
+}
+
 func retire(rows []row) []row {
 	out := make([]row, len(rows))
 	for i, r := range rows {
@@ -464,14 +489,14 @@ func retire(rows []row) []row {
 	return out
 }
 
-// sweepLocked deletes the private key of every key with not_after + 7 d <= now,
+// sweepLocked deletes the private key of every expired key (see expired),
 // then of the oldest keys while more than MaxLive are live. rows is the live
 // list, oldest first.
 func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error {
 	var errs []error
 	var keep []row
 	for _, r := range rows {
-		if r.notAfter.Add(DeleteGrace).After(now) {
+		if !expired(r, rows, now) {
 			keep = append(keep, r)
 			continue
 		}

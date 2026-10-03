@@ -298,7 +298,8 @@ func TestPrune35Days(t *testing.T) {
 	}
 	ins("old", now.Add(-SeenRetention-time.Second))
 	ins("edge", now.Add(-SeenRetention+time.Second))
-	ins("new", now.Add(-time.Hour))
+	// The newest row anchors the cutoff (mail.SeenCutoff, R55-F28).
+	ins("new", now)
 	n, err := Prune(context.Background(), db, now)
 	if err != nil || n != 1 {
 		t.Fatalf("Prune = %d, %v; want 1 row", n, err)

@@ -189,6 +189,8 @@ type harnessNode struct {
 	// daemon.Options test hooks (2.2c grant tests). Set before start().
 	ApprovalNow     func() time.Time
 	OnApprovalReady func(*approval.Store)
+	// Now mirrors daemon.Options Now (R55-F28). Set before start().
+	Now func() time.Time
 	OnStoresReady   func(*capability.Store, *worksession.Store)
 	// OnDebateReady mirrors daemon.Options OnDebateReady (3.1a: entries are
 	// driven through the store until 3.1b adds debate_submit).
@@ -281,6 +283,7 @@ func (n *harnessNode) start() {
 			ApprovalNotify:   n.ApprovalNotify,
 			ApprovalWindow:   n.ApprovalWindow,
 			ApprovalNow:      n.ApprovalNow,
+			Now:              n.Now,
 			OnApprovalReady:  n.OnApprovalReady,
 			OnStoresReady:    n.OnStoresReady,
 			OnDebateReady:    n.OnDebateReady,
