@@ -96,7 +96,7 @@ func TestLockInstanceRefusesUnansweredLegacyPipe(t *testing.T) {
 				t.Fatalf("LockInstance: %v, want how to stop the older agentnetd", err)
 			}
 			// The refusal released the instance lock.
-			f, err := os.OpenFile(filepath.Join(dir, InstanceLock), os.O_RDWR, 0)
+			f, err := os.OpenFile(filepath.Join(dir, InstanceLock), os.O_RDWR, 0) //nolint:gosec // the test's own temp dir
 			if err != nil {
 				t.Fatal(err)
 			}
