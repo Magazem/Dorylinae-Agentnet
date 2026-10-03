@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Magazem/Dorylinae-Agentnet/internal/agentcard"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/audit"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
@@ -214,6 +215,19 @@ func (s *Store) applyRoster(ctx context.Context, tx *sql.Tx, op *mail.Opened) er
 		newPeers = kept
 	}
 
+	// team.roster_apply is an S row (introductions give team trust): written
+	// in this transaction, so a failing row applies nothing. The GC's
+	// peer.remove rows are S- rows in the same transaction.
+	if s.audit != nil {
+		if err := audit.AppendTx(ctx, tx, ActorDaemon, ActionRosterApply, map[string]any{
+			"team": teamID, "epoch": epoch, "added": added, "removed": removedKeys, "state": localState,
+		}); err != nil {
+			return err
+		}
+		if err := s.auditRemovedTx(ctx, tx, gcRemoved); err != nil {
+			return err
+		}
+	}
 	op.Outcome = &rosterOutcome{
 		teamID: teamID, epoch: epoch, added: added, removed: removedKeys, state: localState,
 		newPeers: newPeers, gc: gcRemoved,
@@ -237,10 +251,6 @@ func (s *Store) afterRoster(ctx context.Context, op *mail.Opened) {
 		s.audited(ctx, ActorDaemon, ActionRosterIgnored, detail)
 		return
 	}
-	s.audited(ctx, ActorDaemon, ActionRosterApply, map[string]any{
-		"team": o.teamID, "epoch": o.epoch, "added": o.added, "removed": o.removed, "state": o.state,
-	})
-	s.auditRemoved(ctx, o.gc)
 	s.changed()
 	if s.Outbox == nil || s.Announcement == nil {
 		return

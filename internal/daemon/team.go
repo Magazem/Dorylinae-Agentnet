@@ -309,8 +309,12 @@ func registerTeam(srv *ipc.Server, ts *team.Store, ps *peers.Store, pairs *peers
 		if err != nil {
 			return nil, pairError(err)
 		}
-		// The release is audited with ids only, never the code.
+		// The release is audited with ids only, never the code. This is an S
+		// row without a transaction: if it fails, the pairing just started is
+		// cancelled (no code ever left the daemon) and the error returned
+		// (audit.md §When the row cannot be written).
 		if err := log.Append(ctx, audit.ActorCLI, team.ActionInviteIssued, map[string]any{"team": t.ID, "approval": p.Approval, "pairing_id": st.ID}); err != nil {
+			_ = pairs.Cancel(st.ID)
 			return nil, err
 		}
 		return TeamInviteResult{PairStatus: st, Team: ref}, nil
@@ -534,9 +538,9 @@ func removeMemberFromTeam(ctx context.Context, ts *team.Store, log *audit.Log, t
 	if err != nil {
 		return team.Team{}, err
 	}
-	if err := log.Append(ctx, audit.ActorCLI, team.ActionMemberRemove, map[string]any{"team": nt.ID, "peer": key, "epoch": nt.Epoch}); err != nil {
-		return team.Team{}, err
-	}
+	// team.member_remove is N (OD-F31-3): a failing row is logged centrally
+	// and the removal goes on to the broadcast.
+	_ = log.Append(ctx, audit.ActorCLI, team.ActionMemberRemove, map[string]any{"team": nt.ID, "peer": key, "epoch": nt.Epoch})
 	if err := ts.Broadcast(ctx, nt.ID, []string{key}); err != nil {
 		return team.Team{}, err
 	}

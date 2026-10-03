@@ -97,9 +97,7 @@ func (s *rejectSummary) write(ctx context.Context) {
 	if len(d.Mail) == 0 && len(d.Session) == 0 {
 		return
 	}
-	if err := s.audit.Append(ctx, audit.ActorDaemon, ActionRejectSummary, d); err != nil {
-		s.log.Warn("could not audit the reject summary", "event", "reject_summary_failed", "error", err)
-	}
+	_ = s.audit.Append(ctx, audit.ActorDaemon, ActionRejectSummary, d) // a failure is logged once, centrally, by internal/audit
 }
 
 // start writes the summary every interval until stop.

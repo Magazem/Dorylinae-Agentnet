@@ -41,6 +41,8 @@ func (h gatedHandle) Ready(ctx context.Context) bool {
 	}
 }
 
+func (r *gatedRunner) Check(context.Context) (bool, string) { return true, "" }
+
 func (r *gatedRunner) Start(_ context.Context, id, _, _, _, _ string, _ time.Time) (WindowHandle, error) {
 	h := newFakeWinHandle(true)
 	r.mu.Lock()

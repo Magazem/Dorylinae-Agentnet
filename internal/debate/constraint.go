@@ -335,6 +335,8 @@ func markLateTx(ctx context.Context, tx *sql.Tx, sid string, listed []string) er
 // retryHeldClose re-applies a close B holds for missing constraints, after
 // one arrived. The stored body was checked when it first arrived.
 func (s *Store) retryHeldClose(ctx context.Context, tx *sql.Tx, r row, out *afters) error {
+	// Decoding into a struct is safe here: this is our own stored canonical body, schema-checked
+	// by exact name before it was stored (ParseStrict code rule, review 76 I2).
 	dec := json.NewDecoder(bytes.NewReader([]byte(r.closeBody.String)))
 	dec.UseNumber()
 	var b map[string]any

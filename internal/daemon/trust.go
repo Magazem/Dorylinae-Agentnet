@@ -71,9 +71,9 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 		}
 		d := peerAuditDetail{Peer: peer.PublicKey, Name: peer.Name, Fingerprint: peer.Fingerprint}
 		if subtle.ConstantTimeCompare([]byte(given), []byte(peer.Fingerprint)) != 1 {
-			if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerVerifyFail, d); err != nil {
-				return nil, err
-			}
+			// peer.verify_fail is N: a failing row is logged centrally and the
+			// caller still gets the mismatch, not the audit error.
+			_ = log.Append(ctx, audit.ActorCLI, audit.ActionPeerVerifyFail, d)
 			return nil, &ipc.Error{Code: CodeFingerprintMismatch, Message: "the fingerprint does not match this peer's key; nothing was changed"}
 		}
 		// The fingerprint matched, which any local agent can arrange (it is
@@ -152,13 +152,18 @@ func registerTrust(srv *ipc.Server, ps *peers.Store, log *audit.Log, ts *team.St
 				gcSelf = gcSelf || r.PublicKey == peer.PublicKey
 			}
 		}
-		// GC may already have deleted the row (a stale introduced peer).
-		if err := ps.Remove(ctx, peer.PublicKey); err != nil && (!gcSelf || !errors.Is(err, peers.ErrNoPeer)) {
-			return nil, peerError(err)
-		}
+		// peer.remove is an S- row: written in the removal's transaction
+		// through a savepoint, so the removal commits even if the row fails.
+		// GC may already have deleted the row (a stale introduced peer); then
+		// there is no removal transaction and the row is an N row.
 		d := peerAuditDetail{Peer: peer.PublicKey, Name: peer.Name, Fingerprint: peer.Fingerprint, Trust: peer.Trust}
-		if err := log.Append(ctx, audit.ActorCLI, audit.ActionPeerRemove, d); err != nil {
-			return nil, err
+		err = ps.RemoveWith(ctx, peer.PublicKey, func(ctx context.Context, tx *sql.Tx) error {
+			return audit.AppendTxSoft(ctx, tx, audit.ActorCLI, audit.ActionPeerRemove, d)
+		})
+		if errors.Is(err, peers.ErrNoPeer) && gcSelf {
+			_ = log.Append(ctx, audit.ActorCLI, audit.ActionPeerRemove, d)
+		} else if err != nil {
+			return nil, peerError(err)
 		}
 		return PeerResult{Peer: peer}, nil
 	})

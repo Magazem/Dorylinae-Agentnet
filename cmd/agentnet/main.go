@@ -252,6 +252,11 @@ Exit codes: 0 running, 1 error, 2 usage, 3 daemon not running.
 		res.PID, up, res.Version, res.Outbox.Pending, res.Outbox.Queued, res.Outbox.Relayed,
 		res.Outbox.Delivered, res.Outbox.Failed, res.Outbox.Expired)
 	_, _ = fmt.Fprintf(stdout, "  presence: %s, relay %s\n", res.Presence.Mode, displaytext.Term(res.Presence.Relay))
+	// Named before the first approval would fail (R55-125); printed only when
+	// the window is missing.
+	if res.ApprovalWindow == "missing" {
+		_, _ = fmt.Fprintf(stdout, "  approval window: missing (%s)\n", displaytext.Term(res.ApprovalWindowFix))
+	}
 	if res.Relay != nil {
 		state := "disconnected"
 		if res.Relay.Connected {

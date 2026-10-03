@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
@@ -59,6 +60,14 @@ func dialogEnvDarwin(tag, kind, summary string, secs int) []string {
 		osaEnv("AGENTNET_W_SUMMARY", summary),
 		fmt.Sprintf("AGENTNET_W_TIMEOUT_S=%d", secs),
 	}
+}
+
+// checkWindow is the macOS check: /usr/bin/osascript exists.
+func checkWindow(context.Context) (bool, string) {
+	if fi, err := os.Stat("/usr/bin/osascript"); err != nil || fi.IsDir() {
+		return false, "osascript is missing"
+	}
+	return true, ""
 }
 
 func startDialog(ctx context.Context, _, tag, kind, summary string, expires time.Time) (approval.WindowHandle, error) {

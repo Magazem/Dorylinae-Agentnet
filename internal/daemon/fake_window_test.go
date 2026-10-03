@@ -23,6 +23,15 @@ type fakeWindowRunner struct {
 	handles map[string]*fakeWindowHandle
 	// notReady makes every Start return a handle that never becomes ready.
 	notReady bool
+	// missing and fix are what Check reports.
+	missing bool
+	fix     string
+}
+
+func (r *fakeWindowRunner) Check(context.Context) (bool, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return !r.missing, r.fix
 }
 
 func newFakeWindowRunner() *fakeWindowRunner {

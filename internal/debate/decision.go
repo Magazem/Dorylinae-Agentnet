@@ -130,12 +130,27 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return nil
 }
 
-// createAudit is decision.create's detail: ids, the hash and sizes, never
-// content (decision.md §Audit).
-func (s *Store) createAudit(r row, outcome, hash string, bytes int, signedBy ...string) func(context.Context) {
-	return s.audit("daemon", "decision.create", map[string]any{
+// createAudit writes decision.create (S): its detail is ids, the hash and
+// sizes, never content (decision.md §Audit). It runs in the transaction that
+// stores the Decision, so no row means no Decision.
+func (s *Store) createAudit(ctx context.Context, tx *sql.Tx, r row, outcome, hash string, bytes int, signedBy ...string) error {
+	if s.Audit == nil {
+		return nil
+	}
+	return s.Audit.AppendTx(ctx, tx, "daemon", "decision.create", map[string]any{
 		"id": decision.ID(r.session), "session": r.session, "peer": r.peer, "outcome": outcome,
 		"hash": hash, "bytes": bytes, "signed_by": signedBy,
+	})
+}
+
+// refuseAudit writes decision.refuse (S-) through a savepoint in the
+// refusal's transaction: the refusal commits even if its row fails.
+func (s *Store) refuseAudit(ctx context.Context, tx *sql.Tx, r row, why string) error {
+	if s.Audit == nil {
+		return nil
+	}
+	return s.Audit.AppendTxSoft(ctx, tx, "daemon", "decision.refuse", map[string]any{
+		"id": decision.ID(r.session), "session": r.session, "peer": r.peer, "reason": why,
 	})
 }
 
@@ -144,7 +159,7 @@ func (s *Store) createAudit(r row, outcome, hash string, bytes int, signedBy ...
 // signature to the close body. It returns the loaded transcript and the
 // Decision hash so closeTx can reuse them for the experience record (written
 // before B signs, Docs/protocol/experience.md "acceptance").
-func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time, out *afters) (transcript, string, error) {
+func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, listed []string, outcome, reason string, body map[string]any, now time.Time) (transcript, string, error) {
 	tr, err := loadTranscript(ctx, tx, r.session)
 	if err != nil {
 		return nil, "", err
@@ -174,7 +189,9 @@ func (s *Store) decideTx(ctx context.Context, tx *sql.Tx, r row, entries int, li
 		return nil, "", err
 	}
 	body["decision"], body["sig"] = hash, sig
-	out.add(s.createAudit(r, outcome, hash, len(canon), RoleInitiator))
+	if err := s.createAudit(ctx, tx, r, outcome, hash, len(canon), RoleInitiator); err != nil {
+		return nil, "", err
+	}
 	return tr, hash, nil
 }
 
@@ -208,7 +225,7 @@ func closeGap(tr transcript, roundsMax, entries int) (refuse string, hold bool) 
 // signOnB is B's success path of decision.md §Signing step 2 (the caller has
 // checked the close): sign, store the Decision with both signatures, and
 // queue debate.sign. It returns B's signature.
-func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, sigA string, now time.Time, out *afters) error {
+func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, sigA string, now time.Time) error {
 	sigB, err := s.sign(canon)
 	if err != nil {
 		return err
@@ -226,8 +243,7 @@ func (s *Store) signOnB(ctx context.Context, tx *sql.Tx, r row, canon []byte, si
 	if o, err := decisionOutcome(canon); err == nil {
 		outcome = o
 	}
-	out.add(s.createAudit(r, outcome, hash, len(canon), RoleInitiator, RoleRespondent))
-	return nil
+	return s.createAudit(ctx, tx, r, outcome, hash, len(canon), RoleInitiator, RoleRespondent)
 }
 
 // refuseOnB is B's mismatch path (decision.md §Signing, "If B refuses"): B
@@ -277,9 +293,9 @@ func (s *Store) refuseOnB(ctx context.Context, tx *sql.Tx, r row, tr transcript,
 	}); err != nil {
 		return err
 	}
-	out.add(s.audit("daemon", "decision.refuse", map[string]any{
-		"id": decision.ID(r.session), "session": r.session, "peer": r.peer, "reason": why,
-	}))
+	if err := s.refuseAudit(ctx, tx, r, why); err != nil {
+		return err
+	}
 	return s.closeMirrorTx(ctx, tx, r, worksession.OutcomeCancelled, "session cancelled", EventBroken, OutcomeCancelled, tr, RoleInitiator, nil, now, out)
 }
 
@@ -389,9 +405,9 @@ func (s *Store) applySign(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err
 			DecisionPeerRefused, claimed, storeTime(now), r.session); err != nil {
 			return fmt.Errorf("debate: refuse Decision: %w", err)
 		}
-		out.add(s.audit("daemon", "decision.refuse", map[string]any{
-			"id": decision.ID(r.session), "session": r.session, "peer": r.peer, "reason": why,
-		}))
+		if err := s.refuseAudit(ctx, tx, r, why); err != nil {
+			return err
+		}
 		out.add(s.event(EventBroken, r.session, r.peer, r.requestID))
 		return nil
 	}
@@ -399,8 +415,11 @@ func (s *Store) applySign(ctx context.Context, tx *sql.Tx, op *mail.Opened) (err
 		DecisionSigned, sig, storeTime(now), r.session); err != nil {
 		return fmt.Errorf("debate: store signature: %w", err)
 	}
-	out.add(s.audit("daemon", "decision.sign_in", map[string]any{"id": decision.ID(r.session), "session": r.session, "peer": r.peer}))
-	return nil
+	// decision.sign_in is S: written in this transaction.
+	if s.Audit == nil {
+		return nil
+	}
+	return s.Audit.AppendTx(ctx, tx, "daemon", "decision.sign_in", map[string]any{"id": decision.ID(r.session), "session": r.session, "peer": r.peer})
 }
 
 // DecisionRecord is a stored Decision (the decisions row).

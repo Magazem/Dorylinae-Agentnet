@@ -112,6 +112,10 @@ func TestTerminalModeWritesCodeToStderrOnly(t *testing.T) {
 	if res.Approval != daemon.ApprovalModeTerminalDebug {
 		t.Fatalf("status.approval = %q, want %q", res.Approval, daemon.ApprovalModeTerminalDebug)
 	}
+	// T8 (R55-125): both window fields are absent in terminal mode.
+	if res.ApprovalWindow != "" || res.ApprovalWindowFix != "" {
+		t.Fatalf("terminal mode reports a window: %q %q", res.ApprovalWindow, res.ApprovalWindowFix)
+	}
 
 	if _, err := apprStore.Create(context.Background(), approval.KindGrant, "g-1", "approve grant?", approval.Action{}); err != nil {
 		t.Fatal(err)

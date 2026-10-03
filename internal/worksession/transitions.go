@@ -429,13 +429,17 @@ func (s *Store) ReleaseApproved(ctx context.Context, id, approvalID string) (Vie
 	if err != nil {
 		return View{}, err
 	}
+	// ws.release is an S row: it commits with the release, and no row means
+	// no release (audit.md §When the row cannot be written).
+	if s.Audit != nil {
+		if err := s.Audit.AppendTx(ctx, tx, "cli", "ws.release", map[string]any{"session": id, "peer": peer, "round": round, "approval": approvalID}); err != nil {
+			return View{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return View{}, fmt.Errorf("worksession: commit: %w", err)
 	}
 	s.Outbox.Wake()
-	if s.Audit != nil {
-		_ = s.Audit.Append(ctx, "cli", "ws.release", map[string]any{"session": id, "peer": peer, "round": round, "approval": approvalID})
-	}
 	newRow, err := findByID(ctx, s.DB, id)
 	if err != nil {
 		return View{}, err
