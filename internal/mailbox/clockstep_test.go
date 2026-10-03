@@ -385,142 +385,71 @@ func TestRotateSteadyScheduleUnchanged(t *testing.T) {
 	}
 }
 
-// Review 100b N1: a step that lasts while the daemon runs makes a key every 7
-// days on the stepped clock, and peers refuse every one of them (a forward
-// step fails check 5; a backward one has a not_after already past for them).
-// The MaxLive cap must not delete the last key they accepted, K_n, so it may
-// keep one key over the limit for it, never more. After the correction K_n
-// is deleted by age once mail shows its successor has been current for 7 days.
-func TestRotateLongClockStepKeepsAcceptedKey(t *testing.T) {
+// Owner decision D76 (review 100b N1, documented residual): a clock that stays
+// stepped, forward or back, makes a key every 7 days that every peer refuses.
+// The cap keeps the strict 3-key schedule, so after 14 days of runtime it has
+// deleted K_n, the last key peers accepted. The node never has more than 3
+// live keys, and after the correction its new announcement is accepted.
+func TestRotateLongClockStepDeletesAcceptedKey(t *testing.T) {
 	for _, step := range []time.Duration{30 * 24 * time.Hour, -20 * 24 * time.Hour} {
-		for _, days := range []int{14, 21} {
-			dir := testutil.TempDir(t)
-			db := newDB(t)
-			t0 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-			now := t0
-			k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
-			identity := base64.RawURLEncoding.EncodeToString(pub)
-			rotate := func() {
-				t.Helper()
-				if _, err := k.Rotate(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if n := liveCount(t, db); n > mailbox.MaxLive+1 {
-					t.Fatalf("step %v for %d d: %d live keys at %v, want at most %d", step, days, n, now, mailbox.MaxLive+1)
-				}
-			}
-
-			// Three keys on a steady clock with mail arriving: ages 14 d, 7 d, 0 d.
-			var ids []mail.KeyID
-			for i := 0; i < 3; i++ {
-				now = t0.Add(time.Duration(i) * 7 * 24 * time.Hour)
-				if err := mailbox.ReceivedMailAt(k, now); err != nil {
-					t.Fatal(err)
-				}
-				rotate()
-				a, _ := k.Announcement()
-				ids = append(ids, keyIDOf(t, a, identity, now))
-			}
-			accepted := ids[2]
-			trueNow := now.Add(2 * 24 * time.Hour)
-			if err := mailbox.ReceivedMailAt(k, trueNow); err != nil {
+		dir := testutil.TempDir(t)
+		db := newDB(t)
+		t0 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+		now := t0
+		k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
+		identity := base64.RawURLEncoding.EncodeToString(pub)
+		rotate := func() {
+			t.Helper()
+			if _, err := k.Rotate(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			if n := liveCount(t, db); n > mailbox.MaxLive {
+				t.Fatalf("step %v: %d live keys at %v, want at most %d", step, n, now, mailbox.MaxLive)
+			}
+		}
 
-			// The stepped clock runs hourly for days; step 11 refuses all mail.
-			for h := 0; h <= days*24; h++ {
-				now = trueNow.Add(step + time.Duration(h)*time.Hour)
-				rotate()
-			}
-			if !keyFileExists(dir, accepted.String()) {
-				t.Fatalf("step %v for %d d: key %s that peers seal to was deleted", step, days, accepted)
-			}
-
-			// The correction: a new current key peers accept, K_n still live.
-			trueNow = trueNow.Add(time.Duration(days)*24*time.Hour + time.Hour)
-			for h := 0; h < 3; h++ {
-				now = trueNow.Add(time.Duration(h) * time.Hour)
-				rotate()
-			}
-			// Mail sealed to K_n lives until its not_after + 7 d (21 d).
-			if _, live := k.MailboxKey(accepted); !live && now.Before(t0.Add(35*24*time.Hour)) {
-				t.Fatalf("step %v for %d d: key %s not live after the correction", step, days, accepted)
-			}
-			cur, err := k.Announcement()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, _, err := mail.ParseAnnouncement(cur, identity, now); err != nil {
-				t.Fatalf("step %v for %d d: a peer refuses the current announcement: %v", step, days, err)
-			}
-
-			// Mail arrives 7 days after the correction: K_n goes by age.
-			now = trueNow.Add(7*24*time.Hour + time.Hour)
+		// Three keys on a steady clock with mail arriving: ages 14 d, 7 d, 0 d.
+		var ids []mail.KeyID
+		for i := 0; i < 3; i++ {
+			now = t0.Add(time.Duration(i) * 7 * 24 * time.Hour)
 			if err := mailbox.ReceivedMailAt(k, now); err != nil {
 				t.Fatal(err)
 			}
 			rotate()
-			if keyFileExists(dir, accepted.String()) {
-				t.Fatalf("step %v for %d d: key %s kept 7 days after the correction", step, days, accepted)
-			}
-			if n := liveCount(t, db); n > mailbox.MaxLive {
-				t.Fatalf("step %v for %d d: %d live keys after the correction, want at most %d", step, days, n, mailbox.MaxLive)
-			}
+			a, _ := k.Announcement()
+			ids = append(ids, keyIDOf(t, a, identity, now))
 		}
-	}
-}
-
-// Review 100b N1: on a daemon whose mail stopped, the cap spares the last key
-// made before the newest mail (peers may still seal to it) and deletes every
-// later key at 21 days as before, with at most one key over the limit.
-func TestCapSparesLastAcceptedKeyWhenIdle(t *testing.T) {
-	dir := testutil.TempDir(t)
-	db := newDB(t)
-	t0 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
-	now := t0
-	k, pub, _ := newKeysOn(t, dir, db, func() time.Time { return now })
-	identity := base64.RawURLEncoding.EncodeToString(pub)
-	a, err := k.Announcement()
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := keyIDOf(t, a, identity, now)
-	if err := mailbox.ReceivedMailAt(k, t0.Add(3*24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	created := map[mail.KeyID]time.Time{first: t0}
-	for h := 1; h <= 50*24; h++ {
-		now = t0.Add(time.Duration(h) * time.Hour)
-		if _, err := k.Rotate(context.Background()); err != nil {
+		trueNow := now.Add(2 * 24 * time.Hour)
+		if err := mailbox.ReceivedMailAt(k, trueNow); err != nil {
 			t.Fatal(err)
 		}
-		a, _ := k.Announcement()
-		if id := keyIDOf(t, a, identity, now); created[id].IsZero() {
-			created[id] = now
+
+		// The stepped clock runs hourly for 14 days; step 11 refuses all mail.
+		for h := 0; h <= 14*24; h++ {
+			now = trueNow.Add(step + time.Duration(h)*time.Hour)
+			rotate()
 		}
-		if n := liveCount(t, db); n > mailbox.MaxLive+1 {
-			t.Fatalf("at +%dh: %d live keys, want at most %d", h, n, mailbox.MaxLive+1)
-		}
-		for id, c := range created {
-			if id == first {
-				continue
-			}
-			gone := !keyFileExists(dir, id.String())
-			if want := !now.Before(c.Add(21 * 24 * time.Hour)); gone != want {
-				t.Fatalf("at +%dh: key made at %v deleted = %v, want %v", h, c, gone, want)
+		for _, id := range ids {
+			if keyFileExists(dir, id.String()) {
+				t.Fatalf("step %v: key %s kept; the documented residual changed (mail.md §Lifecycle)", step, id)
 			}
 		}
-	}
-	if !keyFileExists(dir, first.String()) {
-		t.Fatal("the last key peers accepted was deleted while no mail arrived")
-	}
-	if err := mailbox.ReceivedMailAt(k, now); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := k.Rotate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if keyFileExists(dir, first.String()) {
-		t.Fatal("the spared key was kept after mail arrived")
+
+		// The correction: a new current key that peers accept.
+		trueNow = trueNow.Add(14*24*time.Hour + time.Hour)
+		for h := 0; h < 3; h++ {
+			now = trueNow.Add(time.Duration(h) * time.Hour)
+			rotate()
+		}
+		cur, err := k.Announcement()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := mail.ParseAnnouncement(cur, identity, now); err != nil {
+			t.Fatalf("step %v: a peer refuses the current announcement: %v", step, err)
+		}
+		if _, live := k.MailboxKey(keyIDOf(t, cur, identity, now)); !live {
+			t.Fatalf("step %v: current key has no private half", step)
+		}
 	}
 }

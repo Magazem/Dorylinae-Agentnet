@@ -182,6 +182,9 @@ Mismatches:
 
 ## Fixes applied
 
+**N1: reverted per owner decision D76 (document only).** See "Revert (D76)" at the end. The
+list below records the fix that was applied first and then reverted.
+
 Applied by the re-checker (task 01a10105), with no git used. I backed up the changed files
 to `%TEMP%\f28n1bak` first.
 
@@ -236,3 +239,44 @@ to `%TEMP%\f28n1bak` first.
   - `go test -count=1 ./internal/mail ./internal/mailbox ./internal/retention`: ok. The
     mailbox tests use the file backend or `keyring.MockInit` only.
   - `go test -count=1 ./internal/daemon -run 'Clock|Rotation|KeyMiss|Mail'`: ok.
+
+### Revert (D76)
+
+Owner decision D76: document only. The strict 3-key forward-secrecy schedule stays, and no
+extra older private key is kept. Done by the re-checker (task 01a10177), with no git used.
+
+- **Code.**
+  - `internal/mailbox/mailbox.go`: `spareOf` and the cap-loop spare branch are removed.
+  - `capVictim` no longer takes a skip argument. Its order is back to: a future-dated retired
+    key first, then the oldest retired key, never the current key, with `MaxLive = 3`.
+  - The comments (package doc, `MaxLive`, `Rotate`, `sweepLocked`) are restored.
+    `sweepLocked` names the residual.
+  - `internal/mail/receiver.go`: `mail.SeenNewest` is removed. Its only user was the spare.
+    `SeenBasis` is back to the pre-N1 text: the file is identical to the pre-N1 copy,
+    ignoring CR.
+- **Tests** (`internal/mailbox/clockstep_test.go`).
+  - `TestCapSparesLastAcceptedKeyWhenIdle` is removed.
+  - `TestRotateLongClockStepKeepsAcceptedKey` becomes `TestRotateLongClockStepDeletesAcceptedKey`,
+    which pins the residual. It covers steps of +30 d and −20 d, each running hourly for 14
+    days, and checks that:
+    - live keys stay at most 3 after every run;
+    - all three original keys, K_n included, are deleted;
+    - after the correction the current announcement is accepted and has its private half.
+  - Every other F28 test is unchanged.
+- **Spec.** In `Docs/protocol/mail.md` §Lifecycle, the spare bullet is replaced by two
+  remaining cases:
+  - one step: the oldest of three is deleted early (text kept);
+  - a clock that stays wrong by more than 10 min for 14 days or more of runtime: the limit
+    can delete the last key peers accepted, and mail still queued for it is lost. The node
+    is already cut off from its peers while the clock is wrong, so the fix is to correct
+    the clock (D76).
+- **Plan 98.** The N1 amendment is rewritten for D76.
+- **Checks.**
+  - CRLF-aware gofmt on the 3 changed `.go` files: clean.
+  - `go build ./...`: ok.
+  - `go vet ./internal/... ./cmd/...` with GOOS=windows, linux and darwin: ok.
+  - golangci-lint v2.13.2, `run ./...` on 3 OSes: only the CRLF "properly formatted" lines.
+  - `go test -count=1 ./internal/mail ./internal/mailbox ./internal/retention`: ok. The
+    mailbox tests use the file backend or `keyring.MockInit` only.
+  - `go test -count=1 ./internal/daemon -run 'Clock|Rotation|KeyMiss|Mail'`: ok.
+  - Every changed file is still CRLF.

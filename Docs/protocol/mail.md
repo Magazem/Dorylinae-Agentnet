@@ -88,21 +88,20 @@ For a key created at time `t`:
   before it (R55-F28, review 100 L1). The limit is also what bounds the keys while no mail
   arrives: on the 7-day rotation it deletes each key when it is 21 days old, as the age rule
   would.
-- The limit spares **the last key peers accepted**: the newest retired key whose `created` is
-  at most the newest `mail_seen.received_at` (not capped at `now`) + 10 min. Peers stamped
-  that mail, and refuse an announcement dated more than 10 min after their clock. While the
-  local clock stays stepped, forward or back by more than 10 min, every key the daemon makes
-  is refused by every peer (check 5, or a `not_after` already past for them), and they keep
-  sealing to that key. When it would be the key the limit deletes, the limit allows **one
-  extra live key** (4 at most) and deletes the next candidate only if 5 would be live. The
-  spared key is deleted by age once mail shows its successor has been current for 7 days. On
-  a daemon whose mail has stopped, the spared key is the last one created before the newest
-  mail, and it stays until mail arrives (R55-F28, review 100b N1).
-- Remaining case: when a step (forward, or backward by more than 10 min) creates a key, the
-  limit can delete a key other than the spared one early, at a true age of 14 to 21 days.
-  That key's successor was accepted by peers and has been current for at least 7 days, so
-  only mail from a peer that missed two `keys` mails, sealed before that key's `not_after`
-  and still queued, is lost.
+- Remaining case, one step: when a step (forward, or backward by more than 10 min) creates a
+  key, the limit can delete the oldest of the three earlier keys early, at a true age of 14
+  to 21 days. That key's successor was accepted by peers and has been current for at least
+  7 days, so only mail from a peer that missed two `keys` mails, sealed before that key's
+  `not_after` and still queued, is lost.
+- Remaining case, a **clock that stays wrong**: a clock that is wrong by more than 10 min, in
+  either direction, for **14 days or more of daemon runtime** can let the limit delete the
+  last key peers accepted. Every key the daemon makes meanwhile is refused by every peer
+  (check 5, or a `not_after` already past for them), so they keep sealing to that key, but
+  the limit keeps the strict 3-key schedule. Mail still queued for that key is then lost (a
+  [key miss](#key-miss-recovery)). The node is already cut off from its peers while its
+  clock is wrong (step 11 refuses its mail and theirs); fix the clock. The 3-key schedule is
+  kept on purpose: an extra older private key is not kept (owner decision D76, review 100b
+  N1).
 - The first key is created on demand by pairing (0.8c, see [pairing.md](pairing.md#mailbox-key-during-pairing))
   or by the rotation job, whichever comes first.
 - Decrypting uses any live key selected by `key_id`. Sealing uses the peer's newest announcement.

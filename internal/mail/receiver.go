@@ -531,44 +531,29 @@ func SeenCutoff(ctx context.Context, q SeenQueryer, now time.Time) (string, erro
 // step of the local clock does not move. ok is false when the table is empty.
 // SeenCutoff and the mailbox key deletion age by it (R55-F28, review 100 M1).
 func SeenBasis(ctx context.Context, q SeenQueryer, now time.Time) (basis time.Time, ok bool, err error) {
-	newest, ok, err := SeenNewest(ctx, q)
-	if err != nil || !ok {
-		return time.Time{}, false, err
-	}
-	basis = now
-	if !newest.IsZero() && newest.Before(basis) {
-		basis = newest
-	}
-	return basis, true, nil
-}
-
-// SeenNewest returns the newest mail_seen.received_at, not capped at now. ok
-// is false when the table is empty; newest is the zero time when the stored
-// value does not parse. The mailbox key cap uses it to find the last key
-// peers can have accepted (R55-F28, review 100b N1).
-func SeenNewest(ctx context.Context, q SeenQueryer) (newest time.Time, ok bool, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT MAX(received_at) FROM mail_seen`)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var raw sql.NullString
+	var newest sql.NullString
 	if rows.Next() {
-		if err := rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&newest); err != nil {
 			return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
 	}
-	if !raw.Valid {
+	if !newest.Valid {
 		return time.Time{}, false, nil
 	}
+	basis = now
 	// A bad-body row carries badBodyMark after the time.
-	if t, err := time.Parse(StoreTimeFmt, strings.TrimSuffix(raw.String, badBodyMark)); err == nil {
-		newest = t
+	if t, err := time.Parse(StoreTimeFmt, strings.TrimSuffix(newest.String, badBodyMark)); err == nil && t.Before(basis) {
+		basis = t
 	}
-	return newest, true, nil
+	return basis, true, nil
 }
 
 // Prune deletes mail_seen rows older than SeenCutoff.

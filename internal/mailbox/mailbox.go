@@ -3,8 +3,7 @@
 // The public halves, their signed announcements and their lifecycle live in the
 // mailbox_keys_own table (migrations 6 and 26). Keys rotate every 7 days, a retired key
 // still decrypts, and its private key is deleted 21 days after creation, with
-// never more than 3 keys live (4 when the cap spares the last key peers
-// accepted, see spareOf).
+// never more than 3 keys live.
 package mailbox
 
 import (
@@ -41,8 +40,7 @@ const (
 	// DeleteGrace is how long after not_after the private key is kept: the
 	// 7 d queue TTL of mail sealed to it.
 	DeleteGrace = 7 * 24 * time.Hour
-	// MaxLive is the most keys whose private half may exist at once, plus
-	// the last key peers accepted (see spareOf).
+	// MaxLive is the most keys whose private half may exist at once.
 	MaxLive = 3
 	// RunInterval is how often the rotation job runs.
 	RunInterval = time.Hour
@@ -360,7 +358,7 @@ func (k *Keys) forgetLocked(keyID string) {
 // is none, the current one is 7 d old or unusable, deletes the private keys
 // that are 21 d old (not_after + 7 d) and have a successor at least 7 d old,
 // both measured at the mail_seen basis (expired, sweepLocked), and deletes a
-// retired key early if more than 3 would be live (see sweepLocked). It returns
+// retired key early if more than 3 would be live (see capVictim). It returns
 // the announcement of the newly created key, or nil if none was created.
 func (k *Keys) Rotate(ctx context.Context) ([]byte, error) {
 	ann, hook, err := k.rotate(ctx)
@@ -486,12 +484,11 @@ func expired(r row, rows []row, basis time.Time) bool {
 // while the clock was stepped forward; every peer refused its announcement),
 // else the retired key with the earliest created. The current key is never a
 // candidate: after a backward clock step it can be older by created than the
-// key before it (R55-F28, review 100 L1). The key skip is not a candidate
-// either.
-func capVictim(rows []row, now time.Time, skip string) int {
+// key before it (R55-F28, review 100 L1).
+func capVictim(rows []row, now time.Time) int {
 	i := -1
 	for j, r := range rows {
-		if !r.retired || r.keyID == skip {
+		if !r.retired {
 			continue
 		}
 		if r.created.After(now.Add(mail.MaxSkew)) {
@@ -502,27 +499,6 @@ func capVictim(rows []row, now time.Time, skip string) int {
 		}
 	}
 	return i
-}
-
-// spareOf returns the key_id of the newest retired key created no later than
-// newest + mail.MaxSkew, newest being the newest mail_seen stamp (not capped
-// at now), or "". Peers stamped mail at that time, and refuse an announcement
-// dated more than MaxSkew after their clock, so this is the last key they can
-// have accepted. A key made while the clock is stepped, forward or back, is
-// refused by every peer, and the cap keeps this one for them (R55-F28, review
-// 100b N1).
-func spareOf(rows []row, newest time.Time) string {
-	var spare *row
-	for i := range rows {
-		r := &rows[i]
-		if r.retired && !r.created.After(newest.Add(mail.MaxSkew)) && (spare == nil || r.created.After(spare.created)) {
-			spare = r
-		}
-	}
-	if spare == nil {
-		return ""
-	}
-	return spare.keyID
 }
 
 func retire(rows []row) []row {
@@ -544,8 +520,9 @@ func retire(rows []row) []row {
 // (R55-F28, review 100 M1; the same basis as the mail_seen prune, D75). With
 // no mail received there is no basis and nothing is deleted by age; MaxLive
 // then bounds the live keys, and on the 7-day rotation it deletes each key
-// when it is 21 days old, as the age rule would. The cap spares the last key
-// peers accepted (see spareOf) while that leaves MaxLive + 1 keys live.
+// when it is 21 days old, as the age rule would. A clock that stays stepped
+// for 14 days or more of runtime can let the cap delete the last key peers
+// accepted (mail.md §Lifecycle; owner decision D76).
 func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error {
 	var errs []error
 	basis, aged, err := mail.SeenBasis(ctx, k.db, now)
@@ -564,21 +541,8 @@ func (k *Keys) sweepLocked(ctx context.Context, now time.Time, rows []row) error
 			keep = append(keep, r) // still there, so it still counts as live
 		}
 	}
-	spare := ""
-	if newest, ok, err := mail.SeenNewest(ctx, k.db); err != nil {
-		errs = append(errs, fmt.Errorf("mailbox: key cap basis: %w", err))
-	} else if ok && !newest.IsZero() {
-		spare = spareOf(keep, newest)
-	}
 	for len(keep) > MaxLive {
-		i := capVictim(keep, now, "")
-		if i >= 0 && keep[i].keyID == spare {
-			// The last key peers accepted may be one over the limit.
-			if len(keep) == MaxLive+1 {
-				break
-			}
-			i = capVictim(keep, now, spare)
-		}
+		i := capVictim(keep, now)
 		if i < 0 {
 			break
 		}
