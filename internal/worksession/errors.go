@@ -64,6 +64,9 @@ var (
 	ErrUnknownSession = errors.New("worksession: unknown session")
 	ErrNotRequester   = errors.New("worksession: not the requester")
 	ErrNotWorker      = errors.New("worksession: not the worker")
+	// ErrAmbiguousRequest is an r- id that more than one session belongs to
+	// (a request id is unique only per sender, R55-F20).
+	ErrAmbiguousRequest = errors.New("worksession: request id matches more than one session; use the s- id")
 )
 
 func badBody(format string, a ...any) error {

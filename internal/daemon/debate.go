@@ -18,6 +18,7 @@ import (
 	"github.com/Magazem/Dorylinae-Agentnet/internal/debate"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/envelope"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/ipc"
+	"github.com/Magazem/Dorylinae-Agentnet/internal/mail"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/peers"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/request"
 	"github.com/Magazem/Dorylinae-Agentnet/internal/team"
@@ -244,6 +245,11 @@ func debateError(err error) error {
 		return &ipc.Error{Code: ipc.CodeBadRequest, Message: fe.Error()}
 	case errors.As(err, &bse):
 		return &ipc.Error{Code: CodeBadState, Message: bse.Msg}
+	// debate_submit's one-step accept raises request errors (R55-128).
+	case errors.As(err, new(*request.BadStateError)), errors.Is(err, request.ErrUnknownRequest):
+		return lifecycleError(err)
+	case errors.Is(err, mail.ErrUnpaired):
+		return &ipc.Error{Code: ipc.CodeBadRequest, Message: "peer is no longer paired"}
 	default:
 		return err
 	}

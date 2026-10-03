@@ -22,7 +22,7 @@ func TestAcceptOpensSessionBothSides(t *testing.T) {
 		t.Fatalf("B's row = %+v, %v", bv, err)
 	}
 	// The request stays accepted on both sides while the session is open.
-	av2, err := a.req.Show(context.Background(), reqID, testB)
+	av2, err := a.req.Show(context.Background(), reqID, "")
 	if err != nil || av2.State != "accepted" {
 		t.Fatalf("A's request = %+v, %v", av2, err)
 	}

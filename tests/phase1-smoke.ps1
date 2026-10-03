@@ -96,6 +96,59 @@ function Start-Bg([string]$key, [string]$exe, [string[]]$argv, [hashtable]$envs 
     }
     finally { foreach ($k in $old.Keys) { [Environment]::SetEnvironmentVariable($k, $old[$k]) } }
 }
+# Approvals (D48: peers verify, team invite, ... need a human). The daemons run with
+# DORYLINAE_APPROVAL=terminal + DORYLINAE_DEBUG=1 (pipes allowed); this script, never an
+# agent, reads each "AgentNet approval a-XXXXXX: ... Code NNNNNN." line off the daemon's
+# stderr and types "<id> <code>" on its stdin (Docs/protocol/approval.md "Headless machines").
+Add-Type -TypeDefinition @"
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text.RegularExpressions;
+using System.Threading;
+public class SmokeApprovalPump {
+    public static Thread Start(Process daemon, string logPath) {
+        Thread t = new Thread(delegate() {
+            Regex re = new Regex(@"AgentNet approval (a-[0-9a-f]+): .*?Code ([0-9]+)[.]");
+            try {
+                string line;
+                while ((line = daemon.StandardError.ReadLine()) != null) {
+                    try { File.AppendAllText(logPath, line + Environment.NewLine); } catch (IOException) {}
+                    Match m = re.Match(line);
+                    if (m.Success) {
+                        byte[] b = new System.Text.UTF8Encoding(false).GetBytes("\n" + m.Groups[1].Value + " " + m.Groups[2].Value + "\n");
+                        daemon.StandardInput.BaseStream.Write(b, 0, b.Length);
+                        daemon.StandardInput.BaseStream.Flush();
+                    }
+                }
+            } catch (Exception) {}
+        });
+        t.IsBackground = true;
+        t.Start();
+        return t;
+    }
+}
+"@
+
+# Start agentnetd for $who with piped stdin/stderr and the approval pump attached.
+# -NoRelay starts it with no relay URL at all.
+function Start-Daemon([string]$who, [switch]$NoRelay) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $agentnetd
+    $psi.Arguments = 'run'
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables['DORYLINAE_HOME'] = $homes[$who]
+    $psi.EnvironmentVariables['DORYLINAE_APPROVAL'] = 'terminal'
+    $psi.EnvironmentVariables['DORYLINAE_DEBUG'] = '1'
+    if (-not $NoRelay) { $psi.EnvironmentVariables['DORYLINAE_RELAY_URL'] = $relayUrl }
+    $p = New-Object System.Diagnostics.Process
+    $p.StartInfo = $psi
+    $null = $p.Start()
+    $p.BeginOutputReadLine()   # drain stdout (discarded) so the daemon never blocks on a full pipe
+    $null = [SmokeApprovalPump]::Start($p, (Join-Path $work "$who.err.log"))
+    $script:procs[$who] = $p
+}
 function Stop-Bg([string]$key) {
     $p = $script:procs[$key]
     if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
@@ -106,7 +159,14 @@ function Wait-Until([scriptblock]$cond, [int]$seconds = 20) {
     while ((Get-Date) -lt $end) { if (& $cond) { return $true }; Start-Sleep -Milliseconds 300 }
     return $false
 }
-function Wait-Status([string]$who, [int]$seconds = 20) { Wait-Until { (Ag $who @('status')).Code -eq 0 } $seconds }
+# Running and, when a relay is configured, connected to it (the status "relay" object is
+# absent for a daemon started without a relay URL).
+function Wait-Status([string]$who, [int]$seconds = 20) {
+    Wait-Until {
+        $s = AgJson $who @('status')
+        ($s.Code -eq 0) -and ((-not $s.Json.relay) -or ($s.Json.relay.connected -eq $true))
+    } $seconds
+}
 
 function Get-Python3 {
     foreach ($cand in @('python3', 'python')) {
@@ -144,13 +204,12 @@ try {
 
     # 1. relay + four daemons (A, B, C, D), no admin, all foreground child processes
     Start-Bg 'relay' $relayExe @('--listen', "127.0.0.1:$port", '--queue-db', $queueDb, '--verbose')
-    $up = Wait-Until { (Test-Path (Join-Path $work 'relay.out.log')) -and ((Get-Content (Join-Path $work 'relay.out.log') -Raw) -match 'listening') } 10
+    # The relay logs its banner to stderr.
+    $relayLog = Join-Path $work 'relay.err.log'
+    $up = Wait-Until { (Test-Path $relayLog) -and ((Get-Content $relayLog -Raw) -match 'listening') } 10
     Step 'relay starts and listens' $up
 
-    $envCommon = @{ DORYLINAE_RELAY_URL = $relayUrl }
-    foreach ($who in @('A', 'B', 'C', 'D')) {
-        Start-Bg $who $agentnetd @('run') (@{ DORYLINAE_HOME = $homes[$who] } + $envCommon)
-    }
+    foreach ($who in @('A', 'B', 'C', 'D')) { Start-Daemon $who }
     $okAll = $true
     foreach ($who in @('A', 'B', 'C', 'D')) { $okAll = (Wait-Status $who) -and $okAll }
     Step 'status: A, B, C, D all running' $okAll
@@ -170,7 +229,10 @@ try {
     Step 'pair <code> completes with trust=code' (($r.Json.state -eq 'complete') -and ($r.Json.peer.trust -eq 'code')) $r.Out
 
     $r = AgJson 'A' @('peers', 'verify', $refB, ($ib.fingerprint -replace '(.{4})(?!$)', '$1 '))
-    Step 'peers verify with correct fingerprint sets trust=fingerprint' (($r.Code -eq 0) -and ($r.Json.peer.trust -eq 'fingerprint')) $r.Out
+    Step 'peers verify with correct fingerprint creates a peer_verify approval (D48)' (($r.Code -eq 0) -and ($r.Json.approval.kind -eq 'peer_verify') -and ($r.Json.approval.state -eq 'pending')) $r.Out
+    # The approval pump types the code on A's daemon terminal; trust changes only then.
+    $trustOk = Wait-Until { $pp = (AgJson 'A' @('peers')).Json.peers | Where-Object { $_.public_key -eq $refB }; $pp.trust -eq 'fingerprint' } 15
+    Step 'peers verify: B''s trust becomes fingerprint once the approval is confirmed' $trustOk
     $bad = $ib.fingerprint.ToCharArray(); $bad[0] = if ($bad[0] -eq 'A') { 'B' } else { 'A' }
     $r = AgJson 'A' @('peers', 'verify', $refB, (-join $bad))
     Step 'peers verify with wrong fingerprint is rejected' (($r.Code -eq 1) -and ($r.Out -match 'fingerprint_mismatch')) $r.Out
@@ -253,7 +315,7 @@ try {
     Step 'request: accepted as queued while B is offline, urgency blocking, has an artifact' `
         (($offReq.Code -eq 0) -and ($offReq.Json.status -eq 'queued') -and ($offReq.Json.urgency -eq 'blocking')) $offReq.Out
     $offReqId = $offReq.Json.id
-    Start-Bg 'B' $agentnetd @('run') (@{ DORYLINAE_HOME = $homeB } + $envCommon)
+    Start-Daemon 'B'
     Step 'status: B running again' (Wait-Status 'B')
     $delivered = Wait-Until { $inb = AgJson 'B' @('inbox'); @($inb.Json.requests | Where-Object { $_.id -eq $offReqId }).Count -ge 1 } 30
     Step 'request: delivered to B after it restarts' $delivered
@@ -295,6 +357,11 @@ try {
             '--status', 'pass', '--summary', 'SMOKEMARKSUMMARY all green', '--exit-code', '0', `
             '--output-from-file', $outFile, '--artifact', 'url=https://example.test/y branch=main commit=1234567890abcdef path=out/log')
     Step 'complete: B completes with a D14 result' ($comp.Code -eq 0) $comp.Out
+    # Since accept opens a work session (Docs/cli/inbox.md), complete only submits the result
+    # and the request stays accepted until the requester runs accept-result.
+    $arSeen = $null
+    $accRes = Wait-Until { $script:arSeen = AgJson 'A' @('accept-result', $rHigh.Json.id); $arSeen.Code -eq 0 } 20
+    Step 'accept-result: A accepts the result, closing the session' $accRes $arSeen.Out
     $compSeen = Wait-Until { $s = AgJson 'A' @('request', 'show', $rHigh.Json.id); $s.Json.request.state -eq 'completed' } 15
     Step 'complete: A''s mirror shows completed' $compSeen
     $showComp = (AgJson 'A' @('request', 'show', $rHigh.Json.id)).Json.request
@@ -336,13 +403,13 @@ try {
     Step 'cancel after accept: B accepts request 2 while A is offline' ($acc2.Code -eq 0) $acc2.Out
     # A with no relay URL at all: it cannot possibly receive B's queued "accepted" mail, so
     # its own mirror is guaranteed to still read "pending" when we cancel below.
-    Start-Bg 'A' $agentnetd @('run') @{ DORYLINAE_HOME = $homeA }
+    Start-Daemon 'A' -NoRelay
     Step 'status: A running again, deliberately relay-less' (Wait-Status 'A')
     $can2 = AgJson 'A' @('request', 'cancel', $rc2.Json.id)
     Step 'cancel after accept: cancel accepted locally while A''s mirror still reads pending' `
         (($can2.Code -eq 0) -and ($can2.Json.request.state -eq 'pending')) $can2.Out
     Stop-Bg 'A'
-    Start-Bg 'A' $agentnetd @('run') (@{ DORYLINAE_HOME = $homeA } + $envCommon)
+    Start-Daemon 'A'
     Step 'status: A running again with the relay reconnected' (Wait-Status 'A')
     $can2Refused = Wait-Until { $s = AgJson 'A' @('request', 'show', $rc2.Json.id); ($s.Json.request.state -eq 'accepted') -and ($s.Json.request.cancel -eq 'refused') } 30
     Step 'cancel after accept: A''s mirror shows cancel=refused, state stays accepted' $can2Refused
@@ -377,7 +444,10 @@ try {
 
         $posts = New-Object System.Collections.Generic.List[object]
         $deadline = (Get-Date).AddSeconds(20)
-        while ((Get-Date) -lt $deadline -and $posts.Count -lt 2) {
+        # Late events of earlier steps (e.g. request.cancelled from the cancel-after-accept
+        # test) may arrive first, so keep reading until both wanted events were seen.
+        $seen = { $e = @($posts | ForEach-Object { ($_.Body | ConvertFrom-Json).event }); ($e -contains 'request.received') -and ($e -contains 'request.accepted') }
+        while ((Get-Date) -lt $deadline -and $posts.Count -lt 20 -and -not (& $seen)) {
             $ctxTask = $listener.GetContextAsync()
             if ($ctxTask.Wait(2000)) {
                 $ctx = $ctxTask.Result
@@ -387,9 +457,10 @@ try {
                 $ctx.Response.OutputStream.Close()
             }
         }
-        Step 'webhook: at least 2 signed deliveries arrived (request.received + request.accepted)' ($posts.Count -ge 2) "$($posts.Count) received"
+        Step 'webhook: signed deliveries arrived (request.received + request.accepted)' (& $seen) "$($posts.Count) received"
 
         $verified = 0
+        $evs = @($posts | ForEach-Object { ($_.Body | ConvertFrom-Json).event }) -join ','
         foreach ($post in $posts) {
             $payload = $post.Body | ConvertFrom-Json
             $sigHeader = $post.Headers['Dorylinae-Signature']
@@ -397,12 +468,14 @@ try {
             $tsHeader = $post.Headers['Dorylinae-Webhook-Timestamp']
             if (-not $sigHeader -or $sigHeader -notmatch '^v1=(.+)$') { continue }
             $sig = $Matches[1]
-            $secret = if ($payload.event -eq 'request.received') { $secretB } else { $secretA }
+            # B's webhook signs request.received (and late request.cancelled), A's request.accepted.
             $signedContent = 'v1:' + $tsHeader + ':' + $idHeader + ':' + $post.Body
-            $expect = Get-HmacSha256Base64Url $secret $signedContent
-            if (($expect -eq $sig) -and ($idHeader -eq $payload.id)) { $verified++ }
+            $okB = (Get-HmacSha256Base64Url $secretB $signedContent) -eq $sig
+            $okA = (Get-HmacSha256Base64Url $secretA $signedContent) -eq $sig
+            $good = switch ($payload.event) { 'request.received' { $okB } 'request.accepted' { $okA } default { $okA -or $okB } }
+            if ($good -and ($idHeader -eq $payload.id)) { $verified++ }
         }
-        Step 'webhook: HMAC signature verifies for every delivery received' ($verified -eq $posts.Count -and $posts.Count -ge 2) "$verified/$($posts.Count) verified"
+        Step 'webhook: HMAC signature verifies for every delivery received' (($verified -eq $posts.Count) -and (& $seen)) "$verified/$($posts.Count) verified; events: $evs"
 
         $offA = AgJson 'A' @('notify', '--webhook', 'off')
         $offB = AgJson 'B' @('notify', '--webhook', 'off')

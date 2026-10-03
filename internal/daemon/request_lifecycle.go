@@ -243,7 +243,7 @@ func lifecycleError(err error) error {
 	case errors.Is(err, request.ErrUnknownRequest):
 		return &ipc.Error{Code: CodeUnknownRequest, Message: "no such request"}
 	case errors.Is(err, request.ErrAmbiguousRequest):
-		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the id matches requests from several peers; pass from"}
+		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the id matches more than one request; pass from, or use the s- id"}
 	case errors.As(err, &bse):
 		return &ipc.Error{Code: CodeBadState, Message: bse.Msg}
 	case errors.As(err, &fe):

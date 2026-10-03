@@ -50,6 +50,9 @@ func auditError(err error) error {
 	if errors.Is(err, audit.ErrBadParams) || errors.Is(err, audit.ErrBadAnchor) {
 		return &ipc.Error{Code: ipc.CodeBadRequest, Message: err.Error()}
 	}
+	if errors.Is(err, audit.ErrAmbiguous) {
+		return &ipc.Error{Code: CodeAmbiguousRequest, Message: "the request id matches more than one request; use the s- id"}
+	}
 	return err
 }
 

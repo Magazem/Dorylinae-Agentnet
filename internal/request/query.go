@@ -7,26 +7,48 @@ import (
 	"fmt"
 )
 
-// Show runs request_show (Docs/protocol/ipc.md §Requests): out rows first,
-// then in rows (from narrows the in lookup).
+// Show runs request_show (Docs/protocol/ipc.md §Requests). With from, only
+// the `in` row from that peer. Without it, every row with the id: exactly one
+// is returned, more than one is ErrAmbiguousRequest (an id is unique only per
+// sender, R55-F20).
 func (s *Store) Show(ctx context.Context, id, from string) (View, error) {
-	row, err := s.findOutRow(ctx, s.DB, id)
-	if err != nil && !errors.Is(err, ErrUnknownRequest) {
-		return View{}, err
-	}
-	if err == nil {
-		v, err := toView(row)
+	if from != "" {
+		row, err := s.findInRow(ctx, s.DB, id, from)
 		if err != nil {
 			return View{}, err
 		}
-		v.Delivery = s.deliveryOf(ctx, row.mailID)
-		return v, nil
+		return toView(row)
 	}
-	row, err = s.findInRow(ctx, s.DB, id, from)
-	if err != nil {
+	out, err := s.findOutRow(ctx, s.DB, id)
+	if err != nil && !errors.Is(err, ErrUnknownRequest) {
 		return View{}, err
 	}
-	return toView(row)
+	hasOut := err == nil
+	in, err := s.findInRow(ctx, s.DB, id, "")
+	switch {
+	case errors.Is(err, ErrUnknownRequest) && hasOut:
+		v, err := toView(out)
+		if err != nil {
+			return View{}, err
+		}
+		v.Delivery = s.deliveryOf(ctx, out.mailID)
+		return v, nil
+	case err != nil:
+		return View{}, err
+	case hasOut:
+		return View{}, ErrAmbiguousRequest
+	}
+	return toView(in)
+}
+
+// FindIn returns the key of the `in` row with id, narrowed by from when it is
+// set: ErrUnknownRequest for none, ErrAmbiguousRequest for several senders.
+func (s *Store) FindIn(ctx context.Context, id, from string) (Key, error) {
+	row, err := s.findInRow(ctx, s.DB, id, from)
+	if err != nil {
+		return Key{}, err
+	}
+	return Key{Direction: "in", Peer: row.peer, ID: row.id}, nil
 }
 
 // Key identifies one request row: requests are unique per (direction, peer,
