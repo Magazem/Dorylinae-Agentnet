@@ -79,6 +79,20 @@ Download the `windows` zip for your CPU and follow the manual steps. A per-user 
 elevation) is ticket 4.4b. Windows builds are not code-signed in wave 1 (D36): SmartScreen
 may ask you to confirm the first run ("More info", then "Run anyway").
 
+## Linux: shared machines
+
+On Linux the approval window is a `zenity` (or `kdialog`) process. Those tools take their
+text only from the command line, so the window's **title and summary** (the action, the
+label, the peer's name) are in that process's argument list, and any other local user can read
+them with `ps` or `/proc/<pid>/cmdline`. The **code is never in it**: it is shown on the
+desktop notification, and the window only receives what you type. Owner decision D20
+accepted this because the summary is local metadata, not a secret. On a shared machine, mount
+`/proc` with `hidepid=2` (for example `mount -o remount,hidepid=2 /proc`, or `proc /proc proc
+defaults,hidepid=2 0 0` in `/etc/fstab`), so a user sees only their own processes. macOS and
+Windows pass the text through the environment, which only the same user can read.
+
+See [`agentnet approve`](approve.md#linux-the-summary-is-in-the-dialogs-argument-list).
+
 ## Version checks after install
 
 A relay may announce the oldest daemon release it supports (`ready.min_client`,

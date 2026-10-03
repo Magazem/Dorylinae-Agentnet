@@ -168,7 +168,7 @@ automatically; no human step (OD-P3-5).
 
 - **Mismatch** (B's derivation differs, A's signature is bad, or the outcome is
   inconsistent): B stores A's claimed hash and its own, sets `peer_refused` on its side,
-  closes its mirror (`cancelled`), audits `decision.refuse {session, peer, reason}`, notifies
+  closes its mirror (`cancelled`), audits `decision.refuse {id, session, peer, reason}`, notifies
   `debate.refused` ([debate.md §Notifications](debate.md#notifications); R55-F29: not
   `debate.broken`, which means a bad reveal only), and sends `debate.sign {at, decision: <B's hash>, refused: "mismatch",
   request, session}`. B's phase becomes `broken`. **B's own record** is the Decision B
@@ -220,9 +220,17 @@ This file is what goes next to the Markdown in a repo (`d-….json`). **Verifica
 the vector checker):
 
 1. Parse strictly; `decision` must pass the schema of this document and of every embedded
-   debate message (the same validators as the daemon), and `canonical(decision)` must be at
-   most `MaxDecision` bytes. Keys and signatures are strict base64url (the unused bits of the
-   last character are zero), so each has one text form (review 47 L1, L2).
+   debate message (the same validators as the daemon, with one exception below), and
+   `canonical(decision)` must be at most `MaxDecision` bytes. Keys and signatures are strict
+   base64url (the unused bits of the last character are zero), so each has one text form
+   (review 47 L1, L2). In the code step 1 checks only the shape of a signature; the unused
+   bits of a signature's last character are checked when the signature is decoded at step 3,
+   so a non-canonical signature fails at step 3, "does not verify", not at step 1 (it fails
+   closed either way; R55-171). The **context** entries of `problem.context` are checked more
+   loosely by `decision verify` than by a daemon: `bytes` up to 1 MiB (the request limit is
+   65 536), no limit of 8 files, and `.` and `..` accepted as names. A file no daemon could
+   have derived can still verify if both keys signed it, which proves nothing extra (R55-223;
+   reusing the request validator is a possible later change).
 2. Recompute `canonical(decision)`, `msg` and `decision_hash`; it must equal `hash`.
 3. Verify each present signature under `participants.initiator` / `.respondent` over `msg`.
 4. Recompute `id` from `session` (rule 1).
@@ -267,7 +275,10 @@ recomputed: 3); a member added (`"note": "x"`: 1); `id` of another session (4); 
 `claim` with a newline (1); `final_agreement.decision` changed to another valid line, with
 `hash` and both signatures recomputed with the vector keys (5). The vector with the `respondent` signature removed verifies with
 **exit 6** (`complete: false`). `tools/specvectors` and `tools/verifyvectors` reproduce the
-vector and the negatives (ticket 3.3a).
+vector and the negatives (ticket 3.3a). They check the vector's canonical form, id, hash and
+signatures, and the invariants of step 5; they do **not** re-derive the Decision from the debate
+transcript under the derivation rules 1–12. That derivation is covered only by the package tests
+of `internal/decision` (`TestDecisionVector`), which run in CI (R55-179).
 
 ## Markdown
 
@@ -336,7 +347,7 @@ other side cannot check this".
 ```
 # Decision d-… : <title as code span>
 - Outcome: agreed | escalated (reason) ; Signed by: initiator and respondent | initiator only
-- Participants: initiator <name code span> (fingerprint …), respondent … (fingerprint …)
+- Participants: initiator fingerprint …, named <name code span>; respondent fingerprint …, named …
 - Session s-…, request r-…, team t-…, opened …, closed …, hash …
 ## Problem            (topic fenced; context files as a list: name, bytes, sha256)
 ## Initial positions  (per side: claim, assumptions, evidence, rejected alternatives, argument)
@@ -388,13 +399,13 @@ removes the debate it came from ([retention.md](retention.md#finished-items), OD
 | `agentnet decisions [--json]` | `decision_list` |
 | `agentnet decision <id> [--json [--out FILE]]` | the signed file, to stdout or FILE (refuses to overwrite without `--force`; review 48 M3: a PowerShell 5.1 redirect writes UTF-16, which verify refuses) |
 | `agentnet decision <id> --md [--out FILE]` | Markdown to stdout or FILE (refuses to overwrite without `--force`) |
-| `agentnet decision verify FILE [--md \| --json]` | offline, no daemon. Exit 0 valid with two signatures, 6 valid but unconfirmed (initiator only), 1 invalid |
+| `agentnet decision verify FILE [--md \| --json]` | offline, no daemon. With `--md`, stdout is the human status lines and then the Markdown (not a clean file when redirected). Exit 0 valid with two signatures, 6 valid but unconfirmed (initiator only), 1 invalid |
 
 ## Audit
 
 | Action | Side / actor | Detail |
 |---|---|---|
-| `decision.create` | both / `daemon` | `{id, session, peer, outcome, hash, bytes, signed_by}` |
+| `decision.create` | both / `daemon` | `{id, session, peer, outcome, hash, bytes, signed_by}`. B writes it only when B stores a Decision it signs; B's unsigned `peer_refused` record gets `decision.refuse` and no `decision.create` (R55-226) |
 | `decision.sign_in` | A / `daemon` | `{id, session, peer}` |
 | `decision.refuse` | either / `daemon` | `{id, session, peer, reason}` |
 

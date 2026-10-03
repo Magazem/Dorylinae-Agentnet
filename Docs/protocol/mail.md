@@ -190,7 +190,7 @@ Each mail uses its own HPKE context, with exactly one `Seal` and one `Open` (seq
 | `team` | `""` (Phase 1 may set a team label; it is routing metadata and is not covered by the seal) |
 | `type` | `mail` for every kind. The relay learns only that mail was sent, and its size |
 | `id` | `msg.id` |
-| `ts` | Sender clock at the time of this (re)send, RFC 3339 |
+| `ts` | Sender clock when this frame was built, RFC 3339. A resend sends the stored frame unchanged, with the same `ts`; only a re-seal ([Key-miss recovery](#key-miss-recovery), [Sending and backoff](#sending-and-backoff)) builds a new frame with a new `ts` (R55-207) |
 | `payload` | Standard base64 of the binary payload below |
 
 Payload layout, all fixed offsets:
@@ -414,6 +414,7 @@ is accepted before the first release (OD-F18-1 in
 | `ws.result`, `ws.state`, `ws.cancel` | [work-session.md](work-session.md#kinds) (draft) | yes / yes | 2.1a |
 | `grant`, `grant.revoke` | [grant.md](grant.md#kinds) (draft) | yes / yes | 2.2c |
 | `device.link`, `device.unlink` | [device.md](device.md#kinds) (draft) | yes / yes | 2.D1 |
+| `debate.entry`, `debate.reveal`, `debate.constraint`, `debate.close`, `debate.sign` | [debate.md](debate.md#messages-32), [decision.md](decision.md#signing) | yes / yes | 3.1, 3.3 |
 
 Presence heartbeats reuse this seal and signature with kind `presence`, but as envelope type
 `presence`, not `mail` ([presence.md](presence.md)). From 1.4b, an `Apply` error wrapping

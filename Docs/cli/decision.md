@@ -27,7 +27,10 @@ Reads a signed file — the one `--json` prints or `--json --out` writes — **w
 recomputes the hash, checks each present signature, the id and the derivation invariants
 ([decision.md §Signed file](../protocol/decision.md#signed-file-third-party-verification)).
 `--md` also renders Markdown to stdout (not together with `--json`); offline, names are the keys' fingerprints, never
-petnames (nothing here reaches a daemon to look one up).
+petnames (nothing here reaches a daemon to look one up). With `--md`, stdout holds the human
+status lines of the verification **followed by** the Markdown, so redirecting it (`> d.md`) does
+not give a clean Markdown file; to write one, use `agentnet decision <id> --md --out FILE`
+(R55-226).
 
 ## Exit codes
 
@@ -79,7 +82,7 @@ verify` re-canonicalises, so the hash and signatures still verify:
 
 `--md` renders the fixed layout of
 [decision.md §Markdown](../protocol/decision.md#markdown): a title line, the outcome and who
-signed, participants with fingerprints, the problem, initial and (if any) final positions,
+signed, participants (each fingerprint first, then the peer-chosen name), the problem, initial and (if any) final positions,
 rounds, the final agreement or remaining disagreement, human decisions and constraints,
 affected artifacts, and a verification section with the hash and both signatures.
 

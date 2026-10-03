@@ -1,7 +1,7 @@
 # Decision d-ffeeb0b78e6bd96981357b500af940aa : ` Outbox retry policy `
 
 - Outcome: escalated (timeout) ; Signed by: initiator and respondent
-- Participants: initiator ` alice-agent ` (fingerprint AB12-CD34-EF56), respondent ` bob-agent ` (fingerprint 12AB-34CD-56EF)
+- Participants: initiator fingerprint AB12-CD34-EF56, named ` alice-agent `; respondent fingerprint 12AB-34CD-56EF, named ` bob-agent `
 - Session s-36375782ceb6baea9cee4d4273dfb035, request r-0123456789abcdef0123456789abcdef, team t-00112233445566778899aabbccddeeff, opened 2026-10-01T09:00:00Z, closed 2026-10-01T09:20:00Z, hash 6ec367cd5f0f82b1d929878e678ba1aafdd3c33cb13dc22da2fba55836094ede
 
 ## Problem

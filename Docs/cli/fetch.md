@@ -38,7 +38,7 @@ The grantor checks the grant on **every** read, so `agentnet revoke` stops a fet
 next read, and one in progress at its next fragment. An expired grant, a grant of an ended
 or not open session, a revoked grant and a malformed path fail **locally**, with no
 message sent to the grantor. `.git` directories, symlinks, devices and FIFOs are not
-served; the grantor's limits (two reads in flight per holder, 20 operations per second and
+served. On a Windows grantor every non-link reparse point also answers `symlink`, including OneDrive Files-On-Demand files: the grantor can grant a folder outside OneDrive, or mark the files "Always keep on this device" ([grant.md](../protocol/grant.md)). The grantor's limits (two reads in flight per holder, 20 operations per second and
 256 MiB per grant per 24 h) answer `rate_limited`.
 
 ## Output

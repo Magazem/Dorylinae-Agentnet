@@ -370,7 +370,7 @@ back to the requester's side, that is, B's result. While `quarantined`:
   consult (brief, title, context), or the notes of B's replies to A's other requests. Those
   are ordinary untrusted peer text, exactly as in Phase 1, and are not quarantined in Phase 2
   (OD-P2-15).
-- `agentnet release <session>` requires a [human approval](approval.md) (kind `release`).
+- `agentnet session <session> --release` requires a [human approval](approval.md) (kind `release`).
   On approval: `quarantined → awaiting_result`, audit `ws.release {session, peer, round,
   approval}`, `ws.state` to B. The result then becomes visible. The approval summary names
   the peer (cleaned name and full fingerprint), the request (type and quoted title), the
@@ -428,8 +428,13 @@ opens with `PRAGMA secure_delete=ON` ([store.go](../../internal/store/store.go))
 overwritten content is zeroed at the SQLite layer, narrowing that gap. It does **not** cover
 **WAL frames**: in WAL journal mode a page that changes is first written to the `-wal` file and
 only folded into the main database file at a checkpoint, so an old copy of a deleted or
-blanked value can remain in `-wal` (or in `-shm`) until the next checkpoint runs, and
-`secure_delete` does not reach that copy. This is a same-user read of files the user already
+blanked value can remain in `-wal` (or in `-shm`), and
+`secure_delete` does not reach that copy. A checkpoint does **not** remove it: a checkpoint
+neither zeroes nor truncates the `-wal` file, and the old frames stay until new frames
+overwrite them or the last connection to the database closes. The daemon keeps its only
+connection open for its whole life, and neither the daemon nor the relay sets
+`journal_size_limit` or runs `wal_checkpoint(TRUNCATE)` (measured: after a full checkpoint
+the deleted marker was gone from the main file and still present in `-wal`; R55-150). This is a same-user read of files the user already
 owns (the same boundary as [approval.md §Threat model](approval.md#threat-model)), not a new
 exposure to a remote peer; it is a gap in how completely a *local* delete removes bytes from
 disk, not fixed for Phase 3.
@@ -661,7 +666,7 @@ Per-command pages (`Docs/cli/session.md`) are written by ticket 2.1b.
 | `agentnet result <id> --status S [--summary T] [--file F \| --output-from-file F] [--exit-code N] [--artifact SPEC]… [--verification none\|tests_passed] [--notes T] [--json]` | `ws_result` | `--file` is the plan's name and is the same as `--output-from-file` (CRLF → LF, ANSI CSI stripped, other controls rejected, `-` = stdin, as `agentnet complete` in 1.6b). For a consult, `--status` defaults to `n/a` ([consult.md](consult.md)) |
 | `agentnet wait <id> [--timeout SECONDS] [--json]` | polls `ws_show` | See below |
 | `agentnet accept-result <id> [--human] [--json]` | `ws_accept_result` | |
-| `agentnet release <id> [--json]` | `ws_release` | Prints the approval id; the code arrives by desktop notification |
+| `agentnet session <id> --release [--json]` | `ws_release` | Prints the approval id; the code arrives by desktop notification |
 
 **`wait`** is the one command that deliberately blocks beyond 2 s; it is a CLI-side loop and
 every IPC call in it returns in under 2 s. It polls `ws_show` (or, before the session
@@ -756,4 +761,4 @@ Never titles, results, notes, changes or reasons. Only ids, enums, counts and si
 
 `unknown_session`, `not_requester`, `not_worker`, `bad_state`, `bad_request`,
 `result_too_large`, plus the approval codes of [approval.md](approval.md) for
-`--human` and `release`.
+`--human` and `--release`.

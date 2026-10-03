@@ -209,7 +209,7 @@ not needed for the acceptance tests (OD-P3-7 lists it).
 | `converge` | proposal, then answer | A, then B |
 | `closing` | A decided the outcome; waiting for the peer's signature ([decision.md](decision.md#signing)) | — |
 | `closed` | final: `outcome` ∈ `agreed`, `escalated`, `cancelled` | — |
-| `broken` | B only: a bad reveal ([above](#commitreveal)) | — |
+| `broken` | B only: a bad reveal ([above](#commitreveal)), or a refused close (a Decision B will not sign: [decision.md](decision.md#signing)) | — |
 
 The work session row stays `open` until the debate is `closing` or `closed`, and then
 closes in the same transaction as the phase change (`outcome = accepted` when a Decision
@@ -698,7 +698,7 @@ Every method returns within 2 s and never waits for a peer.
   "topic", "context"?: [{"name", "bytes"}],
   "transcript": [{"slot", "author", "kind", "at", "entry"}],
   "constraints": [{"id", "author", "at", "text", "state"}],
-  "decision"?: {"id", "hash", "state"}
+  "decision"?: {"id", "state", "outcome"?, "signed_by"}
 }
 ```
 
@@ -718,7 +718,7 @@ both, the view's size is its canonical size plus a few hundred bytes.
 | `request_submit` | gains `debate: {"position", "rounds"?, "turn_timeout_s"?}` for `type = debate` | as Phase 2, plus `session`. The daemon computes nonce and commitment. **Absent** `rounds` / `turn_timeout_s` take the defaults 2 / 3600. A present value outside 1–5 / 300–86400, **including 0**, is `bad_request` naming `debate.rounds` / `debate.turn_timeout_s` (R55-F29, review 55 R55-116). `bad_request` naming the field; `quarantine_active` |
 | `debate_list` | `{"phase"?, "peer"?}` | `{"debates": [<list view>]}`, newest first. Runs the timeout sweep first ([Timeouts](#timeouts)) |
 | `debate_show` | `{"id"}` (`s-` or `r-`) | `{"debate": <view>}`. Applies the timeout rule to that debate first. `unknown_session` |
-| `debate_submit` | `{"id", "kind", "entry"}` | `{"debate": <view>, "mail_id"}`. `bad_state`, `not_your_turn`, `bad_request`, `entry_too_large`, `quarantine_active` (one-step accept); `ambiguous_request` for an `r-` id of more than one debate; the one-step accept's request errors as `request_accept` (`unknown_request`, `bad_state`; `bad_request` for an unpaired peer; R55-128) |
+| `debate_submit` | `{"id", "kind", "entry"}` | `{"debate": <view>, "mail_id"}`. `bad_state`, `not_your_turn`, `bad_request`, `entry_too_large`, `quarantine_active` (one-step accept); `unknown_session` (also for a session that is not a debate, not `bad_state`); `ambiguous_request` for an `r-` id of more than one debate; the one-step accept's request errors as `request_accept` (`unknown_request`, `bad_state`; `bad_request` for an unpaired peer; R55-128) |
 | `debate_constrain` | `{"id", "text"}` | `{"approval": <approval view>}`. `bad_state`, `bad_request`, `constraint_limit`, the approval errors |
 
 Cancel is `ws_cancel`. New error codes: `not_your_turn`, `entry_too_large`,
@@ -738,8 +738,8 @@ Per-command page `Docs/cli/debate.md` (ticket 3.1b).
 | `agentnet debate <id> --cancel [--reason R]` | `ws_cancel`; `request_cancel` in `invited` (initiator only) | `R` is passed to whichever method runs ([Cancel](#cancel-and-abandon)) |
 | `agentnet wait <id>` | polls `debate_show` | For a debate: exit 0 with `wait: "turn"` when `turn` becomes `you`, `wait: "closed"` when closed (with the decision summary), `4` on timeout |
 
-`--help` prints the JSON shape of each entry kind with one example each, so an agent needs
-nothing else. The snippet ([Docs/agents/snippet.md](../agents/snippet.md)) gains a short
+`--help` prints the shape of each entry kind (the flags that build it), so an agent needs
+nothing else; it does not print a worked example for each kind (R55-226). The snippet ([Docs/agents/snippet.md](../agents/snippet.md)) gains a short
 "debates" paragraph (3.H).
 
 ## Notifications

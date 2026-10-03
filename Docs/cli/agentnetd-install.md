@@ -94,6 +94,10 @@ restrictions, restart up to 3 times at 1 minute intervals on failure.
 A systemd user unit runs while the user has a session. To start it at boot without logging in,
 the user must run `loginctl enable-linger` themselves; `install` does not do this.
 
+On a shared Linux machine, other local users can read an approval window's summary (never the
+code) in `zenity`'s or `kdialog`'s argument list. Mount `/proc` with `hidepid=2` to hide it
+([`agentnet approve`](approve.md#linux-the-summary-is-in-the-dialogs-argument-list)).
+
 ## Behaviour to know about
 
 - **Audit:** a successful `install` / `uninstall` (not `--dry-run`) appends `service.install` /

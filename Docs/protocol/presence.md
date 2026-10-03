@@ -211,6 +211,8 @@ Relay change (1.2a):
   to a separate **ephemeral budget** (`--max-inflight-ephemeral`), never to the mail budget,
   and is dropped silently when that budget (or its recipient prefix's share of it) is spent
   and no stale holder can be evicted.
+- Size cap: an ephemeral frame over **8 KiB** (`defaultEphemeralMaxBytes`, `ephMax`) is dropped
+  silently, like any other ephemeral drop (R55-209). A presence frame is far smaller.
 - Rate limit: at most **600** ephemeral envelopes per minute per sending key (relay option
   `EphemeralPerMinute`). Excess envelopes are dropped silently and counted in the log
   (`event=ephemeral_limited`, once a minute).

@@ -87,7 +87,9 @@ agentnet login           daemon                 relay                    browser
 A key that is already bound gets `error` `already_bound`: moving a key to another account
 needs `agentnet logout` first (review 50 L6).
 `device` is a label the human sees on the confirm page (≤ 32 chars, `[A-Za-z0-9 ._-]`,
-defaults to the host name shortened); `os` from `runtime.GOOS`.
+defaults to the host name shortened); `os` from `runtime.GOOS`. A `device` or `os` the relay
+refuses is answered with `error` `bad_envelope` (R55-224); an internal failure creating the bind
+is `internal`.
 
 `bind_pending` (relay → daemon):
 `{"op":"bind_pending","ref":"bnd_…","user_code":"WDJB-MJHT","url":"https://relay.example/login","expires":"…","interval":5}`
@@ -106,7 +108,7 @@ defaults to the host name shortened); `os` from `runtime.GOOS`.
   it prints "the relay sent an unexpected login URL" and opens nothing. The URL is printed with
   control and bidi characters replaced ([relay-hosted.md](relay-hosted.md#daemon)).
 
-`bind_poll` → `bind_pending` (unchanged), `bind_done`
+`bind_poll` → `bind_pending` (unchanged: it carries `url`, `expires` and `interval` but no `user_code`, because the relay stores only its hash), `bind_done`
 `{"op":"bind_done","account":{…as in ready…}}`, or `error` `bind_expired` / `bind_denied`.
 Polling faster than `interval` gets `rate_limited`. On `bind_done` the relay re-sends
 `ready`-equivalent state; the daemon does not reconnect.

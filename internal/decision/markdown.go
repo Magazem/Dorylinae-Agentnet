@@ -58,8 +58,10 @@ func Render(d map[string]any, hash string, sigInitiator, sigRespondent string, r
 
 	initName, respName := names["initiator"], names["respondent"]
 	initFP, respFP := fingerprints["initiator"], fingerprints["respondent"]
-	fmt.Fprintf(&b, "- Participants: initiator %s (fingerprint %s), respondent %s (fingerprint %s)\n",
-		codeSpan(initName), initFP, codeSpan(respName), respFP)
+	// The real fingerprint comes before the peer-chosen name, so a name cannot
+	// show a fake one first (as `agentnet decision <id>` does, review 96 I4).
+	fmt.Fprintf(&b, "- Participants: initiator fingerprint %s, named %s; respondent fingerprint %s, named %s\n",
+		initFP, codeSpan(initName), respFP, codeSpan(respName))
 
 	session, _ := d["session"].(string)
 	request, _ := d["request"].(string)

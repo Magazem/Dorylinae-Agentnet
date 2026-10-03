@@ -127,7 +127,9 @@ need no cgo and no new dependency.
 ### Secret
 
 Keystore secret (same backends as the identity): keychain service `dorylinae`, account
-`webhook` (there is one webhook per daemon), or file `<config dir>/webhook.key` (owner-only).
+`webhook-<hash>`, where `<hash>` is the first 8 bytes (16 hex) of the SHA-256 of the canonical config
+directory, so two homes on one machine keep separate secrets (R55-088, R55-211; O-115 is fixed),
+or file `<config dir>/webhook.key` (owner-only).
 The value is the raw 32 bytes. When the keychain and the file hold different secrets, the
 one matching `secret_sha256` is used ([Key storage](agent-card.md#key-storage)). Rotation
 replaces it at once. Pending retries are signed with
@@ -158,6 +160,8 @@ The event object (`generic` format), UTF-8 JSON, at most 8 KiB:
 
 - `id`: `w-` + 32 hex, unique per delivery (the replay id). `ts`: when the event was created.
 - `request.session` (the session id) is present on the session and debate events.
+- `request.state` is the request's state for `request.*` events, the **work-session** state for
+  `session.*` events, and `""` for debate events (R55-211).
 - `request.title` is present **only** with `title: true`. Never included: the brief, artifacts,
   requested grant, reasons, notes, public keys, deadline and `urgency_declared`.
 - `request.result_status` (`pass`, `fail`, `partial` or `n/a`) is present only on
@@ -264,8 +268,10 @@ marks every pending row `failed` (`error = "removed"`).
 
 | Data | Desktop | Webhook |
 |---|---|---|
-| Event, type, urgency, state | yes | yes |
-| Peer name, team name | yes (sanitised) | yes (sanitised), plus the fingerprint and team id |
+| Event, type, urgency | yes | yes |
+| State | no | yes |
+| Peer name | yes (sanitised) | yes (sanitised), plus the fingerprint |
+| Team name | no | yes (sanitised), with the team id |
 | Title | yes | only with `--webhook-title on` |
 | Completion result `status` (D14) | yes | only with `--webhook-title on` |
 | Brief, artifacts, reasons, notes, grant, keys | never | never |

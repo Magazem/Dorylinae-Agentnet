@@ -19,7 +19,9 @@ state. The sender keeps a mirror.
 Conventions follow [mail.md](mail.md): `<key>` is an identity key, wire times are RFC 3339
 UTC with `Z` and whole seconds, SQLite times carry milliseconds, JSON is canonical, and
 parsing is strict. "Code points" counts Unicode scalar values. "No control characters"
-means no U+0000–U+001F and no U+007F.
+means no U+0000–U+001F and no U+007F, and also no U+FFFD (the replacement character, which
+marks invalid UTF-8; R55-205). Context file names and texts additionally refuse the C1
+controls U+0080–U+009F, and a debate's topic refuses C1 and U+2028/U+2029.
 
 ## Request object
 
@@ -143,7 +145,9 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
    (`90m`, `2h`, `3d`: Go `time.ParseDuration`, plus a `d` suffix meaning 24 h) resolved
    against `now`, and the result is truncated to whole seconds.
 6. **Sender-side urgency budget** ([Urgency guards](#urgency-guards-17)). This may downgrade
-   `high` or `blocking` to `normal` and set `urgency_declared`.
+   `high` or `blocking` to `normal` and set `urgency_declared`. In the code this runs **before**
+   step 5, right after the idempotency check: a request that then fails validation has read the
+   budget but stored no row and used none of it, so the order is not observable (R55-210).
 7. Build the object (`id` fresh, `created = now`). In **one SQLite transaction**, insert the
    `out` row (`state = pending`) and the outbox row. If any `requests` row already has the
    fresh `id` (either direction, any peer; checked in that transaction, before the outbox
@@ -182,7 +186,9 @@ IPC `request_submit` ([ipc.md](ipc.md#requests)), CLI `agentnet request @peer <t
 - `peer.daemon_online` and `peer.last_seen` come from [presence.md](presence.md#receiving).
   `last_seen` is `null` if the peer was never heard from. `daemon_online` is `false` in that
   case too.
-- `urgency_declared` and `urgency_note` are present only when the request was downgraded.
+- `urgency_declared` and `urgency_note` are present only when the request was downgraded. For a
+  `duplicate` of a downgraded request, `urgency_declared` is present (it is stored in the request)
+  but `urgency_note` is not: the note is built only on a fresh submit (R55-210).
 - For a `duplicate`, `mail_id` and `status` describe the original: `status` is the current
   delivery state (`queued`, `relayed`, `delivered`, `expired`, `failed`), or `unknown` if the
   outbox row was pruned.
@@ -765,7 +771,7 @@ CREATE TABLE requests (
     peer              TEXT NOT NULL,              -- in: sender; out: recipient
     id                TEXT NOT NULL,              -- r-<32 hex>
     team_id           TEXT NOT NULL,
-    type              TEXT NOT NULL CHECK (type IN ('review', 'task', 'question')),
+    type              TEXT NOT NULL CHECK (type IN ('review', 'task', 'question', 'debate')),  -- 'debate' added by migration 19 (R55-210)
     urgency           TEXT NOT NULL CHECK (urgency IN ('low', 'normal', 'high', 'blocking')),
     urgency_declared  TEXT NOT NULL CHECK (urgency_declared IN ('low', 'normal', 'high', 'blocking')),
     downgraded_by     TEXT CHECK (downgraded_by IN ('sender', 'receiver')),

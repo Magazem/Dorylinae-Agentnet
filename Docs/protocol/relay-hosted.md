@@ -877,8 +877,8 @@ connections, queue rows and bytes, redelivery counters, `relay_db_bytes` and
 - Alerts: backup older than 26 h; queue at 80 % of the relay-wide cap; free disk < 2 GiB;
   auth-failure rate spike; any team at 100 % quota.
 - Deploy: one container image built by CI from a tag (the owner authorises tags); the image
-  runs as a non-root user; the database on a persistent volume; `relay --version` printed at
-  start. Rollback = redeploy the previous image; migrations are forward-only, so a release with a
+  runs as a non-root user; the database on a persistent volume; the version is taken from `relay --version` (the relay
+  does not print it at start: R55-224). Rollback = redeploy the previous image; migrations are forward-only, so a release with a
   new relay migration takes a backup first (the deploy script does it).
 - Logs: as today (no payloads, abbreviated keys); retention on the host at most 14 days.
   Account emails never appear in logs (account ids only).

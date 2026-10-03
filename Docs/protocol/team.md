@@ -49,7 +49,11 @@ for a team of five (4 codes instead of 10 pairwise pairings).
 | `fingerprint` | Human-verified | 3 |
 
 `Store.Add` still never lowers trust. A later direct pairing (v2) or `peers verify` of an
-introduced peer raises it to `code` / `fingerprint` and clears `introduced_by`.
+introduced peer raises it to `code` / `fingerprint` and clears `introduced_by`. In the code,
+**every** `AddTrusted` clears `introduced_by`, including a **v1** re-pair (R55-206, O-041):
+the peer keeps trust `team` (it is never lowered), but it is no longer garbage-collected as an
+introduced peer and its card is no longer refreshed from the introducer. The key is the same,
+so nothing is impersonated.
 
 Policy D5 ([pairing.md](pairing.md#storage-and-trust-states)): on a non-loopback relay,
 requests are refused to and from `trust = relay` only. `team` is accepted: the key was
@@ -181,7 +185,7 @@ commit broadcast the roster to all members (the joiner included). Audit
 Owner, in `Apply`: if the team is known, `active`, owned by self, and `msg.from` is a member
 other than the owner: remove it, `epoch += 1`, broadcast the roster to the **remaining**
 members. Audit `team.member_leave {team, peer, epoch}`. Anything else: acked, ignored,
-audit `team.leave_ignored {team, peer}`.
+audit `team.leave_ignored {team, peer}` (no `reason`, unlike the other two `_ignored` rows, R55-209).
 
 ## Operations
 
@@ -193,7 +197,7 @@ audit `team.leave_ignored {team, peer}`.
 | Remove member | owner | `epoch += 1`, member dropped, roster sent to remaining members **and** the removed one | `team_remove` |
 | Rename | owner | `epoch += 1`, new name, roster sent to all | `team_rename` |
 | Leave | member (not owner) | Local state `left` at once: stop presence to members who share no other active team (send `offline` first, [presence.md](presence.md#visibility)), GC introduced peers, then submit `team.leave` | `team_leave` |
-| Delete | owner | `state = dissolved`, `epoch += 1`, roster (with the final member list) sent to all members; locally `dissolved`, GC. A member whose stored Agent Card no longer verifies (agent-card.md, review 68 OD-3) is left out of the final list but still sent the roster, and applies it as `dissolved` (Apply step 4) | `team_delete` |
+| Delete | owner | `state = dissolved`, `epoch += 1`, roster (with the final member list) sent to all members; locally `dissolved`. `Store.Delete` runs **no** GC of introduced peers (R55-209); in practice this changes nothing, because members who joined through a v2 pairing are not introduced peers. A member whose stored Agent Card no longer verifies (agent-card.md, review 68 OD-3) is left out of the final list but still sent the roster, and applies it as `dissolved` (Apply step 4) | `team_delete` |
 
 Plain `agentnet pair <invite code>` also works (it is a pairing code): it pairs but does not
 join, because no `team_pending_joins` row is written and no `team.join` is sent.
@@ -317,7 +321,7 @@ CREATE TABLE team_pending_joins (                   -- joiner side
 
 `team_invites` rows are written only on `pair.complete` (the lookup-to-team mapping for a
 still-pending invite is held in memory by the pairing manager). Rows with `expires < now`
-are pruned daily and at start, in both invite tables. A lookup is reused by the relay only
+are pruned in both invite tables whenever a row is inserted into that table (`team_invites` on `pair.complete`, `team_pending_joins` on a join). They are not pruned daily or at start, so an expired row can stay until the next insert (R55-166, O-087); it is never used after it expires. A lookup is reused by the relay only
 after its pairing ends; if a new invite completes with a lookup still in `team_invites`, the
 old row is replaced.
 
@@ -339,7 +343,8 @@ cards, announcements or codes.
 | `team.rename` | `{team, name, epoch}` |
 | `team.delete` | `{team, epoch}` |
 | `team.roster_apply` | `{team, epoch, added, removed, state}` |
-| `team.roster_ignored`, `team.join_ignored`, `team.leave_ignored` | `{team?, peer, reason}` |
+| `team.roster_ignored`, `team.join_ignored` | `{team?, peer, reason}` |
+| `team.leave_ignored` | `{team, peer}` |
 
 **When the row fails** ([audit.md §When the row cannot be written](audit.md#when-the-row-cannot-be-written-r55-f31-d64)).
 `team.roster_apply` is class S and the GC's `peer.remove {reason: "team"}` rows are class S- (both described above).
