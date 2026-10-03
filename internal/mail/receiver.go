@@ -20,8 +20,9 @@ import (
 // Receiver side of Docs/protocol/mail.md §Dedupe and inbox and §Ack.
 
 const (
-	// SeenRetention is how long mail_seen rows are kept. It is longer than
-	// MaxAge, so pruning can never re-admit a replay (step 11 rejects it).
+	// SeenRetention is how long mail_seen rows are kept (see SeenCutoff). It
+	// is longer than MaxAge, so pruning can never re-admit a replay (step 11
+	// rejects it).
 	SeenRetention = 35 * 24 * time.Hour
 
 	// ActionIn is the audit action for accepted mail.
@@ -313,9 +314,11 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		return seenNew, stageErr("begin", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after a successful commit
-	at := r.now().UTC().Format(StoreTimeFmt)
+	now := r.now()
+	at := now.UTC().Format(StoreTimeFmt)
+	seenAt := seenStamp(now, op.Msg.Created)
 	res, err := tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`, op.Msg.From, op.Msg.ID, at)
+		`INSERT OR IGNORE INTO mail_seen (from_key, id, received_at) VALUES (?, ?, ?)`, op.Msg.From, op.Msg.ID, seenAt)
 	if err != nil {
 		return seenNew, stageErr("record seen", err)
 	}
@@ -337,10 +340,10 @@ func (r *Receiver) store(ctx context.Context, op *Opened, k Kind, known bool) (s
 		if k.Apply != nil {
 			if err := k.Apply(ctx, tx, op); err != nil {
 				if errors.Is(err, ErrBadBody) {
-					return r.storeBad(ctx, tx, op, at, seenBad)
+					return r.storeBad(ctx, tx, op, seenAt, seenBad)
 				}
 				if errors.Is(err, ErrLimit) {
-					return r.storeBad(ctx, tx, op, at, seenLimit)
+					return r.storeBad(ctx, tx, op, seenAt, seenLimit)
 				}
 				return seenNew, &stageError{stage: "apply", prefix: "apply " + op.Msg.Kind, err: err}
 			}
@@ -489,10 +492,75 @@ func (r *Receiver) Flush() {
 	}
 }
 
-// Prune deletes mail_seen rows received more than SeenRetention before now.
+// seenStamp is the mail_seen.received_at of a mail with this created received
+// at now: now, but never later than created + MaxSkew. Step 11 gives
+// created - MaxSkew <= now, so the stamp is within MaxSkew of the signed
+// created, and a mail received while the local clock is stepped forward is
+// stamped with the sender's time (R55-F28, review 55 R55-053).
+func seenStamp(now, created time.Time) string {
+	if limit := created.Add(MaxSkew); now.After(limit) {
+		now = limit
+	}
+	return now.UTC().Format(StoreTimeFmt)
+}
+
+// SeenQueryer is the part of *sql.DB and *sql.Tx that SeenCutoff needs.
+type SeenQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// SeenCutoff returns the mail_seen prune cutoff: rows whose received_at sorts
+// before it are pruned. It is SeenRetention before the earlier of now and the
+// newest received_at. Stamps are bounded by the peers' signed created (see
+// seenStamp), so one prune while the local clock is stepped forward cannot
+// remove rows whose mail is still inside the receive window once the clock
+// is corrected (R55-F28, review 55 R55-053; Docs/protocol/mail.md §Dedupe and
+// inbox). An empty table gives a cutoff that prunes nothing.
+func SeenCutoff(ctx context.Context, q SeenQueryer, now time.Time) (string, error) {
+	basis, ok, err := SeenBasis(ctx, q, now)
+	if err != nil || !ok {
+		return "", err
+	}
+	return basis.Add(-SeenRetention).UTC().Format(StoreTimeFmt), nil
+}
+
+// SeenBasis returns the earlier of now and the newest mail_seen.received_at,
+// a clock bounded by the peers' signed created (see seenStamp) that a forward
+// step of the local clock does not move. ok is false when the table is empty.
+// SeenCutoff and the mailbox key deletion age by it (R55-F28, review 100 M1).
+func SeenBasis(ctx context.Context, q SeenQueryer, now time.Time) (basis time.Time, ok bool, err error) {
+	rows, err := q.QueryContext(ctx, `SELECT MAX(received_at) FROM mail_seen`)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var newest sql.NullString
+	if rows.Next() {
+		if err := rows.Scan(&newest); err != nil {
+			return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return time.Time{}, false, fmt.Errorf("mail: newest mail_seen row: %w", err)
+	}
+	if !newest.Valid {
+		return time.Time{}, false, nil
+	}
+	basis = now
+	// A bad-body row carries badBodyMark after the time.
+	if t, err := time.Parse(StoreTimeFmt, strings.TrimSuffix(newest.String, badBodyMark)); err == nil && t.Before(basis) {
+		basis = t
+	}
+	return basis, true, nil
+}
+
+// Prune deletes mail_seen rows older than SeenCutoff.
 func Prune(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
-	res, err := db.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`,
-		now.Add(-SeenRetention).UTC().Format(StoreTimeFmt))
+	cut, err := SeenCutoff(ctx, db, now)
+	if err != nil {
+		return 0, err
+	}
+	res, err := db.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`, cut)
 	if err != nil {
 		return 0, fmt.Errorf("mail: prune mail_seen: %w", err)
 	}
@@ -503,8 +571,11 @@ func Prune(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
 // mail_seen rows before the mail_inbox rows of the same ids in one
 // transaction (Docs/protocol/retention.md §Finished items).
 func PruneSeenTx(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
-	res, err := tx.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`,
-		now.Add(-SeenRetention).UTC().Format(StoreTimeFmt))
+	cut, err := SeenCutoff(ctx, tx, now)
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM mail_seen WHERE received_at < ?`, cut)
 	if err != nil {
 		return 0, fmt.Errorf("mail: prune mail_seen: %w", err)
 	}

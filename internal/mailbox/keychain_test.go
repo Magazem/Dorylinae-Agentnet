@@ -80,7 +80,17 @@ func TestKeychainLegacyAccountFallback(t *testing.T) {
 		t.Fatalf("key not copied to the canonical account: %v", err)
 	}
 
-	now = now.Add(mailbox.RotateAfter + mailbox.DeleteGrace + 14*24*time.Hour)
+	// Its successor is made by the 7-day rotation: a key is deleted by age only
+	// once a newer key has been current for 7 days (R55-F28).
+	now = now.Add(mailbox.RotateAfter)
+	if _, err := k.Rotate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(mailbox.DeleteGrace + 14*24*time.Hour)
+	// Mail received at that time gives the age basis (review 100 M1).
+	if err := mailbox.ReceivedMailAt(k, now); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := k.Rotate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
