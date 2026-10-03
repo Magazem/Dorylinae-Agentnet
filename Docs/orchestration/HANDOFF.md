@@ -37,6 +37,8 @@ Last updated: 2026-10-03, home PC. **Read §0 "START HERE" first.** Review-55 Lo
 
 **Owner manual checks (before a release):** run tests/phase1-smoke.sh on a real Linux or macOS machine (only the .ps1 was run); macOS launchd log reopen (F14); D7 two-account Windows pipe check; F8c-04 elevated old CLI stopping an elevated old daemon (Docs/beta/known-limitations.md); optional: delete %TEMP%dorylinae-p1-smoke-* scratch dirs by hand.
 
+**Owner manual progress (2026-10-03):** (1) Second-drive recovery (the 2026-09-29 incident) — closed: winfr restored the 42 folder's names, but SSD TRIM had zeroed most contents; the projects are on GitHub (owner confirmed); the other lost folder was unimportant. (2) **D7 two-account pipe-squat check — PASSED** on main d5a5a6e: user d7test squatted the test daemon's pipe (Everyone full access); `agentnet status` and `agentnetd run` both refused with "endpoint held by another user ... owned by S-...-1007 (d7test)". Remaining: Phase 2 Windows window checks, F8c-04 elevated stop, Linux (zenity/kdialog + phase1-smoke.sh), Mac (window, smoke, launchd), early relay deploy.
+
 **Next:** owner's pick (release prep, backlog, or a new review). Local worktrees AgentNet-wt/r55-* can be removed with `git worktree remove` once the owner agrees (never recursive deletes).
 
 
@@ -91,7 +93,7 @@ Reviews written: 66–81b in Docs/review/ (66–72 specs + adversarial reviews; 
 
 **Owner actions pending:**
 1. **D: recovery.** A worker's `rm -rf` through a junction deleted `D:\42` and `D:\Recovery` on 2026-09-29 (incident, rule 14). Do not write to D:. Recover with `winfr D: C:\recovered /extensive` or Recuva, onto C:/USB.
-2. **D7:** the two-account pipe-squat manual check. Steps are in `Docs/review/60-r55-f8-security.md` and the F8 report.
+2. ~~D7 two-account pipe-squat check~~ — PASSED 2026-10-03.
 3. **Early relay (4.1p) deploy:** follow `Docs/ops/early-relay-deploy.md`, "Owner actions on the VM that exists": IPv4-only 443, no AAAA record. Deploy is allowed now (D43); F1 is merged.
 4. **Manual window checks** in `tests/phase2-manual.md`: Ubuntu zenity, **KDE kdialog (mandatory, review 65)**, macOS.
 5. Done already: GitHub immutable releases (F3 OD-5).
