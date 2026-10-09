@@ -1,0 +1,101 @@
+# scoped read access: maya grants theo's agent fs.read on one folder (human-approved), theo lists and reads it, maya revokes it, theo's next read fails
+# captured 2026-10-08T13:43:22Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet accept r-97ae9a37feaf51fcf0c3c8246ae57be1
+Accepted r-97ae9a37feaf51fcf0c3c8246ae57be1 from maya
+[exit 0]
+
+maya$ agentnet request show r-97ae9a37feaf51fcf0c3c8246ae57be1 --json
+{"ok":true,"request":{"id":"r-97ae9a37feaf51fcf0c3c8246ae57be1","direction":"out","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"task","title":"Track down the flaky payments test","brief":"What: Find out why the payments integration test fails about one run in ten.\nWhy: It blocks merges twice a day and nobody owns it yet.\nDone when: You name the cause, or rule out the three usual suspects.\n","urgency":"normal","urgency_declared":"normal","downgraded_by":null,"artifacts":[],"created":"2026-10-08T13:41:40Z","state":"accepted","state_at":"2026-10-08T13:43:22Z","delivery":"delivered","mail_id":"m-b2d3dc4566beac6d9631949d221555c0","session":{"id":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","state":"open","round":1}}}
+[exit 0]
+
+maya$ agentnet grant theo --session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --action fs.read --resource /tmp/claude-0/-home-user-Dorylinae-Agentnet/23e9a7a7-9cfb-51a7-93c9-973648c5f9dc/scratchpad/film/capture/run/work/payments-ci --expires 1h
+Grant g-5d7222ea989a877447415efd69d41ae8: pending approval a-1a9f0356263e0ccac9c1394bfd541a7b. Type the code in the AgentNet approval window (reopen it with 'agentnet approve --open a-1a9f0356263e0ccac9c1394bfd541a7b').
+It is sent to theo once approved.
+[exit 0]
+
+maya$ agentnet grants --session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+ID                                  DIR     PEER  ACTION   RESOURCE          SCOPE  EXPIRES               STATE
+g-5d7222ea989a877447415efd69d41ae8  issued  theo  fs.read  payments-ci-af11  -      2026-10-08T14:43:30Z  pending_approval
+[exit 0]
+
+# maya's daemon terminal for the grant approval:
+#   AgentNet approval a-1a9f03: Grant fs.read to peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" on "/tmp/claude-0/-home-user-Dorylinae-Agentnet/23e9a7a7-9cfb-51a7-93c9-973648c5f9dc/scratchpad/film/capture/run/work/payments-ci" (label "payments-ci-af11"), the whole folder, for 1 h until 2026-10-08 14:43 UTC, in session s-b3098b5fd25dd5ec2aa2b78fe588fc03 (your task request "Track down the flaky payments test"). Sensitive: results of this session stay quarantined until you release them. Confirm only if you asked for exactly this.. Code 248765. Type "a-1a9f03 248765" to approve or "reject a-1a9f03" to reject.
+#   a-1a9f03 248765
+#   AgentNet: a-1a9f0356263e0ccac9c1394bfd541a7b approved
+maya$ agentnet grants --session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+ID                                  DIR     PEER  ACTION   RESOURCE          SCOPE  EXPIRES               STATE
+g-5d7222ea989a877447415efd69d41ae8  issued  theo  fs.read  payments-ci-af11  -      2026-10-08T14:43:30Z  active
+[exit 0]
+
+maya$ agentnet grants --session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --json
+{"ok":true,"grants":[{"id":"g-5d7222ea989a877447415efd69d41ae8","direction":"issued","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc"},"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","action":"fs.read","resource":{"kind":"fs","label":"payments-ci-af11","path":"/tmp/claude-0/-home-user-Dorylinae-Agentnet/23e9a7a7-9cfb-51a7-93c9-973648c5f9dc/scratchpad/film/capture/run/work/payments-ci"},"nbf":"2026-10-08T13:43:30Z","exp":"2026-10-08T14:43:30Z","sensitive":true,"state":"active"}]}
+[exit 0]
+
+theo$ agentnet grants --held
+ID                                  DIR   PEER  ACTION   RESOURCE          SCOPE  EXPIRES               STATE
+g-5d7222ea989a877447415efd69d41ae8  held  maya  fs.read  payments-ci-af11  -      2026-10-08T14:43:30Z  active
+[exit 0]
+
+theo$ agentnet grants --held --json
+{"ok":true,"grants":[{"id":"g-5d7222ea989a877447415efd69d41ae8","direction":"held","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk"},"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","action":"fs.read","resource":{"kind":"fs","label":"payments-ci-af11"},"nbf":"2026-10-08T13:43:30Z","exp":"2026-10-08T14:43:30Z","sensitive":true,"state":"active"}]}
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 --list
+NAME       TYPE  SIZE
+README.md  file  57
+logs       dir   -
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 --list logs
+NAME        TYPE  SIZE
+run-01.log  file  22
+run-02.log  file  22
+run-03.log  file  22
+run-04.log  file  22
+run-05.log  file  22
+run-06.log  file  22
+run-07.log  file  68
+run-08.log  file  22
+run-09.log  file  22
+run-10.log  file  22
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 --list logs --json
+{"ok":true,"path":"logs","entries":[{"name":"run-01.log","type":"file","size":22},{"name":"run-02.log","type":"file","size":22},{"name":"run-03.log","type":"file","size":22},{"name":"run-04.log","type":"file","size":22},{"name":"run-05.log","type":"file","size":22},{"name":"run-06.log","type":"file","size":22},{"name":"run-07.log","type":"file","size":68},{"name":"run-08.log","type":"file","size":22},{"name":"run-09.log","type":"file","size":22},{"name":"run-10.log","type":"file","size":22}]}
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 logs/run-07.log
+run 07: FAIL TestCapture (timeout after 5s waiting for ledger lock)
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 --stat logs/run-07.log
+run-07.log	file	68
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 logs/run-07.log --json
+{"ok":true,"path":"logs/run-07.log","size":68,"data":"cnVuIDA3OiBGQUlMIFRlc3RDYXB0dXJlICh0aW1lb3V0IGFmdGVyIDVzIHdhaXRpbmcgZm9yIGxlZGdlciBsb2NrKQo="}
+[exit 0]
+
+maya$ agentnet revoke g-5d7222ea989a877447415efd69d41ae8
+Revoked grant g-5d7222ea989a877447415efd69d41ae8; theo's next fetch fails.
+[exit 0]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 logs/run-07.log
+agentnet: the grant was revoked
+[exit 1]
+
+theo$ agentnet fetch g-5d7222ea989a877447415efd69d41ae8 --list --json
+{"ok":false,"error":{"code":"revoked","message":"the grant was revoked"}}
+[exit 1]
+
+theo$ agentnet grants --held
+ID                                  DIR   PEER  ACTION   RESOURCE          SCOPE  EXPIRES               STATE
+g-5d7222ea989a877447415efd69d41ae8  held  maya  fs.read  payments-ci-af11  -      2026-10-08T14:43:30Z  revoked
+[exit 0]
+
+maya$ agentnet grants --session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+ID                                  DIR     PEER  ACTION   RESOURCE          SCOPE  EXPIRES               STATE
+g-5d7222ea989a877447415efd69d41ae8  issued  theo  fs.read  payments-ci-af11  -      2026-10-08T14:43:30Z  revoked
+[exit 0]
+

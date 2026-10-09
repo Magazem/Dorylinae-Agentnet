@@ -1,0 +1,51 @@
+# agentnet --help (top-level usage)
+# captured 2026-10-08T13:39:02Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet --help
+AgentNet CLI: talks to the local agentnetd daemon.
+
+Usage:
+  agentnet <command> [flags]
+  agentnet --version
+
+Commands:
+  status    Show whether the daemon is running, its PID, uptime and outbox
+  doctor    Check this machine's AgentNet setup: identity, config, service, relay
+  stop      Ask agentnetd to shut down cleanly and wait for it to exit
+  version   Print version information (same as --version)
+  identity  Print this agent's signed Agent Card
+  pair      Pair with another machine using a one-time code
+  peers     List paired agents
+  ping      Round-trip an encrypted message to a paired agent
+  team      Create and manage teams
+  presence  Show or set who can see this machine's presence
+  request   Send a teammate's agent a request
+  consult   Ask a teammate's agent a question, with context files
+  debate    Argue a question with a teammate's agent, ending in a Decision
+  debates   List your debates
+  decision  Show, export or verify a Decision
+  decisions List your Decisions
+  inbox     List the requests addressed to you
+  accept    Accept a request from your inbox
+  decline   Decline a request from your inbox
+  defer     Defer a request from your inbox
+  complete  Mark an accepted request complete, optionally with a result
+  notify    Configure desktop notifications
+  approve   Confirm or reject a pending human approval
+  device    Link two of your own devices (controller and helper)
+  grant     Give a teammate's agent scoped read access (also: grants, revoke, grant policy)
+  fetch     Read a file or listing under a grant you hold
+  log       Show the audit log and check its hash chain
+  prune     Remove finished items older than a cutoff (asks for your approval)
+
+Run 'agentnet <command> --help' for command flags.
+[exit 0]
+
+maya$ agentnet version
+agentnet 0.0.0-dev+860afe8 (2026-10-03)
+[exit 0]
+
+maya$ agentnet version --json
+{"ok":true,"name":"agentnet","version":"0.0.0-dev+860afe8 (2026-10-03)"}
+[exit 0]
+

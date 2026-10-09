@@ -1,0 +1,164 @@
+# debate: maya and theo's agents argue the checkout retry policy and converge on a signed Decision (both sides driven from the CLI)
+# captured 2026-10-08T13:42:17Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet debate theo --topic 'How should checkout retry when the payment gateway times out at 45s?' --position-file maya-position.json --rounds 1 --idempotency-key demo-debate-1
+Started debate r-d1d0e671738ab1e2a0375bea6acd79b1 with theo (team atlas)
+  session: s-9cb46e2a38f010957acd7b8d8ede87b7 (wait with 'agentnet wait s-9cb46e2a38f010957acd7b8d8ede87b7')
+[exit 0]
+
+maya$ agentnet debate theo --topic 'How should checkout retry when the payment gateway times out at 45s?' --position-file maya-position.json --rounds 1 --idempotency-key demo-debate-1 --json
+{"ok":true,"id":"r-d1d0e671738ab1e2a0375bea6acd79b1","mail_id":"m-568d76ffe5f8625f016e1d358af90a36","status":"delivered","duplicate":true,"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"urgency":"normal","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","daemon_online":true,"last_seen":"2026-10-08T13:42:14Z"},"session":"s-9cb46e2a38f010957acd7b8d8ede87b7"}
+[exit 0]
+
+theo$ agentnet inbox
+ID                                  FROM  TYPE    URGENCY  PRIO  AGE  TITLE
+r-d0d85221604ee5293d79869159039519  maya  task    normal   2000  2m   Add queue settings to the staging runbook
+r-97ae9a37feaf51fcf0c3c8246ae57be1  maya  task    normal   2000  0m   Track down the flaky payments test
+r-d1d0e671738ab1e2a0375bea6acd79b1  maya  debate  normal   2000  0m   How should checkout retry when the payment gateway times out at 45s?
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role respondent  phase invited  turn none
+  peer:    maya
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  0/1
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --json
+{"ok":true,"debate":{"session":"s-9cb46e2a38f010957acd7b8d8ede87b7","request":{"id":"r-d1d0e671738ab1e2a0375bea6acd79b1","title":"How should checkout retry when the payment gateway times out at 45s?"},"role":"respondent","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"phase":"invited","rounds":{"max":1,"current":0},"turn":"none","topic":"How should checkout retry when the payment gateway times out at 45s?"}}
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --claim 'Retry at most twice, then fail fast to the client.' --argument 'Fewer retries mean less load on the gateway during an incident; the client can retry later with the same idempotency key.' --assumption 'Clients already retry on a 503.'
+Submitted position to s-9cb46e2a38f010957acd7b8d8ede87b7 (now positions, turn: none)
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role initiator  phase rounds  turn you
+  peer:    theo
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  0/1
+  expect:  move
+  deadline: 2026-10-08T14:42:25Z
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --json
+{"ok":true,"debate":{"session":"s-9cb46e2a38f010957acd7b8d8ede87b7","request":{"id":"r-d1d0e671738ab1e2a0375bea6acd79b1","title":"How should checkout retry when the payment gateway times out at 45s?"},"role":"initiator","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"phase":"rounds","rounds":{"max":1,"current":0},"turn":"you","expect":"move","hint":"submit a move: agentnet debate \u003cid\u003e --pass  or  --challenge claim=\"...\"","deadline":"2026-10-08T14:42:25Z","topic":"How should checkout retry when the payment gateway times out at 45s?","transcript":[{"slot":0,"author":"initiator","kind":"position","at":"2026-10-08T13:42:25Z","entry":{"argument":"Every retry then ends inside the gateway's 45s timeout, so no retry outlives the call it serves.","assumptions":["The gateway timeout stays at 45s."],"claim":"Cap backoff at 10s with a 40s total retry budget."}},{"slot":1,"author":"respondent","kind":"position","at":"2026-10-08T13:42:25Z","entry":{"argument":"Fewer retries mean less load on the gateway during an incident; the client can retry later with the same idempotency key.","assumptions":["Clients already retry on a 503."],"claim":"Retry at most twice, then fail fast to the client."}}]}}
+[exit 0]
+
+# maya (the human) adds a constraint both agents must respect; it needs her approval on the daemon's terminal:
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --constrain 'Do not change the 45s gateway timeout.'
+Approval a-c6c59be664ac3b58839eedf9d3c8cf1e: the constraint is added once you type the code into the AgentNet approval window.
+[exit 0]
+
+# maya's daemon terminal for that constraint:
+#   AgentNet approval a-c6c59b: Add a human constraint to the debate s-9cb46e2a38f010957acd7b8d8ede87b7 with peer NZ7E CM13 KYB7 DWMX TRH6 named "theo": "Do not change the 45s gateway timeout.". It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.. Code 520305. Type "a-c6c59b 520305" to approve or "reject a-c6c59b" to reject.
+#   a-c6c59b 520305
+#   AgentNet: a-c6c59be664ac3b58839eedf9d3c8cf1e approved
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --challenge 'claim=Two retries miss the short recoveries we see on 3% of calls at peak.'
+Submitted move to s-9cb46e2a38f010957acd7b8d8ede87b7 (now rounds, turn: peer)
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role respondent  phase rounds  turn you
+  peer:    maya
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  1/1
+  expect:  move
+  deadline: 2026-10-08T14:42:37Z
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+  [2] initiator move at 2026-10-08T13:42:37Z
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --challenge 'claim=A 40s budget holds a connection open for most of the timeout when we are already under load.' --revise-claim 'Retry up to 3 times with backoff capped at 10s, then fail fast.' --revise-argument 'Three short retries catch the brief recoveries without holding connections for the whole timeout.'
+Submitted move to s-9cb46e2a38f010957acd7b8d8ede87b7 (now converge, turn: peer)
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role initiator  phase converge  turn you
+  peer:    theo
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  1/1
+  expect:  proposal
+  deadline: 2026-10-08T14:42:44Z
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+  [2] initiator move at 2026-10-08T13:42:37Z
+  [3] respondent move at 2026-10-08T13:42:44Z
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --json
+{"ok":true,"debate":{"session":"s-9cb46e2a38f010957acd7b8d8ede87b7","request":{"id":"r-d1d0e671738ab1e2a0375bea6acd79b1","title":"How should checkout retry when the payment gateway times out at 45s?"},"role":"initiator","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"phase":"converge","rounds":{"max":1,"current":1},"turn":"you","expect":"proposal","hint":"submit a proposal: agentnet debate \u003cid\u003e --agree \"...\"","deadline":"2026-10-08T14:42:44Z","topic":"How should checkout retry when the payment gateway times out at 45s?","transcript":[{"slot":0,"author":"initiator","kind":"position","at":"2026-10-08T13:42:25Z","entry":{"argument":"Every retry then ends inside the gateway's 45s timeout, so no retry outlives the call it serves.","assumptions":["The gateway timeout stays at 45s."],"claim":"Cap backoff at 10s with a 40s total retry budget."}},{"slot":1,"author":"respondent","kind":"position","at":"2026-10-08T13:42:25Z","entry":{"argument":"Fewer retries mean less load on the gateway during an incident; the client can retry later with the same idempotency key.","assumptions":["Clients already retry on a 503."],"claim":"Retry at most twice, then fail fast to the client."}},{"slot":2,"author":"initiator","kind":"move","at":"2026-10-08T13:42:37Z","entry":{"challenges":[{"argument":"Two retries miss the short recoveries we see on 3% of calls at peak.","targets":["claim"]}]}},{"slot":3,"author":"respondent","kind":"move","at":"2026-10-08T13:42:44Z","entry":{"challenges":[{"argument":"A 40s budget holds a connection open for most of the timeout when we are already under load.","targets":["claim"]}],"revision":{"argument":"Three short retries catch the brief recoveries without holding connections for the whole timeout.","claim":"Retry up to 3 times with backoff capped at 10s, then fail fast."}}}],"constraints":[{"id":"c-730f6aa68a6025d48ec8e7439cd6b3cc","author":"initiator","at":"2026-10-08T13:42:35Z","text":"Do not change the 45s gateway timeout.","state":"active"}]}}
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --agree 'Retry up to 3 times with backoff capped at 10s and a 40s total budget, then fail fast.'
+Submitted proposal to s-9cb46e2a38f010957acd7b8d8ede87b7 (now converge, turn: peer)
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role respondent  phase converge  turn you
+  peer:    maya
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  1/1
+  expect:  answer
+  deadline: 2026-10-08T14:42:52Z
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+  [2] initiator move at 2026-10-08T13:42:37Z
+  [3] respondent move at 2026-10-08T13:42:44Z
+  [4] initiator proposal at 2026-10-08T13:42:52Z
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7 --accept
+Submitted answer to s-9cb46e2a38f010957acd7b8d8ede87b7 (now converge, turn: none)
+[exit 0]
+
+maya$ agentnet wait s-9cb46e2a38f010957acd7b8d8ede87b7 --timeout 60
+closed: s-9cb46e2a38f010957acd7b8d8ede87b7 (closed)
+[exit 0]
+
+maya$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role initiator  phase closed  turn none
+  peer:    theo
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  1/1
+  outcome: agreed (accepted)
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+  [2] initiator move at 2026-10-08T13:42:37Z
+  [3] respondent move at 2026-10-08T13:42:44Z
+  [4] initiator proposal at 2026-10-08T13:42:52Z
+  [5] respondent answer at 2026-10-08T13:42:54Z
+[exit 0]
+
+theo$ agentnet debate s-9cb46e2a38f010957acd7b8d8ede87b7
+s-9cb46e2a38f010957acd7b8d8ede87b7  role respondent  phase closed  turn none
+  peer:    maya
+  request: How should checkout retry when the payment gateway times out at 45s? (r-d1d0e671738ab1e2a0375bea6acd79b1)
+  rounds:  1/1
+  outcome: agreed (accepted)
+  topic:   How should checkout retry when the payment gateway times out at 45s?
+  [0] initiator position at 2026-10-08T13:42:25Z
+  [1] respondent position at 2026-10-08T13:42:25Z
+  [2] initiator move at 2026-10-08T13:42:37Z
+  [3] respondent move at 2026-10-08T13:42:44Z
+  [4] initiator proposal at 2026-10-08T13:42:52Z
+  [5] respondent answer at 2026-10-08T13:42:54Z
+[exit 0]
+
+maya$ agentnet debates
+s-9cb46e2a38f010957acd7b8d8ede87b7  theo  role initiator  phase closed  turn none  How should checkout retry when the payment gateway times out at 45s?
+[exit 0]
+
+maya$ agentnet debates --json
+{"ok":true,"debates":[{"session":"s-9cb46e2a38f010957acd7b8d8ede87b7","request":{"id":"r-d1d0e671738ab1e2a0375bea6acd79b1","title":"How should checkout retry when the payment gateway times out at 45s?"},"role":"initiator","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"phase":"closed","outcome":"agreed","reason":"accepted","rounds":{"max":1,"current":1},"turn":"none","entries":6,"constraint_count":1}]}
+[exit 0]
+

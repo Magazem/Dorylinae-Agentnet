@@ -1,0 +1,35 @@
+# status --team atlas: presence of the other member
+# captured 2026-10-08T13:39:49Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet status --team atlas
+agentnetd running
+  pid:     4968
+  uptime:  56s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 1 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON  AGENT   HUMAN    LAST SEEN
+maya  online  active  unknown  now  (you)
+theo  online  active  unknown  2026-10-08T13:39:38Z
+[exit 0]
+
+maya$ agentnet status --team atlas --json
+{"ok":true,"pid":4968,"started_at":"2026-10-08T13:38:53Z","uptime_seconds":55.896088431,"version":"0.0.0-dev+860afe8 (2026-10-03)","outbox":{"queued":0,"relayed":0,"expired":0,"pending":0,"delivered":1,"failed":0},"presence":{"mode":"visible","relay":"connected","agent_active":true,"human_present":null},"relay":{"url":"ws://127.0.0.1:8787","connected":true,"since":"2026-10-08T13:38:53Z","auth":"v2"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas","owner":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","epoch":2,"state":"active","members":[{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC","self":true,"owner":true,"trust":null,"daemon_online":true,"agent_active":true,"human_present":null,"last_seen":"2026-10-08T13:39:49Z","agent_last_active":null,"human_last_present":null},{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6","self":false,"owner":false,"trust":"fingerprint","daemon_online":true,"agent_active":true,"human_present":null,"last_seen":"2026-10-08T13:39:38Z","agent_last_active":"2026-10-08T13:39:38Z","human_last_present":null}]},"approval":"terminal","git":"ok"}
+[exit 0]
+
+theo$ agentnet status --team atlas
+agentnetd running
+  pid:     4977
+  uptime:  56s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 1 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON  AGENT   HUMAN    LAST SEEN
+maya  online  active  unknown  2026-10-08T13:39:38Z
+theo  online  active  unknown  now  (you)
+[exit 0]
+

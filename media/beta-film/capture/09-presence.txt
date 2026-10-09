@@ -1,0 +1,72 @@
+# presence settings: show, invisible (teammate sees offline at once), visible, only-team, human sharing
+# captured 2026-10-08T13:39:49Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet presence
+Presence: visible
+Human presence: shared
+[exit 0]
+
+theo$ agentnet presence --json
+{"ok":true,"mode":"visible","human_share":true}
+[exit 0]
+
+theo$ agentnet presence --invisible
+Presence: invisible
+Human presence: shared
+[exit 0]
+
+maya$ agentnet status --team atlas
+agentnetd running
+  pid:     4968
+  uptime:  58s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 1 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON   AGENT   HUMAN    LAST SEEN
+maya  online   active  unknown  now  (you)
+theo  offline  -       -        2026-10-08T13:39:49Z
+[exit 0]
+
+theo$ agentnet presence --visible
+Presence: visible
+Human presence: shared
+[exit 0]
+
+maya$ agentnet status --team atlas
+agentnetd running
+  pid:     4968
+  uptime:  59s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 1 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON  AGENT   HUMAN    LAST SEEN
+maya  online  active  unknown  now  (you)
+theo  online  active  unknown  2026-10-08T13:39:51Z
+[exit 0]
+
+theo$ agentnet presence --only-team atlas
+Presence: only team atlas (t-56f7…5110)
+Human presence: shared
+[exit 0]
+
+theo$ agentnet presence --only-team atlas --json
+{"ok":true,"mode":"only_team","team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"human_share":true}
+[exit 0]
+
+theo$ agentnet presence --human off
+Presence: only team atlas (t-56f7…5110)
+Human presence: not shared
+[exit 0]
+
+theo$ agentnet presence --human on --json
+{"ok":true,"mode":"only_team","team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"human_share":true}
+[exit 0]
+
+theo$ agentnet presence --visible --json
+{"ok":true,"mode":"visible","human_share":true}
+[exit 0]
+

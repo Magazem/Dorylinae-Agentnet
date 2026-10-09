@@ -1,0 +1,53 @@
+# team atlas: create, invite (human-approved), join, list, show
+# captured 2026-10-08T13:39:35Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet team create atlas
+Created team atlas (t-56f71101717c4309f6105b5a81435110). You are the owner.
+[exit 0]
+
+maya$ agentnet team invite atlas
+Approval a-d4122434933a2c0674fbc77a5556cced: type the code into the AgentNet approval window to create the invite code.
+Invite code:  AK726-63J9J-YPG2G
+Expires:      2026-10-08T13:49:38Z
+Pairing ID:   pair-aad25b9d9bad3b4f
+On the other machine run: agentnet team join AK726-63J9J-YPG2G
+[exit 0]
+
+# maya's daemon terminal during 'team invite' (the invite waited for this approval):
+#   AgentNet approval a-d41224: Create a one-time invite code for the team atlas (t-56f71101717c4309f6105b5a81435110). Whoever redeems it joins the team, and every member's daemon will then trust them as a team member. Confirm only if you asked for this invite yourself.. Code 049487. Type "a-d41224 049487" to approve or "reject a-d41224" to reject.
+#   a-d41224 049487
+#   AgentNet: a-d4122434933a2c0674fbc77a5556cced approved
+theo$ agentnet team join AK726-63J9J-YPG2G
+Paired with maya (fingerprint YSTP CQTC HBWP 96AK 5KHC); asked to join maya's team.
+Run 'agentnet team list' in a few seconds.
+[exit 0]
+
+maya$ agentnet team list
+NAME   ID                                  ROLE   MEMBERS  STATE
+atlas  t-56f71101717c4309f6105b5a81435110  owner  2        active
+[exit 0]
+
+maya$ agentnet team list --json
+{"ok":true,"teams":[{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas","owner":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","epoch":2,"state":"active","role":"owner","members":2}]}
+[exit 0]
+
+theo$ agentnet team list
+NAME   ID                                  ROLE    MEMBERS  STATE
+atlas  t-56f71101717c4309f6105b5a81435110  member  2        active
+[exit 0]
+
+theo$ agentnet team list --json
+{"ok":true,"teams":[{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas","owner":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","epoch":2,"state":"active","role":"member","members":2}]}
+[exit 0]
+
+maya$ agentnet team show atlas
+atlas (t-56f7…5110), owner maya, epoch 2
+NAME  ROLE    ADDED                 FINGERPRINT
+maya  owner   2026-10-08T13:39:35Z  YSTP CQTC HBWP 96AK 5KHC
+theo  member  2026-10-08T13:39:38Z  NZ7E CM13 KYB7 DWMX TRH6
+[exit 0]
+
+maya$ agentnet team show atlas --json
+{"ok":true,"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas","owner":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","epoch":2,"state":"active","role":"owner","members":[{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC","added":"2026-10-08T13:39:35Z","owner":true,"self":true},{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6","added":"2026-10-08T13:39:38Z","owner":false,"self":false}]}}
+[exit 0]
+

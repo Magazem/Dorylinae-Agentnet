@@ -1,0 +1,61 @@
+# quarantine: a result that follows read access is held until the human releases it (approval), then accepted
+# captured 2026-10-08T13:43:54Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet result s-b3098b5fd25dd5ec2aa2b78fe588fc03 --status pass --summary 'Cause found: two tests share one ledger row' --file flaky-finding.md
+Submitted result for s-b3098b5fd25dd5ec2aa2b78fe588fc03 (open)
+[exit 0]
+
+maya$ agentnet wait s-b3098b5fd25dd5ec2aa2b78fe588fc03 --timeout 5
+timeout: s-b3098b5fd25dd5ec2aa2b78fe588fc03 (quarantined)
+[exit 4]
+
+maya$ agentnet session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+s-b3098b5fd25dd5ec2aa2b78fe588fc03  role requester  state quarantined  round 1
+  peer:    theo
+  request: Track down the flaky payments test (r-97ae9a37feaf51fcf0c3c8246ae57be1)
+  quarantined: status pass, 319 result bytes, 209 output bytes, 0 artifacts (run 'agentnet session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --release')
+[exit 0]
+
+maya$ agentnet session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --json
+{"ok":true,"session":{"id":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","role":"requester","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-97ae9a37feaf51fcf0c3c8246ae57be1","type":"task","title":"Track down the flaky payments test"},"state":"quarantined","round":1,"seq":1,"opened":"2026-10-08T13:43:22Z","state_at":"2026-10-08T13:43:54Z","quarantine":{"status":"pass","result_bytes":319,"output_bytes":209,"artifacts":0},"verification":"none","verification_by":"worker","grants":[{"action":"fs.read","exp":"2026-10-08T14:43:30Z","id":"g-5d7222ea989a877447415efd69d41ae8","label":"payments-ci-af11","sensitive":true,"state":"revoked"}]}}
+[exit 0]
+
+maya$ agentnet sessions --state quarantined
+ID                                  ROLE       STATE        PEER  REQUEST                             ROUND
+s-b3098b5fd25dd5ec2aa2b78fe588fc03  requester  quarantined  theo  Track down the flaky payments test  1
+[exit 0]
+
+maya$ agentnet session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --release
+Approval a-c8b0844996de62b5d690f4ecdf2e0880 pending; answer it in the approval window ('agentnet approve --open a-c8b0844996de62b5d690f4ecdf2e0880' shows it again).
+[exit 0]
+
+# maya's daemon terminal for the release approval:
+#   AgentNet approval a-c8b084: Release the quarantined result of peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" for your task request "Track down the flaky payments test" (session s-b3098b5fd25dd5ec2aa2b78fe588fc03, round 1): status pass, 319 bytes, 209 bytes of output, 0 artifact(s). Your agent will then be able to read it. This session had 1 sensitive grant(s). Confirm only if you mean to release this result.. Code 354457. Type "a-c8b084 354457" to approve or "reject a-c8b084" to reject.
+#   a-c8b084 354457
+#   AgentNet: a-c8b0844996de62b5d690f4ecdf2e0880 approved
+maya$ agentnet session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+s-b3098b5fd25dd5ec2aa2b78fe588fc03  role requester  state awaiting_result  round 1
+  peer:    theo
+  request: Track down the flaky payments test (r-97ae9a37feaf51fcf0c3c8246ae57be1)
+  result: status pass
+    summary: Cause found: two tests share one ledger row
+[exit 0]
+
+maya$ agentnet wait s-b3098b5fd25dd5ec2aa2b78fe588fc03 --timeout 10 --json
+{"ok":true,"wait":"result","session":{"id":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","role":"requester","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-97ae9a37feaf51fcf0c3c8246ae57be1","type":"task","title":"Track down the flaky payments test"},"state":"awaiting_result","round":1,"seq":2,"opened":"2026-10-08T13:43:22Z","state_at":"2026-10-08T13:44:04Z","result":{"status":"pass","summary":"Cause found: two tests share one ledger row","output":"Cause: run 07 timed out waiting for the ledger lock.\nTestCapture and TestRefund share one ledger row; when they run in parallel,\none waits past the 5s test timeout. Fix: give each test its own ledger fixture.\n","output_bytes":209,"result_bytes":319},"verification":"none","verification_by":"worker","grants":[{"action":"fs.read","exp":"2026-10-08T14:43:30Z","id":"g-5d7222ea989a877447415efd69d41ae8","label":"payments-ci-af11","sensitive":true,"state":"revoked"}]}}
+[exit 0]
+
+maya$ agentnet accept-result s-b3098b5fd25dd5ec2aa2b78fe588fc03
+Accepted result for s-b3098b5fd25dd5ec2aa2b78fe588fc03 (now closed)
+[exit 0]
+
+maya$ agentnet request show r-97ae9a37feaf51fcf0c3c8246ae57be1
+r-97ae9a37feaf51fcf0c3c8246ae57be1  task to theo (team atlas): Track down the flaky payments test
+  state completed 2026-10-08T13:44:05Z, delivery delivered
+  result: pass: Cause found: two tests share one ledger row
+  output (209 bytes):
+    Cause: run 07 timed out waiting for the ledger lock.
+    TestCapture and TestRefund share one ledger row; when they run in parallel,
+    one waits past the 5s test timeout. Fix: give each test its own ledger fixture.
+[exit 0]
+

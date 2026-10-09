@@ -1,0 +1,48 @@
+# pairing v2: maya issues a one-time code, theo redeems it; then both list peers
+# captured 2026-10-08T13:39:13Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet pair --new
+Pairing code: 4NVKB-FN6CA-7A9JA
+Expires:      2026-10-08T13:49:13Z
+Pairing ID:   pair-38a99246a97d3e26
+
+On the other machine run: agentnet pair 4NVKB-FN6CA-7A9JA
+Then check here with:     agentnet peers
+[exit 0]
+
+theo$ agentnet pair 4NVKB-FN6CA-7A9JA
+Paired with maya (claude-code)
+  public key:  QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk
+  fingerprint: YSTP CQTC HBWP 96AK 5KHC
+  trust:       code
+[exit 0]
+
+maya$ agentnet pair --status pair-38a99246a97d3e26
+Paired with theo (codex)
+  public key:  ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc
+  fingerprint: NZ7E CM13 KYB7 DWMX TRH6
+  trust:       code
+[exit 0]
+
+maya$ agentnet pair --status pair-38a99246a97d3e26 --json
+{"ok":true,"pairing_id":"pair-38a99246a97d3e26","role":"issuer","state":"complete","peer":{"public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","name":"theo","harness":"codex","skills":[],"paired_at":"2026-10-08T13:39:13Z","trust":"code","fingerprint":"NZ7ECM13KYB7DWMXTRH6","introduced_by":null}}
+[exit 0]
+
+maya$ agentnet peers
+NAME  HARNESS  SKILLS  PAIRED                TRUST  FINGERPRINT               PUBLIC KEY                                   INTRODUCED BY
+theo  codex    (none)  2026-10-08T13:39:13Z  code   NZ7E CM13 KYB7 DWMX TRH6  ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc  -
+[exit 0]
+
+maya$ agentnet peers --json
+{"ok":true,"peers":[{"public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","name":"theo","harness":"codex","skills":[],"paired_at":"2026-10-08T13:39:13Z","trust":"code","fingerprint":"NZ7ECM13KYB7DWMXTRH6","introduced_by":null}]}
+[exit 0]
+
+theo$ agentnet peers
+NAME  HARNESS      SKILLS  PAIRED                TRUST  FINGERPRINT               PUBLIC KEY                                   INTRODUCED BY
+maya  claude-code  (none)  2026-10-08T13:39:13Z  code   YSTP CQTC HBWP 96AK 5KHC  QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk  -
+[exit 0]
+
+theo$ agentnet peers --json
+{"ok":true,"peers":[{"public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","name":"maya","harness":"claude-code","skills":[],"paired_at":"2026-10-08T13:39:13Z","trust":"code","fingerprint":"YSTPCQTCHBWP96AK5KHC","introduced_by":null}]}
+[exit 0]
+

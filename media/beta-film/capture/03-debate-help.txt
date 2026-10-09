@@ -1,0 +1,93 @@
+# agentnet debate --help
+# captured 2026-10-08T13:39:02Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet debate --help
+Argues a question with a teammate's agent in a fixed structure, ending in a
+signed Decision (Docs/protocol/debate.md). It is a request of type debate.
+
+Usage:
+  agentnet debate <peer> (--topic TEXT | --topic-from-file F) --position-file P
+                  [--context-file F]... [--rounds N] [--turn-timeout D]
+                  [--title T] [--team T] [--urgency U --urgency-reason R]
+                  [--idempotency-key K] [--json]
+  agentnet debate <id> [--json]
+  agentnet debate <id> --claim S --argument S [--assumption S]... [--json]
+  agentnet debate <id> --pass | --challenge TARGET=ARGUMENT... [--revise-claim S --revise-argument S] [--json]
+  agentnet debate <id> --agree S [--remaining S] [--json]
+  agentnet debate <id> --accept | --reject [--remaining S] [--json]
+  agentnet debate <id> --position-file F | --move-file F | --propose-file F | --answer-file F [--json]
+  agentnet debate <id> --cancel [--reason R] [--json]
+  agentnet debate <id> --constrain TEXT [--json]
+
+<peer> is a peer name or public key, with an optional "@". <id> is a debate's
+session id (s-...) or the request id it belongs to (r-...).
+
+Flags:
+  --topic TEXT              the debate's topic (up to 16 KiB). Exactly one of
+                            --topic and --topic-from-file is required to start
+  --topic-from-file F       read the topic from file F ("-" = stdin)
+  --position-file P         starting a debate: your opening position (a JSON
+                            object, "-" = stdin), committed and never sent
+                            before the peer's own position is applied. On a
+                            pending debate: accepts it and submits your
+                            position in one step
+  --context-file F          repeatable, up to 8; same rules as 'agentnet consult'
+  --rounds N                1-5, default 2 when omitted
+  --turn-timeout D          a Go duration (e.g. 90m, 2h) or Nd, a positive
+                            whole number of seconds, default 1h when omitted
+  --title T                 default: the first line of the topic, cut to 120
+                            characters
+  --team TEAM               needed only when you share several teams with the peer
+  --urgency U                low, normal (default), high or blocking
+  --urgency-reason R         required with high and blocking
+  --idempotency-key K        1-64 characters of [A-Za-z0-9._:-]
+
+Submitting an entry on an existing debate <id>: give exactly one of an entry
+file below, or one set of inline flags below (mixing either two files or a
+file and inline flags is a usage error). Inline flags build the same JSON an
+entry file would hold and submit it the same way; they only work on an
+existing <id>, never to start a debate.
+
+  --move-file F              a move: {"challenges", "revision"?} ("-" = stdin)
+  --propose-file F           a proposal: {"agreement", ...} ("-" = stdin)
+  --answer-file F            an answer: {"accept", ...} ("-" = stdin)
+
+  --claim S                  position (inline): your one-line claim
+  --argument S               position (inline): your argument (multi-line)
+  --assumption S             position (inline): an assumption (repeatable)
+  --pass                     move (inline): no challenge, no revision
+  --challenge TARGET=S       move (inline): challenge one target with an
+                            argument (repeatable, up to 3), e.g.
+                            --challenge claim="Why not use jitter?"
+  --revise-claim S           move (inline): replace your claim (needs
+                            --revise-argument too)
+  --revise-argument S        move (inline): replace your argument (needs
+                            --revise-claim too)
+  --agree S                  proposal (inline): the agreed decision
+  --accept                   answer (inline): agree with the proposal
+  --reject                   answer (inline): escalate, no agreement
+  --remaining S               proposal/answer (inline): one remaining
+                            disagreement point, recorded as both sides'
+                            view too; use --propose-file/--answer-file for
+                            distinct per-side text or more than one point
+
+  --cancel                   close an open or invited debate (no Decision)
+  --reason R                 optional, with --cancel, 1-500 characters
+  --constrain TEXT           add a human constraint, approval-gated: the
+                            AgentNet approval window shows the peer, the
+                            session and TEXT in full, and only your code
+                            stores and sends it (Docs/protocol/debate.md
+                            §Human constraints)
+  --json                     print machine-readable JSON on stdout
+
+Each entry file is a JSON object of the given kind (Docs/protocol/debate.md
+§Messages): position {"claim","argument",...}, move {"challenges","revision"?},
+proposal {"agreement",...}, answer {"accept",...}. Evidence and rejected
+alternatives are file-only (no inline flag).
+
+Wait for your turn or the close with 'agentnet wait <id>'.
+
+Exit codes: 0 done, 1 error (bad_request, bad_state, not_your_turn,
+entry_too_large, quarantine_active, ...), 2 usage, 3 daemon not running.
+[exit 0]
+

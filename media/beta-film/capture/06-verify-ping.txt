@@ -1,0 +1,41 @@
+# fingerprint verification (human-approved on the daemon's terminal) and an encrypted ping
+# captured 2026-10-08T13:39:21Z UTC from the real binaries (local relay, two daemons on one machine)
+
+# maya reads theo's fingerprint aloud from theo's 'agentnet identity' and types it:
+maya$ agentnet peers verify theo 'NZ7E CM13 KYB7 DWMX TRH6'
+Approval a-8f44fc944599fe92fc0ae28a70951f3c: the peer is marked verified once you type the code into the AgentNet approval window.
+[exit 0]
+
+# maya's daemon terminal (DORYLINAE_APPROVAL=terminal) at this moment -- see run/maya.tty.txt:
+#   AgentNet approval a-8f44fc: Mark peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.. Code 047176. Type "a-8f44fc 047176" to approve or "reject a-8f44fc" to reject.
+#   a-8f44fc 047176
+#   AgentNet: a-8f44fc944599fe92fc0ae28a70951f3c approved
+maya$ agentnet peers
+NAME  HARNESS  SKILLS  PAIRED                TRUST        FINGERPRINT               PUBLIC KEY                                   INTRODUCED BY
+theo  codex    (none)  2026-10-08T13:39:13Z  fingerprint  NZ7E CM13 KYB7 DWMX TRH6  ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc  -
+[exit 0]
+
+# theo verifies maya the same way:
+theo$ agentnet peers verify maya 'YSTP CQTC HBWP 96AK 5KHC' --json
+{"ok":true,"approval":{"id":"a-90855e4d5ebab4fc4b64c83a9d406662","kind":"peer_verify","summary":"Mark peer YSTP CQTC HBWP 96AK 5KHC named \"maya\" as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.","created":"2026-10-08T13:39:25.232Z","expires":"2026-10-08T13:49:25.232Z","state":"pending","attempts_left":3,"window":"terminal"}}
+[exit 0]
+
+#   AgentNet approval a-90855e: Mark peer YSTP CQTC HBWP 96AK 5KHC named "maya" as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.. Code 078163. Type "a-90855e 078163" to approve or "reject a-90855e" to reject.
+#   a-90855e 078163
+#   AgentNet: a-90855e4d5ebab4fc4b64c83a9d406662 approved
+theo$ agentnet peers --json
+{"ok":true,"peers":[{"public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","name":"maya","harness":"claude-code","skills":[],"paired_at":"2026-10-08T13:39:13Z","trust":"fingerprint","fingerprint":"YSTPCQTCHBWP96AK5KHC","introduced_by":null}]}
+[exit 0]
+
+maya$ agentnet ping theo
+pong from @theo: rtt 4.1 ms (encrypted)
+[exit 0]
+
+maya$ agentnet ping theo
+pong from @theo: rtt 1.4 ms (encrypted)
+[exit 0]
+
+maya$ agentnet ping theo --json
+{"ok":true,"ping_id":"ping-e3ae174d21058c2d","peer":{"public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","name":"theo"},"state":"complete","rtt_ms":1.343,"handshake":false}
+[exit 0]
+

@@ -1,0 +1,70 @@
+# the signed Decision: list, show, export (Markdown + signed JSON), verify offline
+# captured 2026-10-08T13:43:03Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet decisions
+d-2c3a7ea42af4a5cbd5c8c92181841b23  theo  outcome agreed  state signed  How should checkout retry when the payment gateway times out at 45s?
+[exit 0]
+
+maya$ agentnet decisions --json
+{"ok":true,"decisions":[{"id":"d-2c3a7ea42af4a5cbd5c8c92181841b23","session":"s-9cb46e2a38f010957acd7b8d8ede87b7","peer":"theo","outcome":"agreed","state":"signed","created":"2026-10-08T13:42:54.179Z","title":"How should checkout retry when the payment gateway times out at 45s?"}]}
+[exit 0]
+
+theo$ agentnet decisions
+d-2c3a7ea42af4a5cbd5c8c92181841b23  maya  outcome agreed  state signed  How should checkout retry when the payment gateway times out at 45s?
+[exit 0]
+
+maya$ agentnet decision d-2c3a7ea42af4a5cbd5c8c92181841b23
+d-2c3a7ea42af4a5cbd5c8c92181841b23  outcome agreed (accepted)  state signed  signed by initiator and respondent
+  initiator: fingerprint YSTPCQTCHBWP96AK5KHC, named maya
+  respondent: fingerprint NZ7ECM13KYB7DWMXTRH6, named theo
+  hash: 373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436
+[exit 0]
+
+maya$ agentnet decision d-2c3a7ea42af4a5cbd5c8c92181841b23 --md --out decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.md
+Wrote decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.md
+[exit 0]
+
+maya$ agentnet decision d-2c3a7ea42af4a5cbd5c8c92181841b23 --json --out decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.json
+Wrote decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.json
+[exit 0]
+
+theo$ agentnet decision s-9cb46e2a38f010957acd7b8d8ede87b7 --md --out decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.theo.md
+Wrote decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.theo.md
+[exit 0]
+
+maya$ agentnet decision verify decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.json
+d-2c3a7ea42af4a5cbd5c8c92181841b23  hash 373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436  valid, signed by initiator and respondent
+  initiator fingerprint: YSTPCQTCHBWP96AK5KHC
+  respondent fingerprint: NZ7ECM13KYB7DWMXTRH6
+[exit 0]
+
+maya$ agentnet decision verify decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.json --json
+{"valid":true,"complete":true,"signed_by":["initiator","respondent"],"hash":"373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436","id":"d-2c3a7ea42af4a5cbd5c8c92181841b23","participants":{"initiator":{"key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"respondent":{"key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"}}}
+[exit 0]
+
+# tamper test: a copy of the signed file with the agreed text edited (10s/40s -> 30s/90s):
+maya$ agentnet decision verify decisions/tampered.json
+invalid at step 2: hash does not match canonical(decision)
+[exit 1]
+
+maya$ agentnet decision verify decisions/tampered.json --json
+{"valid":false,"complete":false,"step":2,"reason":"hash does not match canonical(decision)","hash":"c07ed95dd86cdf5dad8529909511fc57d3adab277a6e01315eb378dc8d9f5b81","id":"d-2c3a7ea42af4a5cbd5c8c92181841b23"}
+[exit 1]
+
+# verify with --md (status lines, then the Markdown rendered offline from the signed file; first 12 lines shown):
+maya$ agentnet decision verify decisions/d-2c3a7ea42af4a5cbd5c8c92181841b23.json --md
+d-2c3a7ea42af4a5cbd5c8c92181841b23  hash 373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436  valid, signed by initiator and respondent
+  initiator fingerprint: YSTPCQTCHBWP96AK5KHC
+  respondent fingerprint: NZ7ECM13KYB7DWMXTRH6
+# Decision d-2c3a7ea42af4a5cbd5c8c92181841b23 : ` How should checkout retry when the payment gateway times out at 45s? `
+
+- Outcome: agreed (accepted) ; Signed by: initiator and respondent
+- Participants: initiator fingerprint YSTPCQTCHBWP96AK5KHC, named ` YSTPCQTCHBWP96AK5KHC `; respondent fingerprint NZ7ECM13KYB7DWMXTRH6, named ` NZ7ECM13KYB7DWMXTRH6 `
+- Session s-9cb46e2a38f010957acd7b8d8ede87b7, request r-d1d0e671738ab1e2a0375bea6acd79b1, team t-56f71101717c4309f6105b5a81435110, opened 2026-10-08T13:42:17Z, closed 2026-10-08T13:42:54Z, hash 373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436
+
+## Problem
+
+```
+... (96 lines total)
+[exit 0]
+

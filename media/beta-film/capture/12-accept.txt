@@ -1,0 +1,36 @@
+# theo accepts the high-priority review (opens a work session) and defers the low one
+# captured 2026-10-08T13:40:33Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet accept r-02824085f0a43a85a943105fc8af1e7f
+Accepted r-02824085f0a43a85a943105fc8af1e7f from maya
+[exit 0]
+
+theo$ agentnet defer r-8d12edd8b777ffe60d49c207a363c937 --until 2h
+Deferred r-8d12edd8b777ffe60d49c207a363c937 from maya
+[exit 0]
+
+theo$ agentnet inbox
+ID                                  FROM  TYPE  URGENCY  PRIO  AGE  TITLE
+r-d0d85221604ee5293d79869159039519  maya  task  normal   2000  0m   Add queue settings to the staging runbook
+[exit 0]
+
+theo$ agentnet sessions
+ID                                  ROLE    STATE  PEER  REQUEST                           ROUND
+s-5aef910e10c310d67eb353ee2265b028  worker  open   maya  Review the checkout retry change  1
+[exit 0]
+
+theo$ agentnet sessions --json
+{"ok":true,"sessions":[{"id":"s-5aef910e10c310d67eb353ee2265b028","role":"worker","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-02824085f0a43a85a943105fc8af1e7f","type":"review","title":"Review the checkout retry change"},"state":"open","round":1,"seq":0,"opened":"2026-10-08T13:40:33Z","state_at":"2026-10-08T13:40:33Z","grants":[]}]}
+[exit 0]
+
+maya$ agentnet sessions
+ID                                  ROLE       STATE  PEER  REQUEST                           ROUND
+s-5aef910e10c310d67eb353ee2265b028  requester  open   theo  Review the checkout retry change  1
+[exit 0]
+
+maya$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f
+r-02824085f0a43a85a943105fc8af1e7f  review to theo (team atlas): Review the checkout retry change
+  state accepted 2026-10-08T13:40:33Z, delivery delivered
+  artifact: branch=feat/checkout-retry commit=4f2a9c1
+[exit 0]
+

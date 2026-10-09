@@ -1,0 +1,89 @@
+# offline delivery: theo's daemon stops, maya still sends (queued), theo comes back, the request is delivered
+# captured 2026-10-08T13:41:36Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet stop
+agentnetd stopped
+[exit 0]
+
+theo$ agentnet status
+agentnet: agentnetd is not running (endpoint: /tmp/dn-theo/agentnetd.sock)
+[exit 3]
+
+maya$ agentnet status --team atlas
+agentnetd running
+  pid:     4968
+  uptime:  2m47s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 8 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON   AGENT   HUMAN    LAST SEEN
+maya  online   active  unknown  now  (you)
+theo  offline  -       -        2026-10-08T13:41:37Z
+[exit 0]
+
+maya$ agentnet request theo task --title 'Track down the flaky payments test' --brief-from-file flaky-brief.md --idempotency-key demo-flaky-1
+Queued normal task request r-97ae9a37feaf51fcf0c3c8246ae57be1 to theo (team atlas)
+  theo is offline, last seen 2026-10-08T13:41:37Z; it will be delivered when theo is back.
+[exit 0]
+
+maya$ agentnet request theo task --title 'Track down the flaky payments test' --brief-from-file flaky-brief.md --idempotency-key demo-flaky-1 --json
+{"ok":true,"id":"r-97ae9a37feaf51fcf0c3c8246ae57be1","mail_id":"m-b2d3dc4566beac6d9631949d221555c0","status":"relayed","duplicate":true,"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"urgency":"normal","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","daemon_online":false,"last_seen":"2026-10-08T13:41:37Z"},"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"}
+[exit 0]
+
+maya$ agentnet request show r-97ae9a37feaf51fcf0c3c8246ae57be1
+r-97ae9a37feaf51fcf0c3c8246ae57be1  task to theo (team atlas): Track down the flaky payments test
+  state pending, delivery relayed
+[exit 0]
+
+maya$ agentnet status
+agentnetd running
+  pid:     4968
+  uptime:  2m47s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  1 pending (0 queued, 1 relayed), 8 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+[exit 0]
+
+# theo's daemon is started again (same home, same identity):
+theo$ agentnet status
+agentnetd running
+  pid:     6333
+  uptime:  2s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 6 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:41:45Z
+[exit 0]
+
+maya$ agentnet request show r-97ae9a37feaf51fcf0c3c8246ae57be1
+r-97ae9a37feaf51fcf0c3c8246ae57be1  task to theo (team atlas): Track down the flaky payments test
+  state pending, delivery delivered
+[exit 0]
+
+theo$ agentnet inbox
+ID                                  FROM  TYPE  URGENCY  PRIO  AGE  TITLE
+r-d0d85221604ee5293d79869159039519  maya  task  normal   2000  1m   Add queue settings to the staging runbook
+r-97ae9a37feaf51fcf0c3c8246ae57be1  maya  task  normal   2000  0m   Track down the flaky payments test
+[exit 0]
+
+maya$ agentnet request list
+ID                                  TO   TYPE    URGENCY  STATE      RESULT  DELIVERY   CREATED
+r-97ae9a37feaf51fcf0c3c8246ae57be1  theo  task  normal  pending  -  delivered  2026-10-08T13:41:40Z
+r-02824085f0a43a85a943105fc8af1e7f  theo  review  high  completed  pass  delivered  2026-10-08T13:40:08Z
+r-8d12edd8b777ffe60d49c207a363c937  theo  question  low  deferred  -  delivered  2026-10-08T13:40:07Z
+r-d0d85221604ee5293d79869159039519  theo  task  normal  pending  -  delivered  2026-10-08T13:40:07Z
+[exit 0]
+
+maya$ agentnet status
+agentnetd running
+  pid:     4968
+  uptime:  2m56s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 9 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+[exit 0]
+

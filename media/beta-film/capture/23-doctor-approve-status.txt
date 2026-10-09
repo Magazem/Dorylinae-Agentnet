@@ -1,0 +1,47 @@
+# doctor, pending approvals, final status
+# captured 2026-10-08T13:44:19Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet doctor
+binary    ok   agentnet and agentnetd versions match
+config    warn the config directory can be changed by every user (fix: restrict the directory to your own user (and Administrators/root))
+program   warn agentnetd or its folder can be changed by every user (fix: move agentnetd to a folder only you (and Administrators/root) can write to, then run `agentnetd install` again)
+keychain  ok   identity key readable from file
+service   ok   agentnetd is reachable over IPC
+socket    ok   reachable
+relay     ok   connected, auth v2
+account   skip account support is added by a later ticket (4.2c)
+git       ok   git 2.32 or newer
+clock     ok   within 2 minutes of the relay
+peers     ok   every stored peer card verifies
+[exit 0]
+
+maya$ agentnet doctor --json
+{"ok":true,"checks":[{"id":"binary","state":"ok","detail":"agentnet and agentnetd versions match"},{"id":"config","state":"warn","detail":"the config directory can be changed by every user","fix":"restrict the directory to your own user (and Administrators/root)"},{"id":"program","state":"warn","detail":"agentnetd or its folder can be changed by every user","fix":"move agentnetd to a folder only you (and Administrators/root) can write to, then run `agentnetd install` again"},{"id":"keychain","state":"ok","detail":"identity key readable from file"},{"id":"service","state":"ok","detail":"agentnetd is reachable over IPC"},{"id":"socket","state":"ok","detail":"reachable"},{"id":"relay","state":"ok","detail":"connected, auth v2"},{"id":"account","state":"skip","detail":"account support is added by a later ticket (4.2c)"},{"id":"git","state":"ok","detail":"git 2.32 or newer"},{"id":"clock","state":"ok","detail":"within 2 minutes of the relay"},{"id":"peers","state":"ok","detail":"every stored peer card verifies"}]}
+[exit 0]
+
+maya$ agentnet approve --list
+No pending approvals.
+[exit 0]
+
+maya$ agentnet approve --list --json
+{"ok":true,"approvals":[]}
+[exit 0]
+
+maya$ agentnet status --team atlas
+agentnetd running
+  pid:     4968
+  uptime:  5m26s
+  version: 0.0.0-dev+860afe8 (2026-10-03)
+  outbox:  0 pending (0 queued, 0 relayed), 23 delivered, 0 failed, 0 expired
+  presence: visible, relay connected
+  relay:    connected, auth v2 since 2026-10-08T13:38:53Z
+team atlas (t-56f7…5110), owner maya
+NAME  DAEMON  AGENT   HUMAN    LAST SEEN
+maya  online  active  unknown  now  (you)
+theo  online  active  unknown  2026-10-08T13:44:15Z
+[exit 0]
+
+maya$ agentnet status --json
+{"ok":true,"pid":4968,"started_at":"2026-10-08T13:38:53Z","uptime_seconds":326.423454155,"version":"0.0.0-dev+860afe8 (2026-10-03)","outbox":{"queued":0,"relayed":0,"expired":0,"pending":0,"delivered":23,"failed":0},"presence":{"mode":"visible","relay":"connected","agent_active":true,"human_present":null},"relay":{"url":"ws://127.0.0.1:8787","connected":true,"since":"2026-10-08T13:38:53Z","auth":"v2"},"approval":"terminal","git":"ok"}
+[exit 0]
+

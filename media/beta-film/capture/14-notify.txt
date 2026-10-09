@@ -1,0 +1,28 @@
+# notification settings (desktop toasts may not appear in this headless container)
+# captured 2026-10-08T13:41:27Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet notify
+Desktop:  on
+Events:   debate.agreed, debate.broken, debate.constraint, debate.escalated, debate.refused, device.linked, request.accepted, request.cancelled, request.declined, request.received, session.changes, session.quarantined, session.result
+Webhook:  none
+[exit 0]
+
+theo$ agentnet notify --json
+{"ok":true,"desktop":true,"events":{"debate.agreed":true,"debate.broken":true,"debate.constraint":true,"debate.escalated":true,"debate.refused":true,"device.linked":true,"request.accepted":true,"request.cancelled":true,"request.completed":false,"request.declined":true,"request.deferred":false,"request.received":true,"session.changes":true,"session.quarantined":true,"session.result":true},"webhook":null}
+[exit 0]
+
+theo$ agentnet notify --event request.completed=on
+Desktop:  on
+Events:   debate.agreed, debate.broken, debate.constraint, debate.escalated, debate.refused, device.linked, request.accepted, request.cancelled, request.completed, request.declined, request.received, session.changes, session.quarantined, session.result
+Webhook:  none
+[exit 0]
+
+theo$ agentnet notify --test
+Desktop: failed
+Webhook: none
+[exit 0]
+
+theo$ agentnet notify --test --json
+{"ok":true,"desktop":"failed","webhook":"none"}
+[exit 0]
+

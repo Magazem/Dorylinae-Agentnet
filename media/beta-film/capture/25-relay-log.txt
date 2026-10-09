@@ -1,0 +1,133 @@
+# The local relay's own log (relay --verbose). It forwards encrypted envelopes and logs only routing
+# metadata: short key prefixes, envelope type, id and size. Note the offline queue (13:41:40 -> 13:41:45).
+# The two "auth rejected" lines at the end are agentnet doctor's relay/clock probes, which read the
+# challenge and hang up without signing (Docs: doctor never authenticates to the relay).
+
+$ relay --listen 127.0.0.1:8787 --db relay.db --verbose
+relay listening on 127.0.0.1:8787; Ctrl+C to stop
+public: no; origins: ws://127.0.0.1:8787 ws://localhost:8787 ws://[::1]:8787; accounts: off
+memory budgets: max-inflight 256MiB (and as much again for frames being read); max-inflight-ephemeral 32MiB; frame-read-timeout 30s
+queue redelivery budgets: queue-redeliver-per-key 32MiB/h; queue-redeliver-per-prefix 128MiB/h
+time=2026-10-08T13:38:53.333Z level=INFO msg="peer connected" event=connect peer=QZ_vPMFN
+time=2026-10-08T13:38:53.342Z level=INFO msg="peer connected" event=connect peer=ZhbF0Hsy
+time=2026-10-08T13:39:13.426Z level=INFO msg="pairing code issued" event=pair_issue peer=QZ_vPMFN
+time=2026-10-08T13:39:13.480Z level=INFO msg="pairing completed" event=pair_redeem issuer=QZ_vPMFN redeemer=ZhbF0Hsy
+time=2026-10-08T13:39:13.722Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=pair.confirm id=pc-d954c9dac813407c bytes=309
+time=2026-10-08T13:39:13.748Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=pair.confirm id=pc-8f58459a83b92668 bytes=309
+time=2026-10-08T13:39:13.748Z level=INFO msg="pairing cancelled" event=pair_cancel peer=QZ_vPMFN
+time=2026-10-08T13:39:29.311Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.init id=s29021e0df2ff39460d02760e bytes=285
+time=2026-10-08T13:39:29.312Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.resp id=s112cd3ccafdf63b60f8df448 bytes=585
+time=2026-10-08T13:39:29.315Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.fin id=sd5076c8c334b2fa6181fb689 bytes=539
+time=2026-10-08T13:39:29.315Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=sbe7ab0cfcd2a91739a590fc9 bytes=333
+time=2026-10-08T13:39:29.317Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=s0996be135683a4fcdac00550 bytes=333
+time=2026-10-08T13:39:29.354Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s7d9f26fb9e228630e818e7b8 bytes=333
+time=2026-10-08T13:39:29.355Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=sd6c526354ef0473183779cbe bytes=333
+time=2026-10-08T13:39:29.401Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s6490988d0ab3db5f5f9ffd0e bytes=333
+time=2026-10-08T13:39:29.402Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=s95fe702ccdd694af626ed4dc bytes=333
+time=2026-10-08T13:39:38.212Z level=INFO msg="pairing code issued" event=pair_issue peer=QZ_vPMFN
+time=2026-10-08T13:39:38.252Z level=INFO msg="pairing completed" event=pair_redeem issuer=QZ_vPMFN redeemer=ZhbF0Hsy
+time=2026-10-08T13:39:38.516Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=pair.confirm id=pc-9cc4608faaa14e36 bytes=309
+time=2026-10-08T13:39:38.519Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=pair.confirm id=pc-82b81ece430263b8 bytes=309
+time=2026-10-08T13:39:38.519Z level=INFO msg="pairing cancelled" event=pair_cancel peer=QZ_vPMFN
+time=2026-10-08T13:39:38.523Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-d0320c65fcf415e84fdb540b0612f786 bytes=736
+time=2026-10-08T13:39:38.529Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-5a47cf36c1b32ecb5451c57b5caf7eaf bytes=764
+time=2026-10-08T13:39:38.529Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-3b42f884f33f1e1dff885ca20fa9d20f bytes=2784
+time=2026-10-08T13:39:38.535Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-187ae7ab19c7ce20cc23c15114a64425 bytes=764
+time=2026-10-08T13:40:07.446Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-584300d61319fb63193884f1b7a350d2 bytes=1388
+time=2026-10-08T13:40:07.452Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-d1ba8446308c4c2e91ba83908f6bd028 bytes=764
+time=2026-10-08T13:40:07.992Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-059e41a6eeddd7cf06ab3ce96566af18 bytes=1424
+time=2026-10-08T13:40:07.997Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-916ad9b97f8d843e8791585d21c298ab bytes=764
+time=2026-10-08T13:40:08.542Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-bff2bbb9a0a654c8010f23639b2a3f37 bytes=1612
+time=2026-10-08T13:40:08.547Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-dd0d08d13216b5e3aac7b053e822994e bytes=764
+time=2026-10-08T13:40:33.682Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-51fbfbd752b7e3092a523b58a4ebb872 bytes=828
+time=2026-10-08T13:40:33.686Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-01406ae3ccbd6721d83b9ff3e4ab094e bytes=764
+time=2026-10-08T13:40:33.721Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-d0151b28e2418fcd99ccebd140e14e7b bytes=868
+time=2026-10-08T13:40:33.727Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-0c6afbe4f79ff8cdd6182ddb037d919a bytes=764
+time=2026-10-08T13:40:45.696Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-946465a76908c30190e5e154297c57b1 bytes=1376
+time=2026-10-08T13:40:45.701Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-6c6e511f4950bb29bbb3607c3ffcb0f0 bytes=764
+time=2026-10-08T13:40:45.702Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-d2a2f667cc096c4d02a3010c61d7e907 bytes=932
+time=2026-10-08T13:40:45.708Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-60c142e14b5ab411402cfb11f4892739 bytes=764
+time=2026-10-08T13:40:45.807Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-b9d9ccb244806ea8e0b7c343c84b4ddb bytes=1012
+time=2026-10-08T13:40:45.812Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-7ee9a1e1b854d8e4449422ba0bc9f869 bytes=764
+time=2026-10-08T13:41:17.477Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-be3e837a48f1bfcd3b84a47d01094f86 bytes=1312
+time=2026-10-08T13:41:17.482Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-db1cd20980f81006d6dd7196d73857fc bytes=932
+time=2026-10-08T13:41:17.486Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-80e4f04b3203f27dd6b690a01dc3ed79 bytes=764
+time=2026-10-08T13:41:17.489Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-d8052543bcaa4d829b6bfa908c134c62 bytes=764
+time=2026-10-08T13:41:17.586Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-0323346c50d50df5219d9f707a05c3c7 bytes=988
+time=2026-10-08T13:41:17.593Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-21b98093e5f22cc19b0d2280b5f0f1db bytes=1160
+time=2026-10-08T13:41:17.596Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-b7ff0aec63665657a788be3062f88159 bytes=764
+time=2026-10-08T13:41:17.597Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-a3dc972d8d0493c35a2218ccb8c14660 bytes=764
+time=2026-10-08T13:41:37.048Z level=INFO msg="peer disconnected" event=disconnect peer=ZhbF0Hsy
+time=2026-10-08T13:41:40.228Z level=INFO msg=queued event=queue from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-b2d3dc4566beac6d9631949d221555c0 bytes=1444
+time=2026-10-08T13:41:45.885Z level=INFO msg="peer connected" event=connect peer=ZhbF0Hsy
+time=2026-10-08T13:41:45.886Z level=INFO msg="delivered from queue" event=queue_flush peer=ZhbF0Hsy count=1
+time=2026-10-08T13:41:45.898Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-a7dd94750a4ae2630900954328f06a50 bytes=764
+time=2026-10-08T13:42:00.641Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-238df8a6d73e8c594a742c68a9079baf bytes=1540
+time=2026-10-08T13:42:00.645Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-f613574854a382c5bc19fd42618120c1 bytes=764
+time=2026-10-08T13:42:02.321Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-7c335bb4d867a70d4c8b1443378f867d bytes=828
+time=2026-10-08T13:42:02.322Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-018f74e079b792603fdfed29d040d8e0 bytes=1320
+time=2026-10-08T13:42:02.328Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-6822b1c5e27804ba6c19fa4d93aeddfa bytes=764
+time=2026-10-08T13:42:02.331Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-debf06e429bffb2542f2cdf08868688a bytes=932
+time=2026-10-08T13:42:02.334Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-63e628dd7858e49078d32a0ca3a17e3b bytes=764
+time=2026-10-08T13:42:02.336Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-cc1ad25a4c27401d2ff3e92baeeead97 bytes=764
+time=2026-10-08T13:42:02.502Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-3295da2c0b805f0164b6920d81da8b6e bytes=976
+time=2026-10-08T13:42:02.508Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-b33830e62c340a153cb6bb731d751921 bytes=1236
+time=2026-10-08T13:42:02.510Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-b28b786d25cb759f1063ee37b046d8ca bytes=764
+time=2026-10-08T13:42:02.513Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-3e8fbadd60c563e0d094242ea46e3067 bytes=764
+time=2026-10-08T13:42:17.861Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-568d76ffe5f8625f016e1d358af90a36 bytes=1472
+time=2026-10-08T13:42:17.869Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-7db4e75be9961e5db22cf503b44a4043 bytes=764
+time=2026-10-08T13:42:25.165Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-73918f7acfc88980b1f0186380aad899 bytes=828
+time=2026-10-08T13:42:25.169Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-5e10a8d85bc796d647467804713e1d3c bytes=1256
+time=2026-10-08T13:42:25.189Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-97a1735285e2c81956bbac2528078b27 bytes=764
+time=2026-10-08T13:42:25.195Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-9d46926b7ac94f325a1355c696a1f9b1 bytes=1292
+time=2026-10-08T13:42:25.196Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-695652dbe5ecbac6949db9aa76a7a820 bytes=764
+time=2026-10-08T13:42:25.202Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-1f8456a006bc9f2fd86640168e681ed9 bytes=764
+time=2026-10-08T13:42:35.548Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-d0b46e42ee39c2d9ade3c01cb15b9171 bytes=1004
+time=2026-10-08T13:42:35.553Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-47bdd855567e7f936abb4ab5fa316958 bytes=764
+time=2026-10-08T13:42:37.588Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-0cadc824e128fd728143d477285f5f4f bytes=1080
+time=2026-10-08T13:42:37.593Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-e461e7c862d31087e57872c021361e33 bytes=764
+time=2026-10-08T13:42:44.984Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-e0d41162b9cc1b66e0345c2b7467be77 bytes=1376
+time=2026-10-08T13:42:44.989Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-3d0779491e9ff2d975f9e973fcae9976 bytes=764
+time=2026-10-08T13:42:52.564Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-e12afd418afe535154ea1c3ed6efc306 bytes=1080
+time=2026-10-08T13:42:52.569Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-cf776dee79da26953ec46418816db700 bytes=764
+time=2026-10-08T13:42:54.178Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-4d1b903a638c658278357425064fd5a9 bytes=944
+time=2026-10-08T13:42:54.186Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-6b243bcbb83f523ba6dadd0517707f4a bytes=1248
+time=2026-10-08T13:42:54.193Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-3a5937a8f882ecad01a8e47eb6b0328f bytes=764
+time=2026-10-08T13:42:54.196Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-383b4296d05cb1327aaf7e552b647898 bytes=1108
+time=2026-10-08T13:42:54.199Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-b758aef9f9e6896e93d1354f6e1f655d bytes=864
+time=2026-10-08T13:42:54.201Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-e258ae4feab9c33b0fbe57e5f491d902 bytes=764
+time=2026-10-08T13:42:54.203Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-63120dc8d9af8a5a47f0fd2093223ee1 bytes=764
+time=2026-10-08T13:42:54.208Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-9d8a066e4208718181f627a6b1ff2a30 bytes=764
+time=2026-10-08T13:43:22.642Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-959eaa39de2c250ed72cd83fe5f3bfdf bytes=828
+time=2026-10-08T13:43:22.649Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-fc043765f6ebb4c1ab1255ea7595bc99 bytes=764
+time=2026-10-08T13:43:32.852Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-71e56b1f83bdaa0c53c8dccf1d218463 bytes=1320
+time=2026-10-08T13:43:32.857Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-638fbb00ac35fc8b56538cea5830f5c5 bytes=764
+time=2026-10-08T13:43:40.114Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.init id=sb39fdbf4ace664ef08fc2255 bytes=285
+time=2026-10-08T13:43:40.115Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.resp id=s4c031b923d0b43f051c852e0 bytes=585
+time=2026-10-08T13:43:40.118Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.fin id=se2ec7f15ec2da74bf2888145 bytes=540
+time=2026-10-08T13:43:40.118Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=se18183da70fac271ebcec94a bytes=1041
+time=2026-10-08T13:43:40.121Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s779517af38d7f8da833f6b26 bytes=489
+time=2026-10-08T13:43:40.156Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=s08cfea6a32d1880591702eb2 bytes=1045
+time=2026-10-08T13:43:40.158Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s6eae551b575b1115020ec49d bytes=1004
+time=2026-10-08T13:43:40.193Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=sc3647402f0e913633adffba8 bytes=1045
+time=2026-10-08T13:43:40.195Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s4158412cc8ee0020a066084f bytes=1004
+time=2026-10-08T13:43:40.229Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=sa317c59409ede69a904bd3d3 bytes=1097
+time=2026-10-08T13:43:40.232Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=sa52f39bfb3c1549186f459f1 bytes=549
+time=2026-10-08T13:43:40.267Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=se72f6ad3b38ddf596bbd3fbc bytes=1061
+time=2026-10-08T13:43:40.269Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=sb1abe4a65e257c51a3f68e08 bytes=445
+time=2026-10-08T13:43:40.305Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=session.data id=sc3e4532bdb4ee165017ae923 bytes=1097
+time=2026-10-08T13:43:40.308Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=session.data id=s0f393e90529d4e49ab732d0a bytes=549
+time=2026-10-08T13:43:46.839Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-655c87169b66c348d78092a859afcd27 bytes=836
+time=2026-10-08T13:43:46.844Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-bde3eb4cecbd4774bb76678c33158c13 bytes=764
+time=2026-10-08T13:43:54.425Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-f3d08acefcbd1651076e5a354b160649 bytes=1328
+time=2026-10-08T13:43:54.431Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-4bbb7efb51994f262955af1d31050750 bytes=764
+time=2026-10-08T13:43:54.431Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-101da96b0790d9ed9db6300ef46e4848 bytes=928
+time=2026-10-08T13:43:54.438Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-a793ce24f2e12590076f707b438b5c1f bytes=764
+time=2026-10-08T13:44:04.178Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-89a5d487e555db00f0269b39cdcbe534 bytes=932
+time=2026-10-08T13:44:04.182Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-004f58400789a6391eaa864f2a8b496b bytes=764
+time=2026-10-08T13:44:05.823Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-661e687521f8ed5f80502a8b05d6d12c bytes=976
+time=2026-10-08T13:44:05.829Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-7491d6f7a2b4b1f3b751a5f13ad9e373 bytes=1240
+time=2026-10-08T13:44:05.832Z level=INFO msg=routed event=route from=ZhbF0Hsy to=QZ_vPMFN type=mail id=m-5e7e1bca537ed57906a2e2dd39d369bc bytes=764
+time=2026-10-08T13:44:05.835Z level=INFO msg=routed event=route from=QZ_vPMFN to=ZhbF0Hsy type=mail id=m-9bb51320b8baa0037ebcce2d4b72ffd0 bytes=764
+time=2026-10-08T13:44:19.539Z level=WARN msg="auth rejected" event=auth_failed
+time=2026-10-08T13:44:19.585Z level=WARN msg="auth rejected" event=auth_failed

@@ -1,0 +1,29 @@
+# theo's inbox: sorted by effective priority (high first) though the high one arrived last
+# captured 2026-10-08T13:40:16Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet inbox
+ID                                  FROM  TYPE      URGENCY  PRIO  AGE  TITLE
+r-02824085f0a43a85a943105fc8af1e7f  maya  review    high     3000  0m   Review the checkout retry change
+r-d0d85221604ee5293d79869159039519  maya  task      normal   2000  0m   Add queue settings to the staging runbook
+r-8d12edd8b777ffe60d49c207a363c937  maya  question  low      1000  0m   Which logger does payments use?
+[exit 0]
+
+theo$ agentnet inbox --json
+{"ok":true,"requests":[{"id":"r-02824085f0a43a85a943105fc8af1e7f","direction":"in","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"review","title":"Review the checkout retry change","brief":"","urgency":"high","urgency_declared":"high","downgraded_by":null,"urgency_reason":"Release candidate is cut on Friday","artifacts":[{"branch":"feat/checkout-retry","commit":"4f2a9c1"}],"created":"2026-10-08T13:40:08Z","received_at":"2026-10-08T13:40:08Z","state":"pending","state_at":null,"priority":3000,"mail_id":"m-bff2bbb9a0a654c8010f23639b2a3f37"},{"id":"r-d0d85221604ee5293d79869159039519","direction":"in","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"task","title":"Add queue settings to the staging runbook","brief":"","urgency":"normal","urgency_declared":"normal","downgraded_by":null,"artifacts":[],"created":"2026-10-08T13:40:07Z","received_at":"2026-10-08T13:40:07Z","state":"pending","state_at":null,"priority":2000,"mail_id":"m-059e41a6eeddd7cf06ab3ce96566af18"},{"id":"r-8d12edd8b777ffe60d49c207a363c937","direction":"in","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"question","title":"Which logger does payments use?","brief":"","urgency":"low","urgency_declared":"low","downgraded_by":null,"artifacts":[],"created":"2026-10-08T13:40:07Z","received_at":"2026-10-08T13:40:07Z","state":"pending","state_at":null,"priority":1000,"mail_id":"m-584300d61319fb63193884f1b7a350d2"}]}
+[exit 0]
+
+theo$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f --from maya
+agentnet: no such request
+[exit 1]
+
+# NOTE: 'request show <id> --from maya' (peer name) answered unknown_request; the same with maya's public key works (see INDEX.md, unexpected behaviour).
+theo$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f
+r-02824085f0a43a85a943105fc8af1e7f  review to maya (team atlas): Review the checkout retry change
+  state pending
+  artifact: branch=feat/checkout-retry commit=4f2a9c1
+[exit 0]
+
+theo$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f --json
+{"ok":true,"request":{"id":"r-02824085f0a43a85a943105fc8af1e7f","direction":"in","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"review","title":"Review the checkout retry change","brief":"What: Review the retry change in the checkout client before Friday's release.\nWhy: Checkout calls time out under load; this adds capped backoff with jitter.\nDone when: You approve it, or list the issues that block the release.\n","urgency":"high","urgency_declared":"high","downgraded_by":null,"urgency_reason":"Release candidate is cut on Friday","artifacts":[{"branch":"feat/checkout-retry","commit":"4f2a9c1"}],"created":"2026-10-08T13:40:08Z","received_at":"2026-10-08T13:40:08Z","state":"pending","state_at":null,"mail_id":"m-bff2bbb9a0a654c8010f23639b2a3f37"}}
+[exit 0]
+

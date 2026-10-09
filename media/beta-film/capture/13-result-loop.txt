@@ -1,0 +1,82 @@
+# work session loop: theo returns a result, maya waits for it, requests one change, theo returns round 2, maya accepts the result
+# captured 2026-10-08T13:40:45Z UTC from the real binaries (local relay, two daemons on one machine)
+
+theo$ agentnet result r-02824085f0a43a85a943105fc8af1e7f --status partial --summary '1 blocking issue: backoff has no upper bound' --file review-round1.md
+Submitted result for s-5aef910e10c310d67eb353ee2265b028 (open)
+[exit 0]
+
+maya$ agentnet wait r-02824085f0a43a85a943105fc8af1e7f --timeout 60
+result: s-5aef910e10c310d67eb353ee2265b028 (awaiting_result)
+[exit 0]
+
+maya$ agentnet session s-5aef910e10c310d67eb353ee2265b028
+s-5aef910e10c310d67eb353ee2265b028  role requester  state awaiting_result  round 1
+  peer:    theo
+  request: Review the checkout retry change (r-02824085f0a43a85a943105fc8af1e7f)
+  result: status partial
+    summary: 1 blocking issue: backoff has no upper bound
+[exit 0]
+
+maya$ agentnet session s-5aef910e10c310d67eb353ee2265b028 --request-changes 'Cap the backoff at 30s and add a test for the retry budget.'
+Requested changes on s-5aef910e10c310d67eb353ee2265b028 (now open)
+[exit 0]
+
+# NOTE (capture sequencing, not a product fault): theo's wait below was started ~1.5 s AFTER the
+# change request had already reached theo's daemon, so there was no further change to wait for and it
+# timed out (exit 4) as documented; the next command shows round 2 was already open.
+theo$ agentnet wait s-5aef910e10c310d67eb353ee2265b028 --timeout 30
+timeout: s-5aef910e10c310d67eb353ee2265b028 (open)
+[exit 4]
+
+theo$ agentnet session s-5aef910e10c310d67eb353ee2265b028
+s-5aef910e10c310d67eb353ee2265b028  role worker  state open  round 2
+  peer:    maya
+  request: Review the checkout retry change (r-02824085f0a43a85a943105fc8af1e7f)
+[exit 0]
+
+theo$ agentnet result s-5aef910e10c310d67eb353ee2265b028 --status pass --summary 'Approve: no blocking issues left' --file review-round2.md --verification tests_passed --notes 'Ran the checkout tests locally.'
+Submitted result for s-5aef910e10c310d67eb353ee2265b028 (open)
+[exit 0]
+
+maya$ agentnet wait s-5aef910e10c310d67eb353ee2265b028 --timeout 60 --json
+{"ok":true,"wait":"result","session":{"id":"s-5aef910e10c310d67eb353ee2265b028","role":"requester","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-02824085f0a43a85a943105fc8af1e7f","type":"review","title":"Review the checkout retry change"},"state":"awaiting_result","round":2,"seq":3,"opened":"2026-10-08T13:40:33Z","state_at":"2026-10-08T13:41:17Z","result":{"status":"pass","summary":"Approve: no blocking issues left","output":"Re-reviewed feat/checkout-retry.\n\n1. Backoff is now capped at 30s. Resolved.\n2. New test covers the retry budget. Resolved.\nNo blocking issues left. Approve.\n","notes":"Ran the checkout tests locally.","output_bytes":158,"result_bytes":309},"verification":"tests_passed","verification_by":"worker","changes":"Cap the backoff at 30s and add a test for the retry budget.","grants":[]}}
+[exit 0]
+
+maya$ agentnet session s-5aef910e10c310d67eb353ee2265b028
+s-5aef910e10c310d67eb353ee2265b028  role requester  state awaiting_result  round 2
+  peer:    theo
+  request: Review the checkout retry change (r-02824085f0a43a85a943105fc8af1e7f)
+  result: status pass
+    summary: Approve: no blocking issues left
+[exit 0]
+
+maya$ agentnet accept-result s-5aef910e10c310d67eb353ee2265b028
+Accepted result for s-5aef910e10c310d67eb353ee2265b028 (now closed)
+[exit 0]
+
+maya$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f
+r-02824085f0a43a85a943105fc8af1e7f  review to theo (team atlas): Review the checkout retry change
+  state completed 2026-10-08T13:41:17Z, delivery delivered
+  artifact: branch=feat/checkout-retry commit=4f2a9c1
+  result: pass: Approve: no blocking issues left
+  output (158 bytes):
+    Re-reviewed feat/checkout-retry.
+    
+    1. Backoff is now capped at 30s. Resolved.
+    2. New test covers the retry budget. Resolved.
+    No blocking issues left. Approve.
+[exit 0]
+
+maya$ agentnet request show r-02824085f0a43a85a943105fc8af1e7f --json
+{"ok":true,"request":{"id":"r-02824085f0a43a85a943105fc8af1e7f","direction":"out","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"review","title":"Review the checkout retry change","brief":"What: Review the retry change in the checkout client before Friday's release.\nWhy: Checkout calls time out under load; this adds capped backoff with jitter.\nDone when: You approve it, or list the issues that block the release.\n","urgency":"high","urgency_declared":"high","downgraded_by":null,"urgency_reason":"Release candidate is cut on Friday","artifacts":[{"branch":"feat/checkout-retry","commit":"4f2a9c1"}],"created":"2026-10-08T13:40:08Z","state":"completed","state_at":"2026-10-08T13:41:17Z","result":{"status":"pass","summary":"Approve: no blocking issues left","output":"Re-reviewed feat/checkout-retry.\n\n1. Backoff is now capped at 30s. Resolved.\n2. New test covers the retry budget. Resolved.\nNo blocking issues left. Approve.\n","output_bytes":158},"delivery":"delivered","mail_id":"m-bff2bbb9a0a654c8010f23639b2a3f37","session":{"id":"s-5aef910e10c310d67eb353ee2265b028","state":"closed","round":2}}}
+[exit 0]
+
+theo$ agentnet sessions
+ID                                  ROLE    STATE   PEER  REQUEST                           ROUND
+s-5aef910e10c310d67eb353ee2265b028  worker  closed  maya  Review the checkout retry change  2
+[exit 0]
+
+maya$ agentnet sessions --json
+{"ok":true,"sessions":[{"id":"s-5aef910e10c310d67eb353ee2265b028","role":"requester","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-02824085f0a43a85a943105fc8af1e7f","type":"review","title":"Review the checkout retry change"},"state":"closed","outcome":"accepted","round":2,"seq":4,"opened":"2026-10-08T13:40:33Z","state_at":"2026-10-08T13:41:17Z","closed":"2026-10-08T13:41:17Z","result":{"status":"pass","summary":"Approve: no blocking issues left","output_bytes":158,"result_bytes":309},"verification":"tests_passed","verification_by":"worker","grants":[]}]}
+[exit 0]
+

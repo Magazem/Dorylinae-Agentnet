@@ -1,0 +1,33 @@
+# agentnet identity on both machines (signed Agent Card + fingerprint)
+# captured 2026-10-08T13:39:08Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet identity
+name:        maya
+harness:     claude-code
+public key:  QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk
+fingerprint: YSTP CQTC HBWP 96AK 5KHC
+created:     2026-10-08T13:38:53Z
+skills:      (none)
+signature:   wkqN7gZvdL8z26kGP8ZdkOF84IoAuOmOQMkiIdPwz4typfOAdUDOmjI5c0ATjcSSTcS7RnHfc4YoFCl_6a5oDA
+key storage: file
+[exit 0]
+
+maya$ agentnet identity --json
+{"ok":true,"card":{"version":1,"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","harness":"claude-code","skills":[],"created":"2026-10-08T13:38:53Z"},"signature":"wkqN7gZvdL8z26kGP8ZdkOF84IoAuOmOQMkiIdPwz4typfOAdUDOmjI5c0ATjcSSTcS7RnHfc4YoFCl_6a5oDA","key_backend":"file","fingerprint":"YSTPCQTCHBWP96AK5KHC"}
+[exit 0]
+
+theo$ agentnet identity
+name:        theo
+harness:     codex
+public key:  ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc
+fingerprint: NZ7E CM13 KYB7 DWMX TRH6
+created:     2026-10-08T13:38:53Z
+skills:      (none)
+signature:   r1nv2ujZPwYQzC5XZ-QFrusJzD59GXlecmu5IcWMgy55yyc56X9PVSvoFoeEVwIfch4qg6-AWA-TBVMKx2WTDQ
+key storage: file
+[exit 0]
+
+theo$ agentnet identity --json
+{"ok":true,"card":{"version":1,"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","harness":"codex","skills":[],"created":"2026-10-08T13:38:53Z"},"signature":"r1nv2ujZPwYQzC5XZ-QFrusJzD59GXlecmu5IcWMgy55yyc56X9PVSvoFoeEVwIfch4qg6-AWA-TBVMKx2WTDQ","key_backend":"file","fingerprint":"NZ7ECM13KYB7DWMXTRH6"}
+[exit 0]
+

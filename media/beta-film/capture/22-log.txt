@@ -1,0 +1,78 @@
+# audit log: content-free, hash-chained; --since, --session, --verify, --head
+# captured 2026-10-08T13:44:12Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet log --verify
+The audit log is intact: 101 rows checked.
+head 101 0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b (keep it as an anchor: --anchor 101:0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b)
+[exit 0]
+
+maya$ agentnet log --verify --json
+{"ok":true,"verify":{"status":"ok","rows":101,"legacy_rows":0,"chained_from":1,"head":{"id":101,"hash":"0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b","ts":"2026-10-08T13:44:05.834028602Z"}}}
+[exit 0]
+
+maya$ agentnet log --head
+101 0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b 2026-10-08T13:44:05.834028602Z
+[exit 0]
+
+maya$ agentnet log --since 10m --limit 15
+2026-10-08T13:38:53.314899197Z daemon audit.chain_start legacy_last_id=0 legacy_rows=0
+2026-10-08T13:38:53.315047489Z daemon daemon.start pid=4968 version="0.0.0-dev+860afe8 (2026-10-03)"
+2026-10-08T13:38:53.32041672Z daemon identity.create key_backend="file" key_generated=true public_key="QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk"
+2026-10-08T13:38:53.32241718Z daemon approval.mode mode="terminal"
+2026-10-08T13:38:53.334513692Z daemon mailbox.rotate key_id="32907d60b2d4ea69" retired=""
+2026-10-08T13:39:13.42561289Z cli pair.start id="pair-38a99246a97d3e26" role="issuer" version=2
+2026-10-08T13:39:13.746881865Z daemon pair.complete id="pair-38a99246a97d3e26" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" role="issuer" trust="code"
+2026-10-08T13:39:21.131527655Z cli approval.create id="a-8f44fc944599fe92fc0ae28a70951f3c" kind="peer_verify" subject="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc"
+2026-10-08T13:39:23.632792109Z cli approval.approve id="a-8f44fc944599fe92fc0ae28a70951f3c" kind="peer_verify" subject="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" via="terminal"
+2026-10-08T13:39:23.633069069Z cli peer.verify fingerprint="NZ7ECM13KYB7DWMXTRH6" name="theo" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" trust="fingerprint"
+2026-10-08T13:39:29.313642877Z daemon session.open peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" role="initiator" session="db1f1074"
+2026-10-08T13:39:35.663454387Z cli team.create name="atlas" team="t-56f71101717c4309f6105b5a81435110"
+2026-10-08T13:39:35.701044166Z cli approval.create id="a-d4122434933a2c0674fbc77a5556cced" kind="team_invite" subject="t-56f71101717c4309f6105b5a81435110"
+2026-10-08T13:39:38.202200934Z cli approval.approve id="a-d4122434933a2c0674fbc77a5556cced" kind="team_invite" subject="t-56f71101717c4309f6105b5a81435110" via="terminal"
+2026-10-08T13:39:38.211786258Z cli pair.start id="pair-aad25b9d9bad3b4f" role="issuer" version=2
+[exit 0]
+
+maya$ agentnet log --session s-b3098b5fd25dd5ec2aa2b78fe588fc03
+2026-10-08T13:41:40.224469904Z cli request.submit mail="m-b2d3dc4566beac6d9631949d221555c0" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" request="r-97ae9a37feaf51fcf0c3c8246ae57be1" team="t-56f71101717c4309f6105b5a81435110" type="task" urgency="normal"
+2026-10-08T13:43:22.644959512Z daemon ws.open peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" request="r-97ae9a37feaf51fcf0c3c8246ae57be1" role="requester" session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:43:22.648409461Z daemon request.state peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" request="r-97ae9a37feaf51fcf0c3c8246ae57be1" seq=1 state="accepted"
+2026-10-08T13:43:30.347791296Z cli approval.create id="a-1a9f0356263e0ccac9c1394bfd541a7b" kind="grant" subject="g-5d7222ea989a877447415efd69d41ae8"
+2026-10-08T13:43:30.348767276Z cli grant.create action="fs.read" approval="a-1a9f0356263e0ccac9c1394bfd541a7b" expires_s=3600 grant="g-5d7222ea989a877447415efd69d41ae8" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" sensitive=true session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:43:32.849858556Z cli approval.approve id="a-1a9f0356263e0ccac9c1394bfd541a7b" kind="grant" subject="g-5d7222ea989a877447415efd69d41ae8" via="terminal"
+2026-10-08T13:43:32.850669712Z daemon grant.issue grant="g-5d7222ea989a877447415efd69d41ae8" mail="m-71e56b1f83bdaa0c53c8dccf1d218463" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc"
+2026-10-08T13:43:40.120713364Z daemon grant.fetch bytes=0 grant="g-5d7222ea989a877447415efd69d41ae8" op="list" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:40.15751167Z daemon grant.fetch bytes=0 grant="g-5d7222ea989a877447415efd69d41ae8" op="list" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:40.194856436Z daemon grant.fetch bytes=0 grant="g-5d7222ea989a877447415efd69d41ae8" op="list" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:40.231094698Z daemon grant.fetch bytes=68 grant="g-5d7222ea989a877447415efd69d41ae8" op="read" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:40.268599621Z daemon grant.fetch bytes=0 grant="g-5d7222ea989a877447415efd69d41ae8" op="stat" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:40.307160605Z daemon grant.fetch bytes=68 grant="g-5d7222ea989a877447415efd69d41ae8" op="read" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" result="ok"
+2026-10-08T13:43:46.838022316Z cli grant.revoke grant="g-5d7222ea989a877447415efd69d41ae8" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" reason="user"
+2026-10-08T13:43:54.429467013Z daemon ws.result_in artifacts=0 output_bytes=209 peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" quarantined=true result_bytes=319 round=1 session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:44:01.674763995Z cli approval.create id="a-c8b0844996de62b5d690f4ecdf2e0880" kind="release" subject="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:44:04.176134369Z cli approval.approve id="a-c8b0844996de62b5d690f4ecdf2e0880" kind="release" subject="s-b3098b5fd25dd5ec2aa2b78fe588fc03" via="terminal"
+2026-10-08T13:44:04.176954699Z cli ws.release approval="a-c8b0844996de62b5d690f4ecdf2e0880" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" round=1 session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:44:05.822307538Z cli ws.accept_result peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" round=1 session="s-b3098b5fd25dd5ec2aa2b78fe588fc03" verification="none"
+2026-10-08T13:44:05.824094222Z daemon ws.close age_s=43 outcome="accepted" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" rounds=1 session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:44:05.824894824Z daemon experience.write bytes=849 role="requester" session="s-b3098b5fd25dd5ec2aa2b78fe588fc03"
+2026-10-08T13:44:05.834028602Z daemon request.state artifacts=0 output_bytes=209 peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" request="r-97ae9a37feaf51fcf0c3c8246ae57be1" result_bytes=297 seq=2 state="completed"
+[exit 0]
+
+maya$ agentnet log --session s-b3098b5fd25dd5ec2aa2b78fe588fc03 --json
+{"ok":true,"events":[{"id":40,"ts":"2026-10-08T13:41:40.224469904Z","actor":"cli","action":"request.submit","detail":{"mail":"m-b2d3dc4566beac6d9631949d221555c0","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","request":"r-97ae9a37feaf51fcf0c3c8246ae57be1","team":"t-56f71101717c4309f6105b5a81435110","type":"task","urgency":"normal"},"hash":"6685c077a7f03fdbf9a1942c873f3352003bb167642fcbf60ad3e49d6dc0b99a"},{"id":77,"ts":"2026-10-08T13:43:22.644959512Z","actor":"daemon","action":"ws.open","detail":{"peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","request":"r-97ae9a37feaf51fcf0c3c8246ae57be1","role":"requester","session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"9fcc6f81e0a94e6fe8592fbf74463eb1aad3063a09d56f51e68326800ced7ae6"},{"id":79,"ts":"2026-10-08T13:43:22.648409461Z","actor":"daemon","action":"request.state","detail":{"peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","request":"r-97ae9a37feaf51fcf0c3c8246ae57be1","seq":1,"state":"accepted"},"hash":"47a4aedbb609f4bf4bccbb4e4022bfa396228c9f32ba4c2db8775bd9943bb4c4"},{"id":80,"ts":"2026-10-08T13:43:30.347791296Z","actor":"cli","action":"approval.create","detail":{"id":"a-1a9f0356263e0ccac9c1394bfd541a7b","kind":"grant","subject":"g-5d7222ea989a877447415efd69d41ae8"},"hash":"fb691e789c10d0ffe7cedab18bff27b69c85ec6187c28bddececd9ead61ce112"},{"id":81,"ts":"2026-10-08T13:43:30.348767276Z","actor":"cli","action":"grant.create","detail":{"action":"fs.read","approval":"a-1a9f0356263e0ccac9c1394bfd541a7b","expires_s":3600,"grant":"g-5d7222ea989a877447415efd69d41ae8","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","sensitive":true,"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"c08984eb9c3ffadcafa6bce20e4b2977e4a6de4b1ba17864e562ce9c0128e837"},{"id":82,"ts":"2026-10-08T13:43:32.849858556Z","actor":"cli","action":"approval.approve","detail":{"id":"a-1a9f0356263e0ccac9c1394bfd541a7b","kind":"grant","subject":"g-5d7222ea989a877447415efd69d41ae8","via":"terminal"},"hash":"e1cd5c31295eadfff5acb948aa3e3fd7ce9eac08981556f6543f64042b80a415"},{"id":83,"ts":"2026-10-08T13:43:32.850669712Z","actor":"daemon","action":"grant.issue","detail":{"grant":"g-5d7222ea989a877447415efd69d41ae8","mail":"m-71e56b1f83bdaa0c53c8dccf1d218463","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc"},"hash":"d7f8bc6b76ef66273baf9bd03977ef26a4dd1665325fadd9efe39762d245de23"},{"id":85,"ts":"2026-10-08T13:43:40.120713364Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":0,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"list","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"7185105c403fc9645e123b1a51350cdded40825878cac2386eb3625998feae1f"},{"id":86,"ts":"2026-10-08T13:43:40.15751167Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":0,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"list","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"6c1b7ab62a3b7642ae548b5d28148e04cfb0ac7e7160c8f4ba466e9c05f7e642"},{"id":87,"ts":"2026-10-08T13:43:40.194856436Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":0,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"list","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"42d246046a6cd3e1b6a304314700f53a9b2e21564eece74bb1ca9f55781e0763"},{"id":88,"ts":"2026-10-08T13:43:40.231094698Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":68,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"read","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"9efe46008ca574e66a062b12b2f0dda2f63d4092738f90b45fa34088c69ebc3d"},{"id":89,"ts":"2026-10-08T13:43:40.268599621Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":0,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"stat","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"65e363c70893918701fbb563f88e451435f57ac57a04419b36d4372490d74d12"},{"id":90,"ts":"2026-10-08T13:43:40.307160605Z","actor":"daemon","action":"grant.fetch","detail":{"bytes":68,"grant":"g-5d7222ea989a877447415efd69d41ae8","op":"read","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","result":"ok"},"hash":"4215185aa635d74cb5c5cdeccbec3dc486b9d578eaef282e5cbfb4d9bac9c17e"},{"id":91,"ts":"2026-10-08T13:43:46.838022316Z","actor":"cli","action":"grant.revoke","detail":{"grant":"g-5d7222ea989a877447415efd69d41ae8","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","reason":"user"},"hash":"ac232203e823bded71374970b9bff2c35cd535643a58f9cce7ca9703b81eabc9"},{"id":93,"ts":"2026-10-08T13:43:54.429467013Z","actor":"daemon","action":"ws.result_in","detail":{"artifacts":0,"output_bytes":209,"peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","quarantined":true,"result_bytes":319,"round":1,"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"7a079b429288644ae4e866bf671f6bc0f7fc12cc5e143c8c862ab730e7c494b4"},{"id":94,"ts":"2026-10-08T13:44:01.674763995Z","actor":"cli","action":"approval.create","detail":{"id":"a-c8b0844996de62b5d690f4ecdf2e0880","kind":"release","subject":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"4e7ed857f9a1166be4bb18ea1e82b1306f42ed1bdff96dbc61b3bf566261d4ed"},{"id":95,"ts":"2026-10-08T13:44:04.176134369Z","actor":"cli","action":"approval.approve","detail":{"id":"a-c8b0844996de62b5d690f4ecdf2e0880","kind":"release","subject":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","via":"terminal"},"hash":"fe42c370ec81407dbc3afeaced4e0a61224d1f78cc5a48a28c61df1a20732b69"},{"id":96,"ts":"2026-10-08T13:44:04.176954699Z","actor":"cli","action":"ws.release","detail":{"approval":"a-c8b0844996de62b5d690f4ecdf2e0880","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","round":1,"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"61796d9337c67d96dadf31716dea93c584db1b52e52f44e1c8ba27de2796d0ca"},{"id":97,"ts":"2026-10-08T13:44:05.822307538Z","actor":"cli","action":"ws.accept_result","detail":{"peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","round":1,"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03","verification":"none"},"hash":"8f5be2abd8c12a2f43e26a8c4dd549f5ff33ab92b21cbf6cc49863b726894b14"},{"id":98,"ts":"2026-10-08T13:44:05.824094222Z","actor":"daemon","action":"ws.close","detail":{"age_s":43,"outcome":"accepted","peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","rounds":1,"session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"614501fba6bcc3b5d5b63311e0e92bdbfdcc400714c2a7fe651ff826ab091d32"},{"id":99,"ts":"2026-10-08T13:44:05.824894824Z","actor":"daemon","action":"experience.write","detail":{"bytes":849,"role":"requester","session":"s-b3098b5fd25dd5ec2aa2b78fe588fc03"},"hash":"ef72699bdd61fba0b549f5c3a7b3553222d5dd7a55a1fcdb8ea96bc430a3656d"},{"id":101,"ts":"2026-10-08T13:44:05.834028602Z","actor":"daemon","action":"request.state","detail":{"artifacts":0,"output_bytes":209,"peer":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","request":"r-97ae9a37feaf51fcf0c3c8246ae57be1","result_bytes":297,"seq":2,"state":"completed"},"hash":"0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b"}]}
+[exit 0]
+
+maya$ agentnet log --action decision.
+2026-10-08T13:42:54.181069321Z daemon decision.create bytes=2289 hash="373d753b2a44d213469622ea53636012f94d0ee3b890c83ebf3e1a21e8867436" id="d-2c3a7ea42af4a5cbd5c8c92181841b23" outcome="agreed" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" session="s-9cb46e2a38f010957acd7b8d8ede87b7" signed_by=["initiator"]
+2026-10-08T13:42:54.199002665Z daemon decision.sign_in id="d-2c3a7ea42af4a5cbd5c8c92181841b23" peer="ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc" session="s-9cb46e2a38f010957acd7b8d8ede87b7"
+[exit 0]
+
+theo$ agentnet log --verify
+The audit log is intact: 101 rows checked.
+head 101 559770a16b684197182c755afe536dffb1a5af594a98e41d401a37e06299e339 (keep it as an anchor: --anchor 101:559770a16b684197182c755afe536dffb1a5af594a98e41d401a37e06299e339)
+[exit 0]
+
+maya$ agentnet log --verify --anchor 101:0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b
+The audit log is intact: 101 rows checked.
+head 101 0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b (keep it as an anchor: --anchor 101:0d7eee9cc1ff89821da4b21e32d989e01f0442cbf5cd60897d34c905ca76c46b)
+[exit 0]
+

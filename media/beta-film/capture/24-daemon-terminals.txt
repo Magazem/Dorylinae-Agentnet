@@ -1,0 +1,28 @@
+# The daemons' own terminals (agentnetd run with DORYLINAE_APPROVAL=terminal on a real pseudo-terminal).
+# Each approval prints its summary and a 6-digit code on the daemon's stderr; the human types "<tag> <code>" on
+# the daemon's stdin. In this capture a small script played the human and typed each code ~2.5 s later.
+# Codes are one-time demo values from this run (all used, all expired).
+
+=== maya (agentnetd terminal) ===
+AgentNet approval a-8f44fc: Mark peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.. Code 047176. Type "a-8f44fc 047176" to approve or "reject a-8f44fc" to reject.
+a-8f44fc 047176
+AgentNet: a-8f44fc944599fe92fc0ae28a70951f3c approved
+AgentNet approval a-d41224: Create a one-time invite code for the team atlas (t-56f71101717c4309f6105b5a81435110). Whoever redeems it joins the team, and every member's daemon will then trust them as a team member. Confirm only if you asked for this invite yourself.. Code 049487. Type "a-d41224 049487" to approve or "reject a-d41224" to reject.
+a-d41224 049487
+AgentNet: a-d4122434933a2c0674fbc77a5556cced approved
+AgentNet approval a-c6c59b: Add a human constraint to the debate s-9cb46e2a38f010957acd7b8d8ede87b7 with peer NZ7E CM13 KYB7 DWMX TRH6 named "theo": "Do not change the 45s gateway timeout.". It is signed into the Decision as a human decision. Confirm only if you wrote this constraint yourself.. Code 520305. Type "a-c6c59b 520305" to approve or "reject a-c6c59b" to reject.
+a-c6c59b 520305
+AgentNet: a-c6c59be664ac3b58839eedf9d3c8cf1e approved
+AgentNet approval a-1a9f03: Grant fs.read to peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" on "/tmp/claude-0/-home-user-Dorylinae-Agentnet/23e9a7a7-9cfb-51a7-93c9-973648c5f9dc/scratchpad/film/capture/run/work/payments-ci" (label "payments-ci-af11"), the whole folder, for 1 h until 2026-10-08 14:43 UTC, in session s-b3098b5fd25dd5ec2aa2b78fe588fc03 (your task request "Track down the flaky payments test"). Sensitive: results of this session stay quarantined until you release them. Confirm only if you asked for exactly this.. Code 248765. Type "a-1a9f03 248765" to approve or "reject a-1a9f03" to reject.
+a-1a9f03 248765
+AgentNet: a-1a9f0356263e0ccac9c1394bfd541a7b approved
+AgentNet approval a-c8b084: Release the quarantined result of peer NZ7E CM13 KYB7 DWMX TRH6 named "theo" for your task request "Track down the flaky payments test" (session s-b3098b5fd25dd5ec2aa2b78fe588fc03, round 1): status pass, 319 bytes, 209 bytes of output, 0 artifact(s). Your agent will then be able to read it. This session had 1 sensitive grant(s). Confirm only if you mean to release this result.. Code 354457. Type "a-c8b084 354457" to approve or "reject a-c8b084" to reject.
+a-c8b084 354457
+AgentNet: a-c8b0844996de62b5d690f4ecdf2e0880 approved
+
+=== theo (agentnetd terminal; the daemon was stopped and restarted once for the offline test) ===
+AgentNet approval a-90855e: Mark peer YSTP CQTC HBWP 96AK 5KHC named "maya" as verified. Compare all five groups of this fingerprint with what 'agentnet identity' shows on that peer's machine. Confirm only if all of them match and you started this yourself.. Code 078163. Type "a-90855e 078163" to approve or "reject a-90855e" to reject.
+a-90855e 078163
+AgentNet: a-90855e4d5ebab4fc4b64c83a9d406662 approved
+
+[agentnetd exited 0]

@@ -1,0 +1,60 @@
+# consult: maya asks theo's agent a question with a context file; theo answers in one step; maya waits and accepts
+# captured 2026-10-08T13:42:00Z UTC from the real binaries (local relay, two daemons on one machine)
+
+maya$ agentnet consult theo --question 'Is a 30s retry cap safe with our 45s gateway timeout?' --context-file incident-notes.md --idempotency-key demo-consult-1
+context: sending incident-notes.md (147 bytes)
+Queued normal consult r-d1f29e07da2ba4c9d589b20df7b91f75 to theo (team atlas)
+  session: s-0831e8863520449b986eec1e04f369b5 (wait with 'agentnet wait s-0831e8863520449b986eec1e04f369b5')
+[exit 0]
+
+maya$ agentnet consult theo --question 'Is a 30s retry cap safe with our 45s gateway timeout?' --context-file incident-notes.md --idempotency-key demo-consult-1 --json
+{"ok":true,"id":"r-d1f29e07da2ba4c9d589b20df7b91f75","mail_id":"m-238df8a6d73e8c594a742c68a9079baf","status":"delivered","duplicate":true,"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"urgency":"normal","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","daemon_online":true,"last_seen":"2026-10-08T13:41:48Z"},"session":"s-0831e8863520449b986eec1e04f369b5"}
+[exit 0]
+
+theo$ agentnet inbox
+ID                                  FROM  TYPE      URGENCY  PRIO  AGE  TITLE
+r-d0d85221604ee5293d79869159039519  maya  task      normal   2000  1m   Add queue settings to the staging runbook
+r-97ae9a37feaf51fcf0c3c8246ae57be1  maya  task      normal   2000  0m   Track down the flaky payments test
+r-d1f29e07da2ba4c9d589b20df7b91f75  maya  question  normal   2000  0m   Is a 30s retry cap safe with our 45s gateway timeout?
+[exit 0]
+
+theo$ agentnet request show r-d1f29e07da2ba4c9d589b20df7b91f75 --json
+{"ok":true,"request":{"id":"r-d1f29e07da2ba4c9d589b20df7b91f75","direction":"in","peer":{"name":"maya","public_key":"QZ_vPMFNEulOn5SiRBLGiBTeUQnF9mbhFg4Pw9DZGvk","fingerprint":"YSTPCQTCHBWP96AK5KHC"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"type":"question","title":"Is a 30s retry cap safe with our 45s gateway timeout?","brief":"Is a 30s retry cap safe with our 45s gateway timeout?","urgency":"normal","urgency_declared":"normal","downgraded_by":null,"artifacts":[],"created":"2026-10-08T13:42:00Z","received_at":"2026-10-08T13:42:00Z","state":"pending","state_at":null,"mail_id":"m-238df8a6d73e8c594a742c68a9079baf","context_files":1,"context_bytes":147,"context":[{"name":"incident-notes.md","text":"Checkout incident, last Friday\n- Gateway timeout: 45s\n- Retries: up to 8, capped backoff 30s, full jitter\n- 3% of calls hit the retry path at peak\n"}]}}
+[exit 0]
+
+theo$ agentnet result r-d1f29e07da2ba4c9d589b20df7b91f75 --file answer.md --summary 'No: cap at 10s with a 40s total budget'
+Submitted result for s-0831e8863520449b986eec1e04f369b5 (open)
+[exit 0]
+
+maya$ agentnet wait s-0831e8863520449b986eec1e04f369b5 --timeout 60
+result: s-0831e8863520449b986eec1e04f369b5 (awaiting_result)
+[exit 0]
+
+maya$ agentnet session s-0831e8863520449b986eec1e04f369b5
+s-0831e8863520449b986eec1e04f369b5  role requester  state awaiting_result  round 1
+  peer:    theo
+  request: Is a 30s retry cap safe with our 45s gateway timeout? (r-d1f29e07da2ba4c9d589b20df7b91f75)
+  result: status n/a
+    summary: No: cap at 10s with a 40s total budget
+[exit 0]
+
+maya$ agentnet wait s-0831e8863520449b986eec1e04f369b5 --timeout 10 --json
+{"ok":true,"wait":"result","session":{"id":"s-0831e8863520449b986eec1e04f369b5","role":"requester","peer":{"name":"theo","public_key":"ZhbF0HsyQTfm6xj8auolfEq_x1hRuvUT_uZsVg1udJc","fingerprint":"NZ7ECM13KYB7DWMXTRH6"},"team":{"id":"t-56f71101717c4309f6105b5a81435110","name":"atlas"},"request":{"id":"r-d1f29e07da2ba4c9d589b20df7b91f75","type":"question","title":"Is a 30s retry cap safe with our 45s gateway timeout?"},"state":"awaiting_result","round":1,"seq":1,"opened":"2026-10-08T13:42:02Z","state_at":"2026-10-08T13:42:02Z","result":{"status":"n/a","summary":"No: cap at 10s with a 40s total budget","output":"Not quite. Two capped retries (30s + 30s) already pass the 45s gateway timeout,\nso the gateway gives up while the client is still waiting.\n\nSuggestion: cap the backoff at 10s and stop after a 40s total budget.\n","output_bytes":210,"result_bytes":315},"verification":"none","verification_by":"worker","grants":[]}}
+[exit 0]
+
+maya$ agentnet accept-result s-0831e8863520449b986eec1e04f369b5
+Accepted result for s-0831e8863520449b986eec1e04f369b5 (now closed)
+[exit 0]
+
+maya$ agentnet request show r-d1f29e07da2ba4c9d589b20df7b91f75
+r-d1f29e07da2ba4c9d589b20df7b91f75  question to theo (team atlas): Is a 30s retry cap safe with our 45s gateway timeout?
+  state completed 2026-10-08T13:42:02Z, delivery delivered
+  context file incident-notes.md (147 bytes)
+  result: n/a: No: cap at 10s with a 40s total budget
+  output (210 bytes):
+    Not quite. Two capped retries (30s + 30s) already pass the 45s gateway timeout,
+    so the gateway gives up while the client is still waiting.
+    
+    Suggestion: cap the backoff at 10s and stop after a 40s total budget.
+[exit 0]
+
