@@ -15,12 +15,13 @@ let times = argv.times ? argv.times.split(',').map(Number) : [];
 if (argv.every) { const e = +argv.every, a = +(argv.from ?? 0), b = +(argv.to ?? 10); for (let t = a; t <= b + 1e-9; t += e) times.push(+t.toFixed(4)); }
 const out = path.resolve(argv.out ?? path.join(here, 'out', 'stills'));
 fs.mkdirSync(out, { recursive: true });
-const browser = await chromium.launch({ args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars'] });
+// --disable-partial-raster: every frame rastered whole, so a still is the same pixels as that frame in render.mjs (see there)
+const browser = await chromium.launch({ args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars', '--disable-partial-raster'] });
 const ctx = await browser.newContext({ viewport: { width: W, height: H }, deviceScaleFactor: Number(argv.dsf ?? 1) });
 const page = await ctx.newPage();
 page.on('pageerror', (e) => { console.error('[scene error]', e.message); process.exitCode = 1; });
 page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.error('[scene]', m.text()); });
-await page.goto(pathToFileURL(path.join(here, 'film.html')).href + `?format=${aspect}` + (argv.debug ? '&debug=1' : ''));
+await page.goto(pathToFileURL(path.join(here, 'film.html')).href + `?format=${aspect}` + (argv.cut ? `&cut=${argv.cut}` : '') + (argv.debug ? '&debug=1' : ''));
 await page.evaluate(() => window.ready);
 const files = [];
 for (const t of times) {

@@ -1,0 +1,638 @@
+{
+ "cues": [
+  {
+   "t": 0.0,
+   "kind": "PIC",
+   "G": 0,
+   "desc": "frame 0: plate YOU, caption C-1"
+  },
+  {
+   "t": 1.428571,
+   "kind": "LAND",
+   "G": 2,
+   "desc": "the second paste (plate THEY locks in)"
+  },
+  {
+   "t": 1.428571,
+   "kind": "PIC",
+   "G": 2,
+   "desc": "plate THEY, caption C-2"
+  },
+  {
+   "t": 5.357143,
+   "kind": "PIC",
+   "G": 7.5,
+   "desc": "S-1 with the name"
+  },
+  {
+   "t": 5.714286,
+   "kind": "PIC",
+   "G": 8,
+   "desc": "cut 1 (21 degrees) into the scene; maya pulse"
+  },
+  {
+   "t": 6.071429,
+   "kind": "PAPER",
+   "G": 8.5,
+   "desc": "the letter slides out of maya's machine",
+   "variant": "slide"
+  },
+  {
+   "t": 6.964286,
+   "kind": "PIC",
+   "G": 9.75,
+   "desc": "brief line 1 (8 lines, 1/8 beat apart)"
+  },
+  {
+   "t": 7.857143,
+   "kind": "LAND",
+   "G": 11,
+   "desc": "the agent's command lands on maya's terminal"
+  },
+  {
+   "t": 8.571429,
+   "kind": "PAPER",
+   "G": 12,
+   "desc": "the letter folds in half",
+   "variant": "fold"
+  },
+  {
+   "t": 8.571429,
+   "kind": "PIC",
+   "G": 12,
+   "desc": "maya pulse"
+  },
+  {
+   "t": 9.285714,
+   "kind": "PIC",
+   "G": 13,
+   "desc": "S-2 Your machine seals it."
+  },
+  {
+   "t": 9.464286,
+   "kind": "PAPER",
+   "G": 13.25,
+   "desc": "the open envelope slides out with the letter",
+   "variant": "slide"
+  },
+  {
+   "t": 10.357143,
+   "kind": "PIC",
+   "G": 14.5,
+   "desc": "the letter drops into the envelope"
+  },
+  {
+   "t": 10.892857,
+   "kind": "LAND",
+   "G": 15.25,
+   "desc": "the address form is printed"
+  },
+  {
+   "t": 11.428571,
+   "kind": "PIC",
+   "G": 16,
+   "desc": "maya pulse; the seal"
+  },
+  {
+   "t": 11.428571,
+   "kind": "SEAL",
+   "G": 16,
+   "desc": "the seal (the lift)"
+  },
+  {
+   "t": 11.607143,
+   "kind": "LAND",
+   "G": 16.25,
+   "desc": "output: Queued normal task request"
+  },
+  {
+   "t": 11.964286,
+   "kind": "PIC",
+   "G": 16.75,
+   "desc": "the envelope lifts; S-3"
+  },
+  {
+   "t": 14.285714,
+   "kind": "ARRIVE",
+   "G": 20,
+   "desc": "it sets down on the counter",
+   "note": "root"
+  },
+  {
+   "t": 15.357143,
+   "kind": "PIC",
+   "G": 21.5,
+   "desc": "S-4 It reads the outside:"
+  },
+  {
+   "t": 15.714286,
+   "kind": "PIC",
+   "G": 22,
+   "desc": "pointer FROM: who,"
+  },
+  {
+   "t": 16.428571,
+   "kind": "PIC",
+   "G": 23,
+   "desc": "pointer TO: to whom,"
+  },
+  {
+   "t": 17.142857,
+   "kind": "PIC",
+   "G": 24,
+   "desc": "pointer TIME: when,"
+  },
+  {
+   "t": 17.857143,
+   "kind": "PIC",
+   "G": 25,
+   "desc": "pointer SIZE: how big."
+  },
+  {
+   "t": 20.0,
+   "kind": "PIC",
+   "G": 28,
+   "desc": "S-5 It cannot open the envelope."
+  },
+  {
+   "t": 20.357143,
+   "kind": "PIC",
+   "G": 28.5,
+   "desc": "pointer under the seal tab"
+  },
+  {
+   "t": 22.857143,
+   "kind": "PIC",
+   "G": 32,
+   "desc": "S-6 Theo is offline. The envelope waits. (breakdown)"
+  },
+  {
+   "t": 23.571429,
+   "kind": "PIC",
+   "G": 33,
+   "desc": "the counter clock enters"
+  },
+  {
+   "t": 24.571429,
+   "kind": "CLOCK",
+   "desc": "clock :41 (real seconds)",
+   "variant": "tick"
+  },
+  {
+   "t": 25.571429,
+   "kind": "CLOCK",
+   "desc": "clock :42 (real seconds)",
+   "variant": "tock"
+  },
+  {
+   "t": 26.571429,
+   "kind": "CLOCK",
+   "desc": "clock :43 (real seconds)",
+   "variant": "tick"
+  },
+  {
+   "t": 27.571429,
+   "kind": "CLOCK",
+   "desc": "clock :44 (real seconds)",
+   "variant": "tock"
+  },
+  {
+   "t": 28.571429,
+   "kind": "BACK",
+   "G": 40,
+   "desc": "theo's ring fills"
+  },
+  {
+   "t": 28.571429,
+   "kind": "CLOCK",
+   "G": 40,
+   "desc": "clock :45 (theo is back)",
+   "variant": "tick"
+  },
+  {
+   "t": 28.571429,
+   "kind": "PIC",
+   "G": 40,
+   "desc": "theo's ring fills; S-7 (return)"
+  },
+  {
+   "t": 28.75,
+   "kind": "PIC",
+   "G": 40.25,
+   "desc": "the envelope lifts to theo"
+  },
+  {
+   "t": 30.714286,
+   "kind": "ARRIVE",
+   "G": 43,
+   "desc": "it sets down at theo's dock",
+   "note": "fifth"
+  },
+  {
+   "t": 31.428571,
+   "kind": "PAPER",
+   "G": 44,
+   "desc": "the brief slides out of theo's machine",
+   "variant": "slide"
+  },
+  {
+   "t": 31.785714,
+   "kind": "LAND",
+   "G": 44.5,
+   "desc": "theo's inbox lands"
+  },
+  {
+   "t": 32.142857,
+   "kind": "PIC",
+   "G": 45,
+   "desc": "S-8"
+  },
+  {
+   "t": 32.678571,
+   "kind": "LAND",
+   "G": 45.75,
+   "desc": "the result command lands"
+  },
+  {
+   "t": 33.392857,
+   "kind": "PAPER",
+   "G": 46.75,
+   "desc": "the answer sheet slides out",
+   "variant": "slide"
+  },
+  {
+   "t": 34.285714,
+   "kind": "PIC",
+   "G": 48,
+   "desc": "pointer under the answer"
+  },
+  {
+   "t": 35.0,
+   "kind": "PIC",
+   "G": 49,
+   "desc": "S-9"
+  },
+  {
+   "t": 35.535714,
+   "kind": "PAPER",
+   "G": 49.75,
+   "desc": "the answer sheet folds",
+   "variant": "fold"
+  },
+  {
+   "t": 36.25,
+   "kind": "PAPER",
+   "G": 50.75,
+   "desc": "the answer envelope slides out",
+   "variant": "slide"
+  },
+  {
+   "t": 37.142857,
+   "kind": "SEAL",
+   "G": 52,
+   "desc": "the answer's seal"
+  },
+  {
+   "t": 37.5,
+   "kind": "PIC",
+   "G": 52.5,
+   "desc": "the answer travels back"
+  },
+  {
+   "t": 39.285714,
+   "kind": "ARRIVE",
+   "G": 55,
+   "desc": "it sets down at maya's dock",
+   "note": "root"
+  },
+  {
+   "t": 39.285714,
+   "kind": "PIC",
+   "G": 55,
+   "desc": "maya's arrival pulse"
+  },
+  {
+   "t": 40.0,
+   "kind": "PIC",
+   "G": 56,
+   "desc": "cut 2: the card, display line"
+  },
+  {
+   "t": 40.714286,
+   "kind": "PIC",
+   "G": 57,
+   "desc": "card line 2"
+  },
+  {
+   "t": 41.428571,
+   "kind": "PIC",
+   "G": 58,
+   "desc": "card line 3"
+  },
+  {
+   "t": 46.428571,
+   "kind": "PAPER",
+   "G": 65,
+   "desc": "our envelope travels in (cut 3)",
+   "variant": "slide"
+  },
+  {
+   "t": 46.428571,
+   "kind": "PIC",
+   "G": 65,
+   "desc": "cut 3: the invitation"
+  },
+  {
+   "t": 48.214286,
+   "kind": "PAPER",
+   "G": 67.5,
+   "desc": "a slit opens along the top fold",
+   "variant": "slit"
+  },
+  {
+   "t": 48.571429,
+   "kind": "PAPER",
+   "G": 68,
+   "desc": "the letter rises out",
+   "variant": "slide"
+  },
+  {
+   "t": 49.285714,
+   "kind": "PAPER",
+   "G": 69,
+   "desc": "the letter unfolds",
+   "variant": "unfold"
+  },
+  {
+   "t": 49.642857,
+   "kind": "PIC",
+   "G": 69.5,
+   "desc": "note lines 1-2"
+  },
+  {
+   "t": 50.714286,
+   "kind": "PIC",
+   "G": 71,
+   "desc": "note: Tell us what breaks."
+  },
+  {
+   "t": 51.428571,
+   "kind": "PIC",
+   "G": 72,
+   "desc": "note: That decides what we change first."
+  },
+  {
+   "t": 52.5,
+   "kind": "PIC",
+   "G": 73.5,
+   "desc": "note: Free during the closed beta."
+  },
+  {
+   "t": 53.571429,
+   "kind": "PIC",
+   "G": 75,
+   "desc": "note: Apply at dorylinae.net"
+  },
+  {
+   "t": 54.285714,
+   "kind": "PIC",
+   "G": 76,
+   "desc": "signature 'Yazan' types (85 ms a letter)"
+  },
+  {
+   "t": 54.285714,
+   "kind": "TYPE",
+   "desc": "signature 'Yazan': 'Y'"
+  },
+  {
+   "t": 54.370714,
+   "kind": "TYPE",
+   "desc": "signature 'Yazan': 'a'"
+  },
+  {
+   "t": 54.455714,
+   "kind": "TYPE",
+   "desc": "signature 'Yazan': 'z'"
+  },
+  {
+   "t": 54.540714,
+   "kind": "TYPE",
+   "desc": "signature 'Yazan': 'a'"
+  },
+  {
+   "t": 54.625714,
+   "kind": "TYPE",
+   "desc": "signature 'Yazan': 'n'"
+  },
+  {
+   "t": 57.142857,
+   "kind": "PIC",
+   "G": 80,
+   "desc": "cut 4: the boot"
+  },
+  {
+   "t": 57.292857,
+   "kind": "PIC",
+   "desc": "boot plate 1"
+  },
+  {
+   "t": 57.342857,
+   "kind": "PIC",
+   "desc": "boot plate 2"
+  },
+  {
+   "t": 57.382857,
+   "kind": "PIC",
+   "desc": "boot plate 3"
+  },
+  {
+   "t": 57.432857,
+   "kind": "PIC",
+   "desc": "boot plate 4"
+  },
+  {
+   "t": 57.472857,
+   "kind": "PIC",
+   "desc": "boot plate 5"
+  },
+  {
+   "t": 57.522857,
+   "kind": "PIC",
+   "desc": "boot plate 6"
+  },
+  {
+   "t": 57.562857,
+   "kind": "PIC",
+   "desc": "boot plate 7"
+  },
+  {
+   "t": 57.602857,
+   "kind": "PIC",
+   "desc": "boot plate 8"
+  },
+  {
+   "t": 57.652857,
+   "kind": "PIC",
+   "desc": "boot plate 9"
+  },
+  {
+   "t": 57.692857,
+   "kind": "PIC",
+   "desc": "boot plate 10"
+  },
+  {
+   "t": 57.742857,
+   "kind": "PIC",
+   "desc": "boot plate 11"
+  },
+  {
+   "t": 57.792857,
+   "kind": "PIC",
+   "desc": "boot plate 12"
+  },
+  {
+   "t": 57.832857,
+   "kind": "PIC",
+   "desc": "boot plate 13"
+  },
+  {
+   "t": 57.872857,
+   "kind": "PIC",
+   "desc": "boot plate 14"
+  },
+  {
+   "t": 57.922857,
+   "kind": "PIC",
+   "desc": "boot plate 15"
+  },
+  {
+   "t": 57.962857,
+   "kind": "PIC",
+   "desc": "boot plate 16"
+  },
+  {
+   "t": 58.012857,
+   "kind": "PIC",
+   "desc": "boot plate 17"
+  },
+  {
+   "t": 58.062857,
+   "kind": "PIC",
+   "desc": "boot plate 18"
+  },
+  {
+   "t": 58.102857,
+   "kind": "PIC",
+   "desc": "boot plate 19"
+  },
+  {
+   "t": 58.142857,
+   "kind": "PIC",
+   "desc": "boot plate 20"
+  },
+  {
+   "t": 58.192857,
+   "kind": "PIC",
+   "desc": "boot plate 21"
+  },
+  {
+   "t": 58.232857,
+   "kind": "PIC",
+   "desc": "boot plate 22"
+  },
+  {
+   "t": 58.282857,
+   "kind": "PIC",
+   "desc": "boot plate 23"
+  },
+  {
+   "t": 58.342857,
+   "kind": "PIC",
+   "desc": "boot glint sweep"
+  },
+  {
+   "t": 58.492857,
+   "kind": "PIC",
+   "desc": "boot signal mark"
+  },
+  {
+   "t": 59.042857,
+   "kind": "TYPE",
+   "desc": "boot letter D",
+   "level": "boot"
+  },
+  {
+   "t": 59.122857,
+   "kind": "TYPE",
+   "desc": "boot letter O",
+   "level": "boot"
+  },
+  {
+   "t": 59.212857,
+   "kind": "TYPE",
+   "desc": "boot letter R",
+   "level": "boot"
+  },
+  {
+   "t": 59.292857,
+   "kind": "TYPE",
+   "desc": "boot letter Y",
+   "level": "boot"
+  },
+  {
+   "t": 59.382857,
+   "kind": "TYPE",
+   "desc": "boot letter L",
+   "level": "boot"
+  },
+  {
+   "t": 59.472857,
+   "kind": "TYPE",
+   "desc": "boot letter I",
+   "level": "boot"
+  },
+  {
+   "t": 59.552857,
+   "kind": "TYPE",
+   "desc": "boot letter N",
+   "level": "boot"
+  },
+  {
+   "t": 59.642857,
+   "kind": "TYPE",
+   "desc": "boot letter A",
+   "level": "boot"
+  },
+  {
+   "t": 59.722857,
+   "kind": "TYPE",
+   "desc": "boot letter E",
+   "level": "boot"
+  },
+  {
+   "t": 60.0,
+   "kind": "PIC",
+   "G": 84,
+   "desc": "Apply at dorylinae.net enters"
+  },
+  {
+   "t": 63.857143,
+   "kind": "PIC",
+   "desc": "the music is silent from here (SCRIPT-v2 \u00a72)"
+  },
+  {
+   "t": 64.285714,
+   "kind": "PIC",
+   "G": 90,
+   "desc": "end"
+  }
+ ],
+ "duration": 64.28571428571429,
+ "format": "all",
+ "formats": [
+  "16x9",
+  "4x5"
+ ],
+ "bpm": 84,
+ "source": "design/SCRIPT-v2.md \u00a73 + \u00a78 (both formats share every time), owner decisions from BRIEF-v2: signature 'Yazan', card footnote off. Kinds in ['ARRIVE', 'BACK', 'CLOCK', 'LAND', 'PAPER', 'SEAL', 'TYPE'] are sound cues; PIC are picture anchors the score is timed to."
+}

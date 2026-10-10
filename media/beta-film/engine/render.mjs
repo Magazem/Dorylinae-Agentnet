@@ -76,9 +76,11 @@ async function openPage(browser) {
   const page = await ctx.newPage();
   page.on('pageerror', (e) => { console.error('[scene error]', e.message); process.exitCode = 1; });
   page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') console.error('[scene]', m.text()); });
-  await page.goto(pathToFileURL(opt.scene).href + `?format=${opt.aspect}` + (argv.debug ? '&debug=1' : ''), { waitUntil: 'load' });
+  await page.goto(pathToFileURL(opt.scene).href + `?format=${opt.aspect}` + (argv.cut ? `&cut=${argv.cut}` : '') + (argv.debug ? '&debug=1' : ''), { waitUntil: 'load' });
   const info = await page.evaluate(() => window.ready);
-  const meta = await page.evaluate(() => ({ dur: window.DURATION ?? null, cues: window.CUES ?? null, blur: window.CUES?.blur ?? [] }));
+  // cuts: the start of every shot that replaces the picture (z 0; overlay layers such as caption slots have z > 0)
+  const meta = await page.evaluate(() => ({ dur: window.DURATION ?? null, cues: window.CUES ?? null, blur: window.CUES?.blur ?? [],
+    cuts: (window.FILM?.shots ?? []).filter((s) => !s.z && s.start > 0).map((s) => s.start) }));
   const cdp = await ctx.newCDPSession(page);
   // A fresh CDP session does not inherit Playwright's device emulation: without this override
   // Page.captureScreenshot returns 1920x1080 even when deviceScaleFactor is 2.
@@ -94,15 +96,23 @@ async function grab({ page, cdp }) {
   return Buffer.from(r.data, 'base64');
 }
 // ---------- motion blur: 180° shutter, N sub-frames averaged in linear light, only inside the scene's declared windows
+// The shutter is 180° at the render's own frame rate (span SHUTTER / fps: 1/120 s at 60 fps, 1/60 s at 30 fps), so a
+// 30 fps delivery is rendered natively with --fps 30 (fix-r3: averaging pairs of 60 fps frames gave two separate 180°
+// exposures with a gap, i.e. doubled glyphs and paired stars, not a 180° shutter at 30 fps).
+// A window [t0, t1, maxFps] with a third element applies only when fps <= maxFps (moves whose steps pass 19 px a frame
+// at 30 fps but not at 60). Sub-frame times never cross a hard cut (meta.cuts): a frame after a cut never blends in the
+// shot before it, nor one before a cut the shot after it (at 30 fps the first frame of a shot starting mid-frame would).
 const BLUR_N = Number(argv['blur-samples'] ?? 16), SHUTTER = 0.5;      // 0.5 = 180°
 const toLin = new Float32Array(256).map((_, i) => { const c = i / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; });
 function toSrgb8(l) { const c = l <= 0.0031308 ? l * 12.92 : 1.055 * l ** (1 / 2.4) - 0.055; return Math.max(0, Math.min(255, Math.round(c * 255))); }
-const inBlur = (t, wins) => argv['no-blur'] !== 'true' && wins.some(([a, b]) => t >= a - 1e-9 && t <= b + 1e-9);
+const inBlur = (t, wins) => argv['no-blur'] !== 'true' && wins.some(([a, b, maxFps]) => (maxFps == null || opt.fps <= maxFps + 1e-9) && t >= a - 1e-9 && t <= b + 1e-9);
+/** a sub-frame time held on the frame's own side of every hard cut */
+const sideOfCuts = (ts, t, cuts) => { for (const c of cuts) { if (t >= c && ts < c) ts = c; else if (t < c && ts >= c) ts = c - 1e-6; } return ts; };
 async function grabBlurred(pg, t) {
   const span = SHUTTER / opt.fps;
   let acc = null, info = null;
   for (let i = 0; i < BLUR_N; i++) {
-    const ts = t - span / 2 + ((i + 0.5) / BLUR_N) * span;
+    const ts = sideOfCuts(t - span / 2 + ((i + 0.5) / BLUR_N) * span, t, pg.meta.cuts ?? []);
     await pg.page.evaluate((tt) => window.renderAt(tt), ts);
     const { data, info: inf } = await sharp(await grab(pg)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
     info = inf;
@@ -138,7 +148,11 @@ async function renderRange(browser, f0, f1, sink, timing) {
 // ---------- main
 const t0 = performance.now();
 if (opt.framesDir) fs.mkdirSync(opt.framesDir, { recursive: true });
-const LAUNCH = { args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars'] };
+// --disable-partial-raster (final polish, review r3 motion): with partial raster Chromium re-rasters only the damaged part
+// of a tile and reuses the rest from the previous frame, so a frame's pixels depended on the frames rendered before it: in
+// an in-order render a 1 px light line at a paper edge flickered on/off every frame (4:5 (215,444), frames 471-487, 7/203)
+// and renderAt(t) after a jump differed from renderAt(t) in sequence. Whole-tile raster makes every frame a function of t.
+const LAUNCH = { args: ['--font-render-hinting=none', '--disable-lcd-text', '--force-color-profile=srgb', '--hide-scrollbars', '--disable-partial-raster'] };
 const browser = await chromium.launch(LAUNCH);
 // Pages in one browser share its GPU/compositor process, so they do not scale; give each worker its own
 // browser unless --shared-browser is passed (kept only to reproduce the benchmark).

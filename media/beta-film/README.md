@@ -1,8 +1,49 @@
 # Closed-beta film
 
-A 63-second film that introduces Dorylinae to people who have never heard of it and invites small teams to apply for
-the closed beta at **dorylinae.net**. Everything in it is made in code: no drawing tools, no stock footage, no generated
-imagery, no voice-over. Terminal output on screen is real output from the product, captured from two running daemons.
+A film that introduces Dorylinae to people who have never heard of it and invites small teams to apply for the closed
+beta at **dorylinae.net**. Everything in it is made in code: no drawing tools, no stock footage, no generated imagery, no
+voice-over. Terminal output on screen is real output from the product, captured from two running daemons.
+
+There are two cuts. **v2, "The envelope", is the current film.** v1 is kept below as history.
+
+## v2: "The envelope" (current)
+
+| | |
+|---|---|
+| Length | 64.29 s (22½ bars at 84 BPM) |
+| Formats | 16:9 1920×1080 and a separately laid-out 4:5 1080×1350 |
+| Frame rates | 60 fps; 30 fps versions rendered natively at 30 fps (180° shutter, their own motion blur) |
+| Sound | a new score composed in code (`audio2/score2.py`: CC0 sampled pianos, mallets, strings, designed pad), −14 LUFS, true peak −1.7 dBTP |
+
+Why v2 exists: the owner found that v1 explained the round trip but did not connect or invite. v2 answers that with the
+evidence in `design/BRIEF-v2.md`: one still scene with the caption changing in place beside the action (contiguity,
+split attention), the post-office analogy the product's own docs use (the relay reads the outside of the envelope:
+who, to whom, when, how big; it cannot open it), one card with the three features the film just showed, and a
+personal invitation signed by a person.
+
+1. **The pain** (0–5.7 s): you paste the brief into a chat; they paste it into their coding agent.
+2. **The scene** (5.7–40.0 s), one continuous shot: maya's machine seals the brief in an envelope; the relay works like
+   a post office and reads only the address form (real values from the relay log); theo is offline, so the envelope
+   waits while the relay clock runs; theo comes back, his machine opens it, his agent does the work, and the answer
+   comes back sealed the same way.
+3. **The card** (40.0–46.4 s): End-to-end encrypted. Requests wait while your teammate is offline. You approve what
+   their agent can read.
+4. **The invitation** (46.4–57.1 s): our envelope, FROM Dorylinae TO your team, opens to a note on Dorylinae
+   letterhead: a first wave of 10 small teams, tell us what breaks, free during the closed beta, apply at
+   dorylinae.net, signed Yazan.
+5. **End** (57.1–64.3 s): the brand boot and **Apply at dorylinae.net**.
+
+Owner decisions: signature "Yazan"; the card does not carry "No independent security review yet." (that disclosure
+belongs in the post text, the invitation email and the privacy note); the score is code-composed.
+
+Source: `engine/shots-v2/` (`common-v2.js` is the component library; one file per section), `design/SCRIPT-v2.md`
+(every time, size and colour), `audio2/` (score and sampler; the samples themselves are fetched as in `audio2/PALETTE.md`),
+`sky-tools/v2-paper-sky/` and `sky-tools/v2-end/` (stars cleared near paper and type), `engine/tools/deliver-v2.sh`
+(masters → upload files and posters). Render with `?cut=v2`; `tools/deliver-v2.sh v2` needs the cue files that
+`stills.mjs --cut v2` writes (`out/v2-cues-<format>.json`) and the two mixes from `score2.py --cues …`. Chromium runs
+with `--disable-partial-raster` (stale raster tiles made 1 px paper edges flicker in in-order renders).
+
+## v1 (history)
 
 | | |
 |---|---|

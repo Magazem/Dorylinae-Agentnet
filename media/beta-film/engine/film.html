@@ -43,7 +43,10 @@
     F.cue = (t, kind, extra = {}) => F.cues.push({ t: +t.toFixed(4), kind, ...extra });
   })();
 </script>
-<script src="shots/manifest.js"></script>
+<script>
+  // ?cut=v2 loads shots-v2/manifest.js (the v2 film); no cut = v1 (shots/manifest.js)
+  document.write(`<script src="${(new URLSearchParams(location.search).get('cut') ? 'shots-' + new URLSearchParams(location.search).get('cut') : 'shots')}/manifest.js"><\/script>`);
+</script>
 <script>
   (async () => {
     const F = window.FILM;
