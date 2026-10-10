@@ -48,7 +48,10 @@ print(",".join(f"{max(0.0, (f - 0.01) / 60):.6f}" for f in cuts))
 PY
 )
   echo "$asp cuts: $CUTS"
-  X264="-preset slow -profile:v high -level:v 4.2 -force_key_frames $CUTS -x264-params keyint=600:min-keyint=1:scenecut=0:aq-mode=3"
+  # keyint 2400 (40 s at 60 fps) is longer than the longest shot (the scene, 34.3 s), so keyframes fall only on the cuts:
+  # with keyint 600 the encoder added one every 10 s inside the still scene and the note hold (15.7, 25.7, 35.7, 56.4 s),
+  # and each one shifted ~26,000 sky pixels by 2-6 levels for a frame (a one-frame shimmer)
+  X264="-preset slow -profile:v high -level:v 4.2 -force_key_frames $CUTS -x264-params keyint=2400:min-keyint=1:scenecut=0:aq-mode=3"
   M=out/master-$asp-$V.mkv; M30=out/master30-$asp-$V.mkv
   [ -f $M ] || node render.mjs --aspect $asp --cut v2 --codec ffv1 --workers 3 --blur-samples 16 --out $M --stats out/render-stats-v2.jsonl
   # 32 sub-frames at 30 fps: the shutter is twice as long, so this keeps the 60 fps master's spacing between sub-frames
